@@ -26,12 +26,36 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: 子プロセスに UTF-8 で書かせる。**`encoding="utf-8"` で受ける以上、書かせる側も
+#: 揃えないと辻褄が合わない** ―― 日本語 Windows の既定では、パイプへ書く Python の
+#: 標準出力は cp932 になる。それを utf-8 として ``errors="replace"`` で読むと、
+#: 中身は全部 ``�`` になり、**cp932 のコンソールへ出し直すところで落ちる**
+#: （``�`` は cp932 に無い）。展開そのものは終わっているのに、報告の 1 行で
+#: 異常終了するので、打った人からは失敗にしか見えない。
+CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+
+def resilient_output() -> None:
+    """**コンソールの文字コードで落ちない**（:func:`arp4.cli._resilient_output` と同じ）。
+
+    出すものに日本語のファイル名が並ぶ ―― `資料/` の中身も `examples/` の検体も
+    そうである。**出力の都合で公開作業が止まってはいけない**ので、出せない文字は
+    ``backslashreplace`` で符号位置を残す（``?`` にすると、出せなかった文字と
+    資料に元からある ``?`` が見分けられなくなる）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")   # type: ignore[union-attr]
+        except (AttributeError, OSError, ValueError):
+            pass
 
 # 公開する最上位の要素。ここに無いものは（追跡されていても）出さない。
 INCLUDE = (
@@ -73,6 +97,7 @@ def check_surface() -> None:
     result = subprocess.run(
         [sys.executable, str(ROOT / "build" / "build.py"), "--check"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=CHILD_ENV,
     )
     if result.returncode != 0:
         sys.stderr.write(result.stdout + result.stderr)
@@ -131,6 +156,7 @@ def git(dest: Path, message: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    resilient_output()
     parser = argparse.ArgumentParser(prog="deploy", description=__doc__)
     parser.add_argument("--dest", default=str(DEFAULT_DEST),
                         help=f"展開先（既定: {DEFAULT_DEST}）")
