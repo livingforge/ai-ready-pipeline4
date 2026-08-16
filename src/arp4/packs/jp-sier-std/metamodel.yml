@@ -1,0 +1,1762 @@
+# jp-sier-std メタモデル v3 — 日本の受託システム開発（V 字・工程成果物主義）向け。
+#
+# v2 からの方針転換は 3 つ。
+#   1. 工程レイヤ（layer）を一級市民にする。種別は必ずどれか 1 工程に属する。
+#      設計書の章立て・承認単位・「工程飛ばし」検査がこれに乗る。
+#   2. 日本の設計書で単独の成果物になるものを種別／関係にする。帳票・バッチ・
+#      コード一覧・メッセージ一覧・CRUD 図・権限マトリクス・課題管理表は
+#      「画面の一種」「備考欄」に押し込めない。押し込めた瞬間に生成が破綻する。
+#   3. 共通属性・種別グループを 1 箇所で宣言する。種別が 21 に増えても
+#      from/to の列挙と属性のコピペが増えない。
+#
+# name / statement / description の使い分け（全種別共通の規約）:
+#   name        見出し。体言止め・同一種別内で一意。設計書の一覧行の左端に出る
+#   statement   仕様本文。一文で「〜こと」で終える。ここが仕様の実体
+#   description 補足（背景・例外・図の説明）。多段落可
+version: 3
+
+# --- 工程レイヤ -------------------------------------------------------------
+# 種別は必ずどれか 1 つに属する。publish の章立てと、
+# 「上流が無いのに下流だけある」検査がここに乗る。
+#
+# **`企画` を要件定義の手前に置いた。** 「なぜこのシステムを作るのか」は
+# 要件ではない ―― 要件定義レイヤに混ぜると、`realizes`（設計要素 → 要件）の
+# 相手になって画面が事業目標を直接「実現する」ことになり、業務要件という段が
+# 潰れる。工程を分けると、目標 → 業務要件 → 機能要件 → 設計要素 → テストの
+# 上端が 1 段伸びる（→ contributes-to）。
+#
+# **`out/<番号>_<工程>/` の番号は 1 つずつ繰り下がる**（`1_要件定義` →
+# `2_要件定義`）。publish._phase_dir が layers の添字で決めているためで、
+# 既存の生成物への外部リンクは張り直しが要る。
+layers: [企画, 要件定義, 基本設計, 詳細設計, テスト, 管理]
+
+# --- 全アイテム共通の属性 ---------------------------------------------------
+# 個別種別で再宣言すれば厳格化のみ可（緩和は M1xx / conform が拒否）。
+# id / type / status / source / derived_from / edited はエンジンの予約キーで、
+# ここには書かない。
+common_attributes:
+  name:        { kind: string, required: true }
+  statement:   { kind: string, required: true }
+  # **補足は足し合わせる。** 同じ対象について 2 つのシートが別々のことを書くのは
+  # 相補であって矛盾ではない ―― 実測（sales-corpus 30 冊）で衝突した 6 件は全部
+  # これで、`4.セキュリティ方式`「営業部 120 名。…」と `5.権限マトリクス`
+  # 「与信保留の解除が △（部長職のみ可）…」のように、片方を捨てると事実が消える。
+  # 実際 △ はこれで正本から消えていた（→ 決定 70）。
+  description: { kind: string, merge: append }
+  priority:    { kind: enum, values: [必須, 推奨, 任意], extensible: true }
+  owner:       { kind: string }          # 担当。設計書の作成者欄に出る
+  # **一覧の主軸。** 日本の設計書は種別ごとの一覧を持ち、その**左端の列が揃って
+  # 同じ区分**である ―― sales-corpus 30 冊では 機能一覧・画面一覧・バッチ一覧・
+  # 業務ルール一覧・モジュール一覧・要件と機能の対応表の 6 つが「サブシステム」で
+  # 始まっていた。受け皿が無かったので全部が逃げ、実測で **37 件が `description`
+  # に散文で**（module 18・batch 8・report 6・screen 3・business-flow 2）、
+  # **機能要件 21 件が `refines` の相手**として持っていた ―― どちらも設計書には
+  # 出ず、区分は 1 つも印字されなかった（→ 決定 75）。
+  #
+  # **種別ごとではなく共通に置く。** 主軸は 1 種別の属性ではなく資料全体の割り方
+  # なので、種別側に 6 回書くと「この種別にはサブシステムが無い」という宣言が
+  # 種別を足すたびに増える。`owner` と同じ扱いである。
+  #
+  # 値はプロジェクトが決める（パックは並びを知らない）。**節の並びを資料順に
+  # したいときは、消費側のメタモデルで enum に厳格化して宣言順を与える**::
+  #
+  #     common_attributes:
+  #       subsystem: { kind: enum, extensible: true,
+  #                    values: [受注管理, 在庫管理, 請求管理, 共通基盤] }
+  #
+  # 宣言しないと `publish._group_order` が文字コード順に落ちる（共通基盤 →
+  # 在庫管理 → 受注管理 → 請求管理）。資料の順とは無関係の並びである。
+  subsystem:   { kind: string }
+
+# --- 設計書の列見出し -------------------------------------------------------
+# 属性名 → 日本語見出し。**設計書の表の見出しは日本語でなければ通らない**ので、
+# 様式ごとに書かず属性 1 箇所で持つ。未登録の属性は属性名のまま出る。
+labels:
+  id: ID
+  status: 状態
+  source: 出典
+  name: 名称
+  statement: 仕様
+  description: 補足
+  priority: 優先度
+  owner: 担当
+  subsystem: サブシステム
+  overview_id: 項番
+  overview_kind: 区分
+  goal_id: 目標ID
+  baseline: 現状値
+  # **`metric` と同じ見出しである。** どちらも 目標値 で、同じ表に並べると
+  # `名称` が 2 列並ぶのと同じことが起こる（→ `test_標準パックの表に同じ列見出しが
+  # 2つ並ばない`）。並ぶのは事業目標の表だけなので、**そちらの節の `labels` で
+  # `metric` を 測り方 に名指しする**（→ `project-charter.yml`）。
+  # `requirement.metric`（非機能の測定条件と目標値）はここの読みのままでよいので、
+  # 全体の見出しは動かさない ―― `issue-register` が `category` を 区分 と
+  # 名指ししているのと同じ形である。
+  target: 目標値
+  measurement: 測り方
+  frequency: 確認頻度
+  answer: 回答
+  # **確認日と別の列である。** 点検表の「確認」欄は日付と中身の 2 つを書く
+  # （`2026/03/19` と `実機で極秘テナントに外部モデルを指定し、弾かれることを
+  # 確認した`）―― 見出しを 確認 で共有すると課題管理表に 確認 が 2 列並ぶ
+  # （`test_標準パックの表に同じ列見出しが2つ並ばない`）。
+  verification: 確認内容
+  confirmed_on: 確認日
+  cost_id: 費用ID
+  amount: 金額
+  fiscal_year: 年度
+  problem_id: 現状課題ID
+  impact: 影響
+  risk_id: リスクID
+  probability: 発生可能性
+  mitigation: 対応策
+  milestone_id: マイルストーンID
+  deliverable: 成果物
+  gate: 判定基準
+  flow_id: 業務ID
+  trigger: 起点
+  steps: 手順
+  phase: 区分
+  req_id: 要件ID
+  kind: 種別
+  category: 大分類
+  nf_category: 非機能分類
+  metric: 目標値
+  actor_id: ロールID
+  actor_kind: 区分
+  reading: 読み
+  english: 英語表記
+  screen_id: 画面ID
+  screen_type: 画面種別
+  route: 画面パス
+  report_id: 帳票ID
+  media: 出力媒体
+  paper: 用紙
+  timing: 契機
+  job_id: ジョブID
+  schedule: 実行周期
+  start_time: 起動時刻
+  recovery: 再実行方針
+  step_id: ステップID
+  step_kind: ステップ種別
+  owner_role: 担当ロール
+  commit_interval: コミット間隔
+  concurrency: 多重度
+  columns: 構成列
+  uniqueness: 一意性
+  purpose: 用途
+  if_id: IF-ID
+  direction: 方向
+  partner: 相手システム
+  protocol: 方式
+  format: 形式
+  physical_name: 物理名
+  position: 開始位置
+  fk_columns: 外部キー
+  cardinality: 多重度
+  entity_kind: 種別
+  volume: 想定件数
+  retention: 保持期間
+  data_type: データ型
+  length: 桁数
+  decimals: 小数
+  code_id: コードID
+  managed_by: 管理区分
+  value: コード値
+  rule_id: ルールID
+  constraint_id: 制約ID
+  # **`amount`（金額）と別の見出しにする。** 台帳の「月間上限 500,000 チャンク」は
+  # 金額ではなく、同じ表に費用が並ぶこともない ―― 金額 と読ませると、稟議書の
+  # 費用一覧（`cost-item.amount`）と同じ列だと読まれる。
+  quantity: 数量
+  rule_kind: ルール種別
+  condition: 条件
+  action: 処理
+  event: 契機
+  message_id: メッセージID
+  severity: 重要度
+  body: 表示文
+  module_id: モジュールID
+  class_name: クラス名
+  tier: 階層
+  package: パッケージ
+  constants: 公開定数
+  decorators: 注釈
+  command_id: コマンドID
+  command_line: 書式
+  arguments: 引数
+  exit_code: 終了コード
+  method_id: メソッドID
+  signature: シグネチャ
+  returns: 戻り値
+  raises: 例外
+  test_id: テストID
+  level: レベル
+  precondition: 前提条件
+  expected: 期待結果
+  run_id: 実施ID
+  result: 結果
+  executed_on: 実施日
+  tester: 実施者
+  defect: 不具合ID
+  issue_id: 課題ID
+  positions: 両論
+  due: 期限
+  assignee: 担当者
+  # 課題の対応状況。**`status`（査読状態）と同じ見出しになるが、同じ表には
+  # 出ない** ―― 課題管理表は `status` を出さないと決めている（issue-register）。
+  state: 状態
+  raised_on: 起票日
+  raised_phase: 起票工程
+  decision_id: 決定ID
+  decided_on: 決定日
+  decided_by: 決定者
+  alternatives: 代替案
+  rationale: 根拠
+  order: "No"           # 引用符は必須。YAML 1.1 は裸の No を false と読む
+  pk: PK
+  not_null: 必須
+  default_value: 既定値
+  note: 備考
+  io: 入出力
+  required_flag: 必須
+  control: 部品
+  crud: CRUD
+  permission: 権限
+  linked: 対応する設計要素
+
+# --- from/to をまとめる別名 -------------------------------------------------
+# 種別名は英字・グループ名は日本語なので衝突しない（衝突したら M002）。
+item_groups:
+  処理単位:   [screen, report, batch, external-interface, command]
+  設計要素:   [screen, report, batch, external-interface, command, entity,
+               business-rule, module]
+  データ要素: [entity, data-item, code-master]
+
+item_types:
+
+  # ============ 企画 ========================================================
+  # **ここに受け皿が無かったので、計画書は丸ごと消えていた。** 実測（r001 の
+  # レビュー）で「受注受付の手入力の対象を 6 割減らす」が正本にも生成物にも
+  # 残らなかった ―― 語彙に無いものは整理層が書けず、行き先は
+  # `out_of_scope: 対象外`（＝ holes.py が拾わないので**痕跡が残らない**）か
+  # `description` への散文（＝ 設計書に出ない）しかない。
+  #
+  # もう 1 つの実害は**重複**である。sales-corpus 30 冊で制約 102 件のうち
+  # 6 組が二重登録で、6 組とも「要件定義書とプロジェクト計画書の両方に書かれ、
+  # concept 名が別々に付いた」もの（→ validate._near_duplicates）。受け皿の
+  # 無い情報は、消えるか、近い種別へ滲み出して重複になるかのどちらかである。
+
+  project-overview:
+    label: プロジェクト概要
+    fact_types: [プロジェクト概要]
+    layer: 企画
+    id_prefix: ovw
+    sequence: { attribute: overview_id, format: "OVW-{:02d}" }
+    attributes:
+      overview_id: { kind: string, required: true, unique: true }
+      # **`目的` を値に持たない。** 目的は business-goal が受ける ―― 両方に
+      # 置くと、同じ事実が 2 種別に二重登録される（上の 6 組と同型）。
+      # **体制・納期・法令も入れない。** constraint.category が既に
+      # 体制 / 契約 / 法令 を持っている（既存に寄せられるものは足さない）。
+      overview_kind: { kind: enum, extensible: true,
+                       values: [背景, 適用範囲, 適用範囲外, 関連文書] }
+
+  business-goal:
+    label: 事業目標
+    fact_types: [事業目標]
+    layer: 企画
+    id_prefix: gol
+    # 接頭辞は GOL。BR は requirement.kind=業務 が使っている
+    # （business-rule が RUL へ逃げたのと同じ回避）。
+    sequence: { attribute: goal_id, format: "GOL-{:02d}" }
+    # **どの要件にも支えられていない目標 = 要件化漏れ。** 目標が 1 件も無い
+    # プロジェクト（資産がコードだけ）では 1 件も鳴らない ―― 逆に requirement 側へ
+    # `warn_if_no_upstream: contributes-to` を付けると、計画書の無いラウンドで
+    # 全要件が鳴る（3.6.0 の constraint とは向きが逆になる）。
+    warn_if_unreferenced: true
+    attributes:
+      goal_id: { kind: string, required: true, unique: true }
+      # **数値目標の置き場。** 「手入力の対象を 6 割減らす」の 6 割を statement に
+      # 埋めると、比べることも検収することもできない。baseline と対で持つ
+      # ―― 6 割減は分母（現状値）が書かれていて初めて測れる。
+      #
+      # **実測では 測り方 が入った。** 属性名が metric（＝ 測る手段）と読めるので、
+      # 8 冊を通した実測（r001）の 4 件は全部「1 件あたりの平均所要時間」
+      # 「月次の差戻し件数」のように**何で測るかを書いた値**だった。宣言と
+      # 実際の使われ方が食い違ったまま `target` を足すと 3 列目が何なのか
+      # 読めなくなるので、**事業目標では metric を 測り方 として読む**と決めて、
+      # 見出しを節側の `labels` で 測り方 に直した（→ `project-charter.yml`）。
+      # 値は書き換えない ―― 訳したり詰め替えたりすると E011 が自分の出力を弾く
+      # （3.9.0 の value_labels と同じ判断）。
+      metric:   { kind: string }
+      baseline: { kind: string }
+      # **到達値の置き場。** 資料（稟議書 4.効果）は「測り方 / 現状 / 目標」の
+      # 3 列で書かれ、4 件すべてが 3 列とも埋まっている。受け皿は 2 つしか
+      # 無かったので、**到達値（18 分 → 12 分 の 12 分、四半期 20 件 → 5 件 の
+      # 5 件）だけが statement の文中に埋まった** ―― 事業目標の一覧は現状値だけが
+      # 列に出て、どこまで行けば達成なのかは本文を読まないと分からない。
+      #
+      # **`baseline` の隣に置く**（→ `project-charter.yml` の列の並び）。3.11.0 で
+      # 「`baseline` を `metric` の左に置く」と決めた理由（6 割減は分母が並んで
+      # いて初めて測れる）は、**比べる相手が到達値になったのでこちらに移る** ――
+      # 現状値と目標値が離れていると、読み手はどちらが到達値かを見出しで判断する
+      # ことになる。
+      #
+      # **`due` と混ぜない。** 「いつまでに」は達成時期、ここは「どこまで」である。
+      target:   { kind: string }
+      due:      { kind: string }        # 達成時期
+      category: { kind: string }
+
+  current-issue:
+    label: 現状と課題
+    fact_types: [現状課題]
+    layer: 企画
+    id_prefix: prb
+    # `issue_id`（open-issue）と別の属性名にする。**同じ「課題」でも段が違う**
+    # ―― 現状課題は「システム化の理由」、open-issue は「決着していない争点」。
+    # 同じ属性名にすると、整理層はどちらへ書くかを名前から判断できない。
+    sequence: { attribute: problem_id, format: "PRB-{:03d}" }
+    warn_if_unreferenced: true          # 誰も応えない課題 = 目標化漏れ
+    attributes:
+      problem_id: { kind: string, required: true, unique: true }
+      # 影響の**内容**（工数・件数・金額）。**部門はここへ入れない** ――
+      # 稟議書 2.背景 の 5 行はすべて「影響を受けている部門」列を持ち、受け皿が
+      # 無かったので実測（r001）で 5 件とも部門名（`カスタマーサポート部` /
+      # `品質保証部` / `法務部` / `営業本部` / `全社`）がここへ入った。**組織は
+      # `actor` が持っている種別**で、文字列で書くと体制図の同じ組織と機械では
+      # 突き合わない（`actor.physical_name` を足したときと同じ形）―― 部門は
+      # `affects`（現状課題 → 利用者・ロール）が受ける。
+      #
+      # **見出しは 影響 のまま、`risk.impact` の側を節で名指しする。** 同じ
+      # `impact` でも、こちらは自由文で、`risk.impact` は enum（大 / 中 / 小）の
+      # 影響度である ―― `arp4 model` の出力だけでは読み手にどちらか分からない、
+      # という申告が出た。属性名を分けると `current-issue` と `risk` で名前も
+      # 並びも近い 2 種別が片方だけ違う名前になる（3.14.0 の `category` の穴と
+      # 同じ形）ので、**節側の `labels` で `risk.impact` を 影響度 と呼ぶ**
+      # （→ `project-charter.yml`。`business-goal.metric` を 測り方 と名指しした
+      # のと同じ形で、値も属性名も動かさない）。
+      impact:     { kind: string }
+      category:   { kind: string }
+
+  risk:
+    label: リスク
+    fact_types: [リスク]
+    layer: 企画
+    id_prefix: rsk
+    # **open-issue と分ける。** 課題は「もう起きていて決着していない」、リスクは
+    # 「まだ起きていない」。混ぜると課題管理表に未発生の想定が混ざり、期限の
+    # 意味が変わる（課題の期限は回答期限、リスクの期限は再評価の時期）。
+    sequence: { attribute: risk_id, format: "RSK-{:03d}" }
+    attributes:
+      risk_id:     { kind: string, required: true, unique: true }
+      probability: { kind: enum, values: [高, 中, 低], extensible: true }
+      impact:      { kind: enum, values: [大, 中, 小], extensible: true }
+      # **対応策は必須にしない。** 現場のリスク管理表は起票だけの行を必ず持ち、
+      # 必須にすると整理層が推測で埋めることになる（3.2.0 / 3.4.0 と同じ判断）。
+      mitigation:  { kind: string }
+      due:         { kind: string }     # 再評価の時期
+
+  milestone:
+    label: マイルストーン
+    fact_types: [マイルストーン]
+    layer: 企画
+    id_prefix: mil
+    # 工程計画は**日付の列がある表**なので、project-overview の 1 行では受け
+    # られない（受けると「工程計画」という 1 件の散文になり、どの工程がいつ
+    # 終わるのかが表として出ない）。
+    sequence: { attribute: milestone_id, format: "MS-{:02d}" }
+    attributes:
+      milestone_id: { kind: string, required: true, unique: true }
+      due:          { kind: string }    # 予定日
+      deliverable:  { kind: string }    # その時点の成果物
+      gate:         { kind: string }    # 通過判定の基準
+
+  cost-item:
+    label: 費用項目
+    # **企画レイヤに「金額」の受け皿がどの種別にも無かった。** 稟議書の
+    # 3.投資内訳 は 6 行すべてが金額の列を持つ（GPU サーバ 1,850 / DB 検索基盤
+    # 420 / 外部 API 利用料 680 / 委託費 540 / 構築要員 360 / 予備費。単位は
+    # 万円）が、`project-overview` にも `milestone` にも `constraint` にも
+    # 金額を受ける属性が無く、**6 件すべてが金額を `statement` の文中に埋めた。**
+    # 稟議書・見積・予算は企画レイヤの主要資材なのに、投資額が列として引けない。
+    #
+    # **既存へ寄せられなかった理由を 3 つ書いておく**（この種別を消したくなった
+    # 人が最初に当たるのがここである）。
+    #   1. `constraint`（制約・前提）へ寄せると `category` の軸が 2 つになる ――
+    #      実測（r001）で 稟議書の費用区分（設備 / 人件 / 予備）が
+    #      技術 / 運用 / 法令 / 契約 / 体制 / 規模 と同じ高さで要件定義書の
+    #      「制約・前提」に並んだ。**費用の区分と制約の区分は軸が違う。**
+    #   2. `milestone` へ寄せると 1 行が「日付の表」と「金額の表」を兼ねる。
+    #      投資内訳は工程ではなく費目で割られていて、行数も揃わない。
+    #   3. `current-issue.impact`（影響は工数・件数・金額）は**課題の側の**
+    #      金額で、投資計画の内訳ではない ―― 6 行を 1 件の課題にはできない。
+    #
+    # **関係は 1 本も張らない。** 費用が誰に効くか（`contributes-to` の相手が
+    # 事業目標か）は稟議書に書かれていない ―― 8 冊のどれにも「この費目はこの
+    # 目標のため」という対応が無く、関係を用意すると整理層が推測で張る。
+    # `disputes` / `establishes` の相手（＝ 争点にできるもの・決定が定められる
+    # もの）にも入れていない ―― 投資額は実際に揉めるが、**この 2 本は同じ集合
+    # でなければならない**（`test_決定は何を定めたかを指せる`）ので、片方だけを
+    # 広げられない。実例が出てから 2 本まとめて足す。
+    fact_types: [費用項目]
+    layer: 企画
+    # 接頭辞は `cit`。**`cst` は `constraint` が使っている**（M012 が重複を拒む）。
+    # 採番も同じ理由で `CST-` を避ける ―― 制約 ID と費用 ID が同じ綴りで並ぶと、
+    # 稟議書の「CST-003 の 540 万円」がどちらを指すのか読み手には分からない。
+    id_prefix: cit
+    sequence: { attribute: cost_id, format: "CIT-{:02d}" }
+    attributes:
+      cost_id: { kind: string, required: true, unique: true }
+      # **`int` にしない。** 理由は 2 つある。
+      #   1. 単位が列見出しではなく資料の側にある（稟議書は「単位: 万円」と
+      #      表の外に書く）。`int` にすると 1,850（万円）と 18,500,000（円）が
+      #      同じ列に並んだとき機械には見分けが付かない ―― `data-item.length` の
+      #      ように桁そのものを表す欄とは性質が違う。
+      #   2. 投資内訳は**数でない行**を必ず持つ（実測: 6 行目が「予備費」で、
+      #      額ではなく総額に対する率で書かれている）。`int` にすると整理層は
+      #      その行を落とすか推測で数字を書くかしかない（3.2.0 / 3.4.0 /
+      #      3.8.0 と同じ判断 ―― 資料が言っているところまでが正しい出力である）。
+      # 単位を含めて資料のまま写す（`1,850 万円`）。**合計はここでは取らない。**
+      amount: { kind: string }
+      # 費目の区分（設備 / 人件 / 委託 / 予備）。**`category` という既存の属性名を
+      # 使う**（`current-issue` / `open-issue` / `business-rule` と揃える ――
+      # 名前も並びも近い種別で片方だけ違う名前にしたのが 3.14.0 の穴だった）。
+      # 値はプロジェクトが決めるので `string` のまま。並びを資料順にしたい案件は
+      # 消費側で enum に厳格化する（→ `common_attributes.subsystem` の書き方）。
+      category: { kind: string }
+      # 年度（2026年度 / FY2026）。**`due` を使い回さない** ―― あれは
+      # 「いつまでに」であって、費用が乗る会計期間ではない。複数年度にまたがる
+      # 案件では、同じ費目が年度ごとに 1 行ずつ立つ。
+      fiscal_year: { kind: string }
+
+  # ============ 要件定義 ====================================================
+  business-flow:
+    label: 業務フロー
+    fact_types: [業務フロー]
+    layer: 要件定義
+    id_prefix: bfl
+    warn_if_unreferenced: true          # どの要件にも繋がらない業務 = 要件化漏れ
+    sequence: { attribute: flow_id, format: "BF-{:03d}" }
+    attributes:
+      flow_id: { kind: string, required: true, unique: true }
+      trigger: { kind: string }         # 起点となる業務イベント
+      # 手順を**文章で**書く欄。図形の接続が取れているなら flow-step ＋
+      # has-flow-step / leads-to のほうが良い（トレースと検証の対象になる）。
+      # 図が無い・線が繋がっていない資料のために残してある。
+      steps:   { kind: string }
+      phase:   { kind: enum, values: [現行, 新規, 変更], extensible: true }
+
+  flow-step:
+    label: 業務フローのステップ
+    fact_types: [業務フローのステップ]
+    layer: 要件定義
+    id_prefix: fst
+    warn_if_unreferenced: true          # どのフローにも属さない手順 = 孤児
+    sequence: { attribute: step_id, format: "FS-{:03d}" }
+    attributes:
+      step_id: { kind: string, required: true, unique: true }
+      # 誰の手順か（日本の業務フロー図はスイムレーンで担当を表すが、レーンは
+      # 配置なので機械には取れない ―― 分かるなら整理層が書く）。
+      owner_role: { kind: string }
+      # 図形の種類が持っている意味（凡例に「菱形: 判定」と書かれている）。
+      step_kind: { kind: enum, values: [処理, 判定, 開始, 終了, 他システム],
+                   extensible: true }
+
+  requirement:
+    label: 要件
+    fact_types: { 業務要件: { kind: 業務 }, 機能要件: { kind: 機能 },
+                 非機能要件: { kind: 非機能 } }
+    layer: 要件定義
+    id_prefix: req
+    warn_if_unreferenced: true          # 実現されない要件 = カバレッジ欠落
+    sequence:
+      attribute: req_id
+      by: kind
+      prefix_from: category             # 例 CORE-FR-001（略号は display 設定で与える）
+      format: { 業務: "BR-{:03d}", 機能: "FR-{:03d}", 非機能: "NFR-{:03d}" }
+    attributes:
+      req_id: { kind: string, required: true, unique: true }
+      # 業務要件（何を行う業務か）と機能要件（システムが何をするか）を分ける。
+      # 日本の要件定義書は両方を載せ、業務 → 機能のトレースを求められる。
+      kind:        { kind: enum, values: [業務, 機能, 非機能], required: true }
+      category:    { kind: string }     # 大分類。要件一覧の見出しになる
+      # 非機能のときの分類。IPA「非機能要求グレード」の 6 大項目を既定にするが、
+      # **実資料の分類はそのまま入らない**（ユーザビリティ・移行方式 等）。固定に
+      # すると整理層が近い項目へ寄せる判断を強いられ、資料に無い分類が正本に残る。
+      # 要件定義書の非機能の節はこの値で割るので、寄せない値はそのまま節になる。
+      nf_category: { kind: enum, extensible: true,
+                     values: [可用性, 性能・拡張性, 運用・保守性,
+                              移行性, セキュリティ, システム環境・エコロジー] }
+      metric:      { kind: string }     # 非機能の測定条件と目標値
+      # **測る手段と確認の頻度**（→ 運用引継ぎ資料 3.SLO）。SLO 5 件すべてが
+      # この 2 列を持っている（「Grafana の検索レイテンシパネル」「Prometheus の
+      # up メトリクス」「キュー長のアラート」「バッチの実績ログ」／ 月次・常時・
+      # 実施都度）のに受け皿が無く、**5 件とも `statement` へ畳んだ。**
+      #
+      # **`metric` に相乗りさせない。** 非機能要件の `metric` は「p95 で 3 秒
+      # 以内」＝ **目標値の側**で使われており（見出しも 目標値）、そこへ測定手段を
+      # 足すと 1 つの文字列が 2 列を畳む ―― 3.14.0 の `batch.trigger`
+      # （`時刻起動 07:30/10:30/…`）と同じ形で、**測り方での突合も、目標値での
+      # 検収もできなくなる。** SLO は「何で測るか」まで含めて仕様である。
+      #
+      # **`schedule`（実行周期）を使い回さない。** あれはバッチの起動周期で、
+      # 見出しも値の語彙（日次 / 週次 / 常駐）も違う ―― SLO の確認頻度は
+      # 「常時」「実施都度」のように**周期でない値**を普通に取る。だから enum に
+      # せず string にしてある（近い値へ寄せさせない）。
+      #
+      # **`conformance/rules.yml` の必須化には足さない。** 非機能要件の `metric` は
+      # approved で error だが、測り方と頻度は資料に無いことがある（性能要件は
+      # 目標値だけ書いて測り方を試験計画に委ねる案件がある）―― 必須にすると
+      # 整理層が推測で埋める。
+      measurement: { kind: string }
+      frequency:   { kind: string }
+
+  actor:
+    label: 利用者・ロール
+    fact_types: [利用者・ロール]
+    layer: 要件定義
+    id_prefix: act
+    sequence: { attribute: actor_id, format: "ACT-{:02d}" }
+    attributes:
+      actor_id:   { kind: string, required: true, unique: true }
+      actor_kind: { kind: enum, values: [利用者, 組織, 外部システム, 運用者],
+                    extensible: true }
+      # **資料が付けている識別子。** 利用申請台帳 1.申請一覧 はテナントを
+      # `cs-support` / `qa-defect` / `legal-contract` / `sales-proposal` という
+      # 識別子で呼び、ログ・請求・設定ファイルもその綴りで書かれている。受け皿が
+      # 無かったので**識別子は `name` の括弧書きへ入った**（`カスタマーサポート
+      # （cs-support）`）―― 名前で並べ替えると括弧の中が効かず、他の資料の
+      # `cs-support` と機械では突き合わない。
+      #
+      # **`actor_id` とは別物である。** あちらは arp4 が採番する表示 ID
+      # （`ACT-01`）で、資料の側の識別子ではない ―― 混ぜると採番が資料の綴りに
+      # 引きずられ、台帳を持たない案件では ID が飛ぶ。
+      #
+      # 属性名は `entity` / `code-master` / `displays` と同じ `physical_name` に
+      # 寄せる（見出しも 物理名 で共通。既存に寄せられるものは足さない）。
+      # **pattern は当てない** ―― テナント識別子はハイフンを含み
+      # （`cs-support`）、DB の命名標準（`^[A-Za-z0-9_]+$`）とは体系が違う。
+      # `displays.physical_name`（キャメルケース）と同じ扱いである。
+      physical_name: { kind: string, unique: true }
+      # **同じ申告にあった「申請日・承認日」「要員（区分・氏名・工数・着任時期）」は
+      # 足していない。** どちらも `actor` の属性ではなく、**別の単位のレコード**を
+      # 求めている ―― 利用申請台帳の 1 行は「申請」1 件（誰が・いつ出し・いつ承認
+      # されたか）で、テナントという組織そのものではない。要員計画の 1 行も同じで、
+      # 「人 1 名の工数と着任時期」であってロールではない。
+      #
+      # `actor` に日付を 2 つ足すと、**テナントが 2 度目の申請を出した瞬間に
+      # 書けなくなる**（1 組織 1 行しか持てない）―― 申請・要員は台帳 1 行 =
+      # 1 レコードの種別（`利用申請` / `要員`）でなければ受けられない。
+      #
+      # **標準パックには載せない。** 利用申請の台帳も要員計画も、日本の受託開発の
+      # V 字が必ず作る成果物ではなく（画面・帳票・テーブル・課題管理表とはそこが
+      # 違う）、載せると全案件の `arp4 model` に 0 件の種別が 2 つ並ぶ。
+      # **消費側のメタモデルは種別を追加できる**ので、台帳を持つ案件はそちらで
+      # 宣言する ―― 標準パックが配るのは「どの案件にも出る語彙」である。
+
+  constraint:
+    label: 制約・前提
+    fact_types: [制約・前提]
+    layer: 要件定義
+    id_prefix: cst
+    # 採番が無いと要件定義書の ID 列に内部 ID（cst-…）がそのまま出る。制約・前提は
+    # レビュー指摘や課題票からいちばん参照される種別なので、読める ID が要る。
+    sequence: { attribute: constraint_id, format: "CST-{:03d}" }
+    # **何も制約していない制約は、守られているかを誰も確かめられない。** 要件定義書に
+    # 行として出てしまうぶん、繋がっていないことが読み手から見えない ―― `constrains`
+    # を張る先は本文に書いてあることが多い（「シートの画像化には Excel が要る」）ので、
+    # 張り忘れは資料の不足ではなく整理の取りこぼしである。
+    #
+    # `warn_if_unreferenced`（＝ 誰の `to` にもなっていない）ではない。制約を指す関係は
+    # `disputes`（課題 → 制約）しか無いので、**課題の無いプロジェクトでは全件出る。**
+    # 見たいのは「制約が誰も縛っていない」＝ 自分が `from` の側である。
+    warn_if_no_upstream: constrains
+    attributes:
+      constraint_id: { kind: string, required: true, unique: true }
+      # 「規模」は件数・容量・保存期間の**想定**の置き場である。実測（r001）では
+      # 受注 120 万件/年などの規模想定が「技術」に混ざり、性能試験の入力を
+      # 技術方式の中から探すことになっていた。節の並びはこの宣言順で決まる。
+      #
+      # **値の並び順は消費側で宣言できる ―― 語彙の追加は要らない。** 実測（r001）で
+      # 要件定義書「制約・前提」の節に 監視 / 障害 / 定常 / 変更（運用引継ぎ資料の
+      # 区分）・設備 / 人件 / 予備（稟議書の費用区分）・機密（利用申請台帳）が
+      # 既存の 6 値と同じ高さで並び、「分類の値と並び順を案件側で宣言したい」と
+      # 申告が出た。**これは既にできる** ―― `_relaxation` が拒むのは値の削除と
+      # `extensible` の緩和だけなので、消費側のメタモデルで
+      # `values` を**既存 6 値を含む上位集合**として並べ直せば、`extensible` を
+      # 保ったまま宣言順が節の並びになる（`common_attributes.subsystem` の
+      # 書き方と同じ。書かないと `publish._group_order` が文字コード順に落ちる）。
+      # 標準パックが値を増やすほうは採らない ―― 資料ごとに生える語なので、
+      # 増やし始めると終わらない。
+      #
+      # **費用の区分だけは軸が違うので種別を分けた**（→ `cost-item.category`）。
+      # 設備 / 人件 / 予備 は「何を制約するか」ではなく「何にいくら使うか」で、
+      # 並び順の宣言では直せない（同じ列に並ぶこと自体が誤り）。
+      #
+      # **運用作業の区分（監視 / 障害 / 定常 / 変更）も足さない ―― 属性も値も。**
+      # 2 周目の申告は「委託範囲表 11 行すべてが左端にこの列を持つのに、enum の
+      # 6 値では 体制 か 運用 に潰れ、資料の語が `description` へ流れて G030 が
+      # 鳴った」である。実測（r001 の `運用引継ぎ資料/1.委託範囲`）では 11 件とも
+      # `category: 体制` ＋ `description: 区分 監視` の形になっていた。
+      # **これは受け皿の穴ではない** ―― `category` は `extensible: true` なので、
+      # 整理層は `監視` をそのまま書けた（宣言も要らない）。潰したのは、宣言された
+      # 6 値を**閉じた集合**と読んだためである。
+      #
+      # **別の軸（作業の区分）としても足さない。** 理由は 2 つ。
+      #   1. 費用の区分（設備 / 人件 / 予備）が軸違いだったのは、**同じ列に並ぶ
+      #      こと自体が誤り**だったからである ―― 監視 / 障害 / 定常 / 変更 は
+      #      そうではなく、`運用` の下位区分として同じ列に並んで読める
+      #      （委託範囲表の 11 行は、制約としては全部が運用・体制の話である）。
+      #   2. 属性を 1 本足すと、この列を持つのは 1 冊 11 行だけなのに、**全案件の
+      #      制約一覧に空列が 1 本増える**。しかも要件定義書「制約・前提」は
+      #      `category` で節に割っているので、同じ表を節（制約の区分）と列
+      #      （作業の区分）で 2 度割ることになる。
+      # 委託かどうかが消えるという反論への答え ―― それは `owner`（内製 /
+      # 委託先）と `statement`（「〜へ委託すること」）に書かれており、委託その
+      # ものは `outsources-to` が受ける。並び（監視 → 障害 → 定常 → 変更）は
+      # 消費側で `values` を上位集合として宣言すれば節の並びになる（上の段落）。
+      category: { kind: enum, values: [技術, 運用, 法令, 契約, 体制, 規模],
+                  extensible: true }
+      # **1 レコード = 1 つの数値の置き場**（3.16.0）。台帳の「月間上限
+      # 500,000 チャンク」・保管量の「1 テナントあたり 200 GB」のように、
+      # **規模の想定そのものが 1 行 1 数値**で書かれている資料がある。受け皿が
+      # 無いあいだ、実測（r001）では 4 件のテナント上限が全部 `statement` の
+      # 文中に埋まり（`テナント cs-support の月間上限を 500,000 チャンクと
+      # すること`）、**同じ稟議・同じ台帳の中で「見積の金額は列
+      # （`cost-item.amount`）、規模の数値は文」という非対称**が出ていた。
+      # 制約・前提は「そこへ規模の想定を書け」と言っている当の種別である。
+      #
+      # **`cost-item.amount` と同じく `int` にしない。** 単位が値の側にあり
+      # （`500,000 チャンク` / `200 GB`）、率や範囲で書かれた行（`総額の 5%`）を
+      # 落とさないため ―― 単位を含めて資料のまま写す。**合計は取らない。**
+      #
+      # **単位・時点の列は足さない。** 足すと、単位を値から切り出すという
+      # 判断（`500,000 チャンク/月` はどちらへ？）を整理層に強いることになり、
+      # 資料に無い分解が正本に入る。1 列で受けるのが最小の追加である。
+      #
+      # **数表は受けない ―― これは 1 レコード 1 数値の欄である。** キャパシティ
+      # 試算 2.月次推移（9 か月 × 4 部門）やコスト実績（年月 × テナント × 費目の
+      # 15 系列）は行 × 列の数表で、`quantity` を 1 つ足しても 1 件には収まらない
+      # ―― 数表そのものを正本に置く規則（`has-column` のような「1 升 = 1 件」の
+      # 割り方）が無いのが本体の穴で、そこは申告に残してある。**受けられるものの
+      # 形をここに書いておく** ―― でないと、次の担当が月次推移をここへ畳む。
+      quantity: { kind: string }
+      # **「なぜその制約なのか」の受け皿。** キャパシティ試算 4.GPU は「根拠」列を
+      # 持ち（`VRAM に載る範囲` / `実測` / `8 時間 × 20 日`）、PoC 評価報告書の
+      # 比較表も同じ形で、どちらも受け皿が無くて `statement` に溶けた。
+      # `description` へ入れると G030 が鳴り、その助言に従って `statement` へ
+      # 畳むと**列としては引けなくなる** ―― 助言どおりに直すと消える、という
+      # 出方をしていた。
+      #
+      # **属性名は `decision.rationale` と同じにする**（見出しも 根拠 で共通）。
+      # 制約と決定は「決まったこと」と「決めた理由」の同じ対を持つので、名前を
+      # 変えると整理層はどちらへ書くかを名前から判断できない。
+      #
+      # **`description` とは別である。** 補足は背景・例外・図の説明で、根拠は
+      # 「この数字を選んだ理由」―― 実測の 4 行は全部が後者で、しかも**その 1 列が
+      # 制約の妥当性を示す唯一の記述**だった。
+      #
+      # **同じ申告に載っていた「実測値」は足していない。** PoC 評価報告書の
+      # 比較表（Recall@5 0.82 / 所要 p95 12.4 秒 / チャンク数）は**モデル 1 件 ×
+      # 4 列の数表**で、制約 1 件に 1 列ずつ属性を足す形では受けきれない
+      # ―― 列が 1 つ増えるたびに標準パックの制約が 1 属性太る。数表そのものを
+      # 正本に置く手立て（行 × 列を 1 レコードに割る規則）が無いのが本体の穴で、
+      # そこは `_metamodel-add.yml` の申告に残してある（状態遷移表には
+      # 「遷移 1 本 = 1 件」の規則があるのに、数表には無い）。
+      rationale: { kind: string }
+
+  glossary-term:
+    label: 用語
+    fact_types: [用語]
+    layer: 要件定義
+    id_prefix: trm
+    attributes:
+      name:    { kind: string, required: true, unique: true }   # 厳格化（unique 追加）
+      reading: { kind: string }         # 読み。用語集の五十音ソートに使う
+      english: { kind: string }         # 英語表記。物理名の統制に効く
+
+  # ============ 基本設計 ====================================================
+  screen:
+    label: 画面
+    fact_types: [画面]
+    layer: 基本設計
+    id_prefix: scr
+    warn_if_no_upstream: realizes       # 要件に紐づかない画面 = 出所不明の機能
+    sequence: { attribute: screen_id, format: "SCR-{:03d}" }
+    attributes:
+      screen_id:   { kind: string, required: true, unique: true }
+      screen_type: { kind: enum, values: [入力, 照会, 一覧, 検索, ダイアログ],
+                     extensible: true }
+      route:       { kind: string }     # URL / 画面 ID など遷移上の識別子
+
+  report:
+    label: 帳票
+    fact_types: [帳票]
+    layer: 基本設計
+    id_prefix: rpt
+    warn_if_no_upstream: realizes
+    sequence: { attribute: report_id, format: "RPT-{:03d}" }
+    attributes:
+      report_id: { kind: string, required: true, unique: true }
+      media:     { kind: enum, values: [印刷, PDF, CSV, Excel], extensible: true }
+      paper:     { kind: string }       # 用紙・向き（A4 横 等）
+      timing:    { kind: string }       # 出力契機
+
+  batch:
+    label: バッチ処理
+    fact_types: [バッチ処理]
+    layer: 基本設計
+    id_prefix: bat
+    warn_if_no_upstream: realizes
+    sequence: { attribute: job_id, format: "JOB-{:03d}" }
+    attributes:
+      job_id:   { kind: string, required: true, unique: true }
+      schedule: { kind: enum, values: [日次, 週次, 月次, 年次, 随時, 常駐],
+                  extensible: true }
+      trigger:  { kind: string }        # 起動契機（時刻・先行ジョブ・ファイル到着）
+      # **起動時刻は起動契機と別の列である**（3.14.0）。日本のバッチ一覧は
+      # 起動契機 / 起動時刻 / 先行ジョブ の 3 列で書く（先行ジョブは `triggers`
+      # 関係が受ける）。受け皿が 1 つしか無かったあいだ、実測（sales-corpus
+      # r001）で `trigger` が
+      # `時刻起動 07:30/10:30/13:30/15:30/17:30/20:30` のように 2 列を 1 つの
+      # 文字列へ畳んでいた ―― **起動時刻での並べ替えも、ジョブネットとの突合も
+      # できない。** 8 件中 7 件が値を持つ主軸の列である。
+      start_time: { kind: string }
+      recovery: { kind: string }        # 異常時の再実行方針（リラン可否・再実行単位）
+
+  external-interface:
+    label: 外部インターフェース
+    fact_types: [外部インターフェース]
+    layer: 基本設計
+    id_prefix: eif
+    warn_if_no_upstream: realizes
+    sequence: { attribute: if_id, format: "IF-{:03d}" }
+    attributes:
+      if_id:     { kind: string, required: true, unique: true }
+      direction: { kind: enum, values: [送信, 受信, 双方向], extensible: true }
+      partner:   { kind: string }       # 相手システム
+      protocol:  { kind: string }       # HTTP / SFTP / MQ / 媒体
+      format:    { kind: string }       # 電文・ファイル形式
+      timing:    { kind: string }       # 送受信契機・頻度
+
+  command:
+    label: コマンド
+    fact_types: [コマンド]
+    layer: 基本設計
+    id_prefix: cmd
+    sequence: { attribute: command_id, format: "CMD-{:02d}" }
+    # CLI のコマンドは利用者向けの仕様である。r001 の実測では、cli.py の
+    # コマンド 16 種が全部先頭 `_` の内部関数だったため「公開名だけ起こす」の
+    # 規約で 1 件も起きず、**利用者向け仕様が正本から消えた**。コード資産では
+    # 必ず出る語彙なので、提案（G007）を待たせず最初から持たせる（Phase 1-1）。
+    attributes:
+      command_id:   { kind: string, required: true, unique: true }
+      command_line: { kind: string }    # 呼び出しの書式（そのまま端末に写せる形）
+      arguments:    { kind: string }    # 引数・オプションの一覧
+      exit_code:    { kind: string }    # 終了コードの意味（0/1/2 の区別）
+
+  entity:
+    label: エンティティ
+    fact_types: [エンティティ]
+    layer: 基本設計
+    id_prefix: ent
+    warn_if_unreferenced: true
+    attributes:
+      # 物理名は英数字と _ のみ（日本の命名標準。DB 移植性のため全角を弾く）。
+      physical_name: { kind: string, required: true, unique: true,
+                       pattern: "^[A-Za-z0-9_]+$" }
+      entity_kind:   { kind: enum, values: [マスタ, トランザクション, ワーク, 履歴, ビュー],
+                       extensible: true }
+      volume:        { kind: string }   # 件数見積（容量設計・性能試験の入力）
+      retention:     { kind: string }   # 保持期間（法令要件と結び付く）
+
+  data-item:
+    label: データ項目
+    fact_types: [データ項目]
+    layer: 基本設計
+    id_prefix: itm
+    attributes:
+      # 論理データ項目。テーブル固有の物理名・PK・NOT NULL は has-column 側に持つ
+      # （同じ「受注番号」が複数テーブルに現れるため）。
+      # 属性名は data_type —— type は「アイテムの種別」を指す予約キーなので使えない。
+      # 「操作」は値を持たない画面部品（ボタン・ラベル）のための値である。
+      # displays.control には ボタン があるのに data_type が必須なので、これが無いと
+      # 画面項目定義書からボタンを落とすか、E010 を 20 件出すかの二択になっていた。
+      # **「型が書かれていない」（E010）と「型を持たない部品」を区別する**ためのもので、
+      # 型が資料に無いだけのものをここへ逃がしてはいけない。
+      data_type: { kind: enum, values: [数値, 文字列, 日付, 日時, 真偽, バイナリ, 操作],
+                   required: true, extensible: true }
+      length:   { kind: int }
+      decimals: { kind: int }
+      format:   { kind: string }        # 表示書式（YYYY/MM/DD、#,##0 等）
+
+  index:
+    label: インデックス
+    fact_types: [インデックス]
+    layer: 基本設計
+    id_prefix: idx
+    warn_if_unreferenced: true          # どのテーブルにも属さない索引 = 孤児
+    attributes:
+      # 索引名は物理名なので一意。has-column の physical_name と同じ扱い。
+      name:        { kind: string, required: true, unique: true,
+                     pattern: "^[A-Za-z0-9_]+$" }
+      columns:     { kind: string, required: true }   # 構成列（順序を含む）
+      uniqueness:  { kind: enum, values: [一意, 非一意] }
+      purpose:     { kind: string }     # 用途（どの検索を速くするか）
+
+  code-master:
+    label: コード定義
+    fact_types: [コード定義]
+    layer: 基本設計
+    id_prefix: cdm
+    sequence: { attribute: code_id, format: "CD-{:03d}" }
+    attributes:
+      code_id:       { kind: string, required: true, unique: true }
+      physical_name: { kind: string, unique: true, pattern: "^[A-Za-z0-9_]+$" }
+      managed_by:    { kind: enum, values: [固定, マスタ管理, 外部提供], extensible: true }
+
+  code-value:
+    label: コード値
+    fact_types: [コード値]
+    layer: 基本設計
+    id_prefix: cdv
+    warn_if_unreferenced: true          # どのコード定義にも属さない値 = 孤児
+    attributes:
+      value: { kind: string, required: true }   # コード値そのもの
+      name:  { kind: string, required: true }   # 名称（画面表示文言）
+      # **保持期間だけを足し、外部送出の可否は足さない**（3.16.0）。利用申請台帳
+      # 2.機密区分 は 3 行すべてがこの 2 列を持つが、**担当ごとに割り方が変わって
+      # いた** ―― 1 周目は区分ごとの業務ルール 6 件（`condition` / `action`）へ
+      # 割り、2 周目は「区分の定義そのもの」と判断して 2 つとも `statement` の
+      # 文中へ残した（`機密区分 極秘（30）は …、外部 API への送出を不可として
+      # 社内 GPU でのみ埋め込み、保持期間を 3 年とすること`）。**同じ列が周ごとに
+      # 別の場所へ行くのは、語彙が足りないのではなく線引きが決まっていない**
+      # という形の穴である。判断が割れたまま置くと、次の周も割れる。
+      #
+      # **線引きをここで 1 度だけ決める（一意に決まる形で書く）。**
+      #   属性にする  = 区分に当たった情報**そのものの仕様**（どれだけ在るか）。
+      #                 既に別の種別が同じ名前・同じ見出しで持っているもの。
+      #   業務ルール  = その区分に当たったとき**何をしてよいか / 何をするか**
+      #                 （可否・要否）。`condition` / `action` の対で書けるもの。
+      # この線は**属性名を引くだけで決まる** ―― `retention`（保持期間）は
+      # `entity.retention` が既に持っており、あちらのコメントは「保管そのものが
+      # テーブルの属性なので入れてある ―― 規則ではなく仕様である」と書いている。
+      # 機密区分の保持期間はまったく同じもの（**どのテーブルに入るかではなく、
+      # その区分の情報が何年在るか**）で、片方だけ規則へ回す理由が無い。
+      # 見出しも属性名も `entity` と同じにする（既存に寄せられるものは足さない）。
+      #
+      # **外部送出の可否はこの線の反対側にある。** 値は 可 / 契約による可 / 不可
+      # で、真ん中は**条件つき**である ―― `condition`（`契約で個別に認めたとき`）
+      # と `action` の対でしか書けず、1 つの升に畳むと `batch.trigger` と同じ
+      # 「2 列を 1 文字列」になる。可否を属性にすると、次は「マスキング要否」
+      # 「監査ログ要否」が同じ理由で並び、**コード値が業務ルールの薄い写しに
+      # なる** ―― 上の線引きは、その滑り方をちょうど止める位置にある
+      # （可否・要否は全部むこう側）。業務ルールは `constrains`（業務ルール →
+      # コード定義）で相手を指せるので、区分から辿れなくなることは無い。
+      retention: { kind: string }
+
+  business-rule:
+    label: 業務ルール
+    fact_types: [業務ルール]
+    layer: 基本設計
+    id_prefix: rul
+    # 接頭辞は RUL（id_prefix と揃える）。BR は requirement.kind=業務 が使っている。
+    sequence: { attribute: rule_id, format: "RUL-{:03d}" }
+    attributes:
+      rule_id:  { kind: string, required: true, unique: true }
+      category: { kind: string }
+      # どの値がどの設計書へ出るかは **documents/*.yml の `where` が正**である
+      # ―― ここにも書くと規則が 2 か所になり、いつか片方が古くなる。
+      # 値は英語のまま（既に書かれた整理結果を壊さない）。**見出しに出るのは
+      # value_labels のほう**である ―― 実測で基本設計書の業務ルールが
+      # 「7.1 business」「7.2 calculation」…「7.7 未分類」と英語と日本語の混在で
+      # 出荷された。publish.md は「列見出しは日本語」と書いているが、規則が
+      # 見ていたのは列だけで、group_by が作る**節の見出しは素通り**していた。
+      rule_kind: { kind: enum,
+                   values: [business, calculation, validation, processing, default, error],
+                   extensible: true,
+                   value_labels: { business: 業務, calculation: 計算,
+                                   validation: 入力チェック, processing: 処理,
+                                   default: 既定値, error: 異常系 } }
+      condition: { kind: string }       # 適用条件（日本の設計書の「条件」欄）
+      action:    { kind: string }       # 処理内容（同「処理」欄）
+      # **単価の妥当性を示す唯一の記述。** テナント別コスト実績 2.単価 は 4 件
+      # すべてが「根拠」列を持つ（`voyage-4 の請求実績から按分` など）。受け皿は
+      # `decision` にしか無く、単価表 1 行を決定事項 1 件に起こすのは資料の
+      # 単位を変えてしまう（決定は会議体と決定日を必須にしている ―― 単価表の行に
+      # そのどちらも書かれていない）。
+      #
+      # **`condition` / `action` とは別である。** 条件は「いつ適用するか」、処理は
+      # 「何をするか」で、根拠は「なぜその値か」―― 実測の 4 行は 3 つとも
+      # 埋まっており、根拠を `action` へ寄せると単価の計算式と出所が同じ升に入る。
+      #
+      # `constraint.rationale` / `decision.rationale` と同じ属性名・同じ見出し。
+      rationale: { kind: string }
+
+  message:
+    label: メッセージ
+    fact_types: [メッセージ]
+    layer: 基本設計
+    id_prefix: msg
+    warn_if_unreferenced: true          # どこからも出ないメッセージ = 死んだ定義
+    sequence:
+      attribute: message_id
+      by: severity
+      format: { エラー: "E-{:04d}", 警告: "W-{:04d}", 情報: "I-{:04d}",
+                確認: "Q-{:04d}", default: "M-{:04d}" }
+    attributes:
+      message_id: { kind: string, required: true, unique: true }
+      severity:   { kind: enum, values: [情報, 確認, 警告, エラー], required: true,
+                    extensible: true }
+      body:       { kind: string, required: true }   # 表示文（{0} 等の差込を含む）
+      action:     { kind: string }                   # 利用者の対処
+
+  # ============ 詳細設計 ====================================================
+  module:
+    label: モジュール・クラス
+    fact_types: [モジュール]
+    layer: 詳細設計
+    id_prefix: mod
+    sequence: { attribute: module_id, format: "MOD-{:03d}" }
+    attributes:
+      module_id:  { kind: string, required: true, unique: true }
+      class_name: { kind: string, unique: true }
+      # 属性名 layer は工程レイヤ宣言と衝突するので tier にする。
+      # 値は現場のクラス構成表がそのまま使う語なので英語のままにする。ただし
+      # **節の見出しに出る**ので訳を添える（`1.1 Service` だけでは、隣に並ぶ
+      # `1.3 Common` との違いが読み手に伝わらない）。
+      tier:       { kind: enum,
+                    values: [Controller, Service, Repository, Validator, Batch, Common],
+                    extensible: true,
+                    value_labels: { Controller: "Controller（プレゼンテーション）",
+                                    Service: "Service（アプリケーション）",
+                                    Repository: "Repository（データアクセス）",
+                                    Validator: "Validator（入力検証）",
+                                    Batch: "Batch（バッチ）",
+                                    Common: "Common（共通部品）" } }
+      package:    { kind: string }
+      # 公開定数の受け皿（Phase 1-2）。`__version__`・拡張子・予約名は「決まって
+      # いること」そのものだが、写す先が無く参照レコードで消えていた（r001）。
+      # 規約を述べている定数は従来どおり 制約・前提 に起こしてよい ―― ここは
+      # 「モジュールが何を公開しているか」の転記である。
+      constants:  { kind: string }
+
+  method:
+    label: メソッド
+    fact_types: [メソッド]
+    layer: 詳細設計
+    id_prefix: mtd
+    warn_if_unreferenced: true          # どのモジュールにも属さないメソッド = 孤児
+    sequence: { attribute: method_id, format: "MTD-{:04d}" }
+    attributes:
+      method_id: { kind: string, required: true, unique: true }
+      # signature に unique は付けない。**シグネチャはモジュールの中でしか一意で
+      # ない** ―― `render()` も `as_dict()` も別クラスに普通に並ぶ。一意にすると
+      # 整理層はパース結果の値を修飾して回避するしかなく、「シグネチャは
+      # そのまま呼び出しに写せる形で出す・書き換えない」（parse.md）を破る。
+      # `column` は**パース結果のどの欄から来た値か**の宣言である。凍結ゲートが
+      # 「出典の欄は埋まっているのに属性が空」を照合する（`G018`）ためだけにあり、
+      # 値の中身は見ない。宣言できるのは**見出しを arp4 自身が書いている表**
+      # ―― コードのメンバ表（`parse._MEMBER`）だけである。Excel の見出しは現場が
+      # 書いた文字列なので、同じ列が「戻り値」「返却値」「戻り」と揺れる。
+      signature: { kind: string, column: シグネチャ }
+      returns:   { kind: string, column: 戻り値 }
+      raises:    { kind: string, column: 例外 }
+      # 注釈（@property・@pytest.fixture）の受け皿（Phase 1-3）。パース結果の
+      # 「注釈」欄に出ているのに写す先が無く、statement へ逃がされていた（r001）。
+      # column を宣言してあるので、欄が埋まっているのに落とすと G018 が言う。
+      decorators: { kind: string, column: 注釈 }
+
+  batch-step:
+    label: バッチステップ
+    fact_types: [バッチステップ]
+    layer: 詳細設計
+    id_prefix: stp
+    warn_if_unreferenced: true          # どのジョブにも属さないステップ = 孤児
+    sequence: { attribute: step_id, format: "STP-{:03d}" }
+    attributes:
+      step_id:   { kind: string, required: true, unique: true }
+      # ステップ固有の運用値。method の signature / returns には入らない。
+      step_kind: { kind: enum, values: [Chunk, Tasklet], extensible: true }
+      commit_interval: { kind: string }   # コミット間隔（再実行単位に効く）
+      concurrency:     { kind: string }   # 多重度
+
+  process-step:
+    label: 処理ステップ
+    fact_types: [処理ステップ]
+    layer: 詳細設計
+    id_prefix: pst
+    warn_if_unreferenced: true          # どのモジュールにも属さない手順 = 孤児
+    sequence: { attribute: step_id, format: "PS-{:03d}" }
+    # **batch-step と分けてある。** batch-step の語彙（Chunk / Tasklet・コミット
+    # 間隔・多重度）は再実行の単位を決めるためのもので、オンライン処理には当たる
+    # 欄が 1 つも無い。逆にオンラインには**分岐がある**（`proceeds-to.condition`）
+    # のに batch-step には矢印を張る関係が無い ―― 流用すると、判定の枝が消える。
+    #
+    # **flow-step とも分けてある。** flow-step は要件定義の業務フローの手順で、
+    # 要件定義書の「業務フローの手順」「業務フローの流れ」が種別で絞らずに
+    # 全件を出す（関係の章は `where` を適用しない）。同じ種別に相乗りすると、
+    # 処理仕様書のステップが要件定義書へ丸ごと漏れる。
+    attributes:
+      step_id: { kind: string, required: true, unique: true }
+      # 図形の種類が持っている意味（凡例に「菱形: 判定」「網掛け: 他モジュール
+      # 呼出」と書かれている）。flow-step.step_kind と値を揃えてあるが、
+      # 他モジュール呼出 はオンラインの処理フローにしか出ない。
+      step_kind: { kind: enum,
+                   values: [処理, 判定, 開始, 終了, 他モジュール呼出],
+                   extensible: true }
+
+  # ============ テスト ======================================================
+  test-case:
+    label: テストケース
+    fact_types: [テストケース]
+    layer: テスト
+    id_prefix: tcs
+    # 検証相手の無いテストケースは、トレーサビリティ・マトリクスに 1 行も出ない。
+    # 実測（arp4 自身・62 ファイル）で 527 件中 517 件が verifies 0 本のまま
+    # error 0 / warn 0 で通り、マトリクスが全章「（該当なし）」で出た ―― 白紙の
+    # 原因が「張り忘れ」か「語彙に受け皿が無い」かは成果物から区別できないので、
+    # 書いている手元（freeze の G020）と正本（check の W031）の両方で言う。
+    warn_if_no_upstream: verifies
+    sequence:
+      attribute: test_id
+      by: level
+      format: { 単体: "UT-{:04d}", 結合: "IT-{:04d}",
+                総合: "ST-{:04d}", 受入: "UAT-{:04d}", default: "TC-{:04d}" }
+    attributes:
+      test_id:      { kind: string, required: true, unique: true }
+      # level / steps は required にしない ―― 資料がコード（pytest）のとき、
+      # テストの段階も手順書きもどこにも書いていない。「pytest だから単体」は
+      # 作文で、実測では同じ tests/ にコマンドラインを丸ごと動かすテストが
+      # 混ざっていた。必須にすると整理層は**推測で埋めるか --force で押し切るか**
+      # しか選べず、実測では手順書どおり空欄にした正しい作業が E010 を 1054 件
+      # 出して publish に拒まれた（accesses.crud / operates.permission と同じ判断
+      # ―― 資料が言っているところまでが正しい出力である）。
+      level:        { kind: enum, values: [単体, 結合, 総合, 受入],
+                      extensible: true }
+      # **点検表の「分類」は主軸ではない。** 情報セキュリティ点検表 2.点検項目 の
+      # 分類（情報区分 / ログ / 分離 / 認証 / 監査 / 暗号化 / 通信 / 委託 / 廃棄）は
+      # 点検の観点であって、他の冊子が左端に置くサブシステム（受注管理・共通基盤）
+      # とは軸が違う。受け皿が `subsystem` しか無かったので**10 件がそこへ入り、
+      # 他冊子の主軸と同じ列に混ざった** ―― 実測（r001）で `test-case.subsystem`
+      # 10 件・`test-run.subsystem` 10 件が `P111`（どの設計書にも出ない）に
+      # 並んでいる。
+      #
+      # **`level`（単体 / 結合 / 総合 / 受入）とも別である。** あれは V 字のどの段
+      # かで、点検の観点はその中の割り方 ―― 同じ「認証」の項目が単体にも受入にも
+      # 立つ。節は `level` で割ってあるので、分類は列で出す（3 つの軸のうち節に
+      # 使えるのは 1 つ、という基本設計書の「業務ルール」と同じ規律）。
+      #
+      # 属性名は `requirement.category` / `open-issue.category` と揃える。見出しの
+      # 既定は 大分類 だが、点検表はこの列を「分類」と書くので**節側の `labels` で
+      # 名指しする**（→ `test-spec.yml`。`issue-register` の 区分 と同じ形）。
+      category:     { kind: string }
+      precondition: { kind: string }
+      steps:        { kind: string }
+      expected:     { kind: string, required: true }
+
+  test-run:
+    label: テスト結果
+    # **写像が無く、テスト結果報告書に入口が無かった**（3.12.0 で追加）。属性は
+    # 実施日・実施者・不具合 ID と**資料を写す欄しかない**のに整理層から書けず、
+    # 正本を人が手で書く以外に道が無かった ―― 実際には誰も書かない。
+    # テスト結果報告書と stakeholder のテスト状況サマリは「実施結果はまだ正本に
+    # ありません（**必要な語彙: test-run**）」と出る（決定 59）。読み手は資料を
+    # 探しに行くが、見つけて parse に渡しても整理層が書けない ―― **供給経路の
+    # 無い自己申告**になっていた。
+    fact_types: [テスト結果]
+    layer: テスト
+    id_prefix: trn
+    sequence: { attribute: run_id, format: "TR-{:04d}" }
+    attributes:
+      run_id:      { kind: string, required: true, unique: true }
+      result:      { kind: enum, values: [合格, 不合格, 保留, 対象外], required: true,
+                     extensible: true }
+      executed_on: { kind: string, required: true, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }
+      tester:      { kind: string }
+      defect:      { kind: string }     # 不具合 ID（不合格時）
+      # **`category`（分類）は宣言しない ―― 3.15.0 で足したものを 3.16.0 で
+      # 落とした。** 経緯を残しておく。同じことをもう一度やろうとする人が
+      # 最初に当たるのがここである。
+      #
+      # 足した理由は「点検表は『点検項目』と『実施結果』が同じ分類で並ぶ表なので、
+      # 片方だけに受け皿を置くと実施結果の側が `subsystem` へ逃げ続ける（実測で
+      # `test-run.subsystem` 10 件）」だった。ところが**通し実行を回すと、整理層は
+      # 分類を `test-case`（点検項目）側にしか書かない** ―― 点検表の 1 行が
+      # 「点検項目 1 件」＋「実施結果 1 件」の 2 レコードになる形なので、分類は
+      # 行の左端に 1 つあるだけで、**同じ値を 2 レコードへ写すのは二重登録**で
+      # ある。結果、テスト結果報告書の `from.category` の列は全行空になり、
+      # `check` が `W043`（同じ名前の別の欄に値がある）で鳴った。
+      #
+      # **逃げ場の問題は既に閉じている。** `subsystem` へ逃げていたのは
+      # **どちらの側にも分類の受け皿が無かった**ときの話で、`test-case.category`
+      # ができた以上、整理層はそこへ書ける ―― 実測（r001）でも点検項目 10 件は
+      # `category` に入り、実施結果 10 件は分類を持っていない。**読み手が読む
+      # 分類は残る** ―― テスト結果報告書「実施結果」は `to.category`
+      # （点検項目の分類）を列に出しているので、実施結果の行は分類つきで読める。
+      #
+      # **宣言を残したまま列を外す道は採らなかった。** 出す先の無い属性は
+      # `P111`（正本に値があるのにどの設計書にも出ない）に落ちる ―― 標準パックは
+      # 「宣言してある受け皿に書けて、書いたものがどこにも出ない」状態を残さない
+      # （`test_E_標準パックの様式は宣言済みの属性を出す` が全属性を見張っている）。
+      # 列を戻して `W043` を鳴らし続ける道もあるが、**空の列が常に 1 本増える**
+      # のと引き換えに得られるのは「分類は点検項目の側にある」という、ここに
+      # 書いてある事実だけである。
+      #
+      # 回帰試験の結果表が**ケース抜きで分類ごとに集計されている**資料が出たら、
+      # そのときは消費側のメタモデルで `test-run` に足す（標準パックは種別の追加も
+      # 属性の追加も消費側に開いている ―― `actor` の「申請日・承認日」と同じ扱い）。
+
+  # ============ 管理（工程横断） ============================================
+  open-issue:
+    label: 課題
+    fact_types: [課題]
+    layer: 管理
+    id_prefix: iss
+    sequence: { attribute: issue_id, format: "ISS-{:03d}" }
+    attributes:
+      issue_id:  { kind: string, required: true, unique: true }
+      name:      { kind: string, required: true, unique: true }   # 厳格化
+      # 両論（アイテム ID 付き）。**必須にしない** ―― 両論が立つのは矛盾から
+      # 起こした課題だけで、人が課題管理表に起票した課題には片論しか無い。
+      # contradict --to-issues は従来どおり必ず埋める。
+      positions: { kind: string }
+      # **指摘と回答は食い違いではない。** 情報セキュリティ点検表 3.指摘と回答 は
+      # 1 件が「指摘 / 回答 / 確認 / 状態」の 4 行で組まれている。受け皿が無く、
+      # 回答と確認を `positions`（両論）へ入れて凌いだ結果、**食い違いでないもの
+      # 2 件が「決着していない矛盾」の表に出た** ―― `positions` は
+      # `contradict --to-issues` が両論併記に使う欄で、`disputes` の
+      # `cardinality: { from: "1..*" }`（片側しか指さない課題は両論になっていない）
+      # もその読みを前提にしている。**回避のために別の意味の欄へ入れると、その欄を
+      # 読む側の規律が全部ずれる。**
+      #
+      # 資料の並び（指摘 → 回答 → 確認）は `statement` → `answer` →
+      # `confirmed_on` に対応する ―― 指摘そのものは `statement`（仕様本文）である。
+      #
+      # **`state`（未着手 / 対応中 / 完了）とは別である。** 状態は台帳の管理値で、
+      # 回答は指摘に対する記述、確認日は**誰かが確かめた事実**である ―― 3 つとも
+      # 資料に別々の行として書かれている。
+      answer:       { kind: string }
+      # **確認は「いつ」と「何を」の 2 つで 1 行である**（3.16.0）。3.15.0 で
+      # `confirmed_on`（確認日）を足したところまでで回答は列になったが、確認の
+      # 中身の受け皿が無く、実測（r001）で 5 件が `description` へ流れて G030 が
+      # 鳴った ―― `実機で極秘テナントに外部モデルを指定し、弾かれることを確認した`
+      # `テーブル定義（t_audit_log）に本文の列が無いことを確認した` のように、
+      # **何を見て確かめたかがそこにしか書かれていない。** 日付だけの列は
+      # 「誰かが何かを確かめた」以上のことを言わない。
+      #
+      # **`answer`（回答）とは別である。** 回答は指摘された側が書いた対処、
+      # 確認内容は**点検した側が確かめた事実**で、資料も別の行に書いている
+      # （指摘 / 回答 / 確認 / 状態 の 4 行組）。混ぜると、自己申告と検証が
+      # 同じ升に入る ―― 監査の資料でそれをやると台帳の意味が消える。
+      #
+      # **`description` へ逃がさない。** 補足は背景・例外で、確認内容は
+      # 「確かめた」という事実そのものである（`constraint.rationale` を
+      # `description` から出したときと同じ判断）。実測の 5 件は全部が後者で、
+      # うち 1 件（指摘 6）は**確認が行われていないこと**を書いていた ――
+      # `confirmed_on` が空で `verification` も空なら、それは未確認である。
+      verification: { kind: string }
+      # **pattern を当てない。** `decision.decided_on` / `test-run.executed_on` は
+      # `^\d{4}-\d{2}-\d{2}$` を要求しているが、あの 2 つは required で、資料に
+      # 無ければ書かないという逃げ道がある。確認日は任意なので、`2026/03/12` と
+      # 書かれた資料に当てると整理層は**資料の値を書き換えて**通すことになる
+      # （3.5.0 で `method.signature` の unique を外したのと同じ形）。
+      # 同じ台帳の `raised_on`（起票日）も pattern 無しで揃えてある。
+      confirmed_on: { kind: string }
+      due:       { kind: string }                   # 回答期限
+      assignee:  { kind: string }
+      # **課題管理表の主軸 4 列に受け皿を持たせる**（3.14.0）。日本の課題管理表は
+      # No / 起票日 / 工程 / 区分 / 課題内容 / 対応方針 / 担当 / 期限 / 状態 の形を
+      # していて、**左の 3 列と右端が丸ごと無かった。** 回避策は「整理層が
+      # `description` の散文へ写す」で、`issue-register` にもそう書いてあったが、
+      # 散文にすると並べ替えも絞り込みもできず、**同じブックの「集計」シート
+      # （状態を数えただけの表）に当たるものが生成できない。**
+      #
+      # 実測（sales-corpus r001）でこの穴は 2 つの形で出た ―― (1) 整理層が
+      # 素直に `attrs.category` へ入れ、宣言が無いので `G016` 7 件（＝課題の
+      # 全件）が鳴って `build` が `B021` で捨てた。**捨てるところまで通る。**
+      # (2) 語彙の追加提案（`_metamodel-add.yml`）に毎ラウンド同じ 3 件が
+      # 起票され、`organize.md` の書き方の例そのものがこの穴だった。
+      #
+      # **`status` とは別物である。** あれは arp4 の査読状態（review / approved）で、
+      # 課題の対応状況ではない ―― 混ぜると資料が「完了」と言っている課題が
+      # 「レビュー中」と出る（→ `documents/issue-register.yml`）。
+      state:        { kind: enum, values: [未着手, 対応中, 完了],
+                      extensible: true }
+      # 区分（仕様 / 外部 / 性能 / 移行）。**`current-issue` と同じ属性名にする** ――
+      # 名前も並びも近い 2 種別で片方だけが持っていたのが穴の元だった。
+      category:     { kind: string }
+      raised_on:    { kind: string }                # 起票日
+      # 起票された工程（基本設計 / 詳細設計）。**`phase` を使い回さない** ――
+      # あれは business-flow の 現行 / 新規 / 変更 で、見出しも 区分 でぶつかる。
+      raised_phase: { kind: string }
+
+  decision:
+    label: 決定事項
+    # **議事録から起こせなかった**（3.12.0 で追加）。`decided_by`（＝ 会議体）・
+    # `alternatives`（採らなかった案）は資料を写す欄で、課題管理表の「決定事項」節は
+    # `source` 列まで持っている ―― 資料から起こす前提で設計されているのに写像だけが
+    # 無かった。同じ議事録・同じ課題管理表から起こす `open-issue` は写像を持っており、
+    # **線引きに理由が 1 行も書かれていなかった。**
+    #
+    # 回避策（「決定の中身は業務ルール・制約へ寄せ、決定そのものは正本で人が起こす」）は
+    # 実測で失敗している ―― sales-corpus 30 冊で議事録の暫定合意・承認判定・測定条件の
+    # 確認が**正本に 1 件も入らなかった**。「人が正本で起こす」は、誰も起こさないので
+    # 何も残らないという形で失敗する。
+    #
+    # **`.arp/rounds/<r>/decisions.yml` とは別物である。** あちらは**機械**（draft /
+    # build / auto）が下した判断の全件（事後拒否権の入口。整理層の判断は来ない ――
+    # → `arp4.decisions`）で、こちらは**資料に書いてある人間の合意**である。
+    fact_types: [決定事項]
+    layer: 管理
+    id_prefix: dec
+    sequence: { attribute: decision_id, format: "DEC-{:03d}" }
+    attributes:
+      decision_id:  { kind: string, required: true, unique: true }
+      decided_on:   { kind: string, required: true, pattern: "^\\d{4}-\\d{2}-\\d{2}$" }
+      decided_by:   { kind: string, required: true }   # 決定者（合意の記録）
+      alternatives: { kind: string }                   # 採らなかった案
+      rationale:    { kind: string, required: true }   # 根拠
+
+relation_types:
+
+  # --- 工程間トレース -------------------------------------------------------
+  realizes:
+    label: 実現する
+    # method は起点にしない（粒度が細かすぎてトレース表が読めなくなる）。
+    from: [設計要素]
+    to:   [requirement]
+
+  refines:
+    label: 詳細化する
+    # `actor` を入れてある ―― 大規模の権限マトリクスは「営業部 → 営業担当 /
+    # 営業事務」のロール階層を前提に読む。受け皿が無かったので階層は
+    # `description` の散文に入るしかなく、決定 75（サブシステムが description へ
+    # 逃げた）と同じ形で設計書から消えていた。
+    # `business-goal` も同じ（全社目標 ← 案件目標）。
+    from: [requirement, business-rule, business-flow, module, method, screen,
+           entity, data-item, actor, business-goal]
+    to:   [requirement, business-rule, business-flow, module, method, screen,
+           entity, data-item, actor, business-goal]
+    same_type_only: true                # 同一種別内の階層化（概要 ← 実装詳細）
+
+  contributes-to:
+    label: 寄与する
+    # **トレースの上端。** いままで business-flow / requirement が天井で、
+    # 「なぜその業務要件が要るのか」はどこにも繋がっていなかった。
+    # 課題 ← 目標 ← 業務要件 ← 機能要件 ← 設計要素 ← テストで 1 本になる。
+    from: [requirement, business-flow]
+    to:   [business-goal]
+
+  addresses:
+    label: 課題に応える
+    from: [business-goal, requirement]
+    to:   [current-issue]
+
+  affects:
+    label: 影響が及ぶ
+    # **「誰が困っているか」は現状課題の主軸の列である**（3.16.0）。稟議書
+    # 2.背景 は 5 行すべてが「影響を受けている部門」列を持ち（カスタマーサポート部 /
+    # 品質保証部 / 法務部 / 営業本部 / 全社）、受け皿が無かったので実測（r001）で
+    # 5 件とも部門名が `current-issue.impact`（影響の**内容**の欄）へ入った ――
+    # 稟議は「どの部門がいくら困っているか」で通るので、部門は課題の一部である。
+    #
+    # **文字列ではなく関係にする理由。** 部門は `actor` として体制図・利用申請
+    # 台帳の側にも起きている（`カスタマーサポート（cs-support）`）―― `impact` に
+    # 名前を書くと、同じ組織が 2 つの綴りで正本に並び、機械では突き合わない
+    # （`actor.physical_name` を足したときと同じ形）。関係なら、部門の行から
+    # 「この部門が抱えている現状課題」を逆に引ける。
+    #
+    # **向きは 課題 → 部門。** 主語は課題である ―― 資料の 1 行が課題で、部門は
+    # その行の 1 列だからで、`addresses`（目標 → 課題）と繋ぐと
+    # 部門 ← 課題 ← 目標 ← 要件 の順に読める。
+    #
+    # **`risk` は入れていない。** リスクが誰に及ぶかは `threatens` が受ける
+    # （相手は目標・要件・マイルストーン・処理単位）。組織を足すと、**未発生の
+    # 想定が部門の行に「影響あり」として並ぶ** ―― 課題（もう起きている）と
+    # リスク（まだ起きていない）を分けた理由がここで消える。
+    # `open-issue` も入れない ―― あちらの相手は `disputes`（争点）である。
+    from: [current-issue]
+    to:   [actor]
+
+  threatens:
+    label: 脅かす
+    # リスクが何を脅かすのか。相手を書けないリスクは「気を付ける」以上の
+    # 意味を持てない ―― 計画書のリスク欄がそのまま死ぬのはここである。
+    from: [risk]
+    to:   [business-goal, requirement, milestone, 処理単位]
+
+  supports:
+    label: 支える
+    # 業務要件 → 業務フロー。これが無いと business-flow を指す関係が
+    # refines（同一種別のみ）しか無く、単独の業務フローが永久に孤児になる。
+    from: [requirement]
+    to:   [business-flow]
+
+  verifies:
+    label: 検証する
+    # module を入れてある ―― 現実のテストファイルはたいてい**ファイル 1 本
+    # （仕組み）**を相手にする（tests/test_build.py が検証するのは build という
+    # 仕組みであって、その中の関数 1 本ではない）。一番細かい method しか
+    # 無かったとき、関数を名指しで取り込んだ 10 件しか張れず、残り 517 件が
+    # 関係 0 本で通った。粒度はテストが実際に相手にしているものに合わせる。
+    #
+    # **`code-master` / `entity` / `constraint` を足した。** 検証されるのは
+    # 「動くもの」だけではない ―― 情報セキュリティ点検表 2.点検項目 の 10 行は、
+    # 機密区分の定義（コード定義）・監査ログのテーブル定義（エンティティ）・
+    # 委託先の取り扱い（制約）を点検している。相手が 業務ルール しか無かったので
+    # **張れたのは 10 行のうち 2 行だけで、残る 8 行はトレーサビリティに 1 行も
+    # 出なかった** ―― 点検表は「何を点検したか」が仕様なので、相手の書けない
+    # 点検項目は「点検した」としか言っていないことになる（3.8.0 で
+    # `module` を足したときと同じ形。**粒度ではなく種別のほうが足りなかった。**）
+    #
+    # **`data-item` / `code-value` は足していない。** 点検の相手は定義の側
+    # （どの区分を定めているか・どのテーブルに残すか）であって、列 1 本・値 1 つ
+    # ではない ―― `accesses` が `entity` 止まりで `data-item` を持たないのと
+    # 同じ粒度の判断である。実測 10 行のうち、値 1 つを名指ししている行は無い。
+    #
+    # **`business-goal` も足していない。** 目標が達成できたかを確かめるのは
+    # テストではなく効果測定で、経路は `contributes-to`（要件 → 目標）にある。
+    from: [test-case]
+    to:   [requirement, 処理単位, business-rule, module, method,
+           code-master, entity, constraint]
+
+  executes:
+    label: 実行する
+    from: [test-run]
+    to:   [test-case]
+    cardinality: { from: "1" }          # 結果 1 件は必ず 1 ケースに紐づく
+
+  finds:
+    label: 指摘
+    # **点検・監査の資料では、結果と指摘が対になる**（3.16.0）。情報セキュリティ
+    # 点検表は 2.点検項目 の結果 10 件それぞれに「指摘 N を参照」と書き、指摘
+    # 6 件は 3.指摘と回答 の別シートにある ―― 冊子はその 2 枚で 1 つの点検である。
+    # 受け皿が無いあいだ、実測（r001）では `test-run.defect` に `指摘1` という
+    # **資料の中でしか通じない文字列**を置くしかなく、正本の上では結果と課題が
+    # 繋がっていなかった（`defect` は不具合管理システムの ID を写す欄で、
+    # arp4 の課題を指す欄ではない）。設計書では文字列の突き合わせになる。
+    #
+    # **`defect` は残す。** 外部の不具合管理（JIRA / Redmine）の番号は正本に
+    # 課題として起きないことがあり、`conformance/rules.yml` は「不合格なのに
+    # `defect` が空」を error にしている ―― 関係に置き換えると、その検査が
+    # 「課題を起こしたか」に変わってしまう。**番号を写す欄と、正本の中で指す
+    # 関係は別のもの**である（`actor.physical_name` と `actor_id` と同じ形）。
+    #
+    # **名前は `executes` / `verifies` / `disputes` と同じ語感の 1 語**にした。
+    # `raises` は既に処理単位 → メッセージが使っており（M012 が重複を拒む）、
+    # `reports` は `reports-to`（指揮命令）と綴りが重なるので、整理結果の
+    # `rel:` を読む側が取り違える（体制の関係とテストの関係が並ぶ）。
+    #
+    # **多重度は置かない。** 適合の結果に指摘は無い（実測 10 件中 4 件が
+    # 指摘なし）ので下限は置けず、条件付き適合が指摘を 2 件出すこともある。
+    # `open-issue` に `warn_if_unreferenced` も付けない ―― 点検表を持たない
+    # 案件では課題の全件が鳴る（3.6.0 の `constraint` とは向きが逆になる）。
+    from: [test-run]
+    to:   [open-issue]
+
+  uses-specimen:
+    label: 検体を使う
+    # テストが検体（テストデータの生成器・フィクスチャのモジュール）を使う対応
+    # （Phase 1-4）。verifies（検証相手）と分ける ―― 検体は検証の**材料**であって
+    # 相手ではない。r001 では受け皿が無く、テストと検体の対応がトレーサビリティに
+    # 出なかった。
+    from: [test-case]
+    to:   [module]
+
+  # --- 構造 -----------------------------------------------------------------
+  has-column:
+    label: 列を持つ
+    from: [entity]
+    to:   [data-item]
+    ordered: true
+    cardinality: { from: "1..*" }       # 列 0 本のテーブルは error
+    attributes:
+      physical_name: { kind: string, required: true, pattern: "^[A-Za-z0-9_]+$" }
+      pk:            { kind: bool }
+      not_null:      { kind: bool }
+      default_value: { kind: string }
+      note:          { kind: string }
+
+  has-value:
+    label: コード値を持つ
+    from: [code-master]
+    to:   [code-value]
+    ordered: true
+    cardinality: { from: "1..*" }
+
+  references:
+    label: 関連する
+    # **ER 図が 1 本も描けなかった。** entity → entity を張れる関係は `refines`
+    # （`same_type_only` ＝ 概要と詳細の階層化）しか無く、多重度も外部キーも
+    # 持てない。実資料のテーブル定義書は必ず外部キー欄を持ち、基本設計書には
+    # 必ず ER 図の章がある ―― 受け皿が無いあいだ、外部キー欄は `has-column` の
+    # `note` へ逃げるか（設計書のどの列にも出ない）、図は `未読取` になっていた。
+    #
+    # **向きは 子 → 親**（外部キーを持つ側が from）。逆向きでも成立しないので
+    # build の向き補正は効かない ―― 書いた向きがそのまま残る。
+    from: [entity]
+    to:   [entity]
+    attributes:
+      fk_columns:  { kind: string }     # 外部キーの列（複合可）
+      cardinality: { kind: enum, values: ["1対1", "1対多", "多対多"],
+                     extensible: true }
+      # **bool にしない。** `false` は升に空文字で出るので、「任意参照ではない」と
+      # 「資料が何も言っていない」が同じ見た目になる（決定 71 の × と空欄と同じ
+      # 誤り）。enum なら未記入は `―` として残る。`displays.required_flag` と
+      # 同じ語彙にしてあるのは、読み手が同じ列見出しを 2 通りに読まないため。
+      required_flag: { kind: enum, values: [必須, 任意] }
+      note:        { kind: string }
+
+  has-index:
+    label: 索引を持つ
+    from: [entity]
+    to:   [index]
+    ordered: true
+    # 索引が 1 本も宣言されていないテーブルは普通にあるので下限を置かない。
+
+  has-method:
+    label: メソッドを持つ
+    from: [module]
+    to:   [method]
+    ordered: true
+
+  has-step:
+    label: ステップを持つ
+    from: [batch]
+    to:   [batch-step]
+    ordered: true
+
+  has-flow-step:
+    label: 手順を持つ
+    # has-step と分けてあるのは、**from/to を組み合わせで縛れない**ためである。
+    # 1 本にまとめると batch → flow-step / business-flow → batch-step まで通り、
+    # G012 が「語彙にある関係を語彙にない組み合わせで使った」を拾えなくなる。
+    from: [business-flow]
+    to:   [flow-step]
+    ordered: true
+
+  leads-to:
+    label: 次へ進む
+    # 業務フローの矢印 1 本。図形の接続（パース結果の `s4-c1`）がそのまま入る。
+    # **向きは書いたまま**（元 → 先）で、分岐条件は関係側に持つ ―― ステップ側に
+    # 書くと「どちらの枝の条件か」が消える。
+    from: [flow-step]
+    to:   [flow-step]
+    ordered: true
+    attributes:
+      condition: { kind: string }       # 分岐条件（「与信の枠内のとき」等）
+
+  has-process-step:
+    label: 処理ステップを持つ
+    # 処理仕様書の「3.処理フロー」の受け皿。**has-step / has-flow-step と 3 本に
+    # 分けてある**のは上と同じ理由（from/to を組み合わせで縛れない）―― 1 本に
+    # まとめると batch → process-step / module → batch-step まで通ってしまう。
+    from: [module, method]
+    to:   [process-step]
+    ordered: true
+
+  proceeds-to:
+    label: 次へ進む（処理フロー）
+    # 処理フローの矢印 1 本。図形の接続（パース結果の `s5-c1`）がそのまま入る。
+    # leads-to（業務フロー）と分けてあるのは、要件定義書の「業務フローの流れ」が
+    # 種別で絞らずに leads-to を全件出すためである ―― 相乗りすると詳細設計の
+    # 分岐が要件定義書に出る。**向きは書いたまま**で、分岐条件は関係側に持つ。
+    from: [process-step]
+    to:   [process-step]
+    ordered: true
+    attributes:
+      condition: { kind: string }       # 分岐条件（「検証 OK のとき」等）
+
+  # --- 体制 -----------------------------------------------------------------
+  # **体制図の線には 2 種類ある。** 体制・要員計画 の凡例は実線（指揮命令）と
+  # 破線（委託）を描き分けているのに、`actor` どうしを結べる関係は `refines`
+  # （階層化）しか無かった ―― 実測（r001）で接続 7 本のうち 5 本を `refines` で
+  # 代用し、「基盤開発 → 利用部門」「運用 → 経理部（チャージバック）」の 2 本は
+  # 上下関係ではないので**張られずに落ちた（正本のどこにも残っていない）。**
+  # 委託は `constraint.category: 契約` の文中にしか残らず、体制図は復元できない。
+  #
+  # **2 本に分けてある。** 1 本にして「線種」を属性で持たせると、指揮命令と委託が
+  # 同じ表に並んで `where` でしか分けられない ―― `has-step` / `has-flow-step` /
+  # `has-process-step` を 3 本に分けたのと同じ理由で、**from/to を組み合わせで
+  # 縛れない**以上、意味の違いは関係型の側で持つほうが検査に乗る（G012 が
+  # 「語彙にある関係を語彙にない組み合わせで使った」を拾える）。
+  #
+  # **`same_type_only` は付けない。** 両端が `actor` だけなので付けても何も
+  # 縛らず（E025 は from と to の種別が違うときに鳴る）、「何かを縛っている」と
+  # 読める宣言だけが残る ―― 次に `to` を広げた人が理由を知らずに外すことになる。
+  # `refines` が付けているのは、あちらの両端が 10 種別あって**種別をまたいだ
+  # 階層化を禁じる**必要があるからである。
+  #
+  # **向きは機械が直せない。** `metamodel.orient` は「反転すれば宣言に合うか」で
+  # 判定するので、両端が同じ種別だと**どちらの向きでも成立し**、書いた向きが
+  # そのまま正本に残る（`refines` / `leads-to` / `references` と同じ）。だから
+  # 向きをここで 1 度だけ決めて、様式の `labels` でも同じ言葉で呼ぶ。
+  #
+  # **同じ申告にあった `escalates-to`（エスカレーション）は足していない。**
+  # 運用引継ぎ資料 2.連絡体制 の「一次 / 二次」は、`condition` に時間帯を持つ
+  # 3 本目の線として書けそうに見えるが ―― 実測（r001）でそこに書かれていたのは
+  # **平日 8:00-20:00 / 平日 20:00-8:00 / 休日 の 3 つの体制そのもの**で、
+  # 部門どうしの線ではなく「この時間帯は誰が一次を受けるか」という運用の取り決め
+  # だった。正本では `constraint.category: 運用` 3 件として残っており、そちらの
+  # ほうが資料の単位に合う。連絡体制が**組織図として**書かれている資料が出てから
+  # 足す ―― 線が 1 本も無いまま関係型だけ増やすと、整理層は「近いから」で
+  # 指揮命令をここへ流す。
+  reports-to:
+    label: 指揮命令
+    # **向きは 報告する側 → 報告を受ける側**（下位 → 上位）。関係名がそう読める
+    # ほうへ倒してある ―― `refines`（詳細 → 概要）と同じ向きなので、代用で
+    # `refines` に入っている既存の 5 本は向きを変えずに読み替えられる。
+    from: [actor]
+    to:   [actor]
+
+  outsources-to:
+    label: 委託する
+    # **向きは 委託元 → 委託先。** 指揮命令と逆向き（上位 → 下位）になるが、
+    # 委託は「誰が出したか」が主語である ―― 運用引継ぎ資料 1.委託範囲 も
+    # 「当社が 〜 を委託する」の形で書かれている。
+    #
+    # **委託範囲は `description` に書く。** 属性にしなかったのは、範囲の書き方が
+    # 資料ごとに違いすぎるためである（`監視・一次切り分け`・`平日 8:00-20:00`・
+    # `ダッシュボードの保守` は範囲・時間帯・成果物の 3 種類が同じ列に並ぶ）――
+    # 1 つの属性に畳むと `batch.trigger` と同じ「2 列を 1 文字列」になり、
+    # 分けて宣言すると資料に無い欄が 2 つ増える。**契約条件そのものは
+    # `constraint.category: 契約` が受ける**（既存に寄せられるものは足さない）。
+    from: [actor]
+    to:   [actor]
+
+  # --- 振る舞い -------------------------------------------------------------
+  displays:
+    label: 項目を配置する
+    # 画面項目定義書の 1 行 = この関係 1 本。画面固有の属性は関係側に持つ。
+    from: [screen, report]
+    to:   [data-item]
+    ordered: true
+    cardinality: { from: "1..*" }       # 何も表示しない画面は error
+    attributes:
+      io:            { kind: enum, values: [入力, 出力, 入出力], required: true }
+      required_flag: { kind: enum, values: [必須, 任意] }
+      control:       { kind: enum,
+                       values: [テキスト, 数値, 日付, プルダウン, ラジオ,
+                                チェック, ボタン, 表, ラベル], extensible: true }
+      # **`has-column` と揃える**（3.14.0）。テーブル側は物理名も既定値も宣言して
+      # いるのに、画面・帳票側は 1 つも持っていなかった ―― 日本の画面項目定義書は
+      # この 2 列をほぼ必ず持つ。受け皿が無いあいだ、実測（sales-corpus r001）で
+      # `note` が「物理名 shipDate ／ 初期値 翌営業日 ／ 営業日であること」のように
+      # 3 つの列を 1 つの散文へ畳んでいた ―― **備考は、行き先の無い列の捨て場に
+      # なる。**
+      #
+      # **`required` にはしない**（3.2.0 / 3.4.0 / 3.8.0 と同じ判断）。レイアウト
+      # だけを載せたシートは物理名を書かず、必須にすると整理層が推測で埋める。
+      # パターンも当てない ―― 画面項目の物理名はキャメルケース（`shipDate`）で、
+      # `has-column` の `^[A-Za-z0-9_]+$` とは体系が違う。
+      physical_name: { kind: string }
+      default_value: { kind: string }
+      note:          { kind: string }
+
+  accesses:
+    label: 参照・更新する
+    # CRUD 図（機能 × テーブル）の実体。
+    #
+    # crud は **required にしない**（operates.permission と同じ理由）。資料が
+    # 「触る」ことしか言っていないことがある ―― コードの `import` は依存を
+    # はっきり示すが、C/R/U/D はどこにも書いていない。必須にすると整理層は
+    # **推測して埋めるか、関係そのものを捨てるか**しか選べず、実測では後者に
+    # なった（自身のソース 23 本で accesses 0 本・entity 33 件が全部 W030）。
+    # **真実である依存を丸ごと捨てるほうが、CRUD が空欄なことより悪い** ――
+    # 捨てた側は誰にも見えないが、空欄は空欄として見える。
+    # 空のまま入れれば CRUD 図の升は ○ になる（資料が言っているのはそこまで）。
+    from: [処理単位, module]
+    to:   [entity]
+    attributes:
+      crud: { kind: enum, values: [C, R, U, D], multi: true }
+      note: { kind: string }
+
+  uses-code:
+    label: コードを使う
+    from: [data-item]
+    to:   [code-master]
+
+  raises:
+    label: メッセージを出す
+    from: [処理単位, business-rule, method]
+    to:   [message]
+
+  operates:
+    label: 利用する
+    # 権限マトリクス（ロール × 機能）の実体。**この関係は「権限マトリクスがこの組に
+    # ついて何か言っている」を表す** ―― 可否そのものは permission が言う。
+    #
+    # permission は **required にしない**。現場の権限マトリクスは ○ / × / △ しか
+    # 書いていないことのほうが多く、そこから 参照/登録/更新/削除/実行 を選ぶのは
+    # 整理層の推測になる（「資料に無いものを推測で埋めない」と正面から衝突する）。
+    # 空のまま入れれば権限マトリクスの升は ○ になる ―― **資料が言っているのは
+    # そこまで**なので、それが正しい出力である。
+    #
+    # **不可 と 条件付き を足した（→ 決定 71）。** 足す前は × を「関係を張らない」で
+    # 写すしかなく、升の空欄が「不可」と「そもそも記載が無い」の 2 つを同じ見た目に
+    # していた ―― CLAUDE.md の「『資料に無い』と『機械が読めていない』を混ぜない」を
+    # 正本の設計レベルで破っていた。実測（r001 の権限マトリクス）では原典の
+    # ×（不可）9 行ぶんと △（部長職のみ可）1 件が、正本にも生成物にも残らなかった。
+    #
+    # negative は「その値が否定である」ことの宣言で、升の凡例がこれを読む
+    # （→ publish._legend）。**関係が無いことと、不可と書いてあることは別**である。
+    from: [actor]
+    to:   [処理単位]
+    attributes:
+      permission: { kind: enum,
+                    values: [参照, 登録, 更新, 削除, 実行, 不可, 条件付き],
+                    multi: true, negative: [不可] }
+      # △ の条件（「部長職のみ可」）。permission: 条件付き と対で使う ――
+      # 条件を書けないと 条件付き が ○ と区別できず、足した意味が消える。
+      condition: { kind: string }
+
+  triggers:
+    label: 起動する
+    from: [screen, batch, external-interface]
+    to:   [batch]
+
+  calls:
+    label: 呼び出す
+    # 詳細設計書の「呼出関係」。これが無いと、モジュール間の呼び出しを表す手段が
+    # 業務ルール（processing）しか無く、**実装の構造が業務ルールに化ける。**
+    from: [module, method, batch-step]
+    to:   [module, method]
+
+  transitions:
+    label: 遷移する
+    # 画面遷移図の 1 本。description に文章で書くと設計書のどの列にも出ない。
+    from: [screen]
+    to:   [screen, report]
+    attributes:
+      event:     { kind: string }       # 遷移の契機（押下したボタン等）
+      condition: { kind: string }       # 遷移条件
+
+  interfaces:
+    label: 連携する
+    # **電文の桁割りは順序が仕様である。** 並び順を保証せずに項目を並べると、
+    # 読み手は表の並びをレイアウトとして読む ―― 実測（r001）で `売上仕訳連携`
+    # の 7 項目は No.1・2・4・7・6・3・5 の順に出た（正本が順序を持たないので、
+    # 内部 ID 順に落ちた）。順序が無いことは `W021` が 1 本ずつ言う ――
+    # **無いまま黙って並べるより、無いと言って並べるほうが読める。**
+    ordered: true
+    from: [external-interface]
+    to:   [entity, data-item, module]
+    # **順序だけあって桁が無かった**（3.14.0）。上のコメントは「桁割りは順序が
+    # 仕様である」と言いながら、桁そのものを書く欄を 1 つも持っていない ――
+    # 実測（sales-corpus r001）で `interfaces` 20 本の属性は 0 件で、レイアウト
+    # シートの 開始位置 / 桁数 / 必須 / 編集 は正本に 1 つも入らなかった。
+    # 順序（No）だけでは電文は組めない。
+    #
+    # 置き方は `has-column` に揃える（相手のデータ項目ではなく**この電文での**
+    # 桁だからである ―― 同じ `得意先コード` が IF ごとに違う桁で載る）。
+    # **`required` にはしない** ―― 固定長でない IF（JSON・CSV）は開始位置も
+    # 桁数も書かない。
+    attributes:
+      physical_name: { kind: string }     # 電文中の項目名・タグ名
+      position:      { kind: string }     # 開始位置（固定長のとき）
+      length:        { kind: string }     # 桁数
+      not_null:      { kind: bool }
+      note:          { kind: string }     # 編集規則（前ゼロ埋め・符号の付け方）
+
+  constrains:
+    label: 制約する
+    # `message` と `external-interface` は**後から足した**。無かったころ、
+    # メッセージ定義書の「表示方法」（エラーは赤・処理を中断する）はメッセージを
+    # 縛るのに相手が無く、制約が関係 0 本のまま入って `W031` になった ――
+    # 要件定義書の「文字コードは連携ファイルを含め UTF-8」も同じで、実測
+    # （sales-corpus・r001）の `W031` 30 件のうち 9 件は整理の取りこぼしではなく
+    # **語彙の穴**だった。受け皿が無い指摘は、整理層からは直しようが無い。
+    #
+    # **`project-overview` と `cost-item` を足した**（3.16.0）。3.15.0 で企画の
+    # 種別を足した結果、**縛る先だけが空いていた** ―― 稟議書 2.スコープ の
+    # 9 行を `project-overview`（`overview_kind: 適用範囲 / 適用範囲外`）へ写すと、
+    # 投資額の総額（`constraint`）からその範囲を縛れない。実測（r001）で
+    # `c-cst-初年度の投資額` が `constrains` 0 本のまま `G020` になった ――
+    # **総額はスコープを縛るために書かれている**（この範囲までで 3,850 万円、
+    # という形でしか稟議は通らない）のに、正本ではただの数字として並ぶ。
+    #
+    # 費用項目も同じ側にいる ―― 「外部 API 利用料 680 万円」は
+    # 「極秘は外部 API へ出さない」（機密区分の業務ルール）に縛られており、
+    # 縛られた結果が費目の額である。**`accesses` が `entity` 止まりなのと同じ
+    # 粒度の判断**で、相手は費目 1 行（`cost-item`）であって金額そのものではない。
+    #
+    # **`business-goal` は入れていない。** 目標を縛るものは制約ではなく
+    # 「達成できるか」の話で、経路は `threatens`（リスク → 目標）にある ――
+    # 実測 8 冊で、制約が目標そのものを名指ししている行は 1 つも無かった。
+    from: [business-rule, constraint]
+    to:   [データ要素, screen, report, batch, requirement, module,
+           message, external-interface, project-overview, cost-item]
+
+  # --- 管理 -----------------------------------------------------------------
+  disputes:
+    label: 争点
+    # `business-goal` を入れてある ―― 効果目標の数字（「6 割減」の 6 が妥当か）は
+    # 実際に揉める。受け皿が無いと、争点が「その目標を実現する業務要件」へ
+    # ずらして張られ、課題管理表が読めなくなる。
+    #
+    # `データ要素`（entity / data-item / code-master）も同じ理由で入れてある ――
+    # **争点そのものがデータ項目であることは普通にある。** 実測（sales-corpus）で
+    # 「消費税の計算単位」の証拠は受注ヘッダと請求ヘッダの「消費税額」という 2 つの
+    # データ項目、「コード定義書に定義の無い区分が 6 種ある」の争点はコード値
+    # だったが、どちらも張れず業務ルール・制約へ迂回した ―― **課題管理表から
+    # 証拠のデータ項目へ辿れない**状態になっていた。
+    #
+    # **`actor` を足した**（3.16.0）。実測（r001）で整理層は体制図の争点を
+    # 摘出している ―― 凡例は「実線 = 指揮命令 / 破線 = 委託」の 2 分類だが、
+    # 実線 7 本のうち 点検依頼（情報セキュリティ部）・提供（利用部門）・
+    # 月次締め（経理部）の 3 本はどちらでもなく、相手はいずれも本部の外の部署で
+    # ある。**争点そのものが組織どうしの線**なので張れる種別が無く、
+    # `contradictions` に載せられず、載らないので課題管理表にも出なかった ――
+    # **摘出できたのに出せない**は、摘出できていないのと成果物では区別が付かない
+    # （`データ要素` を足したときと同じ形）。線の 3 本は正本では
+    # `actor.description`（`利用部門へ基盤を提供する`）にしか残っていない。
+    #
+    # **争点は「線」だが、指すのは組織である。** `reports-to` / `outsources-to`
+    # の**関係そのもの**を指せるほうが正確に見えるが、arp4 の関係は関係を
+    # 相手に取れない（`from` / `to` はアイテムである）―― どちらの組織を指しても
+    # 課題管理表からその組織の行へ飛べ、印は `_dispute_marks` が要件定義書
+    # 「利用者・ロール」の行に出す（→ `requirement-spec.yml`）。
+    #
+    # **`project-overview` / `cost-item` も足した。** `cost-item` を作ったときの
+    # コメントは「投資額は実際に揉めるが、`disputes` と `establishes` は同じ集合
+    # でなければならないので片方だけ広げられない ―― 実例が出てから 2 本まとめて
+    # 足す」と書いてある。スコープと投資額の実例が出たので、**宣言どおり 2 本
+    # まとめて広げた**（→ `establishes`。`test_決定は何を定めたかを指せる`）。
+    from: [open-issue]
+    to:   [requirement, business-rule, constraint, 処理単位, module, business-goal,
+           データ要素, actor, project-overview, cost-item]
+    cardinality: { from: "1..*" }       # 片側しか指さない課題は両論併記になっていない
+
+  resolves:
+    label: 解決する
+    from: [decision]
+    to:   [open-issue]
+
+  establishes:
+    label: 定める
+    # **決定は「何を定めたのか」まで書けないと、決めたとしか言っていない。**
+    # 議事録から起こす決定の大半は登録済みの課題に紐づかない（`resolves` の相手が
+    # 無い）ので、受け皿がこれだけだと決定が関係 0 本の孤児として並び、あとから
+    # 来た人は何が変わったのかを本文から推測するしかない。
+    #
+    # 相手は `disputes`（課題 → 争点）と同じ集合にしてある ―― **争点になれるものと
+    # 決定が確定させられるものが違うと、課題 → 決定 の流れが途中で相手を変える。**
+    #
+    # **`project-overview` / `cost-item` / `actor` を足した**（3.16.0）。実測
+    # （r001）で稟議書 2.スコープ の欄外から
+    # `PoC でデモした回答文の生成をスコープに含めるかの扱い` という決定事項が
+    # 起きているのに、**それが定めた範囲（`c-ovw-回答文の生成`、
+    # `overview_kind: 適用範囲外`）を指せず**、決定が関係 0 本で宙に浮いた ――
+    # 課題管理表の「決定が定めたもの」に出ないので、あとから来た人は
+    # 「デモしたのに入っていない」理由を本文から推測することになる。
+    # 投資額（`cost-item`）も同じで、稟議の決定はまず費目を確定させる。
+    #
+    # **`actor` は `disputes` に足したぶんの対である**（この 2 本は同じ集合）。
+    # 対にする規律のほうを優先したが、単体でも成り立つ ―― 体制の決定
+    # （「月次締めは内製で行う」「点検は情報セキュリティ部が担う」）は議事録に
+    # 普通に出て、定めた相手は組織である。
+    from: [decision]
+    to:   [requirement, business-rule, constraint, 処理単位, module, business-goal,
+           データ要素, actor, project-overview, cost-item]

@@ -1,0 +1,126 @@
+name: detail-design
+title: 詳細設計書
+output: 詳細設計書
+phase: 詳細設計          # out/ のフォルダはこれで決まる
+sections:
+  # 元資料のモジュール一覧は「サブシステム／区分」の 2 段（`docs_detail` s85）。
+  # 節は `tier` で割る（→ 決定 18）ので主軸は列にする ―― 実測で 18 件のモジュール
+  # 全部が「サブシステム: 共通基盤」を `description` に散文で抱えていた。
+  - heading: モジュール一覧
+    type: module
+    group_by: tier
+    columns: [module_id, subsystem, name, class_name, package, constants,
+              statement, description, source]
+
+  - heading: メソッド定義
+    kind: relation
+    relation: has-method
+    group_by: from
+    labels: { "to.description": メソッドの補足, description: この行の補足 }
+    columns: [order, "to.method_id", "to.name", "to.signature",
+              "to.returns", "to.raises", "to.decorators", "to.statement",
+              "to.description", description]
+
+  # ステップ 1 本 = has-step 関係 1 本。コミット間隔と多重度は再実行の単位を
+  # 決めるので、運用へ渡す前にここで確定していなければならない。
+  - heading: バッチ構成
+    kind: relation
+    relation: has-step
+    group_by: from
+    labels: { "to.description": ステップの補足, description: この行の補足 }
+    columns: [order, "to.step_id", "to.name", "to.step_kind",
+              "to.statement", "to.commit_interval", "to.concurrency",
+              "to.description", description]
+
+  # 処理ステップ 1 本 = has-process-step 関係 1 本。オンライン処理の処理フロー
+  # （処理仕様書の「3.処理フロー」）はここにしか出ない。**バッチ構成と分けてある**
+  # ―― has-step は batch → batch-step で、コミット間隔・多重度という再実行の
+  # 語彙を持つ。オンラインにその欄は無く、代わりに分岐がある。
+  #
+  # 受け皿が無かったあいだ、実測（sales-corpus r001・処理仕様書 4 冊）で 4 ロットが
+  # 独立に散文（statement / description）へ逃がしており、**構造としては 1 本も
+  # 残らなかった**。詳細設計書のステップ表はバッチ 6 件だけで出ていた。
+  - heading: 処理フロー
+    kind: relation
+    relation: has-process-step
+    group_by: from
+    labels: { "to.description": ステップの補足, description: この行の補足 }
+    columns: [order, "to.step_id", "to.name", "to.step_kind", "to.statement",
+              "to.description", description]
+
+  # 矢印 1 本 = proceeds-to 関係 1 本。**分岐条件は関係側に持つ** ―― ステップに
+  # 書くと「どちらの枝の条件か」が消える（要件定義書の「業務フローの流れ」と
+  # 同じ規律）。**分岐元では節に割らない**。両端が同じ種別で見出しがぶつかるので
+  # labels で名指しし、名前の 2 列を隣に置く。
+  - heading: 処理フローの分岐
+    kind: relation
+    relation: proceeds-to
+    labels: { "from.step_id": 分岐元, "from.name": 分岐元の名称,
+              "to.step_id": 分岐先, "to.name": 分岐先の名称 }
+    columns: ["from.step_id", "from.name", "to.step_id", "to.name", condition,
+              description]
+
+  # 呼出関係 1 本 = calls 関係 1 本。表に出さないと「業務ルールに化けた呼び出し」を
+  # 誰も見つけられない。
+  #
+  # **呼ぶ側で節に割らない。** 割ると節が呼ぶ側の数だけ増え（実測 16 節）、目次が
+  # 58 行になって「この設計書に何があるか」が読めなくなる。呼ぶ側は列で出せば
+  # 足り、しかも 1 つの表なら**呼ばれる側で並べて見比べられる**。
+  #
+  # **両端が同じ種別なので見出しがぶつかる**（`名称` が 2 本並び、しかもどちらが
+  # 呼ぶ側か列見出しからは分からない）。`labels` で名指しし、名前の 2 列を隣に
+  # 置く ―― こうすると**それより右は全部「呼ばれる側」のもの**と読めるので、
+  # 属性ごとに「呼ばれる側の〜」を付けて表を横に伸ばさずに済む。
+  #
+  # 呼ばれる側は**指すだけにする（`to`）** ―― `calls` も N 対 1 で、写すと同じ
+  # 仕様文が呼ぶ側の数だけ並ぶ（`arp4.finding` の 1 文が 20 行）。呼ばれる側の
+  # 仕様はこの設計書の「モジュール一覧」にあり、表示 ID でそこへ飛べる。
+  # **`description` を出す。** 資料（モジュール一覧のクラス構成）は呼出 1 本ごとに
+  # 「呼び出す目的」を書いているが、関係に本文を書く場所が無かったので 11 本が
+  # 丸ごと落ちていた ―― しかも `BillingCloseBatch → TaxCalculator：請求単位の
+  # 消費税額を計算する` は課題 ISS-016（消費税の計算単位）の証拠そのものである。
+  - heading: 呼出関係
+    kind: relation
+    relation: calls
+    labels: { "from.name": 呼ぶ側, "to": 呼ばれる側, description: 呼び出す目的 }
+    columns: ["from.name", "to", "to.class_name", "description"]
+
+  # 業務判断ではなく実装の規律にあたるルール（検証・処理・既定値・異常系）。
+  # 業務判断のルール（business / calculation）は基本設計書が出す ―― 二重掲載を
+  # 避ける規律は向こうのコメントに書いてある（→ basic-design.yml「業務ルール」）。
+  #
+  # **ここが残り全部を引き受ける。** 白列挙どうしで振り分けると、`rule_kind` は
+  # `extensible: true` で未設定も取りうるので、**どちらの節にも入らないルールが
+  # 束のどこにも出ない** ―― 実測（最小例）で `rule_kind` 未設定の 1 件が
+  # そうなりかけた。振り分けの最後の節は残りを取る（`constraint` と同じ形）。
+  #
+  # 列は基本設計書の「業務ルール」と揃える。**振り分けたほうの列が狭いと、
+  # そちらへ回ったルールの欄だけが束から消える** ―― 実測で `subsystem` 54 件・
+  # `category` 55 件がここへ来て、どちらの設計書にも出なくなった（`P111`）。
+  - heading: 実装ルール
+    type: business-rule
+    where: { rule_kind: { not: [business, calculation] } }
+    columns: [rule_id, subsystem, name, category, condition, action,
+              statement, rationale, owner, description, source]
+
+  # **メッセージの定義そのものは基本設計書にある**（`message` の `layer` は
+  # 基本設計）。ここへ全件を並べると 34 行がまるごと二重掲載になり、**同じ表が
+  # 2 つの工程で別々に承認される** ―― 工程をレビューの単位にした意味が消える。
+  #
+  # 詳細設計に要るのは定義ではなく**どのメソッドがどれを出すか**で、それは
+  # `raises` 関係にしか無い（基本設計書の一覧からは読めない）。
+  #
+  # 呼出関係と同じ理由で**出す側で節に割らない**（9 節に増える）。
+  #
+  # ここも両端の `名称` がぶつかる。名指しするのは名前の 2 列だけでよい。
+  #
+  # **定義の欄（重要度・表示文・対処）は写さない。** 上のとおり定義は基本設計書に
+  # あり、写すと結局そこが二重掲載になる ―― 実測（r001）で 34 件の定義が 55 行に
+  # 展開され（`E-0007` だけで 17 回）、`P106`（基本設計書 / 詳細設計書）と `P104`
+  # （同じ本文の繰り返し）が両方鳴っていた。**表示 ID で参照するだけにする**
+  # （`P106` の hint が言っているのはこれである）。
+  - heading: メソッドが出すメッセージ
+    kind: relation
+    relation: raises
+    labels: { "from.name": 出すメソッド, "to.name": メッセージ名 }
+    columns: ["from.name", "to.message_id", "to.name", description]

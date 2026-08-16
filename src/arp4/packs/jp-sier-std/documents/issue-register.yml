@@ -1,0 +1,91 @@
+name: issue-register
+title: 課題管理表
+output: 課題管理表
+phase: 管理          # out/ のフォルダはこれで決まる
+sections:
+  # 資料どうしの食い違いは片方を黙って採らない。両論を残したまま台帳化する。
+  #
+  # `status` の列は**出さない**。あれは arp4 の査読状態（review / approved）で
+  # あって課題の状態ではない ―― 実測 r001 で 22 件全部が「レビュー中」と出て、
+  # 資料が「完了」と言っている課題（WMS の API 仕様）を読者が追いかけ続ける
+  # 表になっていた。
+  #
+  # **課題の状態は `state` が受ける**（3.14.0）。以前は「整理層が description の
+  # 散文へ写す」と決めていたが、散文では並べ替えも絞り込みもできず、**同じブックの
+  # 「集計」シート（状態を数えただけの表）に当たるものが作れない。** 起票日・工程・
+  # 区分も同じ理由で属性にした（→ metamodel.yml の open-issue）。
+  #
+  # 見出しは資料の列名に合わせる ―― `category` の既定は「大分類」だが、日本の
+  # 課題管理表はこの列を「区分」と書く。
+  #
+  # **回答と確認日は `positions` の左に置く**（3.15.0）。点検表・課題管理表の
+  # 1 件は「指摘 / 回答 / 確認 / 状態」の 4 行で組まれていて、指摘は `statement`・
+  # 回答は `answer`・確認は `confirmed_on`・状態は `state` に対応する ―― 資料の
+  # 並びをそのまま列の並びにすると、1 行を左から読んで台帳として追える。
+  #
+  # 受け皿が無かったあいだ、回答と確認は `positions`（両論）へ入っていた。
+  # あれは**食い違いを載せる欄**（`contradict --to-issues` が両論併記に使う）で、
+  # 指摘と回答は食い違いではない ―― 実測（r001）で**食い違いでないもの 2 件が
+  # 「決着していない矛盾」として課題管理表に並んだ。**
+  #
+  # **確認は 2 列で 1 つである**（3.16.0）。3.15.0 は `confirmed_on`（確認日）
+  # までしか足しておらず、確認の中身は実測（r001）で 5 件とも `description` へ
+  # 流れて `G030` が鳴っていた ―― `実機で極秘テナントに外部モデルを指定し、
+  # 弾かれることを確認した` のように、**何を見て確かめたかがそこにしか無い。**
+  # 日付だけの列は「誰かが何かを確かめた」以上のことを言わない。資料の並び
+  # （指摘 → 回答 → 確認）どおり `answer` の右、`confirmed_on` の左に置く。
+  - heading: 課題一覧
+    type: open-issue
+    columns: [issue_id, raised_on, raised_phase, category, name, statement,
+              answer, verification, confirmed_on, positions, description,
+              assignee, due, state]
+    labels: { category: 区分, raised_phase: 工程 }
+
+  # **`state` をここにも出す。** 資料が「完了」と言っているのに `resolves` が
+  # 1 本も無い課題は、閉じ忘れか、決定が正本に入っていないかのどちらかである
+  # ―― 状態を出さないと、その 2 つがこの表では見分けられない。
+  - heading: 未解決の課題
+    kind: trace
+    type: open-issue
+    relation: resolves
+    gap: true
+    columns: [issue_id, name, statement, state, due, assignee]
+
+  # **指摘は「どの点検で出たか」まで書けて 1 件である**（3.16.0）。点検・監査の
+  # 課題は台帳へ人が起票したものではなく、実施結果から出たものである ―― 出どころ
+  # が読めないと、読み手は「いつの点検の指摘か」を資料まで戻って探すことになる
+  # （実測 r001 では `test-run.defect` の `指摘1` という文字列が唯一の手掛かりで、
+  # 正本の上では繋がっていなかった）。
+  #
+  # **相手は指すだけにする（`from`）。** 実施結果の仕様文はテスト結果報告書
+  # 「実施結果」が持っており、両方に全文を置くと `P106` が鳴る ―― この章の値は
+  # **対応そのもの**である（テスト仕様書「検証対象の対応」と同じ規律）。
+  # 結果と実施日だけは列に出す ―― 不適合か条件付き適合か、いつの点検かは、
+  # 指摘の重さを読むのにこの表で要る。
+  - heading: 指摘の出どころ
+    kind: relation
+    relation: finds
+    labels: { from: 出どころの実施結果, to: 指摘, description: 補足 }
+    columns: [from, "from.result", "from.executed_on", to, description]
+
+  - heading: 決定事項
+    type: decision
+    columns: [decision_id, subsystem, name, statement, decided_on, decided_by,
+              alternatives, rationale, description, source]
+
+  # **「決めた」だけでは、何が変わったのかが辿れない。** 議事録から起こす決定の
+  # 大半は登録済みの課題に紐づかないので、`resolves` の gap 章（上の「未解決の
+  # 課題」）には出てこない ―― 定めた相手はこの章にしか出ない。
+  #
+  # **出す側で節に割らない**（1 決定 1 節が並ぶだけになる）。
+  #
+  # **相手にプロジェクト概要・費用項目・利用者ロールが増えた**（3.16.0）。
+  # 章は増やさない ―― 種別で絞らず全件を出す章なので、「PoC でデモした回答文の
+  # 生成をスコープに含めるかの扱い」→「回答文の生成（適用範囲外）」はここに
+  # 並ぶ。決定が何を定めたかは、この 1 表で工程をまたいで読める。
+  - heading: 決定が定めたもの
+    kind: relation
+    relation: establishes
+    labels: { "from.name": 決定の名称, to: 定めた対象 }
+    columns: ["from.decision_id", "from.name", to, "from.decided_on",
+              description]

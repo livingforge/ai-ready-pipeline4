@@ -1,0 +1,33 @@
+name: permission-matrix
+title: 権限マトリクス
+output: 権限マトリクス
+phase: 基本設計          # out/ のフォルダはこれで決まる
+sections:
+  - heading: 権限マトリクス（ロール × 機能）
+    kind: matrix
+    relation: operates
+    row_header: ロール
+    rows: [actor]
+    cols: [screen, report, batch, external-interface]
+    cell: permission
+
+  # **升目には権限の値も条件も出ない。** 升は「関係がある」しか言えないので、
+  # `permission: 条件付き` の条件（△ の「部長職のみ可」）は正本にあっても
+  # どこにも印字されなかった ―― 実測（r001）で 56 本の `operates` が
+  # 権限も条件も `description` へ流し、原典の ○/△/× は 1 つも残らなかった。
+  # **升の裏づけを表で出す**（升は俯瞰、表は値）。
+  - heading: 権限の内訳
+    kind: relation
+    relation: operates
+    group_by: from
+    labels: { to: 対象 }
+    columns: [to, permission, condition, description]
+
+  # **ロールの名簿はここに置かない。** 要件定義書「利用者・ロール」と同じ列で
+  # 全文を並べていたので、`P106`（同じアイテムが両方の設計書に全文）が実測
+  # （kotonoha r001）で 12 件すべてに鳴った。片方を直すともう片方が古くなる。
+  #
+  # **出典列を足して `P107` を消す道は取れない** ―― 足すと共有する列が増えて
+  # `P106` が残る。この 2 つは同じ節に対して逆を要求するので、重複そのものを
+  # やめるほうを採った。升の行見出しがロール名を運び、名前より先の情報
+  # （何をする人か・所管）は要件定義書が持つ。

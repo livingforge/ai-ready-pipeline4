@@ -1,0 +1,38 @@
+# 表面（スキル）の宣言。
+#
+# スキルや docs を足すときは**このファイルに 1 行足す**。build/build.py には触れない
+# （スキルごとに専用ビルド関数を作ると、「足したのに出てこない」の原因が build 側に散る）。
+version: 1
+
+skills:
+  - name: arp4
+    # SKILL.md は工程の地図だけを持ち、詳細は必要になったときに読ませる。
+    # 先に全部読み込ませると、1 回の作業で使わないページに予算を払うことになる。
+    docs:
+      - parse
+      - organize          # ★ 整理層の本体（レコードの契約）。エージェントの持ち場
+      - sheets            # 日本の Excel 設計書の形ごとの読み方
+      - code              # コード資産の通し（draft・文章化・auto）
+      - reconcile         # 整理②（同一性・分類・命名・矛盾）
+      - split             # 分担の配りもの（Excel を複数人で整理するときだけ）
+      - freeze
+      - build
+      - derived           # AI の解釈層（資産の種類に依らない。stakeholder 向けの元）
+      - publish
+      - troubleshooting
+
+# プラットフォーム差はここに閉じる。
+platforms:
+  claude:
+    root: .claude
+    skill_file: SKILL.md
+  github:
+    root: .github
+    skill_file: SKILL.md
+
+# 展開先に Python を置かない。実行環境は pip install で用意する
+# （arp4 は console script `arp4` を持つ）。
+runtime:
+  package: ai-ready-pipeline4
+  command: arp4
+  extras: [parse]

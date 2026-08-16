@@ -1,0 +1,98 @@
+# 語彙の追加提案（`_metamodel-add.yml`）の形。**ここが正である。**
+#
+# `_concepts.yml` には schema があるのに、**この隣のファイルだけが素通り**だった
+# ―― `organized.load` は中身を丸ごと辞書として受け取るだけで、`freeze` が読むのは
+# `add_item_types` の 1 節しかない。つまり `add_attributes:` / `add_relations:` /
+# `add_relation_pairs:` と書いたものは **error も warn も出ないまま読み飛ばされる。**
+#
+# 実測（sales-corpus・11 ロットの分担）で、**3 つのロットが独立にこれを踏んだ**。
+# 「既存種別に属性を足したい」「関係の組み合わせを足したい」は語彙の穴として
+# 最も普通の形なのに、書ける場所が無いことがどこにも書いていない ―― 1 人は
+# `add_item_types` に「課題（既存 open-issue への属性追加。新種別ではない）」という
+# **嘘の種別名**で載せて `G007` に出させた（そうしないと機械が数えないため）。
+#
+# **受けられない欄はコメントではなく機械が数える場所へ**、とこの道具は繰り返し
+# 言っている。その道具自身が、**機械が数えない書き方を黙って通していた。**
+#
+# いま受けられるのは `add_item_types` だけである。それ以外の提案は
+# `notes`（自由記述の申し送り）に書く ―― 機械は解釈しないが、**読み飛ばした
+# ことを黙らない**（`G007` の隣に件数が出る）。
+
+version: 1
+
+root:
+  label: 語彙の追加提案
+  subject: ""
+  shape:
+    code: G000
+    message: _metamodel-add.yml は add_item_types / notes を持つ連想配列でなければなりません
+  keys:
+    add_item_types:
+      sequence: item_type
+      code: G000
+      message: add_item_types は配列でなければなりません
+    notes:
+      sequence: note
+      code: G000
+      message: notes は配列でなければなりません
+  # **見慣れない欄は言う。** ここを黙って読み飛ばしていたのが上記の事故である。
+  unknown:
+    code: G000
+    level: warn
+    message: "受けられない欄です: {keys}（機械が読むのは add_item_types だけです ―― 属性や関係の追加提案は notes に書いてください。いまのままでは黙って読み飛ばされます）"
+
+shapes:
+  # ── 種別の追加提案 ───────────────────────────────────────────
+  item_type:
+    label: 種別の追加提案
+    subject: name
+    shape:
+      code: G000
+      message: "add_item_types の書式が不正です: {value}"
+    required:
+      - keys: [name]
+        code: G006
+        message: "add_item_types には name が要ります: {value}"
+      # **`reason` は必須にしない。** 承認する人が見るのは「なぜ既存種別に
+      # 寄せられないか」なので書くべきだが、必須にすると**いま凍結できている
+      # ラウンドが凍結できなくなる** ―― 段の重みを後から上げない
+      # （`_concepts.yml` の `reason` と同じ扱い）。保留（`status: deferred`）に
+      # 理由が要るのは freeze（`G007`）の側の規律で、そちらは既にある。
+    keys:
+      name: {}
+      reason: {}
+      status: {}            # deferred（保留）の扱いは freeze（G007）が見る
+      deferred_reason: {}
+      # 以下は**提案に添える案**である。機械は解釈しない（承認する人が
+      # `.arp/spec/metamodel.yml` へ手で移す）が、書けないと提案が
+      # 「名前と理由だけ」になり、何を足したいのかが伝わらない。
+      layer: {}             # どの工程の語彙か（企画 / 要件定義 / 基本設計 …）
+      label: {}
+      attributes: {}
+      relations: {}         # その種別が要る関係の案
+      example: {}
+      source: {}
+    unknown:
+      code: G000
+      level: warn
+      message: "add_item_types の見慣れない欄です: {keys}（build は黙って読み飛ばします）"
+
+  # ── 種別以外の申し送り ───────────────────────────────────────
+  note:
+    label: 語彙の穴の申し送り
+    subject: about
+    shape:
+      code: G000
+      message: "notes の書式が不正です: {value}"
+    required:
+      - keys: [about]
+        code: G006
+        message: "notes には about（何の穴か）が要ります: {value}"
+    keys:
+      about: {}
+      reason: {}
+      source: {}            # 実際に落とした列のアンカー
+    unknown:
+      code: G000
+      level: warn
+      message: "notes の見慣れない欄です: {keys}"

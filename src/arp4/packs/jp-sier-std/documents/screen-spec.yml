@@ -1,0 +1,33 @@
+name: screen-spec
+title: 画面帳票項目定義書
+output: 画面帳票項目定義書
+phase: 基本設計          # out/ のフォルダはこれで決まる
+sections:
+  # `statement` は基本設計書の一覧と同じ理由で出す（→ basic-design.yml）。
+  # `source` を出す。基本設計書の「画面一覧」「帳票一覧」が出典を出しているのに
+  # こちらが出さず、`P107` が screen / report の 2 種別で鳴っていた。
+  - heading: 画面一覧
+    type: screen
+    columns: [screen_id, name, screen_type, route, statement, description,
+              source]
+
+  - heading: 帳票一覧
+    type: report
+    columns: [report_id, name, media, paper, timing, statement, description,
+              source]
+
+  # 項目 1 行 = displays 関係 1 本。入出力区分・必須・部品は画面固有なので
+  # データ項目側ではなく関係側に載る。
+  #
+  # 物理名・既定値も関係側である（3.14.0）―― 同じデータ項目が画面ごとに違う
+  # 名前と初期値で出る（`出荷予定日` は `shipDate`／初期値 翌営業日）。テーブル
+  # 定義書の `has-column.physical_name` と同じ置き方で、**列にすると備考から
+  # 3 つぶんの散文が抜ける。**
+  - heading: 画面帳票項目
+    kind: relation
+    relation: displays
+    group_by: from
+    labels: { "to.description": データ項目の補足, description: この項目の補足 }
+    columns: [order, "to.name", physical_name, io, required_flag, control,
+              "to.data_type", "to.length", "to.format", default_value,
+              "to.description", note, description]

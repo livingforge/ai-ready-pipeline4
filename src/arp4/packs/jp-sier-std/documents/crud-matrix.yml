@@ -1,0 +1,22 @@
+name: crud-matrix
+title: CRUD図
+output: CRUD図
+phase: 基本設計          # out/ のフォルダはこれで決まる
+sections:
+  - heading: CRUD 図（機能 × テーブル）
+    kind: matrix
+    relation: accesses
+    row_header: 機能
+    rows: [screen, report, batch, external-interface, module]
+    cols: [entity]
+    cell: crud
+
+  # **升目には参照の目的が出ない。** `accesses` の `note`（「参照の目的」）は
+  # 実測（r001）で 24 本中 20 本が埋まっていたのに、CRUD 図は升しか出さないので
+  # 1 文字も印字されなかった ―― 升は俯瞰、表は値である（権限マトリクスと同じ）。
+  - heading: 参照・更新の内訳
+    kind: relation
+    relation: accesses
+    group_by: from
+    labels: { to: テーブル }
+    columns: [to, crud, note, description]

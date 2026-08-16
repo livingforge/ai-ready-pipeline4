@@ -1,0 +1,122 @@
+name: project-charter
+title: プロジェクト計画書
+output: プロジェクト計画書
+phase: 企画            # out/ のフォルダはこれで決まる（1_企画）
+# **この 1 冊が無かったので、計画書は取り込んでも消えていた。** 実測（r001 の
+# レビュー）で「受注受付の手入力の対象を 6 割減らす」が正本にも生成物にも残らず、
+# 制約 102 件のうち 6 組が「要件定義書とプロジェクト計画書の両方に書かれ、
+# concept 名が別々に付いた」二重登録になっていた（→ metamodel.yml の 企画 節）。
+#
+# **`require_documents` には入れない。** 資産がコードだけのプロジェクトでは
+# 中身が 0 件になるが、そのとき publish は「この文書に出せるデータが正本に
+# ありません（必要な語彙: …）」と自己申告する ―― **空で出ること自体が
+# 「計画書を取り込んでいない」の可視化**である（決定 55）。必須にすると、
+# 計画書を持たない案件が恒久的に 1 冊落とすことになる。
+sections:
+  # 区分で節に割らない。5 区分 × 各 1〜2 件だと C205（1 節 2 件未満）に当たり、
+  # 目次が「この文書に何があるか」ではなく**区分の一覧**に変わる。区分は列で出す。
+  - heading: プロジェクト概要
+    type: project-overview
+    columns: [overview_id, overview_kind, subsystem, name, statement, owner,
+              description, source]
+
+  # **`baseline` を目標値の左に置く。** 「6 割減」は分母（現状値）が並んで
+  # いて初めて測れる ―― 目標値だけの列は、読み手には標語と区別が付かない。
+  #
+  # **その目標値は `target` になった。** 資料（稟議書 4.効果）は「測り方 / 現状 /
+  # 目標」の 3 列で、受け皿が 2 つしか無かったあいだ**到達値（18 分 → 12 分 の
+  # 12 分）だけが `statement` の文中に埋まっていた** ―― 一覧には現状値しか
+  # 出ず、どこまで行けば達成なのかは本文を読まないと分からなかった。
+  # 3.11.0 が `baseline` を左に置いた理由はそのまま `target` に移るので、
+  # **`baseline` の右隣は `target`** にする（現状 → 目標が隣り合う）。
+  # `metric`（測り方）はその右。`baseline` が `metric` より左であることは
+  # 変わらない（→ `test_効果目標は現状値と対で出る`）。
+  #
+  # **`metric` の見出しをここでだけ 測り方 に直す。** 属性の既定の見出しは
+  # 目標値 で、`target` と同じ字がこの表に 2 列並ぶ ―― 事業目標では `metric` に
+  # 資料の「測り方」が入る（実測 4 件とも）ので、この表での読みを名指しする。
+  # `requirement.metric` は目標値のままでよいので全体の見出しは動かさない
+  # （`issue-register` が `category` を 区分 と名指ししているのと同じ形）。
+  - heading: 事業目標
+    type: business-goal
+    labels: { metric: 測り方 }
+    columns: [goal_id, name, category, statement, baseline, target, metric, due,
+              owner, description, source]
+
+  - heading: 現状と課題
+    type: current-issue
+    columns: [problem_id, name, category, statement, impact, description,
+              source]
+
+  # **稟議は「どの部門がいくら困っているか」で通る。** 稟議書 2.背景 は 5 行
+  # すべてが「影響を受けている部門」列を持つのに受け皿が無く、実測（r001）で
+  # 5 件とも部門名が `impact`（影響の**内容**の欄）へ入っていた ―― 上の一覧を
+  # 読むと「影響」の列に カスタマーサポート部 と書いてあり、影響の中身は
+  # どこにも無い。部門は `actor` として体制図・利用申請台帳の側にも起きている
+  # ので、名前ではなく関係で指す（→ `metamodel.yml` の `affects`）。
+  #
+  # **課題の側を先に置く。** 資料の 1 行が課題で、部門はその行の 1 列である。
+  # 両端で `名称` がぶつかるので `labels` で名指しする（3.1.0 の規律）。
+  - heading: 影響を受ける部門
+    kind: relation
+    relation: affects
+    labels: { "from.name": 現状課題, "to.name": 影響を受ける部門,
+              description: 補足 }
+    columns: ["from.problem_id", "from.name", "to.actor_id", "to.name",
+              description]
+
+  # 目標がどの課題に応えるか。**目標一覧だけでは「なぜその目標か」が消える**
+  # ―― 資料は必ず「現状 → 課題 → 目的」の順で書いてあり、その矢印がここである。
+  #
+  # 起点は目標と要件の両方が来るので、`goal_id` / `req_id` のどちらでも読める
+  # よう**属性なしの `from`（指す列）**を置く（`GOL-01 受注手入力の削減`）。
+  - heading: 課題と目標の対応
+    kind: relation
+    relation: addresses
+    labels: { from: 目標・要件, "to.name": 応える現状課題 }
+    columns: [from, "to.problem_id", "to.name", "to.impact", description]
+
+  # **`impact` の見出しをここでだけ 影響度 に直す。** 属性の既定は 影響 だが、
+  # `risk.impact` は enum（大 / 中 / 小）で、`current-issue.impact`（影響の内容。
+  # 上の「現状と課題」）とは意味が違う ―― 同じ計画書の中に 影響 という列が
+  # 2 つあって、片方は部門への波及の記述、もう片方は 3 段階の評価という状態に
+  # なっていた（`arp4 model` の出力だけでは読み手に見分けが付かない、という
+  # 申告が出た）。属性名は分けない ―― `current-issue` と `risk` は名前も並びも
+  # 近い 2 種別で、片方だけ違う名前にしたのが 3.14.0 の穴だった。
+  # `metric` を 測り方 と名指ししたのと同じ形である。
+  - heading: リスク
+    type: risk
+    labels: { impact: 影響度 }
+    columns: [risk_id, subsystem, name, statement, probability, impact,
+              mitigation, owner, due, description, source]
+
+  # リスクの相手。**相手を書けないリスクは「気を付ける」以上の意味を持てない。**
+  - heading: リスクの影響先
+    kind: relation
+    relation: threatens
+    labels: { "from.name": リスクの名称, to: 脅かす対象 }
+    columns: ["from.risk_id", "from.name", to, "from.mitigation", description]
+
+  - heading: マイルストーン
+    type: milestone
+    columns: [milestone_id, name, due, deliverable, gate, statement,
+              description, source]
+
+  # **投資内訳を表として出す章。** 稟議書 3.投資内訳 の 6 行は金額の列を持つのに
+  # 受け皿がどの種別にも無く、実測（r001）で**6 件すべてが金額を `statement` の
+  # 文中に埋めた** ―― 計画書を開いた読み手は、いくらの案件なのかを本文から
+  # 拾い集めることになる（→ `metamodel.yml` の `cost-item`）。
+  #
+  # **日程の次に置く。** 順は 目的 → 課題 → リスク → 日程 → 費用 で、稟議書の
+  # 並び（目的 → 投資内訳 → 効果）とは違うが、`fiscal_year`（年度）で割れる
+  # 表はマイルストーンの隣にあるほうが読める ―― 複数年度の案件では、どの年度に
+  # いくら乗るかを日程と突き合わせて読む。
+  #
+  # **区分では節に割らない。** 6 行 × 4 区分だと 1 節 1.5 件で、目次が
+  # 「この文書に何があるか」ではなく費目の一覧に変わる（`C205` が同じ式で拒む）。
+  # 見出しは資料の列名に合わせて 区分 にする（既定は 大分類）。
+  - heading: 費用
+    type: cost-item
+    labels: { category: 区分 }
+    columns: [cost_id, category, subsystem, name, amount, fiscal_year,
+              statement, owner, description, source]

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-ready-pipeline4"
+version = "4.0.0.dev0"
+description = "既存資産（Excel・コード）を LLM が整理し、機械が正本として管理する仕様パイプライン"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# 中核（メタモデル・正本・検証・生成）の依存は YAML 1 本に留める。
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# 資料の取り込み（arp4 parse）。Excel を読むときだけ import する。
+parse = [
+    "openpyxl>=3.1",
+]
+
+# シートの画像化（arp4 render）。Windows + Microsoft Excel が前提で、
+# 図形・罫線・塗りを見た目どおり撮れるのは Excel 自身だけなので代替は無い。
+render = [
+    "openpyxl>=3.1",
+    "pywin32>=306",
+    "pypdfium2>=4.30",
+    "Pillow>=10.0",
+]
+
+# テストだけで使う。**設計書の Markdown を人が見るのと同じ規則で読み戻す**ため
+# のもので、arp4 の実行時には要らない（生成側は文字列を組み立てるだけ）。
+# 自前で書かないのは、逃がし漏れを見つける相手が自前の実装だと、**同じ思い込みを
+# 2 度書くだけ**で何も検査できないからである。
+check = [
+    "markdown-it-py>=3.0",
+]
+
+[project.scripts]
+arp4 = "arp4.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arp4"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

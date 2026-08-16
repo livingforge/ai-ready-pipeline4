@@ -1,0 +1,71 @@
+# jp-sier-std の準拠ルール（L2）。
+#
+# メタモデル（構造）では表せない**工程の約束**をここに置く。
+# 「構造としては省略できるが、この工程を抜けるには埋まっていなければならない」
+# という条件つきの規律は required では書けないため。
+
+# この様式標準を継承したら必ず生成できるべき文書。
+require_documents:
+  - requirement-spec
+  - basic-design
+  - detail-design
+  - traceability-matrix
+
+# 文書の形そのものへの規律。**割った数が中身の数の半分を超えたら**
+# （＝ 1 節あたり 2 件未満）、それは分類ではなく見出しの水増しである。
+# 中身が少ないうちは割れて当たり前なので、6 件を超えてから見る。
+document_rules:
+  - { level: warn, min_rows_per_section: 2, when_rows_at_least: 6 }
+
+# status に応じて属性を必須化する。
+attribute_rules:
+  # **測れない目標は、達成したかを誰も判定できない。** ただし承認時のみ・warn
+  # 止まりにする ―― 現場の計画書には数値の無い目的（「顧客満足の向上」）が
+  # 普通に載っており、error にすると整理層が推測で数字を書くことになる。
+  - { type: business-goal, attribute: metric, level: warn, when_status: [approved] }
+  # 対応策の無いリスクは、承認の時点では「気を付ける」としか言っていない。
+  - { type: risk, attribute: mitigation, level: warn, when_status: [approved] }
+  # 基本設計をレビューに出す時点で、処理単位の概要が無いのは差し戻しになる。
+  - { type: screen, attribute: description, level: error, when_status: [review, approved] }
+  - { type: report, attribute: description, level: error, when_status: [review, approved] }
+  - { type: batch,  attribute: description, level: error, when_status: [review, approved] }
+  # バッチは異常時の再実行方針が無いと運用に引き継げない。
+  - { type: batch,  attribute: recovery,  level: error, when_status: [review, approved] }
+  # 外部 IF は方式と形式が決まっていなければ相手と握れない。
+  - { type: external-interface, attribute: protocol, level: error, when_status: [review, approved] }
+  - { type: external-interface, attribute: format,   level: error, when_status: [review, approved] }
+  # 非機能要件は測定条件が無ければ検収できない（IPA 非機能要求グレードのメトリクス）。
+  - { type: requirement, attribute: metric, level: error,
+      when_status: [approved], where: { kind: 非機能 } }
+  - { type: requirement, attribute: nf_category, level: warn,
+      when_status: [review, approved], where: { kind: 非機能 } }
+  # 容量設計・保持期間はテーブル承認時に決まっていること。
+  - { type: entity, attribute: volume,    level: warn, when_status: [approved] }
+  - { type: entity, attribute: retention, level: warn, when_status: [approved] }
+  # 不合格のテスト結果に不具合 ID が無いと、追跡が切れる。
+  - { type: test-run, attribute: defect, level: error,
+      when_status: [review, approved], where: { result: 不合格 } }
+  # メッセージは「利用者が次に何をすればよいか」まで書く。
+  - { type: message, attribute: action, level: warn, when_status: [approved] }
+
+# トレースの欠落を、様式標準の判断で warn から error に上げる。
+# メタモデルの warn_if_no_upstream は warn 固定であり、
+# 「承認までに必ず埋める」かどうかは様式の判断だから。
+trace_rules:
+  - { type: screen, relation: realizes, level: error, when_status: [approved] }
+  - { type: report, relation: realizes, level: error, when_status: [approved] }
+  - { type: batch,  relation: realizes, level: error, when_status: [approved] }
+  - { type: external-interface, relation: realizes, level: error, when_status: [approved] }
+  # 承認済みなのに実現する設計要素が無い要件＝設計漏れ。
+  - { type: requirement, relation: realizes, direction: to, level: error,
+      when_status: [approved], where: { kind: [機能, 非機能] } }
+  # 承認済みなのにテストが無い要件＝検証漏れ。
+  - { type: requirement, relation: verifies, direction: to, level: warn,
+      when_status: [approved], where: { kind: [機能, 非機能] } }
+  # 承認済みの課題に決定が無い＝未決着のまま締めようとしている。
+  - { type: open-issue, relation: resolves, direction: to, level: warn,
+      when_status: [approved] }
+
+# ベースライン（版として締める）前提。arp3 conform --baseline のときだけ回る。
+status_rules:
+  baseline_requires: approved

@@ -1,0 +1,37 @@
+name: table-spec
+title: テーブル定義書
+output: テーブル定義書
+phase: 基本設計          # out/ のフォルダはこれで決まる
+sections:
+  # `source` を出す。基本設計書「エンティティ一覧」が出典を出しているのに
+  # こちらが出さず、`P107`（同じ種別なのに出典列の有無が揃っていない）が鳴って
+  # いた ―― 同じテーブルなのに、開いた設計書によって出典を辿れたり辿れなかったりする。
+  - heading: テーブル一覧
+    type: entity
+    columns: [physical_name, name, entity_kind, volume, retention, statement,
+              description, source]
+
+  # 列 1 本 = has-column 関係 1 本。テーブル固有の物理名・PK・NOT NULL は
+  # 関係の属性に載っている（同じ論理項目が複数テーブルに現れるため）。
+  #
+  # `to.statement` を必ず出す。無かったあいだ、列の意味（「10=受付、20=与信保留…」
+  # 「排他制御に使う」）は data-item の statement にあるのに**どの成果物にも出ず**、
+  # 受注ステータスの値の意味が設計書一式から消えていた（実測 r001・52 列すべて）。
+  - heading: テーブル定義
+    kind: relation
+    relation: has-column
+    group_by: from
+    labels: { "to.description": データ項目の補足, description: この列の補足 }
+    columns: [order, "to.name", physical_name, "to.data_type", "to.length",
+              "to.decimals", pk, not_null, default_value, "to.statement",
+              "to.description", note, description]
+
+  # 索引 1 本 = has-index 関係 1 本。テーブル定義書に索引の節が無いと、
+  # 性能設計のレビューがこの表を離れて別ファイルに散る。
+  - heading: インデックス一覧
+    kind: relation
+    relation: has-index
+    group_by: from
+    labels: { "to.description": 索引の補足, description: この行の補足 }
+    columns: [order, "to.name", "to.columns", "to.uniqueness", "to.purpose",
+              "to.statement", "to.description", description]

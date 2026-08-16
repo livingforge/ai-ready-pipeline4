@@ -1,0 +1,150 @@
+# 整理②の出力（`_concepts.yml` ―― 同一性の台帳への提案）の形。**ここが正である。**
+#
+# レコード（`organized.yml`）には schema と lint があるのに、`_concepts.yml` だけは
+# 正本が reconcile.md の例示 1 個しか無かった ―― label は必須か・型は語彙と合わせる
+# のか・存在しない概念を書いたらどうなるか、のどれも決まっておらず、書いた内容が
+# 効いたか分かるのは build を打った後だった。ここに書けば `arp4 schema concepts` で
+# 書く側に渡り、`arp4 lint` / `arp4 freeze` が読むそばから検査する。
+#
+# 例示にしか無かった問いへの答え：
+#   - `label` は**必須ではない**（省くと concept がそのまま見出しになる）
+#   - `type` は**語彙（fact type）と合わせる**。語彙に無い type は freeze が
+#     `G002` で止める（レコードの type と同じ規律 ―― 台帳だけ別の語彙を持つと、
+#     次のラウンドで台帳を引いた整理が語彙外の type を写してしまう）
+#   - `assign` の相手が台帳に無ければ `G021`（build の `B003` を待たずに言う）
+#   - `reason` は必須ではないが、**書かないと判断の記録が残らない**（台帳は
+#     次のラウンドの判断材料である ―― 「なぜ同じと言えたか」が無い行は、
+#     次に読む人が判断をやり直すことになる）
+#
+# `new` に書くのは**他と比べないと同一と決められなかったもの**だけである。
+# 使われた concept は build が台帳へ自動登録するので、全部を書く必要は無い
+# （初回ラウンドも同じ。→ reconcile.md）。
+
+version: 1
+
+root:
+  label: 同一性の台帳への提案
+  subject: ""
+  shape:
+    code: G000
+    message: _concepts.yml は new / assign / contradictions を持つ連想配列でなければなりません
+  keys:
+    new:
+      sequence: new
+      code: G000
+      message: new は配列でなければなりません
+    assign:
+      sequence: assign
+      code: G000
+      message: assign は配列でなければなりません
+    contradictions:
+      sequence: contradiction
+      code: G000
+      message: contradictions は配列でなければなりません
+  # 見慣れない欄は**言う**。build は宣言に無い節を黙って読み飛ばすので、
+  # `asign:` のような打ち間違いは「守っているつもりで守られていない」を作る。
+  unknown:
+    code: G000
+    level: warn
+    message: "見慣れない欄です: {keys}（new / assign / contradictions のどれでもないので、build は黙って読み飛ばします）"
+
+shapes:
+  # ── 台帳への追加提案 ─────────────────────────────────────────
+  new:
+    label: 台帳への追加提案
+    subject: concept
+    shape:
+      code: G000
+      message: "new の書式が不正です: {value}"
+    required:
+      - keys: [concept]
+        code: G006
+        message: "new には concept が要ります: {value}"
+    keys:
+      concept: {}
+      type: {}          # 語彙との照合は freeze（G002）が見る
+      label: {}
+      aliases: {}
+      reason: {}
+    unknown:
+      code: G000
+      level: warn
+      message: "new の見慣れない欄です: {keys}（build は黙って読み飛ばします）"
+
+  # ── 既存 concept への別名の追加 ──────────────────────────────
+  assign:
+    label: 既存 concept への割当
+    subject: concept
+    shape:
+      code: G000
+      message: "assign の書式が不正です: {value}"
+    required:
+      - keys: [concept]
+        code: G006
+        message: "assign には concept が要ります: {value}"
+      # 別名の無い assign は何も足さない ―― 書いた人は何かを意図している
+      # はずなので、黙って no-op にしない。
+      - keys: [aliases_add]
+        code: G006
+        message: assign には aliases_add が要ります（別名を足す宣言です）
+    keys:
+      concept: {}
+      aliases_add: {}
+    unknown:
+      code: G000
+      level: warn
+      message: "assign の見慣れない欄です: {keys}（build は黙って読み飛ばします）"
+
+  # ── 矛盾の摘出 ───────────────────────────────────────────────
+  contradiction:
+    label: 矛盾
+    subject: subject
+    shape:
+      code: G000
+      message: "contradictions の書式が不正です: {value}"
+    required:
+      # subject は**争点そのもの**の concept（課題を指すと build が B015 で
+      # 止める）。positions の無い矛盾は両論が無い ―― 摘出になっていない。
+      - keys: [subject]
+        code: G006
+        message: "contradictions には subject（争点の concept）が要ります: {value}"
+      - keys: [positions]
+        code: G006
+        message: contradictions には positions（両論）が要ります
+    keys:
+      subject: {}
+      # **課題の名前は書いた人が付けられる。** 省くと `<争点の label> の記述が
+      # 資料間で食い違う` になるが、争点が複数のアイテムにまたがるとき
+      # （`subject` は 1 つしか取れない）は代表を選ぶしかなく、**名前が中身を
+      # 表さなくなる** ―― 実測で「夜間バッチの実行順序」の争点が
+      # `EDI受注取込 の記述が資料間で食い違う` として起票され、課題一覧から
+      # 何の話か読めなかった。
+      name: {}
+      positions:
+        sequence: position
+        code: G000
+        message: positions は配列でなければなりません
+    unknown:
+      code: G000
+      level: warn
+      message: "contradictions の見慣れない欄です: {keys}（build は黙って読み飛ばします）"
+
+  # ── 両論の片側 ───────────────────────────────────────────────
+  position:
+    label: 両論
+    subject: inherit
+    shape:
+      code: G000
+      message: "positions の書式が不正です: {value}"
+    required:
+      - keys: [statement]
+        code: G006
+        message: "positions には statement（その側の言い分）が要ります: {value}"
+    keys:
+      statement: {}
+      concept: {}       # 書けば disputes がその側へ個別に張られる
+      source: {}
+    unknown:
+      code: G000
+      level: warn
+      message: "positions の見慣れない欄です: {keys}（build は黙って読み飛ばします）"

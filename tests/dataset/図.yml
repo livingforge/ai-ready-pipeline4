@@ -1,0 +1,243 @@
+# 図に描いてある仕様 ―― セルに 1 文字も無いのに、そこにしか無いもの。
+#
+# 描画パート（`xl/drawings/*.xml`）は openpyxl が捨てるので、arp4 は zip を
+# 直接読んでいる。ここに書くのは**箱と線だけ**で、DrawingML の作法（位置・
+# 寸法・形・文字枠、`[Content_Types].xml` の申告、シート XML の `<drawing>`）は
+# `dataset.py` が埋める ―― 生の XML で書いていた頃は**それが 3 つとも抜けて
+# いて、Excel で開いても図が 1 つも出なかった**。arp4 は zip の関係だけを
+# 辿るのでパースは通ってしまい、実物で開いたときにだけ消える検体だった。
+
+置き場: 資料/G/業務フロー集.xlsx
+なぜ: |
+  **箱の中の改行が消えると、別々の語が 1 語に化ける。** DrawingML の改行は
+  段落（`a:p`）と行区切り（`a:br`）の 2 通りあり、後者を読み飛ばしていたぶん
+  「承認待ち」＋「3 営業日以内」が `承認待ち3 営業日以内` になっていた ――
+  整理層はそれを 1 つの状態名として読む。
+
+  ほかに、実物の業務フローに必ず混ざる線を 4 種類入れてある ―― 双方向、
+  自己ループ（差戻し）、名前の無い図形（囲み枠）へ繋がった線、どこにも
+  繋がっていない線。**取れない線は本数だけ言う**ところまでが検体である。
+シート:
+  - 名前: 受注フロー
+    セル:
+      A1: 受注業務フロー（詳細は下図）
+    描画:
+      # **入れ子の群。** 実物の業務フローはゾーンごとに group してあり、
+      # アンカー 1 個の中に箱が何個も入る（数えるのは箱のほうである）。
+      #
+      # **箱は 1 辺に 1 本しか受けられない。** 3 つを横一列に並べていたときは、
+      # 承認待ちの右辺から次工程への線と自己ループの両方が出ていて、2 本が
+      # 同じ点から同じ向きへ重なって走った ―― 図としては「出荷指示から出た線」
+      # に見える。実物の業務フローが折れ曲がって描いてあるのはそのためで、
+      # ここも折る（横へ 1 つ、あとは下へ）。
+      - 群:
+          - 箱: [受注登録]
+            id: 2
+            位置: B4:D7
+          - 群:
+              # **行区切り（a:br）を持つ箱。** 段落を割らない改行である
+              - 箱: [[承認待ち, 3 営業日以内]]
+                id: 3
+                位置: F4:H7
+              - 箱: [出荷指示]
+                id: 4
+                位置: F10:H13
+          # **文字を持たない箱**（ゾーンの囲み枠）。線の相手にはなる。
+          # 横長だが**中心は上の箱と揃えてある** ―― 線は辺の真ん中どうしを
+          # 結ぶので、揃えないと斜めに落ちる（それは図の崩れであって検体ではない）
+          - 箱: []
+            id: 5
+            名前: ゾーン枠
+            形: rect
+            位置: D16:J19
+      # **繋がっている線は番地を持たない。** 端は箱の接続点にあり、箱を動かせば
+      # Excel が引き直す ―― 番地を書くのは目分量で置いた線（下の 1 本）だけで、
+      # それは**位置にしか情報が無い**からそう書ける
+      - 線: {元: 2, 先: 3, 矢: 終点}
+        id: 20
+      - 線: {元: 3, 先: 4, 矢: 両方}          # 差戻しのある工程
+        id: 21
+      - 線: {元: 3, 先: 3, 矢: 終点}          # 自己ループ（再申請）
+        id: 22
+      - 線: {元: 4, 先: 5, 矢: 終点}          # 相手が名前を持たない
+        id: 23
+      - 線: {矢: 終点}                        # 目分量で置いた線
+        id: 24
+        位置: N4:P7
+
+  - 名前: 画面遷移
+    なぜ: |
+      **矢羽根の向きだけが「次にどちらへ行くか」を持っている。** 始点側に
+      付いた矢羽根は向きを起こし直さないと、資料と逆の遷移が仕様になる。
+      ここは向きの 4 通り（終点側・始点側・両方・無し）を 1 枚に集めてある。
+    セル:
+      A1: 画面遷移図
+    描画:
+      - 箱: [メニュー]
+        id: 10
+        位置: B4:D7
+      # **段落が 2 つ**（行区切りではない）。画面名と画面 ID を 2 行で書く
+      - 箱: [受注一覧, SCR002]
+        id: 11
+        位置: F4:H7
+      - 箱: [受注入力]
+        id: 12
+        位置: J4:L7
+      # **矢羽根が始点側**にある線 ―― 素直に出すと資料と逆の遷移になる
+      - 線: {元: 11, 先: 10, 矢: 始点}
+        id: 30
+      # 矢羽根の付いていない線は**無向のまま**出す（決めつけない）
+      - 線: {元: 11, 先: 12, 矢: なし}
+        id: 31
+
+---
+
+置き場: 資料/G/実績グラフ.xlsx
+なぜ: |
+  **グラフのタイトルと参照範囲は 2 通りの書かれ方がある。** 人が打った文字は
+  `a:t` に、セルから引いたものは `c:strRef`（＋キャッシュ）に入る。後者を
+  読めていなかったぶん、**タイトルがセル参照のグラフだけ**が「（タイトル
+  なし）」になっていた ―― 実物では表題をセルから引くほうが多い。
+
+  散布図・バブルはもっと静かに落ちる。系列が指す範囲は `c:cat` / `c:val`
+  ではなく `c:xVal` / `c:yVal` に入るので、**分類も値も空欄のまま**「参照
+  範囲を取り出しました」と申告していた（申告のほうが嘘になる）。
+シート:
+  - 名前: 元データ
+    表:
+      A1:
+        - [件数, 応答時間, 区分]
+        - [100, 0.8, 通常]
+        - [200, 1.4, 通常]
+        - [400, 3.1, 繁忙]
+    セル:
+      E1: 件数と応答時間の相関
+
+  - 名前: 相関図
+    セル:
+      A1: 散布図（元データを参照）
+    描画:
+      - 図表: {種類: グラフ, 関係: rIdChart1}
+        id: 2
+        名前: Chart 1
+        位置: B3:J20
+    描画の関係:
+      - [rIdChart1, chart, ../charts/chart1.xml]
+
+  - 名前: 構成比
+    セル:
+      A1: 円グラフ（人が打ったタイトル）
+    描画:
+      - 図表: {種類: グラフ, 関係: rIdChart2}
+        id: 2
+        名前: Chart 2
+        位置: B3:J20
+    描画の関係:
+      - [rIdChart2, chart, ../charts/chart2.xml]
+パーツ:
+  xl/charts/chart1.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+                  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <c:chart>
+        <c:title><c:tx><c:strRef>
+          <c:f>'元データ'!$E$1</c:f>
+          <c:strCache><c:ptCount val="1"/>
+            <c:pt idx="0"><c:v>件数と応答時間の相関</c:v></c:pt></c:strCache>
+        </c:strRef></c:tx></c:title>
+        <c:plotArea>
+          <c:layout/>
+          <c:scatterChart>
+            <c:scatterStyle val="lineMarker"/>
+            <c:varyColors val="0"/>
+            <c:ser>
+              <c:idx val="0"/><c:order val="0"/>
+              <c:tx><c:strRef>
+                <c:f>'元データ'!$B$1</c:f>
+                <c:strCache><c:ptCount val="1"/>
+                  <c:pt idx="0"><c:v>応答時間</c:v></c:pt></c:strCache>
+              </c:strRef></c:tx>
+              <c:xVal><c:numRef><c:f>'元データ'!$A$2:$A$4</c:f></c:numRef></c:xVal>
+              <c:yVal><c:numRef><c:f>'元データ'!$B$2:$B$4</c:f></c:numRef></c:yVal>
+              <c:smooth val="0"/>
+            </c:ser>
+            <c:axId val="111111111"/>
+            <c:axId val="222222222"/>
+          </c:scatterChart>
+          <c:valAx>
+            <c:axId val="111111111"/>
+            <c:scaling><c:orientation val="minMax"/></c:scaling>
+            <c:delete val="0"/><c:axPos val="b"/>
+            <c:crossAx val="222222222"/>
+          </c:valAx>
+          <c:valAx>
+            <c:axId val="222222222"/>
+            <c:scaling><c:orientation val="minMax"/></c:scaling>
+            <c:delete val="0"/><c:axPos val="l"/>
+            <c:crossAx val="111111111"/>
+          </c:valAx>
+        </c:plotArea>
+        <c:plotVisOnly val="1"/>
+      </c:chart>
+    </c:chartSpace>
+  xl/charts/chart2.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+                  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <c:chart>
+        <c:title><c:tx><c:rich>
+          <a:bodyPr/><a:lstStyle/>
+          <a:p><a:r><a:rPr lang="ja-JP"/><a:t>区分別の構成比</a:t></a:r></a:p>
+        </c:rich></c:tx><c:overlay val="0"/></c:title>
+        <c:autoTitleDeleted val="0"/>
+        <c:plotArea>
+          <c:layout/>
+          <c:pieChart>
+            <c:varyColors val="1"/>
+            <c:ser>
+              <c:idx val="0"/><c:order val="0"/>
+              <c:cat><c:strRef><c:f>'元データ'!$C$2:$C$4</c:f></c:strRef></c:cat>
+              <c:val><c:numRef><c:f>'元データ'!$A$2:$A$4</c:f></c:numRef></c:val>
+            </c:ser>
+            <c:firstSliceAng val="0"/>
+          </c:pieChart>
+        </c:plotArea>
+        <c:plotVisOnly val="1"/>
+      </c:chart>
+    </c:chartSpace>
+
+---
+
+置き場: 資料/G/体制と役割.xlsx
+なぜ: |
+  **SmartArt が 1 枚に 2 つ載っている。** 体制図と業務の流れを並べて描くのは
+  ごく普通で、そのとき描画パートは 1 本のまま `diagramData` への関係が 2 本に
+  なる ―― 1 本しか辿っていなければ、**後から足したほうの図が丸ごと消える。**
+
+  補佐（`asst`）は箱であって見た目用の複製ではない ―― 型で切り分ける側の
+  検体である（`pres` と `parTrans` / `sibTrans` は数えない）。
+
+  **箱と一緒に並ぶ 3 種類を数えない**ところまでが検体である ―― 繋ぎの点
+  （`parTrans` / `sibTrans`）と見た目用の複製（`pres`）は同じ一覧に入っており、
+  拾うと同じ語が 2 回出て箱の数が合わなくなる。補佐（`asst`）はそれらと違って
+  **箱である**。
+シート:
+  - 名前: 体制
+    セル:
+      A1: プロジェクト体制と受注の流れ（下図）
+    描画:
+      - 図表:
+          種類: SmartArt
+          箱:
+            - [PM]
+            - {文字: [品質保証], 種別: asst}
+            - [[基盤チーム, （インフラ・共通）], 受注・請求]
+        id: 2
+        名前: Diagram 1
+        位置: B3:H14
+      - 図表:
+          種類: SmartArt
+          箱: [[受付], [与信], [出荷]]
+        id: 3
+        名前: Diagram 2
+        位置: J3:P14

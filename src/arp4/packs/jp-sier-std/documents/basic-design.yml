@@ -1,0 +1,195 @@
+name: basic-design
+title: 基本設計書
+output: 基本設計書
+phase: 基本設計          # out/ のフォルダはこれで決まる
+sections:
+  # 一覧には `statement`（何をするものか）を必ず出す。description だけだと、
+  # 仕様文は正本にあるのに一覧が名前と属性の羅列になる ―― 実測 r001 で帳票一覧は
+  # 補足も全空で畳まれ、説明文が 1 文字も無かった。エンティティ一覧は statement を
+  # 出していたので、**同じ設計書の中で節ごとに規則が違って見えていた。**
+  # **主軸（`subsystem`）は、節に割れるだけ数があるものだけ節にする。** 一覧の
+  # 左端が揃ってサブシステムなのは 6 種別だが、割ってよいかは種別ごとに違う ――
+  # 実測（sales-corpus 30 冊）で画面は 16 件あって 4 サブシステムなら 1 節 4 件だが、
+  # 帳票は 6 件・バッチは 8 件しか無く、割ると 1 節 1.5 件・2 件になる。1 節あたり
+  # 2 件を切る分類は見出しの水増しで、`conform` の `C205` が同じ式で拒む
+  # （割る前に自分の様式が C205 に当たらないかを見ること）。**割らない種別でも
+  # 主軸は捨てず列に出す** ―― 列なら並べ替えの軸として読めるし、`_trim` が
+  # 全行空のときだけ畳むので、埋まっていない段では邪魔にならない（→ 決定 75）。
+  # **システム方式**（システム構成図・ソフトウェア構成・サーバ構成・共通方式・
+  # セキュリティ方式）。`constraint` の `layer` は要件定義だが、`category: 技術`
+  # の 50 件は中身が基本設計そのもので、**要件定義書 8 章に `CST-*` として
+  # 並ぶだけだった** ―― 基本設計書を開いた読み手が構成に到達できない。
+  #
+  # 1 つの種別を `where` で 2 冊へ振り分ける形は、下の「業務ルール」と同じ
+  # 仕組みである。残り（契約・規模・運用・データ項目・メッセージ）は要件定義書
+  # 側が「残り全部」で引き受ける（→ requirement-spec.yml「制約・前提」）。
+  #
+  # 次期: `category` と出す文書の対応を表として決める ―― `データ項目` 14 件は
+  # 基本設計書（テーブル定義書の前）、`メッセージ` 4 件は詳細設計書が出す先で
+  # ある。どちらも `extensible: true` で生えた値で、いまは要件定義書に残る。
+  #
+  # **`rationale`（根拠）は振り分けた両側に出す。** 要件定義書「制約・前提」に
+  # だけ置くと、`category: 技術` でこちらへ回った制約の根拠が束のどこにも出ない
+  # ―― 実測（r001）で `subsystem` 54 件・`category` 55 件が振り分け先の列漏れで
+  # 同じ形に落ちている（→ `detail-design.yml`「実装ルール」）。**振り分けたほうの
+  # 列が狭いと、そちらへ回ったものの欄だけが消える。** キャパシティ試算の
+  # GPU 台数の根拠（`VRAM に載る範囲` / `実測`）はまさにこちら側に来る。
+  #
+  # **`quantity`（数量）も両側に出す**（3.16.0）。理由は 1 つ上の段落と同じで、
+  # キャパシティ試算の GPU 台数・保管量のように**規模の数値そのもの**が
+  # `category: 技術` でこちらへ回る ―― 要件定義書側にだけ置くと、振り分けた
+  # ほうの欄だけが消える（`rationale` で 1 度やった失敗である）。
+  - heading: システム方式
+    type: constraint
+    where: { category: [技術] }
+    columns: [constraint_id, subsystem, name, quantity, statement, rationale,
+              owner, description, source]
+
+  - heading: 画面一覧
+    type: screen
+    group_by: subsystem
+    columns: [screen_id, name, screen_type, route, statement, description, source]
+
+  - heading: 帳票一覧
+    type: report
+    columns: [report_id, subsystem, name, media, paper, timing, statement,
+              description, source]
+
+  - heading: バッチ処理一覧
+    type: batch
+    columns: [job_id, subsystem, name, schedule, trigger, start_time, recovery,
+              statement, description, source]
+
+  - heading: 外部インターフェース一覧
+    type: external-interface
+    columns: [if_id, name, direction, partner, protocol, format, timing,
+              statement, description, source]
+
+  # 電文のレイアウト。**この節が無かったあいだ、桁割りは正本にあるのにどこにも
+  # 出なかった** ―― 実測（r001）で 20 項目のうち 12 項目は名前すら束のどこにも
+  # 現れず（`借方勘定科目コード X(6)`・`摘要 X(40)`）、残る 8 項目は画面項目と
+  # 同名だったので画面の側に紛れて出ていただけだった。連携の実装者はここを見る。
+  #
+  # **この電文での桁は関係側から出す**（3.14.0）。同じデータ項目が IF ごとに
+  # 違う名前・違う桁で載るので、`to.length`（データ項目の桁）だけでは電文を
+  # 組めない ―― 関係側が空なら従来どおり `to.*` の側が読まれる。
+  - heading: 外部インターフェースの項目
+    kind: relation
+    relation: interfaces
+    group_by: from              # 電文ごとに 1 表
+    # 桁数が 2 列並ぶ ―― **どちらも要る**ので、見出しでどちらの桁かを言う。
+    labels: { "to": 項目, description: 内容, note: 編集規則,
+              length: この電文での桁数, "to.length": データ項目の桁数 }
+    columns: ["to", physical_name, position, "to.data_type", length,
+              "to.length", "to.format", not_null, note, description]
+
+  # ジョブの先行後続。バッチ処理一覧の「起点」列は 1 ジョブぶんの起動契機しか
+  # 書けないので、**ジョブフロー図が引いていた線がここにしか残らない。**
+  - heading: ジョブの先行後続
+    kind: relation
+    relation: triggers
+    labels: { "from": 先行, "to": 後続, description: 補足 }
+    columns: ["from", "to", description]
+
+  # CLI のコマンドは利用者向けの仕様である（Phase 1-1）。画面を持たない資産
+  # （コマンドラインのツール・バッチ基盤）では、ここが利用者との唯一の接点になる。
+  - heading: コマンド一覧
+    type: command
+    columns: [command_id, name, command_line, arguments, exit_code, statement,
+              description, source]
+
+  - heading: エンティティ一覧
+    type: entity
+    columns: [physical_name, name, entity_kind, volume, retention, statement,
+              description, source]
+
+  # **ER 図の代わりになる表。** 図そのものは撮れない（図形は `未読取`）が、
+  # 関連・多重度・外部キーは表で読める ―― いままで entity → entity を張れる
+  # 関係が `refines`（階層化）しか無く、外部キー欄は `has-column` の `note` へ
+  # 逃げて設計書のどの列にも出ていなかった。
+  #
+  # **出す側で節に割らない**（呼出関係・画面遷移と同じ ―― 親テーブルの数だけ
+  # 1 行の節が並ぶ）。1 枚の表なら上から辿ってデータモデルとして読める。
+  - heading: エンティティ関連
+    kind: relation
+    relation: references
+    # 両端が同じ種別なので、物理名も名称もぶつかる。4 列とも名指しする。
+    labels: { "from.physical_name": 参照する側の物理名, "from.name": 参照する側,
+              "to.physical_name": 参照される側の物理名, "to.name": 参照される側 }
+    columns: ["from.physical_name", "from.name", "to.physical_name", "to.name",
+              cardinality, fk_columns, required_flag, note, description]
+
+  - heading: 画面遷移
+    kind: relation
+    relation: transitions
+    group_by: from
+    columns: ["to.screen_id", "to.name", event, condition, description]
+
+  # 元資料の業務ルール一覧は「サブシステム／区分」の 2 段（`docs_basic` s306）。
+  # 節は層（`rule_kind`）で割ってあるので、主軸は列で出す ―― 3 つの軸のうち
+  # 節に使えるのは 1 つだけである。
+  #
+  # **実装の規律にあたるルールは詳細設計書「実装ルール」にある。** ここへ全件を
+  # 並べると 55 行がまるごと二重掲載になり、**同じ表が 2 つの工程で別々に
+  # 承認される** ―― 工程をレビューの単位にした意味が消える（下の
+  # 「メッセージ一覧」を詳細設計書が持たないのと同じ規律。実測 r001 で
+  # 55 件すべてが両冊に全文で出て、`P106` が鳴っていた）。
+  #
+  # **振り分けは 2 つの `where` が全部である**（メタモデル側には書かない）。
+  # ここが業務判断の層を名指しし、**残り全部は詳細設計書が引き受ける** ――
+  # `rule_kind` は `extensible: true` なので、両方を白列挙にするとどちらにも
+  # 入らない値が束のどこにも出なくなる。層を足すときに触るのはこの 1 行である。
+  #
+  # **`rationale`（根拠）を出す。** テナント別コスト実績 2.単価 は 4 件すべてが
+  # 根拠列を持ち（`voyage-4 の請求実績から按分`）、単価の妥当性を示すのはその
+  # 1 列だけである ―― 受け皿が `decision` にしか無かったあいだ `statement` に
+  # 溶けていた。**`action`（処理）へ寄せない** ―― 計算式と出所が同じ升に入る。
+  # 列は詳細設計書「実装ルール」と揃える（振り分けたほうだけ狭いと欄が消える）。
+  - heading: 業務ルール
+    type: business-rule
+    where: { rule_kind: [business, calculation] }
+    group_by: rule_kind
+    columns: [rule_id, subsystem, name, category, condition, action,
+              statement, rationale, owner, description, source]
+
+  # **コード定義そのものの一覧が無かった。** 下の「コード定義」は
+  # `group_by: from` の節見出しに名前を出すだけなので、物理名（`M_CODE`）も
+  # 管理区分（誰が値を増やすか）も仕様文も、束のどこにも印字されない ――
+  # 節の見出しは名前 1 つしか運べない。
+  - heading: コード定義一覧
+    type: code-master
+    columns: [code_id, subsystem, name, physical_name, managed_by, statement,
+              description, source]
+
+  # コード値そのものは code-value（to 側）の `value` にある。`value` と書くと
+  # **関係の属性を探して全行空**になり、「全行が空だったので省略した列: コード値」
+  # と畳まれた ―― 残った No 連番のせいで受注ステータスの表が「1=受付」と読めた
+  # （実際は 10）。この取り違えは E040 / W043 が機械で拾う（→ publish.lint）。
+  #
+  # **`to.retention`（保持期間）を出す**（3.16.0）。機密区分表は 3 行すべてが
+  # この列を持ち、区分ごとに情報を何年保つかを定めている ―― 受け皿が無かった
+  # あいだ、実測（r001）では区分の `statement` の文中に埋まっていて、
+  # **区分の表を見ても保持期間が列として引けなかった**（同じ字の列を
+  # `entity`（エンティティ一覧）は前から出している）。外部送出の可否は
+  # ここには出ない ―― あちらは業務ルールが受ける（→ `metamodel.yml` の
+  # `code-value`。可否・要否は規則、期間は仕様、という線引きを 1 度だけ決めた）。
+  - heading: コード定義
+    kind: relation
+    relation: has-value
+    group_by: from              # コード定義ごとに 1 表
+    labels: { "to.description": コード値の補足, description: この行の補足 }
+    columns: [order, "to.value", "to.name", "to.subsystem", "to.retention",
+              "to.statement", "to.description", description]
+
+  # どのデータ項目がどのコード定義を使うか。コード定義だけでは「誰が使うか」が
+  # 読めず、データ項目だけでは「取りうる値」が読めない ―― 対で意味を持つ。
+  - heading: コードを使うデータ項目
+    kind: relation
+    relation: uses-code
+    labels: { "from": データ項目, "to": コード定義 }
+    columns: ["from", "from.data_type", "to", description]
+
+  - heading: メッセージ一覧
+    type: message
+    columns: [message_id, severity, name, body, action, statement,
+              description, source]

@@ -1,0 +1,180 @@
+name: requirement-spec
+title: 要件定義書
+output: 要件定義書
+phase: 要件定義          # out/ のフォルダはこれで決まる
+sections:
+  # `steps`（手順の文章）は出さない ―― **直下の「業務フローの手順」が同じことを
+  # 関係から出す**ので、埋まっていれば重複、埋まっていなければ空の列になる。
+  # 空けた枠には `statement` を入れる。**データにあるのに出していなかった** ――
+  # 業務フローが何をする流れなのかは、起点と手順の間にしか書く場所が無い。
+  - heading: 業務フロー
+    type: business-flow
+    columns: [flow_id, subsystem, name, phase, trigger, statement,
+              description, source]
+
+  # 手順 1 つ = has-flow-step 関係 1 本。図形の接続が取れていればここが埋まり、
+  # 取れていなければ business-flow.steps の文章だけが残る（どちらでも読める）。
+  - heading: 業務フローの手順
+    kind: relation
+    relation: has-flow-step
+    group_by: from
+    labels: { "to.description": ステップの補足, description: この行の補足 }
+    columns: [order, "to.step_id", "to.name", "to.step_kind",
+              "to.owner_role", "to.statement", "to.description", description]
+
+  # 矢印 1 本 = leads-to 関係 1 本。**分岐条件は関係側に持つ** ―― ステップに書くと
+  # 「どちらの枝の条件か」が消える。
+  #
+  # **分岐元では割らない。** 割ると 9 本の矢印が 8 節になり、35 行かけて伝わるのが
+  # 分岐 2 つだけになる（実測）。分岐元は列で出せば足り、1 つの表なら**上から順に
+  # 流れとして読める** ―― 決定 18 で詳細設計書の「呼出関係」16 節に当てた規律と
+  # 同じである。両端が同じ種別なので見出しがぶつかる。labels で名指しする。
+  - heading: 業務フローの流れ
+    kind: relation
+    relation: leads-to
+    labels: { "from.step_id": 分岐元, "from.name": 分岐元の名称,
+              "to.step_id": 分岐先, "to.name": 分岐先の名称 }
+    columns: ["from.step_id", "from.name", "to.step_id", "to.name", condition,
+              description]
+
+  # **区分は 2 段ある。** 元資料の要件一覧は「区分」を結合セルで束ね、下に
+  # サブシステム・分類の 2 列を置く（sales-corpus の `3.機能要件一覧` は B4:D4 が
+  # 区分、B5=サブシステム・C5=分類）。節を 1 段しか持てないので、**上段を節、
+  # 下段を列**にする ―― 逆にすると `5.1 入金業務` と `5.2 共通` が同じ高さに並び、
+  # どのサブシステムの話かが目次から消える（実測: 区分が 1 つも印字されなかった）。
+  #
+  # `category` を節にしていたときの実害は 2 つあった。上段（サブシステム）は
+  # 属性の受け皿が無いので `refines` の相手へ逃げて設計書に出ず、下段は
+  # `kind: string` なので節の並びが文字コード順（入金業務 → 共通 → 出荷業務）に
+  # なり、資料の順（受注管理から）とも工程順とも無関係だった（→ 決定 75）。
+  # **`measurement` / `frequency` は 3 つの節すべてに出す。** SLO が載るのは
+  # 非機能だが、`P111` は**種別×属性ではなくレコード単位**で数える ―― 片方の節に
+  # だけ列を置くと、業務・機能に書かれた測り方が「どの設計書にも出ない」まま
+  # 残り、しかも列が無いことは成果物からは見えない（`metric` を 3 節すべてに
+  # 出しているのと同じ理由）。埋まっていない段では `_trim` が畳む。
+  - heading: 業務要件
+    type: requirement
+    where: { kind: 業務 }
+    group_by: subsystem
+    columns: [req_id, name, category, statement, metric, measurement, frequency,
+              priority, description, source]
+
+  - heading: 機能要件
+    type: requirement
+    where: { kind: 機能 }
+    group_by: subsystem           # 未設定は「未分類」に集約する
+    columns: [req_id, name, category, statement, metric, measurement, frequency,
+              priority, description, source]
+
+  # **SLO はここに来る。** 運用引継ぎ資料 3.SLO の 5 件は「目標値 / 測り方 /
+  # 確認頻度」の 3 列を持つのに受け皿が `metric` しか無く、測定手段と確認頻度は
+  # 5 件とも `statement` へ畳まれていた ―― 「p95 3 秒以内」は誰が何を見て
+  # 判定するのかまで書けて初めて運用に引き継げる。`metric` の右隣に 2 列を置く
+  # （目標値 → 測り方 → 確認頻度 が資料の並びである）。
+  - heading: 非機能要件
+    type: requirement
+    where: { kind: 非機能 }
+    group_by: nf_category         # IPA 非機能要求グレードの 6 大項目
+    columns: [req_id, name, category, statement, metric, measurement, frequency,
+              priority, description, source]
+
+  # `subsystem` と `owner` を出す。**組織・ロールの一覧は「誰が持つか」を書く欄が
+  # 無いと、体制の資料を取り込んでも役職・所管部門が印字されない** ―― 実測
+  # （kotonoha r001）で `actor.owner` 6 件（本部長 大城・課長 田村・テナントの
+  # 所管部門）が正本にあるのに束のどの列にも出ず、`P111` で拾われた。
+  #
+  # **`physical_name` は資料が付けている識別子**（テナントの `cs-support`）。
+  # 受け皿が無かったあいだ、識別子は `name` の括弧書き（`カスタマーサポート
+  # （cs-support）`）に入っていて、ログ・請求・設定ファイルの側の綴りと機械では
+  # 突き合わなかった。見出しの既定は 物理名 だが、利用申請台帳はこの列を
+  # 「識別子」と書くので名指しする ―― テーブルの物理名（DB の命名標準）と
+  # 同じ字にすると、読み手が同じ見出しを 2 通りに読む。
+  #
+  # **体制図の争点はこの表に印として出る**（3.16.0 で `disputes` の相手に
+  # `actor` を足した）。列は足していない ―― 争点の印（課題の表示 ID）は
+  # `_dispute_marks` が**争点のある行がある表にだけ**末尾へ足すので、
+  # 体制の争点を持たない案件では列そのものが出ない。この表が `actor_id` を
+  # 先頭に持っている（＝ 表示 ID の列がある）ことが、印の出る条件である。
+  - heading: 利用者・ロール
+    type: actor
+    labels: { physical_name: 識別子 }
+    columns: [actor_id, physical_name, subsystem, name, actor_kind, statement,
+              owner, description, source]
+
+  # **体制図の線 1 本 = 関係 1 本。** 凡例が実線（指揮命令）と破線（委託）を
+  # 描き分けているのに書く先が無く、実測（r001）で 7 本のうち 5 本を `refines`
+  # （階層化）で代用し、上下関係でない 2 本（基盤開発 → 利用部門、運用 → 経理部）は
+  # **張られずに落ちた。** 一覧（上）はロールの名簿でしかないので、誰が誰に
+  # 報告し、どこへ委託しているかはこの 2 章にしか出ない。
+  #
+  # **2 章に分ける。** 1 表にまとめると線種が列の値になり、体制図の凡例が
+  # 分けているものを読み手が絞り込みで戻すことになる（メタモデル側で関係を
+  # 2 本に分けた理由と対）。
+  #
+  # **相手は指すだけにする（`from` / `to`）。** 両端が同じ種別なので、`名称` を
+  # 2 列並べると見出しがぶつかる ―― 名前より先の情報（何をする組織か・所管）は
+  # 上の「利用者・ロール」が持っており、表示 ID でそこへ飛べる。
+  - heading: 指揮命令
+    kind: relation
+    relation: reports-to
+    labels: { from: 報告する側, to: 報告を受ける側, description: 補足 }
+    columns: [from, to, description]
+
+  - heading: 委託
+    kind: relation
+    relation: outsources-to
+    # 委託範囲（`監視・一次切り分け`・`平日 8:00-20:00`）は関係の `description` に
+    # 書く ―― 属性にしなかった理由はメタモデル側に書いてある。**列を出さないと
+    # 委託先の名前だけが並ぶ**ので、この章では `description` が本体である。
+    labels: { from: 委託元, to: 委託先, description: 委託範囲 }
+    columns: [from, to, description]
+
+  # `技術` の 50 件は基本設計書「システム方式」が出す（→ basic-design.yml）。
+  # ここは **`category` の残り全部**を引き受ける ―― 白列挙にすると、`category` は
+  # `extensible: true` なので生えた値（実測: データ項目 14・メッセージ 4・
+  # 未設定 1）が**どちらの設計書にも出ない**。振り分けの最後の節は残りを取る。
+  # `subsystem` は節ではなく列である（節は `category`）。**印が無いことを
+  # 「書かなくてよい」と読まない**（→ organize.md「主軸は例外」）とこちらから
+  # 求めておきながら、受ける列が無かった ―― 実測（kotonoha r001）で
+  # `constraint.subsystem` 8 件がどこにも出なかった。
+  #
+  # **`rationale`（根拠）を出す。** キャパシティ試算・PoC 評価報告書の表は
+  # 「根拠」列を持ち（`VRAM に載る範囲` / `実測` / `8 時間 × 20 日`）、そこが
+  # 制約の妥当性を示す唯一の記述である ―― 受け皿が無かったあいだ `statement` に
+  # 溶けており、**制約の一覧を見ても「なぜその数字か」が 1 行も読めなかった。**
+  # `statement` の右隣（何を決めたか → なぜそう決めたか）に置く。
+  #
+  # **`quantity`（数量）を出す**（3.16.0）。台帳の「月間上限 500,000 チャンク」の
+  # ように、**規模の想定そのものが 1 行 1 数値**で書かれている行がある ―― 受け皿が
+  # 無かったあいだ、実測（r001）で 4 件のテナント上限は全部 `statement` の文中に
+  # 埋まり、同じ束の中で「見積の金額は列（計画書の費用）、規模の数値は文」という
+  # 非対称が出ていた。**列の位置は `cost-item.amount` と揃える**（名称の右）――
+  # 読み手が 2 冊で同じところを見る。
+  - heading: 制約・前提
+    type: constraint
+    where: { category: { not: [技術] } }
+    group_by: category
+    # **`owner` を出す。** 委託範囲表のように「その制約を誰が担うか」を持つ資料があり、
+    # 書く先が owner しか無い（実測 r001 で 23 件が入り、列が無いため P111 が鳴った）。
+    columns: [constraint_id, subsystem, name, quantity, statement, rationale,
+              owner, description, source]
+
+  # 制約が**何を縛るか**。制約の一覧（上）は「何を決めたか」しか言わない。
+  #
+  # **正本でいちばん多い関係なのに、長いあいだ 1 行も出ていなかった**（実測 227 本）。
+  # しかも縛る先を持たない制約 45 件だけが `0_この設計書の穴.md` に理由つきで
+  # 並んでいたので、**丁寧に張ったほうが静かに消える**という非対称が出ていた。
+  #
+  # **相手にプロジェクト概要と費用項目が増えた**（3.16.0）が、章は増やさない ――
+  # `kind: relation` の章は種別で絞らず全件を出すので、投資額の総額 →
+  # 適用範囲、業務ルール → 費目 はそのままここに並ぶ。計画書の側に同じ章を
+  # 置くと、同じ関係が 2 冊で別々に承認される。
+  - heading: 制約が縛るもの
+    kind: relation
+    relation: constrains
+    labels: { "from": 制約・業務ルール, "to": 縛る先, description: 補足 }
+    columns: ["from", "to", description]
+
+  - heading: 用語
+    type: glossary-term
+    columns: [name, reading, english, statement, description, source]

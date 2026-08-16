@@ -1,0 +1,133 @@
+name: traceability-matrix
+title: トレーサビリティ・マトリクス
+output: トレーサビリティ・マトリクス
+phase: 管理          # out/ のフォルダはこれで決まる
+# トレースは埋まっている部分より**空いている部分に価値がある**ので、
+# 対応表とギャップ表を必ず対で載せる。
+sections:
+  # **上端が 1 段伸びた。** いままで business-flow / requirement が天井で、
+  # 「なぜその要件が要るのか」はどこにも繋がっていなかった ―― 目標に届いて
+  # いない要件は「やると決めた理由が資料に無い」であり、要件に支えられて
+  # いない目標は「掲げただけ」である。どちらも対で見えて初めて意味を持つ。
+  - heading: 事業目標 → 要件
+    kind: trace
+    type: business-goal
+    relation: contributes-to
+    link_label: 寄与する要件
+    columns: [goal_id, name, metric, linked]
+
+  - heading: 要件の無い事業目標（要件化漏れ）
+    kind: trace
+    type: business-goal
+    relation: contributes-to
+    gap: true
+    columns: [goal_id, name, statement, metric, status]
+
+  - heading: 業務フロー → 業務要件
+    kind: trace
+    type: business-flow
+    relation: supports
+    link_label: 対応する業務要件
+    columns: [flow_id, name, linked]
+
+  # **母集合は 4 章（gap）と必ず揃える。** 揃っていなかったあいだ、業務要件
+  # 31 件はここに「対応する設計要素 ―」として並び、下の「要件の詳細化」で
+  # 機能要件へ繋がっていることが読めなかった ―― 同じ文書の中で、同じ問いに
+  # 違う母集合で答えていた（→ 下の 5 章のコメント）。業務要件の追跡経路は
+  # `refines` の 1 ホップ先にある。
+  #
+  # **被覆の関係は 1 本ではない。** `realizes.from` は `設計要素` グループで
+  # `constraint` を含まないので、セキュリティ方式・共通方式が非機能要件に
+  # 応える経路は `constrains` にしかない ―― 整理層は正しく張っており、要件
+  # 定義書「制約が縛るもの」には出ていた。配列で書くと**どれか 1 本あれば
+  # 被覆**とみなす（和集合。→ `publish.relation_names`）。
+  - heading: 要件 → 設計要素
+    kind: trace
+    type: requirement
+    relation: [realizes, constrains]
+    where: { kind: [機能, 非機能] }
+    columns: [req_id, kind, name, linked]
+
+  # 4 章の母集合・関係は 3 章と同じでなければならない ―― 違うと、同じ問いに
+  # 対応表と漏れの一覧が別々の答えを出す。実測（r001）で非機能 15 件が
+  # 全件「設計漏れ」に並び、うち 7 件は方式が応えていた。
+  - heading: 未実現の要件（設計漏れ）
+    kind: trace
+    type: requirement
+    relation: [realizes, constrains]
+    gap: true
+    where: { kind: [機能, 非機能] }
+    columns: [req_id, kind, name, statement, status]
+
+  - heading: 要件 → テストケース
+    kind: trace
+    type: requirement
+    relation: verifies
+    link_label: 対応するテストケース
+    columns: [req_id, kind, name, linked]
+
+  - heading: 未検証の要件（テスト漏れ）
+    kind: trace
+    type: requirement
+    relation: verifies
+    gap: true
+    where: { kind: [機能, 非機能] }
+    columns: [req_id, kind, name, status]
+
+  # コード起点のラウンドでは verifies はたいてい module へ張られる（テスト
+  # ファイルが相手にするのは仕組み＝ファイル 1 本）。要件 → テストの 2 章だけ
+  # だと、テストが 500 件あってもこの文書は白紙のままになる。
+  - heading: モジュール → テストケース
+    kind: trace
+    type: module
+    relation: verifies
+    link_label: 対応するテストケース
+    columns: [module_id, name, linked]
+
+  # **テストファイルにテストが無いのは漏れではない** ―― そのファイルが
+  # テストである。実測で 85 件中 31 件が `tests.test_paths` のようなテスト側の
+  # モジュールで、漏れの一覧として使えなかった。除くのは名前ではなく
+  # **出典の照合**で決める（`tests/test_paths.py` から `test-case` が起きている）
+  # ―― 名前を見ると意味の判断になり、`*Spec.java` や `*_test.go` で外れる。
+  - heading: テストの無いモジュール（テスト漏れ）
+    kind: trace
+    type: module
+    relation: verifies
+    gap: true
+    exclude_sources_of: test-case
+    columns: [module_id, name, tier, status]
+
+  # **`verifies` の相手が増えても、この文書の章は増やさない**（3.15.0 で
+  # `code-master` / `entity` / `constraint` を足した）。上の 4 章は
+  # `type: requirement` / `type: module` で絞っているので、相手が増えても
+  # 母集合は変わらない ―― 影響は無い。
+  #
+  # **足さなかった理由のほうを書いておく。** 「コード定義 → テストケース」の
+  # ような章を対で足すと、gap 側（テストの無いコード定義・エンティティ・制約）が
+  # **正本のほぼ全件を「テスト漏れ」として並べる。** テーブルもコード定義も、
+  # 検証の相手になるのは点検表・移行検証のような特定の冊子が来たときだけで、
+  # 普通の案件では 0 本が正常である ―― モジュールの章が
+  # `exclude_sources_of: test-case` を必要としたのと同じ問題で、あちらは
+  # 「テストファイルにテストが無いのは漏れではない」を出典の照合で外せたが、
+  # こちらは**外す基準が無い**（テストの無いテーブルは、漏れかもしれないし
+  # 対象外かもしれない）。
+  #
+  # 点検表が実際に何を点検したかは、テスト仕様書「検証対象の対応」が
+  # `verifies` を種別で絞らず全件出す（関係の章は `where` を適用しない）ので、
+  # そちらで読める ―― **繋がりが消えるわけではない。**
+  - heading: 参照されていないメッセージ
+    kind: trace
+    type: message
+    relation: raises
+    gap: true
+    columns: [message_id, severity, body]
+
+  # 業務要件と機能要件の対応。`realizes`（要件 → 設計要素）だけを出していたころ、
+  # 業務要件 31 件は「対応する設計要素なし」として全行 `―` に見えていた ――
+  # 実際には 1 ホップ先の機能要件が設計要素を持っている。**繋がっているのに
+  # 繋がっていないように見える**のがいちばん悪い出方である。
+  - heading: 要件の詳細化（機能要件 → 業務要件）
+    kind: relation
+    relation: refines
+    labels: { "from": 詳細化した側, "to": 詳細化された側 }
+    columns: ["from", "to", description]

@@ -1,0 +1,182 @@
+# 整理結果 1 ファイルの形。**ここが正である。**
+#
+# 語彙（使ってよい種別・関係・属性）はメタモデルが持ち、**形**（どの欄が要るか・
+# どこに何を書くか）はここが持つ。2 つを分けるのは持ち主が違うからで、語彙は
+# プロジェクトが決め、形は arp4 が決める。
+#
+# 手続きで書いていたころ、この契約は `organized.py` の関数の中と docs の例示の
+# 2 か所にあった ―― **同じ規則が 2 つあると、同じ問題が形を変えて戻る。** 例示の
+# ほうが古くなっても誰も気づかない（例示は実行されない）。ここを正にして、
+# `arp4 schema` で書く側にそのまま渡す。
+#
+# 構文は**いまある検査 1 つにつき 1 つ**しか用意しない。汎用のスキーマ言語に
+# すると、置き換えた手続きより読みにくいものが残る。
+#
+#   shape     節の型が違う（連想配列でない）
+#   required  必須の欄。`together: true` なら「全部揃えるか、全部省くか」
+#   keys      書いてよい欄。`values` は決められた値、`sequence` は要素の形、
+#             `mapping` は「名前 → 要素の形」（**名前は書く側が決める**）
+#   unknown   宣言に無い欄をどう扱うか
+#
+# **error を出した要素は落とす**（その先は見ない）。warn は落とさない ――
+# 「書けているが置き場所が違う」ものを捨てると、資料が黙って消える。
+
+version: 1
+
+root:
+  label: 整理結果
+  subject: ""
+  shape:
+    code: G000
+    message: 整理結果は records / out_of_scope を持つ連想配列でなければなりません
+  keys:
+    records:
+      sequence: record
+      code: G000
+      message: records は配列でなければなりません
+    out_of_scope:
+      sequence: out_of_scope
+      code: G000
+      message: out_of_scope は配列でなければなりません
+  # 根の見慣れないキーは黙って通す。整理結果に注記を書く人がいて、
+  # **それは資料の側の都合**である（レコードの中とは事情が違う）。
+  unknown: ignore
+
+shapes:
+  # ── レコード ────────────────────────────────────────────────
+  record:
+    label: レコード
+    # 指摘の「何の話か」。アンカーで言う ―― 読み手が次に開くのは
+    # パース結果のその番地である。
+    subject: source.anchor
+    shape:
+      code: G000
+      message: レコードは連想配列でなければなりません
+    required:
+      - keys: [concept, source.anchor]
+        code: G006
+        message: "必須の欄がありません: {missing}"
+      # **3 つ揃えるか、3 つとも省くか。** 中途半端を通すと「書き忘れ」と
+      # 「参照だけのつもり」が区別できなくなる。
+      - keys: [type, name, statement]
+        together: true
+        code: G006
+        message: >-
+          必須の欄がありません: {missing}（type / name / statement は 3 つ揃えるか、
+          3 つとも省いて参照だけのレコードにしてください）
+    keys:
+      concept: {}
+      type: {}
+      name: {}
+      statement: {}
+      source: {}
+      attrs: {}
+      refs:
+        sequence: ref
+        code: G000
+        message: refs は配列でなければなりません
+      # **「調べたうえで相手がいない」と書く場所。** ここが無いあいだ、整理層は
+      # 相手を探し尽くしたことを宣言できず、`G020`（語彙が「1 本は要る」と定める
+      # 関係が 0 本）を warn のまま親へ渡すしかなかった ―― 正本側の `known_gaps`
+      # は `build` を打った人の欄で、**分担しているとき配る側は `build` を禁じる**
+      # （凍結の後にしか打てない）。実測（8 冊 / 8 分担 × 2 周）で 80 件超の
+      # `G020` が 2 周とも warn のまま渡り、8 人中 4 人が「宣言する場所が無い」と
+      # 独立に報告した。**「調べた」と「まだ調べていない」が正本を組むまで
+      # 区別できない**のがいちばん悪い形である。
+      #
+      # 名前は**関係型でも属性名でもよい**（正本の `known_gaps` が両方を受ける
+      # ので揃える ―― 書く側から見れば「この欄が資料に無い」の一言で足りる）。
+      # `build` がそのまま正本の `known_gaps` へ引き継ぎ、`check` では `W032`
+      # （承知している欠落）として理由つきで出続ける。**消えはしない。**
+      known_gaps:
+        mapping: gap
+        code: G000
+        message: "known_gaps は 関係型・属性名 → { reason: … } の連想配列でなければなりません: {value}"
+    unknown:
+      code: G008
+      level: warn
+      message: "レコード直下の見慣れない欄です: {keys}（属性は attrs に入れてください）"
+
+  # ── 関係 ────────────────────────────────────────────────────
+  ref:
+    label: refs
+    # 指摘はレコードの話として出す（アンカー）。関係 1 本に名前は無い。
+    subject: inherit
+    shape:
+      code: G000
+      message: "refs の書式が不正です: {value}"
+    required:
+      - keys: [rel, to]
+        code: G000
+        message: "refs の書式が不正です: {value}"
+    keys:
+      rel: {}
+      to: {}
+      attrs: {}
+      # 関係そのものについて資料が書いていること（「呼び出す目的」等）。
+      # **宣言しないと unknown: ignore が黙って捨てる** ―― 実測で、モジュール一覧の
+      # 「呼び出す目的」11 本は書く場所が無く、整理層が落とすほかなかった。
+      note: {}
+    unknown: ignore
+
+  # ── 承知している欠落 ────────────────────────────────────────
+  #
+  #   records:
+  #     - concept: c-cst-チャンク数の推移-品質保証部
+  #       type: 制約・前提
+  #       name: 品質保証部のチャンク数の月次推移
+  #       statement: …
+  #       source: { anchor: s4-t1 }
+  #       known_gaps:
+  #         constrains:                 # 関係型（この関係が 1 本も張れない）
+  #           reason: 規模の想定で、縛る先の列がそもそも無い（8 冊にテーブル定義書もモジュール一覧も無い）
+  #         data_type:                  # 属性名（資料にその欄が無い）でもよい
+  #           reason: 帳票の出力項目シートに型の欄が無い
+  #
+  gap:
+    label: known_gaps
+    # 指摘はレコードの話として出す（アンカー）。宣言 1 つに名前は無い。
+    subject: inherit
+    shape:
+      code: G000
+      message: "known_gaps の宣言は { reason: … } で書いてください: {value}"
+    required:
+      # **理由の無い宣言は、黙って飛ばすのと区別が付かない。** `out_of_scope` の
+      # `reason` と同じ規律で、正本側の `known_gaps` も `E019` で同じことを言う
+      # （規則を 2 つ持たない ―― ここは同じ規則を書く側の手元へ前倒ししたもの）。
+      - keys: [reason]
+        code: G006
+        message: >-
+          known_gaps には reason が要ります（「調べたうえで相手がいない」と
+          「まだ調べていない」は、理由でしか区別できません）
+    keys:
+      reason: {}
+      # 宣言した日。正本側の `known_gaps` と同じ欄で、省いてよい。
+      at: {}
+    unknown: ignore
+
+  # ── 対象外宣言 ──────────────────────────────────────────────
+  out_of_scope:
+    label: 対象外宣言
+    subject: anchor
+    shape:
+      code: G000
+      message: "out_of_scope の書式が不正です: {value}"
+    required:
+      - keys: [anchor]
+        code: G000
+        message: "out_of_scope の書式が不正です: {value}"
+      # 黙って飛ばすのを防ぐための宣言なので、理由の無い宣言は意味がない。
+      - keys: [reason]
+        code: G006
+        message: out_of_scope には reason が要ります
+    keys:
+      anchor: {}
+      reason: {}
+      kind:
+        # **「資料に無い」と「機械が読めていない」は別物**である。前者は次の
+        # ラウンドでも変わらないが、後者は拾い直す対象として残る。
+        values: [対象外, 未読取]
+        code: G011
+        message: "out_of_scope の kind が不正です: {value}（{values} のどちらか）"
+    unknown: ignore
