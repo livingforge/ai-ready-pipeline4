@@ -1,0 +1,19 @@
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# 開発環境。**中身は pyproject.toml から作り直せる**ので追跡しない。
+.venv/
+
+# 検体を実ファイルにした置き場（Excel で開いて確かめるため）。
+# **バイナリは追跡しない** ―― `python tests/dataset.py test_data` で作り直せる。
+/test_data/
+
+# 撮った絵の置き場（`arp4 render --out out`）。**PNG は追跡しない** ――
+/out/
+/old/
+
+# 追跡しない
+.arp/
+
+/work/

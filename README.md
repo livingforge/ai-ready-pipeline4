@@ -344,23 +344,30 @@ python build/build.py --check              # 展開が古くないか（CI 用�
 ## 資材（バイナリは置かない）
 
 Excel はバイナリなので、**中身がコードで読める形**でしか置かない ―― 置いてしまうと「この
-資料は何を写したものか」が半年後に誰にも分からなくなる。3 つとも生成器である。
+資料は何を写したものか」が半年後に誰にも分からなくなる。4 つとも生成器を持つ。
 
 | 資材 | 規模 | 何のためにあるか |
 | --- | --- | --- |
 | `examples/from-excel` | 資料 2 冊 | `parse → 整理 → freeze → build → publish` を**通しで**確かめる最小サンプル（`tests/test_example.py` が同じ道を通る） |
 | `tests/corpus.py` | 20 冊 / 35 シート | **パースの検体**。数式・非表示・貼り付け画像・マクロ付き・シート名衝突・壊れたブックなど、実物によくある書かれ方を集めたもの |
-| `examples/sales-corpus` | 30 冊 / 201 シート ＋ Java 114 本 | **架空の新販売管理システム一式**。日本の SIer の設計書の形（2 段見出し・縦結合・図形＋コネクタ・結合セル作図）と、矛盾・粒度差・表記ゆれ・重複を仕込んである → [README](examples/sales-corpus/README.md) |
+| `examples/sales-corpus` | 30 冊 / 201 シート ＋ 追加資料 8 冊 / 56 シート ＋ Java 114 本 | **架空の新販売管理システム一式**。日本の SIer の設計書の形（2 段見出し・縦結合・図形＋コネクタ・結合セル作図）と、矛盾・粒度差・表記ゆれ・重複を仕込んである。`追加資料/` は**2 ラウンド目の検体**（食い違いの決着とあとから足りた仕様）→ [README](examples/sales-corpus/README.md) |
+| `examples/kotonoha` | Python 110 本 / DDL 7 本 / 設計メモ 22 本 ＋ Excel 8 冊 | **架空の社内エンベディング基盤一式**。`sales-corpus` の鏡像で、**実装が先にあって文書が後追い**の検体である。`draft` が主役になり、`.sql` / `test_*.py` / `.md` があるのでテーブル定義書・テスト仕様書・課題管理表の語彙がここから立つ → [README](examples/kotonoha/README.md) |
 
 ```bash
 python examples/make_sample.py                  # 最小サンプルの資料 2 冊
 python tests/corpus.py <ディレクトリ>            # パースの検体
-python examples/sales-corpus/build.py --clean   # 資料 30 冊・実装 116 ファイル
+python examples/sales-corpus/build.py --clean   # 資料 30 冊・追加資料 8 冊・実装 116 ファイル
+python examples/kotonoha/build.py --clean       # Excel 8 冊（コード・DDL・設計メモは生成物ではない）
 ```
 
 `tests/corpus.py` と `sales-corpus` は役割が違う。**前者は 1 つの欠陥を 1 つのシートで突く
 検体**（壊れ方が特定できる）、**後者は 30 冊を丸ごと通したときに何が起きるかの検体**（現場の
 規模でしか出ない問題を出す）。片方だけでは足りない。
+
+`sales-corpus` と `kotonoha` は**軸が反対**である。前者は Excel の設計書が先にあって実装が
+後（受託・ウォーターフォール）、後者は実装が先にあって文書が後追いで散らばっている（社内
+内製）。**「コードと DDL と設計メモも渡すこと」を示すのは後者**で、`kotonoha` の Excel 8 冊は
+設計書ではなく稟議・台帳・点検表という別の層である。
 
 ## 開発
 
@@ -375,13 +382,17 @@ src/arp4/
 ├── yamlio.py      YAML の読み書き。拡張子はここだけが正（EXT = ".yml"）
 ├── mdio.py        アンカー付き Markdown（パース結果の器。編集に強い形）
 ├── paths.py       置き場 ―― .arp/ の中だけ（rounds / spec / out）
+├── finding.py     検出 1 件の型（level は error / warn の 2 値だけ）
 ├── parse.py       ① 既存資産 → パース結果（Excel はセルのまま、コードは構文木）
 ├── render.py      シートの画像化（Windows + Excel）
 ├── draft.py       コードのパース結果 → 整理結果の骨格
 ├── organized.py   ② 整理結果を読む（契約違反はここで全部数える）
+├── shape.py       形の検査（schemas/*.yml が正。arp4 schema が出すもの）
+├── fix.py         lint --fix ―― 機械的に確実なものだけを直す
 ├── freeze.py      凍結ゲートとハッシュ固定
 ├── concepts.py    同一性の台帳（ラウンドをまたぐ。凍結物を無傷に保つ間接層）
-├── build.py       ③ 整理結果 → 正本（マージ・採番・向き補正）
+├── build.py       ③ 整理結果 → 正本（マージ・アイテム ID・向き補正）
+├── sequence.py    表示 ID の採番（arp4 number。既存の番号は動かさない）
 ├── override.py    overridden ―― 出典と異なる値の記録（理由必須）
 ├── gaps.py        known_gaps ―― 資料に定義が無いことの表明（理由必須）
 ├── derived.py     AI の解釈層（basis / confidence）
@@ -389,10 +400,19 @@ src/arp4/
 ├── trace.py       出典の追跡（正本 → 整理結果 → パース結果）
 ├── spec.py        正本ストアの読み書き・書き戻し
 ├── validate.py    正本の機械検証
-├── holes.py       0_この設計書の穴 / 0_元資料と設計書の対応
 ├── metamodel.py   継承の解決・共通属性の畳み込み・メタモデル自身の検査
 ├── pack.py        パックの解決チェーン・内容ハッシュ・pack.lock
+├── conform.py     標準パックへの準拠検証（arp4 conform）
+├── holes.py       0_この設計書の穴（正本に何が無いか）
+├── origins.py     0_元資料と設計書の対応（届いた資料のどれが使われなかったか）
+├── figure.py      束の見取り図（正本にある関係だけを線にする）
+├── audit.py       出来上がった設計書のほうを検査する（P1xx）
 ├── publish.py     文書定義 → Markdown / HTML
+├── page.py        生成物の HTML の見た目（Excel で読まれてきた形へ寄せる）
+├── audience.py    読者別の生成（stakeholder 向けと決定記録）
+├── gate.py        --force の痕跡 ―― 抜け道を選んだことを成果物に残す
+├── digest.py      人向けの一覧を畳む（--summary / --code）
+├── report.py      指摘の機械可読な出力（--format json / sarif）
 ├── auto.py        通し（parse → publish）
 └── cli.py         入口
 
@@ -401,7 +421,28 @@ surface/                    エージェントへの手順書（.claude / .githu
 └── skills/arp4/
     ├── body.md             SKILL.md の本文（工程の地図）
     └── docs/*.md           工程ごとのページ
+
+build/
+├── build.py                surface/ → .claude / .github（展開）
+└── deploy.py               公開用のフォルダへ配布物を展開する（下記）
 ```
+
+### 公開用に配る
+
+`build/deploy.py` が、このリポジトリから**配布するものだけ**を別のフォルダへ展開して
+git へ入れる。**何を出すかは `deploy.py` の `INCLUDE` だけが決める**（中身の列挙は
+`git ls-files` に任せる ―― `.gitignore` と二重に「出さないもの」を書くと、片方を直した
+ときにもう片方が古いまま残り、`__pycache__` やローカル設定が公開側へ漏れる）。
+
+```bash
+python build/deploy.py                     # 隣の arp4-publish/ へ展開してコミットまで
+python build/deploy.py --dest <パス>       # 展開先を変える
+python build/deploy.py --check             # 書かずに対象の一覧だけ見る
+python build/deploy.py --no-git            # コピーだけして git は触らない
+```
+
+**展開先の中身は毎回作り直す**（`.git` だけ残す） ―― 元から消したファイルが公開側に
+残り続けると、「消したのに出続ける」の原因が展開側に散る。
 
 ## ドキュメント
 
