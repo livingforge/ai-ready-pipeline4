@@ -272,9 +272,12 @@ python build/build.py --root <消費側>      # 消費側プロジェクトへ�
 python build/build.py --check              # 展開が古くないか（CI 用）
 ```
 
-展開されるのは `SKILL.md`（工程の地図）と `docs/` 11 ページで、**必要になったページだけを
-読ませる**設計である。**展開先（`.claude` / `.github`）を直接編集しない** ―― 直すのは
-`surface/` のほうで、宣言は `surface/manifest.yaml` に 1 行足す。
+展開されるのはスキル 2 つ ―― `arp4`（`SKILL.md` ＝ 工程の地図 ＋ `docs/` 11 ページ。
+**必要になったページだけを読ませる**）と `arp4-setup`（1 枚。起動コマンドの決定・導入・
+端末の符号化）である。**環境を arp4 側に書かない** ―― これを読ませたいのは arp4 が
+打てない状態のときで、工程の地図とは読むタイミングが違う。**展開先（`.claude` /
+`.github`）を直接編集しない** ―― 直すのは `surface/` のほうで、宣言は
+`surface/manifest.yaml` に 1 行足す。
 
 | ページ | いつ読む |
 | --- | --- |
@@ -426,9 +429,11 @@ src/arp4/
 
 surface/                    エージェントへの手順書（.claude / .github の元）
 ├── manifest.yaml           スキルと docs の宣言。**足すときはここに 1 行**
-└── skills/arp4/
-    ├── body.md             SKILL.md の本文（工程の地図）
-    └── docs/*.md           工程ごとのページ
+├── skills/arp4/
+│   ├── body.md             SKILL.md の本文（工程の地図）
+│   └── docs/*.md           工程ごとのページ
+└── skills/arp4-setup/
+    └── body.md             環境（起動コマンド・導入・符号化）。docs は持たない
 
 build/
 ├── build.py                surface/ → .claude / .github（展開）

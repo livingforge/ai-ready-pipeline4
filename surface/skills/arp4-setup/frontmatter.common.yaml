@@ -1,0 +1,4 @@
+# .claude / .github 両方の SKILL.md に共通するフロントマター。
+# ここを直せば両プラットフォームに反映される。
+name: arp4-setup
+description: arp4 を打てる状態にする ―― 起動コマンドの決定・導入（pip install）・端末の符号化だけを扱う。「arp4 --help が通らない」「arp4 は認識されていません / command not found / not recognized」「python -m arp4 が No module named arp4」「arp4 を入れたい・環境を作りたい」「Windows で arp4 の出力が文字化けする・UnicodeEncodeError で止まる」で使う。arp4 のソースリポジトリの中にいても、入っているとは限らないので同じように使う。仕様パイプラインの進め方（parse・整理・build・publish）は arp4 スキルの担当で、こちらでは扱わない。
