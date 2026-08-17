@@ -54,6 +54,15 @@ Excel とコードで役割が違う。
 別々に数えるのは**次にやることが 3 つとも違う**からである（グラフは元データの
 シートを読む、SmartArt は箱の文字が取れる、埋め込みは元ファイルを足す）。
 
+**貼り付け画像は中の文字も読む**（:mod:`arp4.ocr` ―― Windows OCR）。実体を
+``images/`` へ出すだけだった頃は、「文字しか無い平坦な画像」（表・画面・帳票を
+そのまま撮ったもの）まで整理層が 1 枚ずつ開く必要があった ―― 字であるなら
+機械が読める。**読んだ字は別のアンカー**（``s4-o1``）へ出し、セルの値とも
+代替テキストとも混ぜない ―― OCR は必ず読み違えるので、出自が同じ枠に入ると
+整理層は「資料にそう書いてある」と読む。これも意味の判断ではない（engine が
+出した字の転記である）。**使えない環境では黙って劣化させず、理由を出す**
+（``P016`` と ``o1`` の両方 ―― 空の ``o1`` は「画像に字が無かった」に見える）。
+
 **接続を取るのは意味の判断ではない。** 以前ここには「『A の次が B』は矢印が持って
 おり、座標から復元するしかない（＝意味の判断になる）ので取らない」と書いてあった
 が、**前提が事実と違った。** 接続子は繋がっている図形の id を ``a:stCxn`` /
@@ -87,7 +96,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 
-from arp4 import mdio, yamlio
+from arp4 import mdio, ocr, yamlio
 from arp4.finding import Finding
 from arp4.paths import Round
 
@@ -184,13 +193,16 @@ _SPARSE_AREA = 100
 class Media:
     """ブックから取り出した画像 1 枚。**中身は入っていたそのまま**（変換しない）。
 
-    arp4 はいまも画像の中の文字を読まない ―― 読むのは**エージェント**である。
     機械が読めないものを「読めません」と申告するだけで終わっていたころ、
     貼り付け画像に描かれた業務フローは**誰の手にも渡らなかった** ―― 申告の宛先
     （整理層）が画像を開けるのに、開ける場所へ出していなかったからである。
 
     名前は 2 か所に出す。**パース結果の中**（``s<番号>-i1`` の Markdown リンク）と
     **``sources.yml``** で、前者は読むため、後者は撮った版を突き合わせるためにある。
+
+    **中の文字は :mod:`arp4.ocr` が読む。** 絵は絵のまま渡すが、絵の中の字まで
+    渡さないでいると、文字しか無い画像（表・画面・帳票を撮ったもの）まで
+    整理層が 1 枚ずつ開くことになる。
     """
 
     #: 書き出す名前（``<シート>-p1.jpeg``）。:mod:`arp4.render` の ``-1.png`` と
@@ -198,6 +210,10 @@ class Media:
     #: **貼ってあった画像**が同じ名前の並びになると出自が分からなくなる。
     name: str
     body: bytes
+    #: この画像から**機械が読んだ字**（``None`` は読みにいかなかったとき）。
+    #: 画像そのものとは別に持つ ―― バイト列は資料の写しだが、こちらは
+    #: **機械の読み**であって資料ではない。
+    reading: ocr.Reading | None = None
 
 
 @dataclass
@@ -224,7 +240,7 @@ class Target:
 
 # ── 入口 ────────────────────────────────────────────────────────
 def plan(round_: Round, sources: Iterable[Path], base: Path,
-         exclude: Iterable[str] | None = None
+         exclude: Iterable[str] | None = None, use_ocr: bool = True
          ) -> tuple[list[Target], list[Finding]]:
     """資料を読んで**書き出し計画**を返す。書き込みは :func:`write`。
 
@@ -234,6 +250,12 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
     丸ごと渡すと、パース結果の正解（``dataset/正解/*.md``）やフィクスチャを
     資料として拾う。除外は黙って行わない（何件飛ばしたかを ``P014`` で言う。
     1 件にも当たらないパターンは打ち間違いの疑いなので、それも言う）。
+
+    ``use_ocr`` を落とすと**貼り付け画像の中の字を読まない**（既定は読む）。
+    切れるようにしてあるのは 2 つの理由からで、どちらも「読まないほうがよい」
+    ではない ―― 資料が数百冊あって画像だけで何分も掛かるとき、そして
+    **環境の違うマシンで同じパース結果を出したい**ときである（読める字は
+    入っている言語パックで変わる）。落としたことは ``o1`` に必ず書く。
     """
     targets: list[Target] = []
     findings: list[Finding] = []
@@ -255,7 +277,7 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
                    "Word・PDF は 2 側にあります）")))
             continue
         try:
-            docs, said, media = _parse_one(path, base)
+            docs, said, media = _parse_one(path, base, use_ocr)
         except Exception as exc:                       # 壊れたファイルで止めない
             findings.append(Finding("error", "P010", path.name,
                                     f"読み込みに失敗しました: {exc}"
@@ -275,6 +297,7 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
                                           for one in media.get(relative, [])]))
 
     findings += _missed_note(missed)
+    findings += _ocr_note(targets, use_ocr)
     targets, clashes = _unique(targets, dirty)
     findings += [Finding("warn", "P002", was.name,
                          f"書き出し先が重なったので名前を変えました → {now.name}"
@@ -603,6 +626,30 @@ def _missed_note(missed: list[tuple[Path, str]]) -> list[Finding]:
             for path, kind in sorted(missed)]
 
 
+def _ocr_note(targets: list[Target], use_ocr: bool) -> list[Finding]:
+    """**画像の中の字を誰も読まなかったこと**を、走らせた人にも言う。
+
+    パース結果の ``o1`` には理由が入るが、それを読むのは整理層である ――
+    足りないのは**言語パック 1 つ**というような、いま手元で直せる話が、
+    直せる人の目に触れないまま終わる。
+
+    **1 度だけ出す。** 環境の話なので、資料 30 冊ぶん同じ行を並べても
+    分かることは増えない（ブック単位の申告と役割が違う）。
+    """
+    if not use_ocr or not any(target.images for target in targets):
+        return []
+    why = ocr.trouble()
+    if not why:
+        return []
+    return [Finding("warn", "P016", "Windows OCR",
+                    f"貼り付け画像の中の文字を読めませんでした（{why}）。"
+                    "画像の実体は出してあるので、整理層が開けば読めます ―― "
+                    "ただし平坦な画像（表・画面・帳票を撮ったもの）まで"
+                    "1 枚ずつ開くことになります。Windows で言語パックを"
+                    "入れると次のラウンドから読めます（設定 > 時刻と言語 > "
+                    "言語と地域 > 言語のオプション > 基本的なタイピング）。")]
+
+
 def _walk(root: Path, missed: list[Path] | None = None) -> list[Path]:
     """フォルダの下のファイル。**同じフォルダを二度歩かない。**
 
@@ -803,13 +850,14 @@ def _unopenable(path: Path) -> str:
     return ""
 
 
-def _parse_one(path: Path, base: Path
+def _parse_one(path: Path, base: Path, use_ocr: bool = True
                ) -> tuple[list[tuple[Path, mdio.Doc]], list[Finding],
                           dict[Path, list[Media]]]:
     """**画像を持ちうるのは Excel だけ**なので、ほかの形式は空の第 3 要素を返す。"""
     relative = relative_path(path, base)
     if path.suffix.lower() in _EXCEL:
-        return _excel(path, relative)          # 空なら `_excel` が P009 を出す
+        # 空なら `_excel` が P009 を出す
+        return _excel(path, relative, use_ocr)
     if path.suffix.lower() in _TEXT:
         return (*_empty_note(_markdown(path, relative), path), {})
     if path.suffix.lower() in _SQL:
@@ -912,7 +960,7 @@ def _said(caught: list[Any]) -> list[str]:
                    if _MUTED not in str(one.message)})
 
 
-def _excel(path: Path, relative: Path
+def _excel(path: Path, relative: Path, use_ocr: bool = True
            ) -> tuple[list[tuple[Path, mdio.Doc]], list[Finding],
                       dict[Path, list[Media]]]:
     """**シート 1 枚 = ファイル 1 本。** ブックのファイル名がディレクトリになる。"""
@@ -932,6 +980,10 @@ def _excel(path: Path, relative: Path
     # 名前を付け直して出す。
     bodies = {part.name: part.body
               for parts in related["image"].values() for part in parts}
+    # **中の字はブック 1 冊ぶんまとめて読む。** シートごとに読みにいくと、
+    # 20 枚のブックで engine を 20 回起こすことになる（:func:`arp4.ocr.read`
+    # は同じ実体を 1 度しか読まないので、貼り回された社章も 1 回で済む）。
+    readings = _readings(drawings, bodies) if use_ocr else None
     made: list[tuple[Path, mdio.Doc]] = []
     media: dict[Path, list[Media]] = {}
     skipped: list[tuple[str, str]] = []
@@ -951,10 +1003,13 @@ def _excel(path: Path, relative: Path
             # 「資料に無い」と「機械が読めていない」のどちらでもない
             # 「機械が見なかった」が 1 枚ぶん混ざる。
             drawing = drawings.get(title, Drawing())
-            shots, chunk = _pictures(index, title, relative, drawing, bodies)
+            shots, chunk, said_ocr = _pictures(index, title, relative, drawing,
+                                               bodies, readings)
             out, doc = _chartsheet(path, relative, index, title, drawing)
             if chunk is not None:
                 doc.chunks.append(chunk)
+                if said_ocr is not None:
+                    doc.chunks.append(said_ocr)
                 media[out] = shots
             made.append((out, doc))
             continue
@@ -991,7 +1046,7 @@ def _excel(path: Path, relative: Path
             # 空欄になったものを「資料に無い」と読ませないために、値の隣に置く。
             doc.notes.append(_RESCUE_NOTE)
         if drawing.total or drawing.unreadable:
-            doc.notes.append(_shape_note(index, drawing))
+            doc.notes.append(_shape_note(index, drawing, readings))
         if blanks:
             doc.notes.append(_formula_note(index, blanks))
         if sheet_cells.errors:
@@ -1107,13 +1162,19 @@ def _excel(path: Path, relative: Path
                 heading="代替テキスト（人が書いた説明）",
                 cells=drawing.alts))
 
-        shots, pictures = _pictures(index, sheet.title, relative, drawing, bodies)
+        shots, pictures, said_ocr = _pictures(index, sheet.title, relative,
+                                              drawing, bodies, readings)
         if pictures is not None:
             # **貼り付け画像は実体ごと出す。** ここは長く「中身は取れていません」
             # の 1 行だけだった ―― 機械が読めないのは本当だが、**整理層は読める**
             # のに、開ける場所へ出していなかった。名前を md に書いておくのは、
             # 出典として指す先が要るからである（アンカーは `i1`）。
             doc.chunks.append(pictures)
+        if said_ocr is not None:
+            # **読んだ字は絵とは別のアンカー**（`o1`）にする。同じ `i1` に混ぜると、
+            # 「ブックに入っていた画像」と「機械がその画像から読んだ字」が同じ
+            # 出典になる ―― 前者は資料の写しだが、後者は**必ず読み違えを含む**。
+            doc.chunks.append(said_ocr)
 
         if drawing.total or drawing.unreadable:
             # **セルの塊とは別のアンカー**にする。図形は番地を持たないので、
@@ -1473,13 +1534,27 @@ def _chartsheet(path: Path, relative: Path, index: int, title: str,
     return Path(*relative.parts) / f"{safe_name(title)}{mdio.EXT}", doc
 
 
-def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
-              bodies: dict[str, bytes]) -> tuple[list[Media], mdio.Chunk | None]:
-    """貼り付け画像を取り出して名前を付ける。``(出す画像, パース結果へ貼る塊)``。
+def _readings(drawings: dict[str, Drawing], bodies: dict[str, bytes]
+              ) -> dict[str, ocr.Reading]:
+    """ブック 1 冊ぶんの画像を**まとめて**読む（:mod:`arp4.ocr`）。
 
-    **arp4 はいまも画像を読まない。** 読むのは整理層（エージェント）である ――
-    ここがやるのは「読める場所へ置いて、名前を出典として指せる形にする」ことだけで、
-    中身の判断はしない（パース層の規律はそのまま）。
+    **貼ってある画像だけを読む。** ``bodies`` にはブックの中の画像が全部入って
+    いるが、どの図にも貼られていない実体（差し替えて消し忘れた絵）は資料の
+    どこにも現れないので、読んでも出す先が無い。
+    """
+    wanted = {part for drawing in drawings.values() for part, _ in drawing.media}
+    return ocr.read({part: body for part, body in bodies.items() if part in wanted})
+
+
+def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
+              bodies: dict[str, bytes],
+              readings: dict[str, ocr.Reading] | None = None
+              ) -> tuple[list[Media], mdio.Chunk | None, mdio.Chunk | None]:
+    """貼り付け画像を取り出して名前を付ける。``(出す画像, 画像の塊, 読んだ字の塊)``。
+
+    **絵は絵のまま渡し、字は字として読む。** ここがやるのは「読める場所へ置いて、
+    名前を出典として指せる形にする」ことと「機械が読める字を読んでおく」ことだけで、
+    中身の判断はしない（パース層の規律はそのまま）。絵として読むのは整理層である。
 
     **同じ実体は 1 回だけ出す。** 1 枚の画像を 2 か所に貼ったシートは ``xdr:pic``
     が 2 個になるが、実体は 1 つである ―― 枚数ぶん書き出すと、同じバイト列が
@@ -1487,9 +1562,13 @@ def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
 
     **実体に辿り着けない画像は数から落とす。** リンク画像（``r:link``）は
     ブックの中に実体を持たず、指しているのは資料を作った人の手元のパスである。
+
+    ``readings`` が ``None`` なら**読みにいかなかった**（``--no-ocr``）。
+    「読んで字が無かった」と同じ形にはしない ―― 前者は誰も見ていないという
+    ことで、次にやることが正反対である。
     """
     if not drawing.media:
-        return [], None
+        return [], None, None
     stem = safe_name(title)
     named: dict[str, str] = {}
     shots: list[Media] = []
@@ -1500,10 +1579,11 @@ def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
             continue
         if part not in named:
             named[part] = f"{stem}-p{len(named) + 1}{Path(part).suffix.lower() or '.bin'}"
-            shots.append(Media(name=named[part], body=body))
+            shots.append(Media(name=named[part], body=body,
+                               reading=(readings or {}).get(part)))
             listed.append((named[part], alt or "（代替テキストはありません）"))
     if not shots:
-        return [], None
+        return [], None, None
 
     # **リンクはパース結果からの相対**にする（:mod:`arp4.render` と同じ形）。
     # ``rounds/r001/`` の中で ``parsed/`` と ``images/`` が並んでいるので、
@@ -1514,7 +1594,58 @@ def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
         anchor=f"s{index}-i1", at=f"画像 {len(shots)} 枚",
         heading="画像（ブックから取り出したファイル）",
         cells=listed,
-        text="\n".join(f"![{one.name}]({where}/{one.name})" for one in shots))
+        text="\n".join(f"![{one.name}]({where}/{one.name})" for one in shots)), \
+        _read_chunk(index, shots, readings is not None)
+
+
+#: 読んだ字を出すときの見出し。**「機械が読んだ」と毎回書く** ―― 出典として
+#: 指された整理結果を人がレビューするとき、そこに見えているのはこの見出しである。
+_OCR_HEADING = "画像の中の文字（Windows OCR が読んだもの。読み違えが混ざります）"
+
+#: 読みにいかなかったとき（``--no-ocr``）。**空にしない** ―― 空の ``o1`` は
+#: 「画像に文字が無かった」に見え、それは「資料に無い」と「機械が読めていない」の
+#: 取り違えそのものである。
+_OCR_OFF = ("読みにいっていません（`--no-ocr` が指定されました）。"
+            "画像を開いて読むのは整理層の仕事です。")
+
+#: 読んだが字が 1 つも出なかったとき。**画像は絵である**（図・写真・網点の
+#: 掛かった絵）。次にやることは「開いて見る」で、`arp4 render` ではない。
+_OCR_BLANK = ("文字は見つかりませんでした（図・写真・網点の掛かった絵は"
+              "こうなります）。開いて見るのは整理層の仕事です。")
+
+
+def _read_chunk(index: int, shots: list[Media], attempted: bool
+                ) -> mdio.Chunk | None:
+    """読んだ字を ``s<番号>-o1`` へ。**必ず 1 枚ずつ、画像の名前と対で出す。**
+
+    まとめて 1 つの塊にしないのは、読んだ字が**どの画像から出たか**を整理層が
+    辿れるようにするためである（3 枚貼ってあるシートで、字が 1 枚からしか
+    出ていないことは、それ自体が「残り 2 枚は絵である」という事実になる）。
+
+    字は**インデントした塊**（4 字下げ）で出す。OCR の行には ``|`` も
+    ``#`` も ``` も普通に混ざるので、表や引用に組み直すと**読めた字のほうが
+    壊れる** ―― ここは原文をそのまま置く場所である。
+    """
+    if not shots:
+        return None
+    body: list[str] = []
+    for one in shots:
+        body.append(f"`{one.name}`")
+        body.append("")
+        if not attempted:
+            said = _OCR_OFF
+        elif one.reading is None:
+            said = "読みにいっていません。"
+        elif one.reading.trouble:
+            said = f"読めませんでした（{one.reading.trouble}）。"
+        elif not one.reading.lines:
+            said = _OCR_BLANK
+        else:
+            said = one.reading.text
+        body += [f"    {line}" for line in said.splitlines()]
+        body.append("")
+    return mdio.Chunk(anchor=f"s{index}-o1", at=f"画像 {len(shots)} 枚",
+                      heading=_OCR_HEADING, text="\n".join(body).rstrip())
 
 
 #: パース結果の ``<!-- source: … -->`` でブックとシートを繋ぐ語。
@@ -2672,7 +2803,8 @@ def _line_width(line: ET.Element) -> str:
     return f"{points:g}pt"
 
 
-def _shape_note(index: int, drawing: Drawing) -> str:
+def _shape_note(index: int, drawing: Drawing,
+                readings: dict[str, ocr.Reading] | None = None) -> str:
     """図形について何が取れて何が取れなかったかの申告。**黙って空を返さない。**"""
     if drawing.unreadable:
         # **XML として開けなかった描画パートは、図形 0 個と同じ形で出てくる。**
@@ -2702,7 +2834,7 @@ def _shape_note(index: int, drawing: Drawing) -> str:
             # （表紙の会社ロゴ・スキャンした帳票見本がまさにこの形になる）。
             return (f"このシートには {drawing.summary} があります。"
                     "文字を持つ図形はありません。"
-                    + _picture_note(index, drawing))
+                    + _picture_note(index, drawing, readings))
         return (f"このシートには {drawing.summary} があります。"
                 + ("テキストも接続も取れていません（業務フロー・ER 図・"
                    "状態遷移図・画面レイアウトはここに描かれていることが多い）。"
@@ -2747,15 +2879,16 @@ def _shape_note(index: int, drawing: Drawing) -> str:
                  "（線を目分量で置いた図）。両端の id が資料に無いので、"
                  "どこからどこへの線かは絵にしても決まりません。")
     if drawing.pictures:
-        note += _picture_note(index, drawing)
+        note += _picture_note(index, drawing, readings)
     note += ("取れていないのは配置です。枠で括られたゾーン・段組み・注記の"
              "位置が仕様なら、`arp4 render` で絵にして読み、それでも確定できない"
              "ときに out_of_scope に kind: 未読取 で宣言してください。")
     return note
 
 
-def _picture_note(index: int, drawing: Drawing) -> str:
-    """**画像は撮り直しても読めるようにならない。取り出して渡す。**
+def _picture_note(index: int, drawing: Drawing,
+                  readings: dict[str, ocr.Reading] | None = None) -> str:
+    """**画像は撮り直しても読めるようにならない。取り出して渡し、字は読む。**
 
     :mod:`arp4.render` は「人が見て読む」ための絵であって、貼り付け画像の中の
     文字を機械が読むわけではない ―― 図形と違い、画像は**絵にする以前から絵**
@@ -2768,20 +2901,26 @@ def _picture_note(index: int, drawing: Drawing) -> str:
     「中身は取れていません」の 1 行だけで、貼り付け画像に描かれた業務フローは
     **ブックの中に入ったまま**だった。
 
+    **字は機械も読む**（:mod:`arp4.ocr` ―― ``s<番号>-o1``）。ここも「絵は読めない」
+    の一言で片付けていたが、貼ってある画像の多くは**表・画面・帳票をそのまま
+    撮ったもの**で、絵ではなく字である。読めた枚数を言うのは、**残りが本当に絵
+    である**ことをそれで示すためでもある。
+
     **代替テキストの無い画像は分けて数える。** 中身が読めないのは同じでも、
     書いてあれば「何の画像か」は分かる ―― 無ければそれすら分からないので、
     次にやること（元の画像ファイルか紙を当たる）が変わる。
     """
     blind = drawing.pictures - drawing.picture_alts
     missing = drawing.pictures - len(drawing.media)
-    note = (f"貼り付け画像 {drawing.pictures} 枚の中身は機械には取れていません"
-            "（表のスクリーンショットならセルの値は 1 つも取れていません）。"
-            "`arp4 render` で撮り直しても読めるようにはなりません。"
+    note = (f"貼り付け画像 {drawing.pictures} 枚は絵のままです"
+            "（表のスクリーンショットなら、セルの値としては 1 つも取れていません）。"
+            "`arp4 render` で撮り直しても中身は変わりません。"
             "図形と違い、画像は絵にする以前から絵です。")
     if drawing.media:
         note += (f"実体は `s{index}-i1` に出してあります（`images/` の中）。"
                  "開いて読むのは整理層の仕事です。読み取った内容を整理結果へ"
                  f"書くときは、出典に `s{index}-i1` を指してください。")
+        note += _ocr_said(index, drawing, readings)
     if drawing.picture_alts:
         note += (f"うち {drawing.picture_alts} 枚には代替テキストがあるので、"
                  f"何の画像かは `s{index}-a1` でも分かります。")
@@ -2796,6 +2935,40 @@ def _picture_note(index: int, drawing: Drawing) -> str:
         note += (f"うち {missing} 枚は実体を取り出せませんでした"
                  "（ブックの外を指すリンク画像です）。元の画像ファイルを"
                  "当たるか、out_of_scope に kind: 未読取 で宣言してください。")
+    return note
+
+
+def _ocr_said(index: int, drawing: Drawing,
+              readings: dict[str, ocr.Reading] | None) -> str:
+    """OCR が何枚から字を読めたかの申告。**枚数で言う**（中身は ``o1`` にある）。
+
+    **「読めた」も申告である。** 読めなかったものを数えるのと同じ理由で、
+    読めたものも数える ―― 3 枚のうち 1 枚からしか字が出ていないことは、
+    「残り 2 枚は開いて見るしかない」という次の一手そのものである。
+
+    **理由は 1 つにまとめる。** 環境が理由（言語パックが無い）なら画像 20 枚
+    ぶん同じ文が並んでも分かることは増えないので、代表を 1 つだけ出す。
+    """
+    if readings is None:
+        return ("画像の中の文字は読みにいっていません（`--no-ocr`）。"
+                f"`s{index}-o1` にもそう書いてあります。")
+    parts = {part for part, _ in drawing.media}
+    got = [readings[part] for part in sorted(parts) if part in readings]
+    if not got:
+        return ""                                  # 読む相手が 1 枚も無かった
+    read = [one for one in got if one.lines]
+    troubled = [one for one in got if one.trouble]
+    if read:
+        note = (f"うち {len(read)} 枚からは Windows OCR が文字を読み出しました"
+                f"（`s{index}-o1`）。読み違えが混ざります（`ORDER-001` が "
+                "`ORDER-OOI` になるなど）ので、値として使う前に画像そのものを"
+                "確かめてください。")
+    else:
+        note = ("Windows OCR では文字を 1 つも読めませんでした"
+                f"（`s{index}-o1`）。")
+    if troubled:
+        note += (f"うち {len(troubled)} 枚は読みにいって失敗しました"
+                 f"（{troubled[0].trouble}）。")
     return note
 
 

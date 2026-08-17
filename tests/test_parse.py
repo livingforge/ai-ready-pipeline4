@@ -1134,11 +1134,105 @@ def test_同じ実体を貼った2枚を別々の画像として出さない() -
     """
     drawing = parse.Drawing(pictures=2, media=[("xl/media/image1.png", "現行画面"),
                                                ("xl/media/image1.png", "現行画面")])
-    shots, chunk = parse._pictures(
+    shots, chunk, _ = parse._pictures(
         3, "画面", Path("受注.xlsx"), drawing, {"xl/media/image1.png": b"\x89PNG"})
 
     assert [one.name for one in shots] == ["画面-p1.png"]
     assert chunk is not None and chunk.at == "画像 1 枚"
+
+
+# ── 画像の中の文字（Windows OCR） ────────────────────────────────
+def _reads(monkeypatch: pytest.MonkeyPatch, *lines: str) -> None:
+    """engine の代わりに、決まった行を返す（`conftest` の差し替えを上書きする）。"""
+    from arp4 import ocr
+
+    monkeypatch.setattr(ocr, "_unavailable", lambda: "")
+    monkeypatch.setattr(
+        ocr, "_run",
+        lambda bodies: ("", [ocr.Reading(lines=lines, language="ja")
+                             for _ in bodies]))
+
+
+def test_画像の中の文字は別のアンカーに出る(
+        project: Paths, round_: Round, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**`i1` に混ぜない。** バイト列の写し（資料）と機械の読みは出自が違う ――
+    同じ塊に入れると、整理層は誤読を「資料にそう書いてある」と読む。
+    """
+    _reads(monkeypatch, "受注番号 ORDER-001", "得意先コード")
+    source = _book_with_pictures(sources_dir(project) / "受注.xlsx", 1)
+    doc = _parse(round_, source, sources_dir(project))[0]
+
+    chunk = next(c for c in doc.chunks if c.anchor == "s1-o1")
+    assert chunk.at == "画像 1 枚"
+    assert "読み違えが混ざります" in chunk.heading      # 出典として指されたときに見える
+    assert "`画面-p1.png`" in chunk.text                # どの画像から出た字か
+    assert "    受注番号 ORDER-001" in chunk.text       # 原文のまま（表に組み直さない）
+    # 申告にも枚数で出る（残りが「絵である」ことはこれで言える）
+    note = "".join(doc.notes)
+    assert "うち 1 枚からは Windows OCR が文字を読み出しました" in note
+
+
+def test_字の出なかった画像にも空でない塊を出す(
+        project: Paths, round_: Round) -> None:
+    """**空の `o1` は「画像に文字が無かった」に見える。**
+
+    それは「資料に無い」と「機械が読めていない」の取り違えそのものなので、
+    engine が動いたことと字が無かったことを本文に書く（`conftest` の差し替えが
+    ちょうどこの形＝「動いたが字は無い」である）。
+    """
+    source = _book_with_pictures(sources_dir(project) / "受注.xlsx", 1)
+    doc = _parse(round_, source, sources_dir(project))[0]
+
+    chunk = next(c for c in doc.chunks if c.anchor == "s1-o1")
+    assert "文字は見つかりませんでした" in chunk.text
+    assert "Windows OCR では文字を 1 つも読めませんでした" in "".join(doc.notes)
+
+
+def test_読みにいっていないことと字が無いことを混ぜない(
+        project: Paths, round_: Round) -> None:
+    """`--no-ocr` は「誰も見ていない」であって「絵だった」ではない。"""
+    source = _book_with_pictures(sources_dir(project) / "受注.xlsx", 1)
+    targets, _ = parse.plan(round_, [source], sources_dir(project), use_ocr=False)
+    doc = targets[0].doc
+
+    chunk = next(c for c in doc.chunks if c.anchor == "s1-o1")
+    assert "読みにいっていません" in chunk.text
+    assert "文字は見つかりませんでした" not in chunk.text
+    assert "読みにいっていません（`--no-ocr`）" in "".join(doc.notes)
+
+
+def test_engineの無い環境は走らせた人にも1度だけ言う(
+        project: Paths, round_: Round, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**足りないのは言語パック 1 つ**ということが、入れられる人の目に触れる。
+
+    パース結果の中だけに書いても、それを読むのは整理層である ―― しかも資料
+    30 冊ぶん同じ行を並べても、分かることは 1 つも増えない。
+    """
+    from arp4 import ocr
+
+    monkeypatch.setattr(ocr, "_unavailable", lambda: "言語パックがありません")
+    where = sources_dir(project)
+    _book_with_pictures(where / "受注.xlsx", 2)
+    _book_with_pictures(where / "出荷.xlsx", 2, title="一覧")
+    targets, findings = parse.plan(round_, [where], where)
+
+    assert [f.code for f in findings if f.code == "P016"] == ["P016"]
+    assert "言語パックがありません" in next(
+        f for f in findings if f.code == "P016").message
+    chunk = next(c for c in targets[0].doc.chunks if c.anchor == "s1-o1")
+    assert "読めませんでした（言語パックがありません）" in chunk.text
+
+
+def test_画像の無い資料でOCRの申告を出さない(
+        project: Paths, round_: Round, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**関係の無い資料に環境の話を出さない。** 出すと申告そのものが読み飛ばされる。"""
+    from arp4 import ocr
+
+    monkeypatch.setattr(ocr, "_unavailable", lambda: "言語パックがありません")
+    path = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"]])
+    _, findings = parse.plan(round_, [path], sources_dir(project))
+
+    assert not [f for f in findings if f.code == "P016"]
 
 
 def test_実体を取り出せない画像は数えて申告する() -> None:

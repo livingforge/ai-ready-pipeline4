@@ -7,8 +7,42 @@ from pathlib import Path
 import pytest
 
 from arp4 import metamodel as mm
+from arp4 import ocr as ocr_module
 from arp4 import paths as paths_module
 from arp4.paths import Paths, Round
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_engine():
+    """**テストで Windows OCR を起こさない**（`render` の Excel と同じ理屈）。
+
+    起こすと 3 つとも壊れる ―― CI（Linux）には engine が無いので**環境で
+    結果が変わり**、Windows でも入っている言語パックで**読める字が変わり**、
+    ブック 1 冊ごとに ``powershell.exe`` が起きるので**遅くなる**。
+
+    「engine は動いたが字は無かった」に寄せるのは、そこが**画像のある検体の
+    ほとんどで正しい**からである（`tests/picture.py` の絵柄は、人には読めて
+    機械には読めないものばかり）。読んだ字が要るテストは自分で差し替える。
+
+    **セッションごとに掛ける。** 検体を組むフィクスチャ（`parsed`）は
+    session スコープで、関数スコープの差し替えより**先に**動く ―― そこだけ
+    本物の engine が走ると、正解ファイルがマシンごとに変わる。
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ocr_module, "_unavailable", lambda: "")
+        patch.setattr(
+            ocr_module, "_run",
+            lambda bodies: ("", [ocr_module.Reading(language="ja")
+                                 for _ in bodies]))
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _forget_readings() -> None:
+    """読み置きをテストごとに捨てる。**前のテストの読みを持ち越さない。**"""
+    ocr_module.forget()
+    yield
+    ocr_module.forget()
 
 
 @pytest.fixture

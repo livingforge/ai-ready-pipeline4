@@ -273,7 +273,8 @@ def _parse(args: argparse.Namespace) -> int:
 
     print(f"ラウンド {round_.name} ― {why}")
     targets, findings = parse_module.plan(round_, sources, base,
-                                          exclude=args.exclude)
+                                          exclude=args.exclude,
+                                          use_ocr=not args.no_ocr)
     for finding in order(findings):
         print(finding.render())
     if not targets:
@@ -1390,7 +1391,7 @@ _AUTO_PENDING = 3
 def _step_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
     """auto の 1 段に渡す引数。**各コマンドの既定と同じ値**を明示して埋める。"""
     base = {"root": args.root, "strict": False, "format": "text",
-            "round": None, "dry_run": False}
+            "round": None, "dry_run": False, "no_ocr": False}
     base.update(overrides)
     return argparse.Namespace(**base)
 
@@ -1808,6 +1809,11 @@ def main(argv: list[str] | None = None) -> int:
     parse.add_argument("--exclude", action="append", metavar="<glob>",
                        help="資料として読まないパターン（パスにも名前にも当たる。"
                             "テストの期待値・フィクスチャを除くのに使う。複数可）")
+    parse.add_argument("--no-ocr", action="store_true",
+                       help="貼り付け画像の中の文字を読まない（既定は読む）。"
+                            "資料が数百冊あって画像だけで待たされるとき、"
+                            "環境の違うマシンで同じパース結果を出したいときに使う"
+                            "（読める字は入っている言語パックで変わる）")
     parse.add_argument("--yes", action="store_true",
                        help="編集済みのパース結果も上書きする")
     parse.add_argument("--dry-run", action="store_true",

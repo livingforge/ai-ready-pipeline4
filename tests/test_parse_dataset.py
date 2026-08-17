@@ -461,7 +461,7 @@ def test_申告が7本並んでもアンカーがぶつからない(parsed) -> N
     doc = _doc(parsed, "資料/H/画面仕様書.xlsx/受注入力.md")
     anchors = [c.anchor for c in doc.chunks]
     assert anchors == ["s1-t1", "s1-f1", "s1-e1", "s1-m1", "s1-l1",
-                       "s1-d1", "s1-a1", "s1-i1", "s1-g1"]
+                       "s1-d1", "s1-a1", "s1-i1", "s1-o1", "s1-g1"]
     assert len(anchors) == len(set(anchors))
     assert len(doc.notes) == 7
     # 表の値は 1 つも落ちていない（消してある行も、隠してある行も残す）
@@ -737,7 +737,7 @@ def test_画像しか無いシートに絵にしろと言わない(parsed) -> No
     """
     doc = _doc(parsed, f"{BOOK}/表紙.md")
     note = _notes(doc)
-    assert "`arp4 render` で撮り直しても読めるようにはなりません" in note
+    assert "`arp4 render` で撮り直しても中身は変わりません" in note
     assert "実体は `s1-i1` に出してあります" in note
     assert "絵にして読んでください" not in note        # 空振りさせる案内
     # **名前は md の中にある。** 出典として指せないと、読んだ内容を整理結果へ
@@ -753,7 +753,7 @@ def test_代替テキストのある画像とない画像を分けて数える(p
     """
     doc = _doc(parsed, f"{BOOK}/画面レイアウト.md")
     note = _notes(doc)
-    assert "貼り付け画像 2 枚の中身は機械には取れていません" in note
+    assert "貼り付け画像 2 枚は絵のままです" in note
     assert "うち 1 枚には代替テキストがあるので" in note
     # **2 枚とも実体は出ている。** 代替テキストの有無で読めるかどうかは変わらない
     # ―― 変わるのは「開く前に何の画像か分かるか」だけである。

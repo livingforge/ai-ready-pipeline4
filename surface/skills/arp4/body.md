@@ -166,7 +166,8 @@ arp4 publish --root "$R"                    # ⑥
 
 ```
 .arp/rounds/r001/parsed/**.md   ① の出力（編集可・git 管理）
-.arp/rounds/r001/images/        シートの画像と render の絵（★ 開いて読むのはあなた）
+.arp/rounds/r001/images/        シートの画像と render の絵（★ 開いて見るのはあなた。
+                                中の文字は `o1` に読んである）
 .arp/rounds/r001/organized/     ★ あなたが書くところ
     **.yml               整理①（parsed と 1:1）
     _concepts.yml        整理②（同一性・用語・矛盾）
