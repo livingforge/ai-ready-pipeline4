@@ -46,6 +46,25 @@ def _forget_readings() -> None:
 
 
 @pytest.fixture
+def pdf_reader() -> None:
+    """**PDF の期待値は、読む道具が入っている環境でだけ見る。**
+
+    ``pypdfium2`` は ``[parse]`` の追加依存である。入っていない環境で arp4 は
+    ``P020`` を出して 1 冊を飛ばす ―― **それが正しい振る舞い**で、資料に中身が
+    無いのではないことも申告している。
+
+    同じことをテストが「アンカーがありません」で落ちる形で言うと、依存を
+    入れていない環境（中核だけを入れた人・PDF を使わない CI）で**毎回 6 本
+    赤くなる** ―― 赤が常態になると、本当に壊れたときの赤が読まれなくなる。
+    ここで飛ばすのは**環境の話であって、arp4 の振る舞いの話ではない**。
+    """
+    pytest.importorskip(
+        "pypdfium2",
+        reason="PDF を読むには pypdfium2 が要ります"
+               '（pip install "ai-ready-pipeline4[parse]"）')
+
+
+@pytest.fixture
 def project(tmp_path: Path) -> Paths:
     return paths_module.create(tmp_path)
 

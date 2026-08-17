@@ -1741,8 +1741,8 @@ parser.add_argument("path")
     assert not [c for c in targets[0].doc.chunks if c.anchor == "p1"]
 
 
-def test_no_ocrでもスキャンしたページの絵は出す(project: Paths,
-                                                round_: Round) -> None:
+def test_no_ocrでもスキャンしたページの絵は出す(project: Paths, round_: Round,
+                                                pdf_reader) -> None:
     """**`--no-ocr` が落とすのは機械の読みだけである。**
 
     実体を渡さないことではない ―― 整理層は絵を開いて読めるので、そこまで

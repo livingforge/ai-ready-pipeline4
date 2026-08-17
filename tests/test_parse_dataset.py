@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import os
 import re
 import time
@@ -26,13 +27,31 @@ import pytest
 import dataset
 from arp4 import mdio, parse
 
-#: **1 冊だけ**、パース結果を丸ごと置いてある（→ `docs/parsed.md`）。
+#: **形式ごとに 1 冊だけ**、パース結果を丸ごと置いてある（→ `docs/parsed.md`）。
 #: ほかの検体は「1 つの観点だけを見る」テストで押さえるが、現場の設計書 1 冊は
 #: **出来上がりそのものを人が読んで**正しさを判定できないと確かめようがない。
 GOLDEN = Path(__file__).with_name("dataset") / "正解"
 
-#: その 1 冊。
+#: その 1 冊（Excel）。
 BOOK = "資料/K/受注管理システム基本設計書（第3.2版）.xlsx"
+
+#: Excel 以外の 1 冊ずつ。**丸ごと置くのを Excel だけにしていた**あいだ、
+#: 観点の隙間（申告の二重出し・塊の並び・節の名前の付き方）は Excel でしか
+#: 見えていなかった ―― 形式が違えば割り方も申告も別の実装なので、**隙間も
+#: 形式ごとに別の場所にある。**
+PAPER = "資料/P/受注登録機能仕様書（第1.2版）.docx"
+DECK = "資料/O/新販売管理システム方式提案（第2.1版）.pptx"
+#: PDF の本文は **pypdfium2 が読んだ字**である ―― 行の中の連続した空白が
+#: どう畳まれるかは読み手の実装で決まるので、`pypdfium2` を上げたときに
+#: ここだけ差分が出ることがある。**そのときは差分を読んで書き直す**
+#: （arp4 が壊れたのではない、と分かる形でここに書いておく）。
+ACCEPT = "資料/Q/受注管理システム検収仕様書（第1.0版）.pdf"
+#: CSV は**1 ファイルが 1 本**である（割る構造を持たない）ので、パース結果の
+#: 道も `…csv.md` になる ―― 丸ごと置く相手としては、そこも含めて 1 冊である。
+LIST = "資料/N/得意先マスタ移行.csv"
+
+#: 丸ごと置いてある原本。**1 形式に 1 冊**（増やすと維持費だけが倍になる）。
+FROZEN = (BOOK, PAPER, DECK, ACCEPT, LIST)
 
 #: その**下流**の 1 冊（機能 1 本ぶんの詳細設計書）。**正解は置かない** ――
 #: 丸ごと置くのは「出来上がりを人が読んで判定する」ためで、同じ役目の 2 冊目を
@@ -653,9 +672,22 @@ def test_作成アプリが数式のキャッシュ無しの理由になって�
     assert "計算結果が保存されていない" in _notes(docs[f"{DETAIL}/性能と試験.md"])
 
 
-# ── 現場の 1 冊（正解結果との照合） ────────────────────────────
-def test_設計書のパース結果は正解のとおり(parsed) -> None:
-    """**この 1 冊だけは出来上がりを丸ごと置いてある。**
+# ── 形式ごとの 1 冊（正解結果との照合） ────────────────────────
+def _owner(name: str) -> str:
+    """パース結果の道が**どの原本のものか**（どれでもなければ空）。
+
+    1 冊が何本にも割れる形式は原本の名前がディレクトリになり、割れない形式
+    （CSV）は `…csv.md` がそのまま 1 本である ―― どちらも「1 冊ぶん」として
+    まとめて突き合わせたいので、ここで畳む。
+    """
+    for source in FROZEN:
+        if name.startswith(f"{source}/") or name == f"{source}.md":
+            return source
+    return ""
+
+
+def test_形式ごとの1冊は正解のとおり(parsed) -> None:
+    """**形式ごとに 1 冊、出来上がりを丸ごと置いてある。**
 
     ほかの検体は 1 つの観点だけを見る（落ちたテストから直す場所が一意に
     決まる）。それだけだと、**観点の隙間**は誰の目にも触れないまま残る ――
@@ -663,14 +695,32 @@ def test_設計書のパース結果は正解のとおり(parsed) -> None:
     落ちない。現場の設計書は 1 冊に全部が同時に入っているので、そこだけは
     **人が読める形の答え**を置いて丸ごと突き合わせる。
 
-    代償は正直に言う ―― 申告の文言を 1 つ直すと 9 本の期待値が書き換わる。
-    だから**この 1 冊にしか掛けない**（`corpus.py` を移し替えないのと同じ
+    **Excel だけに掛けていたあいだ、その番人は Excel にしかいなかった。**
+    割り方（シート／節／スライド／しおり）も申告の文も形式ごとに別の実装で、
+    隙間もそれぞれの場所にある ―― 1 冊ずつ足したのはそのためである。
+
+    代償は正直に言う ―― 申告の文言を 1 つ直すと期待値がまとめて書き換わる。
+    だから**1 形式に 1 冊しか掛けない**（`corpus.py` を移し替えないのと同じ
     理由である）。書き直すときは `ARP4_GOLDEN=write` を渡し、**差分を読んで
     から**コミットすること。
+
+    PDF だけは追加依存（`pypdfium2`）が要るので、入っていない環境ではその
+    1 冊を母集合から外す ―― 環境の話であって振る舞いの話ではない
+    （→ `conftest.pdf_reader`）。**外したことは黙らない。**
     """
     docs, _ = parsed
+    frozen = set(FROZEN)
+    try:
+        # **arp4 自身とまったく同じ判定にする**（`arp4.pdf.read` の入口）――
+        # `find_spec` で見ると、**在るのに読み込めない**入り方（壊れた
+        # インストール）で判定が割れ、正解だけが残って照合が落ちる。
+        importlib.import_module("pypdfium2")
+    except ImportError:
+        frozen.discard(ACCEPT)
+        print(f"pypdfium2 が無いので {ACCEPT} を照合から外しました")
+
     made = {name: mdio.dump(doc) for name, doc in docs.items()
-            if name.startswith(f"{BOOK}/")}
+            if _owner(name) in frozen}
 
     if _WRITE:                                   # 既定では通らない道である
         for name, body in made.items():
@@ -678,10 +728,27 @@ def test_設計書のパース結果は正解のとおり(parsed) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body, encoding="utf-8", newline="\n")
 
-    answers = {p.relative_to(GOLDEN).as_posix() for p in GOLDEN.rglob("*.md")}
+    answers = {name for p in GOLDEN.rglob("*.md")
+               if _owner(name := p.relative_to(GOLDEN).as_posix()) in frozen}
     assert answers == set(made), "正解とパース結果でファイルの数が違います"
     for name, body in sorted(made.items()):
         assert (GOLDEN / name).read_text(encoding="utf-8") == body, name
+
+
+def test_正解に置き忘れた形式が無い() -> None:
+    """**丸ごと置くと決めた形式が、置かれないまま通らない。**
+
+    `FROZEN` に足しても正解ファイルを書き出し忘れれば、上の照合は
+    「両方とも 0 本」で緑になる ―― **番人が 1 冊も見ていない状態**が
+    成功に見える。ここは母集合そのものを見る。
+    """
+    placed = {_owner(p.relative_to(GOLDEN).as_posix()) for p in GOLDEN.rglob("*.md")}
+
+    assert placed == set(FROZEN), (
+        "正解の置いてある原本が `FROZEN` と違います "
+        f"（置いてある: {sorted(placed)}）")
+    assert len({Path(source).suffix for source in FROZEN}) == len(FROZEN), (
+        "同じ形式を 2 冊置いています ―― 維持費だけが倍になります")
 
 
 def test_設計書は9枚出て非表示の1枚は申告される(parsed) -> None:
@@ -1440,12 +1507,11 @@ def test_例外の出ない文字化けを申告する(parsed) -> None:
     assert "EUC-JP で保存された資料を cp932 として読むとこの形になります" in said
 
 
-ACCEPT = "資料/Q/受注管理システム検収仕様書（第1.0版）.pdf"
 MINUTES = "資料/Q/受注管理システム移行判定会議_議事録.pdf"
 SCANNED = "資料/Q/受注管理システム受入確認書（押印済）.pdf"
 
 
-def test_PDFはしおりで節に割れる(parsed) -> None:
+def test_PDFはしおりで節に割れる(parsed, pdf_reader) -> None:
     """**しおりは資料が持っている構造である。**
 
     1 冊 1 本のまま出すと、200 ページの検収仕様書が 1 つのアンカーになり、
@@ -1462,7 +1528,7 @@ def test_PDFはしおりで節に割れる(parsed) -> None:
         docs[f"{ACCEPT}/01_（前書き）.md"], "p1-x1").text
 
 
-def test_PDFのアンカーはページ番号で振る(parsed) -> None:
+def test_PDFのアンカーはページ番号で振る(parsed, pdf_reader) -> None:
     """**PDF には番地が無い。** 唯一そこにあるのはページ番号なので、それで振る。
 
     節の中に何ページ入っていても、出典は 1 ページを名指しできる。
@@ -1473,7 +1539,7 @@ def test_PDFのアンカーはページ番号で振る(parsed) -> None:
     assert [c.at for c in doc.chunks] == ["p.1", "p.2"]
 
 
-def test_PDFの表は組み直さない(parsed) -> None:
+def test_PDFの表は組み直さない(parsed, pdf_reader) -> None:
     """**PDF が持っているのは位置を持った文字だけ**で、列の切れ目は無い。
 
     文字の隙間から当てにいくと、閾値の外れたところで**列がずれた表が
@@ -1487,7 +1553,7 @@ def test_PDFの表は組み直さない(parsed) -> None:
     assert "表は組み直していません" in " ".join(doc.notes)
 
 
-def test_しおりが無ければ1本のまま出す(parsed) -> None:
+def test_しおりが無ければ1本のまま出す(parsed, pdf_reader) -> None:
     """**割れないことを失敗にしない。**
 
     議事録・メモを印刷した PDF にアウトラインは無く、それが普通である ――
@@ -1500,7 +1566,7 @@ def test_しおりが無ければ1本のまま出す(parsed) -> None:
     assert "しおり（アウトライン）がありません" in " ".join(docs[made[0]].notes)
 
 
-def test_テキスト層が無いページは絵にして字を読む(parsed) -> None:
+def test_テキスト層が無いページは絵にして字を読む(parsed, pdf_reader) -> None:
     """**「テキスト層が無い」は「字が無い」ではない。**
 
     押印の要る書類は必ずスキャンで回ってくる ―― 黙って空のページを出すと
@@ -1518,7 +1584,7 @@ def test_テキスト層が無いページは絵にして字を読む(parsed) ->
     assert "テキスト層の無いページが 2 ページあります" in said[SCANNED.rsplit("/", 1)[-1]]
 
 
-def test_字の出なかったページでも絵は出す(parsed) -> None:
+def test_字の出なかったページでも絵は出す(parsed, pdf_reader) -> None:
     """**「読んで字が無かった」と「絵が無い」は別である。**
 
     OCR が 1 文字も返さなくても、絵は `images/` に出ている ―― 整理層は開いて
@@ -1532,7 +1598,6 @@ def test_字の出なかったページでも絵は出す(parsed) -> None:
     assert _chunk(doc, "p3-o1").text.strip()       # 空の `o1` は出さない
 
 
-PAPER = "資料/P/受注登録機能仕様書（第1.2版）.docx"
 MEMO_DOC = "資料/P/受注管理システム操作手順（暫定）.docx"
 
 
@@ -1653,9 +1718,6 @@ def test_申告は実在するアンカーを名指しする(parsed) -> None:
     assert "`w1-g1`" in said
     assert "`s1-g1`" not in said
     assert "w1-g1" in {c.anchor for c in doc.chunks}
-
-
-DECK = "資料/O/新販売管理システム方式提案（第2.1版）.pptx"
 
 
 def test_スライドは1枚がファイル1本になる(parsed) -> None:

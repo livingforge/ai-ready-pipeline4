@@ -22,13 +22,23 @@ _EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 _CROSS_DOCUMENT = ("P106", "P107")
 
 
-def _make_sample(directory: Path) -> Path:
-    """見本の資料を組んで、**その置き場を返す**（parse に渡すため）。"""
+def _sample_module():
     spec = importlib.util.spec_from_file_location(
         "make_sample", _EXAMPLES / "make_sample.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.build(directory)
+    return module
+
+
+def _make_sample(directory: Path) -> Path:
+    """見本の資料を組んで、**その置き場を返す**（parse に渡すため）。"""
+    _sample_module().build(directory)
+    return directory
+
+
+def _make_documents(directory: Path) -> Path:
+    """Excel 以外の見本（Word・PowerPoint・PDF・CSV）を組む。"""
+    _sample_module().build_documents(directory)
     return directory
 
 
@@ -95,6 +105,119 @@ records:
 }
 
 
+#: Excel 以外の 4 形式（Word・PowerPoint・PDF・CSV）から起こした整理結果。
+#:
+#: **1 形式から 1 つ以上のレコードを起こす。**通しで見たいのは「読めた」では
+#: なく、**形式ごとに違うアンカー**（`w3-` 節・`p4-` ページ・`s2-` スライド・
+#: 接頭辞の無い CSV）が凍結・正本・出典の照合・設計書の出典欄まで、そのままの
+#: 形で流れるかである ―― パースだけを見ていると、ここは 1 度も通らない。
+#:
+#: 同じ concept が別々の形式に出てくるのも**わざとである**（`c-T_ORDER` は
+#: PowerPoint の移行対象一覧と Word の画面項目表の両方に、`c-M_CUSTOMER` は
+#: PowerPoint と CSV の両方に出る）。現場の 1 案件はそうなっており、出典が
+#: 冊をまたいで揃うかどうかはそこでしか見えない。
+_DOCUMENTS_ORGANIZED = {
+    # PowerPoint ―― 移行対象の表（スライド 2 枚目）。
+    "資料/方式提案.pptx/02_移行対象と件数.yml": """\
+records:
+  - concept: c-T_ORDER
+    type: エンティティ
+    name: 受注ヘッダ
+    statement: 受注ヘッダ T_ORDER は移行対象であり、移行件数は 120,000 件であること
+    attrs: { physical_name: T_ORDER, entity_kind: トランザクション, volume: "120000" }
+    source: { anchor: s2-t1 }
+  - concept: c-M_CUSTOMER
+    type: エンティティ
+    name: 得意先
+    statement: 得意先マスタ M_CUSTOMER は移行対象であり、移行件数は 3,200 件であること
+    attrs: { physical_name: M_CUSTOMER, entity_kind: マスタ, volume: "3200" }
+    source: { anchor: s2-t1 }
+""",
+    # Word ―― 見出し 1 で割れた 3 節目（画面項目の表）。
+    "資料/受注登録機能仕様書.docx/03_2 画面項目.yml": """\
+records:
+  - concept: c-受注登録画面
+    type: 画面
+    name: 受注登録画面
+    statement: 受注登録画面は受注ヘッダと受注明細を 1 画面で登録すること
+    attrs: { screen_type: 入力 }
+    source: { anchor: w3-t1 }
+    refs:
+      - { rel: displays, to: c-得意先コード,
+          attrs: { io: 入力, required_flag: 必須 } }
+      - { rel: accesses, to: c-T_ORDER, attrs: { crud: [C] } }
+  - concept: c-得意先コード
+    type: データ項目
+    name: 得意先コード
+    statement: 得意先コードは文字列型（5 桁）の必須項目であること
+    attrs: { data_type: 文字列, length: 5 }
+    source: { anchor: w3-t1 }
+  # **参照だけのレコード。** 受注ヘッダを定義しているのは PowerPoint 側で、
+  # ここが言っているのは「その表に列が 1 本ある」だけである ―― 定義を 2 度
+  # 書くと、同じ事実が出典どうしで食い違ったことになる（`W045`）。
+  - concept: c-T_ORDER
+    source: { anchor: w3-t1 }
+    refs:
+      - { rel: has-column, to: c-得意先コード,
+          attrs: { physical_name: CUSTOMER_CD, not_null: true } }
+""",
+    # Word ―― 4 節目（本文の段落。表ではない）。
+    "資料/受注登録機能仕様書.docx/04_3 業務ルール.yml": """\
+records:
+  - concept: c-与信枠超過の承認
+    type: 業務ルール
+    name: 与信枠超過時の承認
+    statement: 与信枠を超える受注は、営業部長の承認を得るまで出荷指示を行わないこと
+    attrs: { rule_kind: business, condition: 与信枠を超える受注,
+             action: 営業部長の承認を得るまで出荷指示を行わない }
+    source: { anchor: w4-h1 }
+    refs: [{ rel: constrains, to: c-T_ORDER }]
+""",
+    # PDF ―― しおりで割れた 3 節目（原本では罫線の表。行のまま出ている）。
+    "資料/検収仕様書.pdf/03_2 確認項目.yml": """\
+records:
+  - concept: c-数量0の確認
+    type: テストケース
+    name: 数量に 0 を入力
+    statement: 受注登録画面で数量に 0 を入力するとエラーとなること
+    attrs: { expected: エラーとなる, level: 受入,
+             steps: 受注登録画面で数量に 0 を入力する }
+    source: { anchor: p4-x1 }
+    refs: [{ rel: verifies, to: c-受注登録画面 }]
+""",
+    # CSV ―― **1 ファイルが 1 本**なので、アンカーに接頭辞が無い（`t1`）。
+    "資料/得意先マスタ移行.csv.yml": """\
+records:
+  # ここも参照だけ（得意先マスタを定義しているのは PowerPoint 側）。
+  # CSV が言っているのは**見出し行にどの列があるか**である。
+  - concept: c-M_CUSTOMER
+    source: { anchor: t1 }
+    refs:
+      - { rel: has-column, to: c-得意先コード,
+          attrs: { physical_name: CUSTOMER_CD, pk: true, not_null: true } }
+      - { rel: has-column, to: c-得意先名,
+          attrs: { physical_name: CUSTOMER_NAME, not_null: true } }
+  - concept: c-得意先名
+    type: データ項目
+    name: 得意先名
+    statement: 得意先名は文字列型の項目であること
+    attrs: { data_type: 文字列 }
+    source: { anchor: t1 }
+""",
+}
+
+#: 形式ごとの出典。**設計書の出典欄にこの形で出る**（ラウンド名＋パース結果の
+#: 道＋アンカー）。接頭辞が形式ごとに違うので、1 つでも欠ければどの形式の
+#: 経路が切れているかがそのまま分かる。
+_DOCUMENT_SOURCES = (
+    "資料/方式提案.pptx/02_移行対象と件数#s2-t1",
+    "資料/受注登録機能仕様書.docx/03_2 画面項目#w3-t1",
+    "資料/受注登録機能仕様書.docx/04_3 業務ルール#w4-h1",
+    "資料/検収仕様書.pdf/03_2 確認項目#p4-x1",
+    "資料/得意先マスタ移行.csv#t1",
+)
+
+
 @pytest.fixture
 def 通し(tmp_path: Path):
     paths = paths_module.create(tmp_path)
@@ -107,6 +230,61 @@ def 通し(tmp_path: Path):
     for name, body in _ORGANIZED.items():
         write(round_.organized / name, body)
     return paths, root
+
+
+@pytest.fixture
+def 通し_文書(tmp_path: Path, pdf_reader):
+    """Excel 以外の 4 形式で、整理結果まで用意した 1 ラウンド。
+
+    残りのアンカーは `declare` でまとめて対象外にする ―― **実際の使われ方が
+    そうだから**である（表紙・体制図・発表者ノートを 1 枚ずつ書く人はいない）。
+    ここを手書きの YAML で埋めると、通しの経路から `declare` が抜ける。
+    """
+    paths = paths_module.create(tmp_path)
+    資料 = str(_make_documents(sources_dir(paths)))
+    root = str(tmp_path)
+
+    assert cli.main(["parse", "--root", root, "--round", "2026-08-02",
+                     資料]) == 0
+    round_ = paths.round("2026-08-02")
+    for name, body in _DOCUMENTS_ORGANIZED.items():
+        write(round_.organized / name, body)
+    assert cli.main(["declare", "--root", root, "--round", "2026-08-02", "*",
+                     "--reason", "表紙・体制図・発表者ノート（この通しでは起こさない）"]) == 0
+    return paths, root
+
+
+def test_Excel以外の4形式が設計書まで通る(通し_文書) -> None:
+    """**Word・PowerPoint・PDF・CSV が、正本と設計書まで 1 本で通るか。**
+
+    パースのテストは「読めたか」までしか見ない。そこから先 ―― 凍結が
+    アンカーを数え、`build` が出典を正本へ写し、`check` が出典の実在を
+    確かめ、`publish` が出典欄に刷る ―― の経路は、長いあいだ **Excel の
+    パース結果でしか通っていなかった。**
+
+    ここが Excel 専用に書かれていても、パースのテストは 1 本も落ちない
+    （落ちるのは、Excel 以外を実際に流した人のところである）。アンカーの
+    接頭辞は形式ごとに違う（`w3-` `p4-` `s2-` と、CSV の接頭辞なし）ので、
+    **どこかが `s` を決め打っていればここで止まる。**
+    """
+    paths, root = 通し_文書
+
+    for step in ("freeze", "build", "number", "check", "publish"):
+        assert cli.main([step, "--root", root]) == 0, f"{step} で止まりました"
+
+    # 4 形式ぶんの正本が組み上がっている（種別は形式ではなく資料の中身で決まる）。
+    for kind in ("entity", "screen", "data-item", "business-rule", "test-case"):
+        assert (paths.items / f"{kind}.yml").is_file(), kind
+
+    # **出典は形式ごとのアンカーのまま設計書に出る。**
+    # 見るのは HTML である ―― Markdown の原文では `03_2 画面項目` が
+    # `03\_2 画面項目` と逃がされている（`__init__` が `init` に化けるのを
+    # 防ぐため）ので、**読み手に届く字**のほうで確かめる。
+    published = "\n".join(
+        path.read_text(encoding="utf-8") for path in paths.out.rglob("*.html"))
+    for source in _DOCUMENT_SOURCES:
+        assert f"2026-08-02 {source}" in published, (
+            f"{source} が設計書の出典に出ていません")
 
 
 def test_凍結から設計書まで通る(通し, capsys: pytest.CaptureFixture) -> None:
