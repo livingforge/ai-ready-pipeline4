@@ -30,17 +30,30 @@ _LEFT, _TOP, _LEADING, _SIZE = 60, 780, 20, 12
 _BASE_FONT = "KozMinPr6N-Regular"
 _CMAP = "UniJIS-UCS2-H"
 
+#: 欧文の送り幅。**ここを書かないと ASCII が全角送りで出る。**
+#:
+#: 幅を 1 つも書かないと全部の字が ``/DW`` になる ―― 日本語は全角なので合うが、
+#: **`No` も `2026-07-15` も全角 1 文字ぶん送られる**ので、空白で桁を揃えた行
+#: （実物の PDF の表はそうなっている）が倍に伸びて**紙の右から出る。**実測で
+#: 検収仕様書の「判定」列が `MediaBox` の外に落ちていた ―― パースは位置を持った
+#: 文字を取るだけなので通り、**開いた人にだけ列が消えて見える。**
+#:
+#: ``UniJIS-UCS2-H`` は ASCII を Adobe-Japan1 のプロポーショナル欧文
+#: （CID 1〜95）へ送るので、そこを半角（500）に揃える。全角のちょうど半分に
+#: なるので、**空白で揃えた桁が日本語の端末と同じ見え方になる。**
+_ROMAN_FIRST, _ROMAN_LAST, _HALF = 1, 95, 500
+
 
 def build(path: Path, spec: dict[str, Any]) -> Path:
     """検体 1 冊を ``.pdf`` として書く。"""
     pages = spec.get("ページ") or []
-    toc = [(str(one["しおり"]), index + 1)
+    toc = [(str(one["しおり"]), int(one.get("深さ") or 0), index + 1)
            for index, one in enumerate(pages) if one.get("しおり")]
 
     #: オブジェクト番号を先に決める。**相互参照表は番号順に並ぶ**ので、
     #: 後から足すと全部の offset を数え直すことになる。
-    catalog, tree, font, descendant = 1, 2, 3, 4
-    first = 5
+    catalog, tree, font, descendant, descriptor = 1, 2, 3, 4, 5
+    first = 6
     page_ids = {i: first + i * 2 for i in range(len(pages))}
     stream_ids = {i: first + i * 2 + 1 for i in range(len(pages))}
     outline_root = first + len(pages) * 2
@@ -58,7 +71,12 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
     objects[descendant] = (
         f"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /{_BASE_FONT} "
         "/CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) "
-        "/Supplement 6 >> /DW 1000 >>")
+        f"/Supplement 6 >> /FontDescriptor {descriptor} 0 R "
+        f"/DW 1000 /W [{_ROMAN_FIRST} {_ROMAN_LAST} {_HALF}] >>")
+    objects[descriptor] = (
+        f"<< /Type /FontDescriptor /FontName /{_BASE_FONT} /Flags 6 "
+        "/FontBBox [-437 -340 1147 1317] /ItalicAngle 0 /Ascent 1137 "
+        "/Descent -349 /CapHeight 742 /StemV 80 >>")
 
     for index, page in enumerate(pages):
         body = _content([] if page.get("スキャン") else (page.get("行") or []))
@@ -71,21 +89,58 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
                                       + body.decode("utf-8") + "\nendstream")
 
     if toc:
-        objects[outline_root] = (
-            f"<< /Type /Outlines /First {outline_ids[0]} 0 R "
-            f"/Last {outline_ids[len(toc) - 1]} 0 R /Count {len(toc)} >>")
-        for order, (title, page_number) in enumerate(toc):
-            links = ""
-            if order:
-                links += f" /Prev {outline_ids[order - 1]} 0 R"
-            if order + 1 < len(toc):
-                links += f" /Next {outline_ids[order + 1]} 0 R"
-            objects[outline_ids[order]] = (
-                f"<< /Title {_title(title)} /Parent {outline_root} 0 R{links} "
-                f"/Dest [{page_ids[page_number - 1]} 0 R /Fit] >>")
+        objects.update(_outline(toc, outline_root, outline_ids, page_ids))
 
     path.write_bytes(_assemble(objects, catalog))
     return path
+
+
+def _outline(toc: list[tuple[str, int, int]], root: int, ids: dict[int, int],
+             page_ids: dict[int, int]) -> dict[int, str]:
+    """しおりの**木**。``深さ`` を書けば子しおりになる。
+
+    実物の検収仕様書・他社製品の仕様書は章の下に節のしおりを持っている ――
+    平らなしおりしか書けなかったあいだ、`pdf.py` の「深い階層では割らない」
+    という規律は**1 度も試されていなかった**（章より細かく割ると 1 本が
+    数段落になり、出典が細かすぎて資料の姿が見えなくなる）。
+
+    PDF のしおりは双方向の連結リストである ―― ``/First`` ``/Last`` ``/Count``
+    を親に、``/Prev`` ``/Next`` ``/Parent`` を子に置く。1 つでも欠けると
+    読み手はしおりの木を辿れない（そして**しおりの無い PDF と同じに見える**）。
+    """
+    kids: dict[int, list[int]] = {root: []}
+    parents: dict[int, int] = {}
+    stack: list[int] = []                            # 深さごとの直近のしおり
+    for order, (_shown, depth, _page) in enumerate(toc):
+        identity = ids[order]
+        parent = stack[depth - 1] if depth and len(stack) >= depth else root
+        parents[identity] = parent
+        kids.setdefault(parent, []).append(identity)
+        kids.setdefault(identity, [])
+        del stack[depth:]                            # 浅いところへ戻った
+        stack.append(identity)
+
+    made: dict[int, str] = {
+        root: (f"<< /Type /Outlines /First {kids[root][0]} 0 R "
+               f"/Last {kids[root][-1]} 0 R /Count {len(toc)} >>")}
+    for order, (title, _depth, page_number) in enumerate(toc):
+        identity = ids[order]
+        siblings = kids[parents[identity]]
+        place = siblings.index(identity)
+        links = ""
+        if place:
+            links += f" /Prev {siblings[place - 1]} 0 R"
+        if place + 1 < len(siblings):
+            links += f" /Next {siblings[place + 1]} 0 R"
+        if kids[identity]:
+            # **正の ``/Count`` は「開いた状態」**である（負にすると畳まれる）。
+            links += (f" /First {kids[identity][0]} 0 R "
+                      f"/Last {kids[identity][-1]} 0 R "
+                      f"/Count {len(kids[identity])}")
+        made[identity] = (
+            f"<< /Title {_title(title)} /Parent {parents[identity]} 0 R{links} "
+            f"/Dest [{page_ids[page_number - 1]} 0 R /Fit] >>")
+    return made
 
 
 def _content(lines: list[Any]) -> bytes:

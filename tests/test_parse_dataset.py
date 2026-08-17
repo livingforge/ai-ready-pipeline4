@@ -205,6 +205,195 @@ def test_検体がExcelで開ける形になっている(dataset_source: Path) -
     assert seen >= 4                                   # 描かせている描画パート
 
 
+# ── Excel 以外も「開ける形か」を見る ──────────────────────────
+#
+# 上の 1 本（`test_検体がExcelで開ける形になっている`）を Excel にしか置いて
+# いなかったあいだ、**Word・PowerPoint・PDF の見本は 3 冊とも壊れていた** ――
+# Word は 1 冊まるごと開けず、PowerPoint は「修復が必要です」と言われ、PDF は
+# 判定列が紙の外へ落ちていた。どれも **arp4 は関係とバイト列を辿るだけなので
+# パースは通り、実物のアプリで開いた人にだけ見える**壊れ方である。
+#
+# 実物の Word / PowerPoint / Acrobat で開いて確かめるテストは置けない（CI に
+# Office は無い）ので、Excel と同じく**アプリが見に行く場所に書いてあるか**を
+# 構造で押さえる。
+
+def _opc(archive) -> tuple[list[str], str]:
+    """OPC の共通検査 ―― **種別の申告と、関係の飛び先の実在。**
+
+    どちらか 1 つでも欠けると Word も PowerPoint も「問題があるため開けません」
+    「修復が必要です」に落ちる。ここは形式に依らないので 1 か所に書く。
+    """
+    import xml.etree.ElementTree as ET
+
+    names = archive.namelist()
+    kinds = archive.read("[Content_Types].xml").decode("utf-8")
+    defaults = dict(re.findall(
+        r'Default Extension="([^"]+)" ContentType="([^"]+)"', kinds))
+    declared = dict(re.findall(
+        r'PartName="/([^"]+)" ContentType="([^"]+)"', kinds))
+
+    for name in names:
+        if name.endswith(".rels") or name == "[Content_Types].xml":
+            continue
+        kind = declared.get(name) or defaults.get(name.rsplit(".", 1)[-1], "")
+        assert kind, f"{name} の種別が申告されていません"
+        # **画像は XML ではない。** 種別が申告どおりのものだけを構文で見る。
+        if kind.endswith("xml"):
+            assert ET.fromstring(archive.read(name)) is not None, name
+
+    for part in [n for n in names if n.endswith(".rels")]:
+        base = Path(part).parent.parent            # `word/_rels/x.rels` → `word`
+        for relation in ET.fromstring(archive.read(part)):
+            target = relation.get("Target") or ""
+            if relation.get("TargetMode") == "External":
+                # **外部の飛び先は URI である。**生の日本語を置くと Word は
+                # 1 冊まるごと開けなくなる（`document.py` の `_uri`）。
+                assert target.isascii(), (
+                    f"{part} の飛び先が URI になっていません: {target}")
+                continue
+            where = os.path.normpath(
+                str(base / target)).replace(os.sep, "/").lstrip("/")
+            assert where in names, f"{part} の飛び先がありません: {target}"
+    return names, kinds
+
+
+def test_検体がPowerPointで開ける形になっている(dataset_source: Path) -> None:
+    """**PowerPoint が描けないものは検体ではない。**
+
+    `CT_Presentation` は ``xsd:sequence`` なので子要素の並びが決まっている ――
+    `sldIdLst` を `notesMasterIdLst` より前に置いていたあいだ、パースは通る
+    のに実物の PowerPoint は「修復が必要です」と言っていた。**修復すると
+    発表者ノートとコメントが落ちる**ので、開いた人は何が書いてあるはずだった
+    かを確かめられない。
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    #: `CT_Presentation` の並び（ECMA-376 Part 1）。**ここから動かせない。**
+    order = ["sldMasterIdLst", "notesMasterIdLst", "handoutMasterIdLst",
+             "sldIdLst", "sldSz", "notesSz"]
+
+    seen = 0
+    for deck in sorted(dataset_source.rglob("*.pptx")):
+        with zipfile.ZipFile(deck) as archive:
+            names, _ = _opc(archive)
+            body = archive.read("ppt/presentation.xml").decode("utf-8")
+            found = [name for name in re.findall(r"<p:([A-Za-z]+)", body)
+                     if name in order]
+            assert found == sorted(found, key=order.index), (
+                f"{deck.name}: presentation.xml の子要素が順番どおりでは"
+                f"ありません（PowerPoint が修復を求めます）: {found}")
+
+            # スライドは**関係で辿れて実体がある**（片方だけでは 1 枚消える）。
+            rels = ET.fromstring(archive.read("ppt/_rels/presentation.xml.rels"))
+            by_id = {r.get("Id"): r.get("Target") for r in rels}
+            for slide in re.findall(r'<p:sldId [^>]*r:id="([^"]+)"', body):
+                assert slide in by_id, f"{deck.name}: {slide} の関係がありません"
+
+            # **マスターとレイアウトとテーマは 3 つ揃って初めて開ける。**
+            master = archive.read(
+                "ppt/slideMasters/slideMaster1.xml").decode("utf-8")
+            assert "<p:sldLayoutIdLst>" in master, (
+                f"{deck.name}: マスターがレイアウトを持っていません")
+            assert any(n.startswith("ppt/theme/") for n in names), (
+                f"{deck.name}: テーマがありません")
+            seen += 1
+    assert seen >= 1
+
+
+def test_検体がWordで開ける形になっている(dataset_source: Path) -> None:
+    """**Word が開けないものは検体ではない。**
+
+    実測で、外部リンクの飛び先に日本語をそのまま置いた 1 冊が**丸ごと開け
+    なかった** ―― OPC の ``Target`` は URI（RFC 3986）でなければならず、
+    Word のパッケージ読み取りはそこで例外を投げる。中身（見出し・表・
+    変更履歴・コメント）は全部正しいのに、開いた人は 1 文字も読めない。
+
+    見出しのスタイル定義も見る ―― `w:name` が無いと**節に割れない**のに、
+    パースは 1 本のまま静かに通る（`docx.py` の docstring）。
+    """
+    import zipfile
+
+    seen = 0
+    for book in sorted(dataset_source.rglob("*.docx")):
+        with zipfile.ZipFile(book) as archive:
+            names, _ = _opc(archive)
+            body = archive.read("word/document.xml").decode("utf-8")
+
+            # 見出しを使うなら、**Word が見に行くのは `w:name` のほう**である。
+            if 'w:pStyle w:val="' in body:
+                styles = archive.read("word/styles.xml").decode("utf-8")
+                for style in set(re.findall(r'w:pStyle w:val="([^"]+)"', body)):
+                    assert f'w:styleId="{style}"' in styles, (
+                        f"{book.name}: スタイル {style} の定義がありません")
+                assert 'w:name w:val="heading 1"' in styles, (
+                    f"{book.name}: 見出し 1 の綴りが英語で書かれていません")
+
+            # ヘッダ・フッタは `w:sectPr` から辿る（関係だけでは出ない）。
+            for kind in ("header", "footer"):
+                if any(n.startswith(f"word/{kind}") for n in names):
+                    assert f"<w:{kind}Reference" in body, (
+                        f"{book.name}: {kind} が本文から参照されていません")
+            seen += 1
+    assert seen >= 1
+
+
+def test_検体がPDFとして開ける形になっている(dataset_source: Path) -> None:
+    """**紙に収まらないものは検体ではない。**
+
+    PDF には「開けない」と「開けるが読めない」の間がある ―― 相互参照表が
+    ずれれば開けないが、**フォントの送り幅を書かないと開けてしまう。**実測で
+    検収仕様書の「判定」列が `MediaBox` の外に落ちていた（`/W` が無いと ASCII が
+    全角送りになり、空白で桁を揃えた行が倍に伸びる）。パースは位置を持った
+    文字を取るだけなので通り、**開いた人にだけ列が消えて見える。**
+
+    ここは実物の読み手（`pypdfium2`）で開く ―― arp4 が本体依存にしている
+    読み手なので、CI にも必ずある。
+    """
+    import pypdfium2 as pdfium
+
+    seen = 0
+    for paper in sorted(dataset_source.rglob("*.pdf")):
+        raw = paper.read_bytes()
+        assert raw.startswith(b"%PDF-"), paper.name
+
+        # ① 相互参照表は**実際のオブジェクトの頭**を指す（ずれると開けない）。
+        start = int(re.search(rb"startxref\s+(\d+)", raw).group(1))
+        assert raw[start:start + 4] == b"xref", f"{paper.name}: xref の位置"
+        for number, offset in enumerate(
+                re.findall(rb"^(\d{10}) 00000 n ", raw[start:], re.M)):
+            place = int(offset)
+            if place:
+                assert re.match(rb"\d+ 0 obj", raw[place:place + 20]), (
+                    f"{paper.name}: {number + 1} 番の位置がずれています")
+
+        # ② 埋め込まないフォントには **`/FontDescriptor` が要る**（PDF 32000-1
+        #    表 117 で必須）。無いと読み手が代替フォントを決められない。
+        for cid in re.finditer(rb"/Subtype /CIDFontType0(.{0,400}?)endobj",
+                               raw, re.S):
+            assert b"/FontDescriptor" in cid.group(1), (
+                f"{paper.name}: CIDFont に FontDescriptor がありません")
+            assert b"/W [" in cid.group(1), (
+                f"{paper.name}: 欧文の送り幅（/W）がありません ―― "
+                "ASCII が全角送りになって行が紙から出ます")
+
+        # ③ **本当に紙の中に収まっているか。**構造ではなく置かれた字で見る。
+        document = pdfium.PdfDocument(paper)
+        for index, page in enumerate(document):
+            width, height = page.get_size()
+            text = page.get_textpage()
+            for char in range(text.count_chars()):
+                left, bottom, right, top = text.get_charbox(char)
+                assert 0 <= left and right <= width, (
+                    f"{paper.name} {index + 1} ページ目: "
+                    f"{char} 文字目が紙の横幅（{width}）から出ています")
+                assert 0 <= bottom and top <= height, (
+                    f"{paper.name} {index + 1} ページ目: "
+                    f"{char} 文字目が紙の高さ（{height}）から出ています")
+        seen += 1
+    assert seen >= 1
+
+
 def test_Noを偽と読まない(parsed) -> None:
     """YAML 1.1 は ``No`` を偽と読む ―― **課題一覧の 1 列目はたいてい ``No``**。
 
@@ -1403,7 +1592,7 @@ def test_csvは当てた区切りと文字コードを必ず書く(parsed) -> No
     said = " ".join(doc.notes)
 
     assert "cp932" in said and "カンマ" in said
-    assert "100% が 4 列" in said
+    assert "100% が 8 列" in said
     assert "機械が決めたもの" in said
 
 
@@ -1413,12 +1602,25 @@ def test_csvの引用符の中の区切りと改行を守る(parsed) -> None:
     `東京都千代田区1-2-3, 丸の内ビル` にはカンマが、備考には改行が入っている
     ―― どちらも実物の移行データにごく普通にある。`csv` 標準ライブラリに渡すのは
     そのためで、自前で `split(",")` すると**列が 1 本増えた表が「読めた」顔で出る。**
+
+    引用符の中の引用符（`""`）と、**前ゼロの残った数値**もここで見る ――
+    前者を素朴に外すと値が途中で切れ、後者を数として読み直すと `00120000` が
+    `120000` になる。どちらも移行データの照合を静かに壊す。
     """
     table = _table(_doc(parsed, "資料/N/得意先マスタ移行.csv.md"))
 
-    assert [len(row) for row in table] == [4, 4, 4, 4]
-    assert table[1][2] == "東京都千代田区1-2-3, 丸の内ビル"
-    assert "取引停止" in table[2][3] and "与信枠は 0" in table[2][3]
+    assert [len(row) for row in table] == [8, 8, 8, 8, 8, 8]
+    assert table[1][3] == "東京都千代田区1-2-3, 丸の内ビル"
+    assert "取引停止" in table[2][7] and "与信枠は 0" in table[2][7]
+
+    # 引用符の中の引用符は 1 つに戻る（値が途中で切れない）。
+    assert table[4][1] == '株式会社"あおぞら"商会'
+    # 前ゼロは残る（数として読み直さない）。
+    assert table[1][4] == "00120000"
+    # 半角カタカナを全角に直さない（旧システムの項目はこの形で来る）。
+    assert table[1][2] == "ｱｶﾂｷｼｮｳｼﾞ"
+    # 引用符の中の改行も守る（住所が 2 行の得意先は実在する）。
+    assert "第2ひかりビル" in table[5][3]
 
 
 def test_tsvは拡張子が名乗る区切りを当てにいかない(parsed) -> None:
@@ -1507,15 +1709,27 @@ def test_PDFはしおりで節に割れる(parsed) -> None:
     1 冊 1 本のまま出すと、200 ページの検収仕様書が 1 つのアンカーになり、
     整理層はどの章の話かを言えない。最初のしおりより前（表紙・改訂履歴）を
     捨てないのは、捨てるとアンカーの無いページができるからである。
+
+    **子しおりは割り先にしない。** この 1 冊は `2.1` `2.2` `2.3` `5.1` の
+    4 本を第 2 階層に持っているが、節は 6 本しか出ない ―― 章より細かく割ると
+    1 本が数段落になり、出典が細かすぎて資料の姿が見えなくなる。落として
+    いるのではなく割り先にしないだけなので、**本文はどれかの章に必ず入る。**
     """
     docs, _ = parsed
     made = sorted(name[len(ACCEPT) + 1:] for name in docs if name.startswith(ACCEPT))
 
-    assert made == ["01_（前書き）.md", "02_1 適用範囲.md",
-                    "03_2 確認項目.md", "04_3 検収の合否.md"]
+    assert made == ["01_（前書き）.md", "02_1 適用範囲.md", "03_2 確認項目.md",
+                    "04_3 検収の合否.md", "05_4 検収の体制と期間.md",
+                    "06_5 是正と再検収.md"]
     # 表紙は前書きに入っている（落ちていない）
     assert "株式会社あかつき商事" in _chunk(
         docs[f"{ACCEPT}/01_（前書き）.md"], "p1-x1").text
+
+    # **子しおりのページは親の章に入っている。**（割り先にしないだけである）
+    確認項目 = mdio.dump(docs[f"{ACCEPT}/03_2 確認項目.md"])
+    for 行 in ("2.1 画面の確認", "2.2 帳票の確認", "2.3 外部接続の確認"):
+        assert 行 in 確認項目, f"{行} が親の章から落ちています"
+    assert "5.1 重大度の判定" in mdio.dump(docs[f"{ACCEPT}/06_5 是正と再検収.md"])
 
 
 def test_PDFのアンカーはページ番号で振る(parsed) -> None:
@@ -1603,7 +1817,12 @@ def test_Wordは見出し1で節に割れる(parsed) -> None:
     made = sorted(name[len(PAPER) + 1:] for name in docs if name.startswith(PAPER))
 
     assert made == ["00_ヘッダとフッタ.md", "01_（前書き）.md", "02_1 機能概要.md",
-                    "03_2 画面項目.md", "04_3 業務ルール.md"]
+                    "03_2 画面項目.md", "04_3 業務ルール.md", "05_4 帳票.md",
+                    "06_5 外部インタフェース.md", "07_6 非機能要件.md"]
+    # **見出し 2 では割らない。** `2.1 入力項目` `2.2 表示項目` は 3 節目の中に
+    # あり、節にはならない（PDF の子しおりとまったく同じ判断である）。
+    画面項目 = mdio.dump(docs[f"{PAPER}/03_2 画面項目.md"])
+    assert "2.1 入力項目" in 画面項目 and "2.2 表示項目" in 画面項目
 
 
 def test_見出しはスタイルidではなく名前で決める(parsed) -> None:
@@ -1644,6 +1863,49 @@ def test_Wordの縦結合も下へ広げる(parsed) -> None:
 
     assert table[0] == ["区分", "項目名", "型", "必須", "備考"]
     assert [row[0] for row in table[1:]] == ["ヘッダ", "ヘッダ", "明細", "明細"]
+
+
+def test_見出し2の直後の表はその見出しに属する(parsed) -> None:
+    """**節の中に同じ形の表が 2 つ並ぶのは、実物でいちばん多い形である。**
+
+    `2.1 入力項目` `2.2 表示項目` はどちらも見出し 2 の直後が表で、表の形
+    （5 列）まで同じである ―― 見出しを本文の塊にしか渡していなかったあいだ、
+    **どちらの見出しも 1 文字も出てこなかった。**整理層に届くのは「5 列の表が
+    2 つ」だけで、どちらが入力項目かは中身からも決まらない（両方とも
+    区分・項目名・型を持っている）。
+
+    見出し 2 で節に割らないのは正しい ―― 割ると 1 本が表 1 つになり、資料の
+    姿が見えなくなる（PDF の子しおりと同じ判断）。**割らないことと、どの
+    見出しの下にあるかを言わないことは別である。**
+    """
+    doc = _doc(parsed, f"{PAPER}/03_2 画面項目.md")
+    表 = [c for c in doc.chunks if c.rows]
+
+    assert len(表) == 2
+    assert 表[0].at == "見出し「2.1 入力項目」の表 5 行 × 5 列"
+    assert 表[1].at == "見出し「2.2 表示項目」の表 5 行 × 5 列"
+    # 見出しは写しの本文にも出る（読む人が節の中で迷わない）。
+    写し = mdio.dump(doc)
+    assert "2.1 入力項目" in 写し and "2.2 表示項目" in 写し
+
+
+def test_Wordの貼り付け画像は代替テキストと結びつく(parsed) -> None:
+    """**「代替テキストが 3 件ある」と「どの絵の説明か」は別の話である。**
+
+    節の頭にまとめて並べるだけだった時期、画像の一覧のほうは 2 枚とも
+    「代替テキストはありません」と言っていた ―― ハードコピーと帳票見本が
+    並んでいるのに、**どちらがどちらかを整理層が言えない。**
+
+    Word は同じ説明を図面の枠（`wp:docPr`）と画像（`pic:cNvPr`）の 2 か所に
+    書くので、枠から降りて画像へ配る。
+    """
+    doc = _doc(parsed, f"{PAPER}/01_（前書き）.md")
+    絵 = dict(_chunk(doc, "w1-i1").cells)
+
+    assert len(絵) == 2
+    assert [説明 for 名, 説明 in sorted(絵.items())] == [
+        "現行の受注登録画面（2019 年版）。ボタンの配置は変更しない",
+        "受注請書（現行様式）。項目の位置は変更しない"]
 
 
 def test_未確定の変更履歴を機械が確定させない(parsed) -> None:
@@ -1722,7 +1984,10 @@ def test_スライドは1枚がファイル1本になる(parsed) -> None:
     made = sorted(name[len(DECK) + 1:] for name in docs if name.startswith(DECK))
 
     assert made == ["01_全体構成（A 案）.md", "02_移行対象と件数.md",
-                    "03_体制と役割分担.md"]
+                    "03_体制と役割分担.md", "04_現行システム全体構成（ゾーン別）.md",
+                    "05_現行の受注入力画面（ハードコピー）.md",
+                    "06_フェーズ計画と主要マイルストーン.md", "07_移行方式の比較.md",
+                    "08_本提案の対象外（やらないこと）.md"]
 
 
 def test_スライドの図形と接続はExcelと同じ道で取れる(parsed) -> None:
@@ -1739,6 +2004,59 @@ def test_スライドの図形と接続はExcelと同じ道で取れる(parsed) 
     assert ["与信の枠内？", "→", "在庫引当", "夜間バッチ", "破線"] in links
     # **箱の中の改行は残る**（`a:br`）―― 潰すと別々の語が 1 語に化ける。
     assert "オーダー入力\n（Web／代行）" in [text for _, text in _chunk(doc, "s1-g1").cells]
+
+
+def test_スライドの群の中の箱も線も落とさない(parsed) -> None:
+    """**実物の構成図はゾーンごとに group してある。**
+
+    オンライン系・バッチ系・外部接続を枠で括るのは提案書の定型で、**箱は
+    群の中にしか無く、線は群をまたぐ。** `p:grpSp` を降りない実装はここで
+    箱を 1 つも見つけられず（＝空のスライドに見える）、降りても端点の id を
+    群の中で振り直せば**線が 1 本も繋がらない。**
+
+    群そのものにも代替テキストが付く（`現用／待機の 2 系統`）―― 箱ではなく
+    ゾーンの説明で、そこにしか書かれていない前提がある。
+    """
+    doc = _doc(parsed, f"{DECK}/04_現行システム全体構成（ゾーン別）.md")
+    boxes = [text for _, text in _chunk(doc, "s4-g1").cells]
+    links = _chunk(doc, "s4-c1").rows
+
+    # 群の中の箱は 12 個（3 ゾーン × 4 個）＋ 表題の 1 個。
+    assert len(boxes) == 13, boxes
+    for name in ("会計連携", "得意先 EDI\n（全銀手順）", "銀行ファイル伝送"):
+        assert name in boxes, f"{name} が群の中から出てきていません"
+
+    # **群をまたぐ線**が繋がったまま取れている。
+    assert ["出荷指示", "→", "売上計上", "夜間バッチ", "破線"] in links
+    assert ["得意先 EDI\n（全銀手順）", "→", "受注入力\n（Web／代行）",
+            "受注データ", "実線"] in links
+    assert len(links) == 11                          # 見出し 1 行 ＋ 10 本
+
+    # 群に書かれた代替テキストは箱の説明ではない（落とすと前提が消える）。
+    説明 = [text for _, text in _chunk(doc, "s4-a1").cells]
+    assert "現用／待機の 2 系統。DR サイトは別紙 5" in 説明
+
+
+def test_スライドの貼り付け画像も絵にして出す(parsed) -> None:
+    """**PowerPoint の貼り付け画像は Excel とまったく同じ道を通る。**
+
+    現行画面のハードコピーを 1 枚貼って「これと同じものを作る」と書くのは
+    提案書の定型で、**項目名はその絵にしか無い。**絵を出さずに空のスライド
+    として出すと、整理層は「資料に何も書いていない」と読む ―― 「資料に無い」と
+    「機械が読めていない」の取り違えそのものである。
+
+    長いあいだ `pptx.py` にはこの経路のコードがあったのに、**画像を貼った
+    検体が 1 冊も無かった**（`deck.py` に `画像:` の口が無かった）。
+    """
+    doc = _doc(parsed, f"{DECK}/05_現行の受注入力画面（ハードコピー）.md")
+    said = " ".join(doc.notes)
+
+    assert "貼り付け画像 1 枚は絵のままです" in said
+    assert "`s5-i1`" in said
+    # 実体は `images/` へ出て、代替テキストは**その 1 枚に**紐付く。
+    絵 = _chunk(doc, "s5-i1").cells
+    assert 絵[0][0].endswith("-p1.png")
+    assert 絵[0][1] == "現行の受注入力画面。項目名は別紙 2 の項目定義書による"
 
 
 def test_繋がっていない線は本数だけ言う(parsed) -> None:
@@ -1806,7 +2124,7 @@ def test_非表示のスライドは読まないが言う(parsed) -> None:
     name = DECK.rsplit("/", 1)[-1]
 
     assert "非表示のスライドが 1 枚あります" in said[name]
-    assert "4 全体構成（B 案・旧版）" in said[name]
+    assert "9 全体構成（B 案・旧版）" in said[name]
 
 
 def test_レイアウトとマスターを読んでいないことを言う(parsed) -> None:

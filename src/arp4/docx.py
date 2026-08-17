@@ -197,7 +197,8 @@ def _package(path: Path, trouble: list[str]) -> Package | None:
                 if kind.endswith(_REL_HYPERLINK):
                     # **行き先は本文に無い。** 表示文字列だけを読むと、
                     # まだ手元に無い資料があること自体が分からない。
-                    found.links[identity] = target
+                    # 符号化は解く（実物の Word は日本語を必ず符号化して持つ）。
+                    found.links[identity] = parse.readable_link(target)
                     continue
                 part = parse._resolve("word", target)
                 if part not in names:
@@ -396,18 +397,16 @@ def _document(section: Section, relative: Path, package: Package) -> mdio.Doc:
     heading = ""
 
     def flush() -> None:
-        nonlocal texts, buffer, heading
+        nonlocal texts, buffer
         body = "\n\n".join(one for one in buffer if one.strip())
         buffer = []
         if not body.strip():
-            heading = ""
             return
         texts += 1
         doc.chunks.append(mdio.Chunk(
             anchor=f"w{index}-h{texts}",
             at=f"見出し「{heading}」" if heading else "見出しなし（節の先頭）",
             heading=heading or "（本文）", text=body))
-        heading = ""
 
     for block in section.blocks:
         if block.kind == "t":
@@ -415,9 +414,16 @@ def _document(section: Section, relative: Path, package: Package) -> mdio.Doc:
             tables += 1
             shape = (f"{len(block.rows)} 行 × "
                      f"{max((len(row) for row in block.rows), default=0)} 列")
+            # **見出し 2 の直後が表なのは、実物でいちばん多い形である。**
+            # 見出しを本文の塊にしか渡していなかったあいだ、`2.1 入力項目` の
+            # ように**次が表の見出しは 1 文字も出てこなかった** ―― 節の中に
+            # 5 列の表が 2 つ並び、どちらが入力項目でどちらが表示項目かを
+            # 整理層が言えない（表の形は同じなので、中身からも決まらない）。
             doc.chunks.append(mdio.Chunk(
-                anchor=f"w{index}-t{tables}", at=f"表 {shape}",
-                heading=f"表 {shape}", rows=block.rows))
+                anchor=f"w{index}-t{tables}",
+                at=f"見出し「{heading}」の表 {shape}" if heading else f"表 {shape}",
+                heading=f"{heading}｜表 {shape}" if heading else f"表 {shape}",
+                rows=block.rows))
             continue
         if block.level and block.text.strip():
             flush()
@@ -516,6 +522,35 @@ _WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 _VML = "urn:schemas-microsoft-com:vml"
 
 
+def _alt_of(node: ET.Element) -> str:
+    """``title`` と ``descr`` を 1 本にする（両方あることがある）。"""
+    return "／".join(one for one in ((node.get("title") or "").strip(),
+                                     (node.get("descr") or "").strip()) if one)
+
+
+def _picture_alts(body: ET.Element) -> dict[int, str]:
+    """``{画像の要素: 代替テキスト}``。**枠から降りて画像に配る。**
+
+    Word は同じ説明を 2 か所に書く ―― 図面の枠（``wp:docPr``）と画像
+    （``pic:cNvPr``）である。画像のほうが空の資料もあるので、**枠に書いて
+    あるものを、その枠の中の画像へ配る。**枠に絵が 1 枚しか入っていない
+    のが実物のほとんどなので、これで取り違えない。
+    """
+    found: dict[int, str] = {}
+    for drawn in body.iter(f"{{{_W}}}drawing"):
+        outer = ""
+        for node in drawn.iter():
+            if node.tag in (f"{{{_WP}}}docPr", f"{{{_WP}}}cNvPr"):
+                outer = outer or _alt_of(node)
+        for picture in drawn.iter(f"{{{_PIC}}}pic"):
+            inner = ""
+            for node in picture.iter(f"{{{_PIC}}}cNvPr"):
+                inner = inner or _alt_of(node)
+            if alt := (inner or outer):
+                found[id(picture)] = alt
+    return found
+
+
 def _drawing(body: ET.Element, images: dict[str, str]) -> parse.Drawing:
     """文書 1 冊ぶんの図形と画像。**器は Excel と同じ**（申告も画像も使い回す）。
 
@@ -536,11 +571,16 @@ def _drawing(body: ET.Element, images: dict[str, str]) -> parse.Drawing:
         drawing.shapes += 1
         if text:
             drawing.labels.append(text)
+    labelled = _picture_alts(body)
     for picture in body.iter(f"{{{_PIC}}}pic"):
         drawing.pictures += 1
         embedded = parse._embedded(picture)
         if embedded and (where := images.get(embedded)):
-            drawing.media.append((where, ""))
+            # **代替テキストは画像 1 枚に紐付ける**（Excel と同じ形）。
+            # 節の頭にまとめて並べるだけだと、`w1-a1` に 3 件あっても
+            # **どの絵の説明かが決まらない** ―― 画像の一覧のほうは
+            # 「代替テキストはありません」と言い続けることになる。
+            drawing.media.append((where, labelled.get(id(picture), "")))
     for anchor in body.iter():
         # **代替テキストは ``wp:docPr`` にある**（Excel の ``xdr:cNvPr`` に当たる）。
         if anchor.tag not in (f"{{{_WP}}}docPr", f"{{{_WP}}}cNvPr"):

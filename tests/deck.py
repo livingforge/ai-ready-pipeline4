@@ -47,6 +47,10 @@ _TITLE = (700000, 500000, _WIDTH - 1400000, 1000000)
 _TABLE = (700000, 1900000, _WIDTH - 1400000)
 _ROW_H = 370000
 
+#: 1 px ぶんの EMU。**貼り付け画像の画素数は枠から決める**（`dataset.py` と
+#: 同じ理屈 ―― 検体に px を書かせると、箱を 1 つ動かすたびに数え直しになる）。
+_PX = 9525
+
 #: 線種。検体は日本語で書き、ここで DrawingML の綴りに直す。
 _DASH = {"実線": "solid", "破線": "dash", "点線": "sysDot", "一点鎖線": "dashDot"}
 
@@ -62,7 +66,7 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
     comments = {i for i, one in enumerate(slides, start=1) if one.get("コメント")}
     authors = _authors(slides)
 
-    parts: dict[str, str] = {
+    parts: dict[str, Any] = {                        # 画像だけ bytes が入る
         "_rels/.rels": _rels([
             ("rId1", f"{_R}/officeDocument", "ppt/presentation.xml"),
             ("rId2", f"{_PKG}/metadata/core-properties", "docProps/core.xml")]),
@@ -86,8 +90,11 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
             ("rId1", f"{_R}/theme", "../theme/theme1.xml")])
 
     for order, slide in enumerate(slides, start=1):
-        parts[f"ppt/slides/slide{order}.xml"] = _slide(slide)
+        media: list[tuple[str, str]] = []
+        parts[f"ppt/slides/slide{order}.xml"] = _slide(slide, order, parts, media)
         links = [("rId1", f"{_R}/slideLayout", "../slideLayouts/slideLayout1.xml")]
+        links += [(rid, f"{_R}/image", f"../media/{Path(part).name}")
+                  for rid, part in media]
         if order in notes:
             links.append((f"rId{len(links) + 1}", f"{_R}/notesSlide",
                           f"../notesSlides/notesSlide{order}.xml"))
@@ -130,6 +137,7 @@ def _content_types(parts: dict[str, str]) -> str:
     listed = ['<Default Extension="rels" ContentType="application/vnd.'
               'openxmlformats-package.relationships+xml"/>',
               '<Default Extension="xml" ContentType="application/xml"/>',
+              '<Default Extension="png" ContentType="image/png"/>',
               '<Override PartName="/docProps/core.xml" ContentType="application/'
               'vnd.openxmlformats-package.core-properties+xml"/>']
     for name in sorted(parts):
@@ -165,6 +173,15 @@ def _core(spec: dict[str, Any]) -> str:
 
 
 def _presentation(slides: list[dict[str, Any]], notes: bool) -> str:
+    """``ppt/presentation.xml``。**子要素の順番は決まっている。**
+
+    `CT_Presentation` は ``xsd:sequence`` なので、並びは
+    **sldMasterIdLst → notesMasterIdLst → handoutMasterIdLst → sldIdLst →
+    sldSz → notesSz** から動かせない。ここで `sldIdLst` を先に置いていた
+    あいだ、**arp4 は zip の関係だけを辿るのでパースは通り、PowerPoint で
+    開いたときにだけ「修復が必要です」**と言われていた ―― このファイルの
+    頭に書いてある失敗そのものである。
+    """
     listed = "".join(f'<p:sldId id="{255 + i}" r:id="rId{i + 1}"/>'
                      for i in range(1, len(slides) + 1))
     notes_id = f'<p:notesMasterIdLst><p:notesMasterId r:id="rId{len(slides) + 2}"/>' \
@@ -173,7 +190,7 @@ def _presentation(slides: list[dict[str, Any]], notes: bool) -> str:
             f'<p:presentation xmlns:a="{_A}" xmlns:r="{_R}" xmlns:p="{_P}">'
             '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/>'
             "</p:sldMasterIdLst>"
-            f"<p:sldIdLst>{listed}</p:sldIdLst>{notes_id}"
+            f"{notes_id}<p:sldIdLst>{listed}</p:sldIdLst>"
             f'<p:sldSz cx="{_WIDTH}" cy="{_HEIGHT}"/>'
             '<p:notesSz cx="6858000" cy="9144000"/></p:presentation>')
 
@@ -193,35 +210,121 @@ def _presentation_rels(slides: list[dict[str, Any]], notes: set[int],
 
 
 # ── スライド ────────────────────────────────────────────────────
-def _slide(spec: dict[str, Any]) -> str:
+class _Ids:
+    """図形の id と枠の割り当て。**群の中の子も同じ通し番号を使う。**
+
+    群を書けるようにしたときに要るようになった ―― 子だけ別の数え方にすると、
+    ``a:stCxn`` が指す先が親と子で食い違い、**線がどこにも繋がっていない扱い**
+    になる（実物の構成図はゾーンごとに group してあり、線はその中の箱を指す）。
+    """
+
+    def __init__(self) -> None:
+        self.shape = 2                               # 1 は ``spTree`` が使う
+        self.slot = 0                                # 箱を並べる位置
+
+    def next_shape(self) -> int:
+        self.shape += 1
+        return self.shape - 1
+
+    def next_rect(self) -> tuple[int, int, int, int]:
+        self.slot += 1
+        return _grid(self.slot - 1)
+
+
+def _slide(spec: dict[str, Any], order: int, parts: dict[str, Any],
+           media: list[tuple[str, str]]) -> str:
     shown = "" if spec.get("非表示") is not True else ' show="0"'
     shapes: list[str] = []
-    identity = 2
+    ids = _Ids()
     if spec.get("表題"):
-        shapes.append(_box(identity, "タイトル 1", spec["表題"], _TITLE,
+        shapes.append(_box(ids.next_shape(), "タイトル 1", spec["表題"], _TITLE,
                            placeholder="title"))
-        identity += 1
 
     where: dict[str, int] = {}
-    for order, box in enumerate(spec.get("図形") or []):
-        name = box.get("名前") or f"図形 {order + 1}"
-        shapes.append(_box(identity, name, box.get("文字") or "",
-                           _grid(order), alt=box.get("代替")))
-        where[name] = identity
-        identity += 1
+    for box in spec.get("図形") or []:
+        shapes.append(_shape(box, ids, where, order, parts, media))
 
     for line in spec.get("接続") or []:
-        shapes.append(_line(identity, line, where))
-        identity += 1
+        shapes.append(_line(ids.next_shape(), line, where))
 
     for table in spec.get("表") or []:
-        shapes.append(_table(identity, table))
-        identity += 1
+        shapes.append(_table(ids.next_shape(), table))
 
     return (f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<p:sld xmlns:a="{_A}" xmlns:r="{_R}" xmlns:p="{_P}"{shown}>'
             f"<p:cSld><p:spTree>{_tree_head()}{''.join(shapes)}</p:spTree>"
             "</p:cSld></p:sld>")
+
+
+def _shape(box: dict[str, Any], ids: _Ids, where: dict[str, int], order: int,
+           parts: dict[str, Any], media: list[tuple[str, str]]) -> str:
+    """箱 1 個 ―― **枠・画像・群のどれか。**"""
+    if "群" in box:
+        return _group(box, ids, where, order, parts, media)
+    name = box.get("名前") or f"図形 {ids.shape}"
+    identity, rect = ids.next_shape(), ids.next_rect()
+    where[name] = identity
+    if "画像" in box:
+        return _pic(box["画像"], identity, name, rect, order, parts, media)
+    return _box(identity, name, box.get("文字") or "", rect,
+                alt=box.get("代替"))
+
+
+def _group(box: dict[str, Any], ids: _Ids, where: dict[str, int], order: int,
+           parts: dict[str, Any], media: list[tuple[str, str]]) -> str:
+    """群（``p:grpSp``）。**枠は子の合併**で、子は同じ座標系に置く。
+
+    実物の構成図はゾーン（オンライン／バッチ／外部）ごとに group してあり、
+    **群の中にしか無い箱と、群をまたぐ線**がある。子を別の座標系（``chOff``）に
+    置くと親の枠と食い違うので、ここは親の ``chOff`` / ``chExt`` を自分の枠に
+    揃えて**中も外も同じ番地**にしてある。
+    """
+    identity = ids.next_shape()
+    inner = [_shape(child, ids, where, order, parts, media)
+             for child in box["群"]]
+    rects = [_grid(slot) for slot in range(ids.slot - len(box["群"]), ids.slot)]
+    left = min(r[0] for r in rects)
+    top = min(r[1] for r in rects)
+    rect = (left, top,
+            max(r[0] + r[2] for r in rects) - left,
+            max(r[1] + r[3] for r in rects) - top)
+    alt = box.get("代替")
+    descr = f' descr="{_esc(alt)}"' if alt else ""
+    name = box.get("名前") or f"グループ化 {identity}"
+    return (f'<p:grpSp><p:nvGrpSpPr>'
+            f'<p:cNvPr id="{identity}" name="{_esc(name)}"{descr}/>'
+            "<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+            f"<p:grpSpPr><a:xfrm>{_offset(rect)}"
+            f'<a:chOff x="{rect[0]}" y="{rect[1]}"/>'
+            f'<a:chExt cx="{rect[2]}" cy="{rect[3]}"/></a:xfrm></p:grpSpPr>'
+            f"{''.join(inner)}</p:grpSp>")
+
+
+def _pic(spec: dict[str, Any], identity: int, name: str,
+         rect: tuple[int, int, int, int], order: int, parts: dict[str, Any],
+         media: list[tuple[str, str]]) -> str:
+    """貼り付け画像（``p:pic``）。**実体と絵柄が要る**（Excel と同じ理由）。
+
+    ``r:embed`` の先が無いと PowerPoint は「修復が必要」と言って画像を落とし、
+    開いた人は図の有無を確かめられない。絵柄そのものが検体の一部であることも
+    Excel と同じで、何を描くかは :mod:`picture` にある。
+    """
+    import picture
+
+    part = f"ppt/media/image{order}_{len(media) + 1}.png"
+    parts[part] = picture.draw(spec.get("絵柄", ""),
+                               rect[2] // _PX, rect[3] // _PX)
+    rid = f"rIdImg{order}_{len(media) + 1}"
+    media.append((rid, part))
+    alt = spec.get("代替", "")
+    descr = f' descr="{_esc(alt)}"' if alt else ""
+    return (f'<p:pic><p:nvPicPr>'
+            f'<p:cNvPr id="{identity}" name="{_esc(name)}"{descr}/>'
+            '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
+            f'<p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{rid}"/>'
+            "<a:stretch><a:fillRect/></a:stretch></p:blipFill>"
+            f"<p:spPr>{_frame(rect)}"
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>')
 
 
 def _tree_head() -> str:

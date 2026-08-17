@@ -267,6 +267,30 @@ def test_先の消えたリンクは黙って落とさない(project: Paths,
     assert "先が見つかりません" in said[0].message
 
 
+def test_符号化された飛び先を人が読める字に戻す() -> None:
+    """**実物の Office は日本語のリンク先を必ず符号化して持つ。**
+
+    OPC の関係の ``Target`` は URI なので ASCII の外はパーセント符号化される
+    ―― 検体のほうが符号化せずに書いていたあいだ、arp4 はここを 1 度も
+    通っていなかった（そして検体は Word で開けなかった）。そのまま出すと
+    整理層に渡るのは `%E6%89%BF…` で、**どの資料がまだ手元に無いのかを
+    誰も名指しできない。**
+
+    **戻せないものは戻さない。** 古い道具が Shift_JIS のまま符号化した飛び先を
+    UTF-8 として読むと化ける ―― 符号化されたままのほうが元へ戻せる。
+    """
+    assert parse.readable_link(
+        "https://example.invalid/%E6%89%BF%E8%AA%8D%E3%83%95%E3%83%AD%E3%83%BC"
+        ".xlsx") == "https://example.invalid/承認フロー.xlsx"
+
+    # 符号化されていないものは触らない（`%` を含んでいても壊さない）。
+    assert parse.readable_link("../別紙/達成率 100%.xlsx") == "../別紙/達成率 100%.xlsx"
+    assert parse.readable_link("") == ""
+
+    # UTF-8 として読めないものは、そのまま残す。
+    assert parse.readable_link("../%8FE%94F.xls") == "../%8FE%94F.xls"
+
+
 def test_そのパスに無いことを0冊で正常終了にしない(project: Paths,
                                                   round_: Round) -> None:
     """**打ち間違いも同じ形で消える。** 読めた資料 0 冊は成功に見える。"""

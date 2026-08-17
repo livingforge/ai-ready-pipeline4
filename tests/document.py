@@ -16,6 +16,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -26,6 +27,7 @@ _DC = "http://purl.org/dc/elements/1.1/"
 _WPS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
 _A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+_PIC = "http://schemas.openxmlformats.org/drawingml/2006/picture"
 
 _OFFICE = "application/vnd.openxmlformats-officedocument.wordprocessingml."
 
@@ -40,13 +42,14 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
     comments: list[tuple[str, dict[str, Any]]] = []
     notes: list[tuple[str, str]] = []
     links: list[tuple[str, str]] = []
+    images: list[tuple[str, bytes]] = []
     body: list[str] = []
 
     for block in blocks:
-        body.append(_block(block, comments, notes, links))
+        body.append(_block(block, comments, notes, links, images))
     body.append("<w:sectPr>" + _margins_refs(spec) + "</w:sectPr>")
 
-    parts: dict[str, str] = {
+    parts: dict[str, Any] = {                        # 画像だけ bytes が入る
         "_rels/.rels": _rels([
             ("rId1", f"{_R}/officeDocument", "word/document.xml"),
             ("rId2", f"{_PKG}/metadata/core-properties", "docProps/core.xml")]),
@@ -67,7 +70,11 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
     if spec.get("フッタ"):
         parts["word/footer1.xml"] = _margin("ftr", str(spec["フッタ"]))
         pairs.append(("rIdG", f"{_R}/footer", "footer1.xml"))
-    pairs += [(identity, f"{_R}/hyperlink", where) for identity, where in links]
+    for order, (identity, body_bytes) in enumerate(images, start=1):
+        parts[f"word/media/image{order}.png"] = body_bytes
+        pairs.append((identity, f"{_R}/image", f"media/image{order}.png"))
+    pairs += [(identity, f"{_R}/hyperlink", _uri(where))
+              for identity, where in links]
     parts["word/_rels/document.xml.rels"] = _rels(pairs)
     parts["[Content_Types].xml"] = _content_types(parts)
 
@@ -79,12 +86,15 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
 
 # ── 本文 ────────────────────────────────────────────────────────
 def _block(block: dict[str, Any], comments: list[tuple[str, dict[str, Any]]],
-           notes: list[tuple[str, str]], links: list[tuple[str, str]]) -> str:
-    """1 かたまり。**見出し・段落・箇条書き・表・図形のどれか。**"""
+           notes: list[tuple[str, str]], links: list[tuple[str, str]],
+           images: list[tuple[str, bytes]]) -> str:
+    """1 かたまり。**見出し・段落・箇条書き・表・図形・画像のどれか。**"""
     if "表" in block:
         return _table(block["表"])
     if "図形" in block:
         return _textbox(block["図形"])
+    if "画像" in block:
+        return _picture(block["画像"], images)
 
     style = ""
     for key, (identity, _name) in _HEADINGS.items():
@@ -168,6 +178,44 @@ def _textbox(text: str) -> str:
             f"<wps:txbx><w:txbxContent/></wps:txbx>"
             f"<wps:bodyPr/><wps:txBody>{body}</wps:txBody></wps:wsp>"
             "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>")
+
+
+#: 貼り付け画像の枠（EMU）と、そこから決まる画素数。
+_PIC_CX, _PIC_CY, _PX = 3600000, 2000000, 9525
+
+
+def _picture(spec: dict[str, Any], images: list[tuple[str, bytes]]) -> str:
+    """貼り付け画像（``pic:pic``）。**実体と絵柄が要る。**
+
+    Word の設計書には現行画面のハードコピーと帳票見本のスキャンが必ず貼って
+    あり、**そこにしか書かれていない項目**がある ―― パースは「中身は取れて
+    いません」と申告するが、灰色の矩形ではその申告が正しいかを目で判定でき
+    ない（→ :mod:`picture`）。
+
+    ``r:embed`` の先が無いと Word は画像を落として開くので、実体も必ず置く。
+    """
+    import picture
+
+    identity = f"rIdImg{len(images) + 1}"
+    images.append((identity, picture.draw(spec.get("絵柄", ""),
+                                          _PIC_CX // _PX, _PIC_CY // _PX)))
+    alt = spec.get("代替", "")
+    descr = f' descr="{_esc(alt)}"' if alt else ""
+    name = spec.get("名前") or f"図 {len(images)}"
+    return (f'<w:p><w:r><w:drawing><wp:inline xmlns:wp="{_WP}">'
+            f'<wp:extent cx="{_PIC_CX}" cy="{_PIC_CY}"/>'
+            f'<wp:docPr id="{20 + len(images)}" name="{_esc(name)}"{descr}/>'
+            f'<a:graphic xmlns:a="{_A}"><a:graphicData uri="{_PIC}">'
+            f'<pic:pic xmlns:pic="{_PIC}"><pic:nvPicPr>'
+            f'<pic:cNvPr id="{20 + len(images)}" name="{_esc(name)}"{descr}/>'
+            "<pic:cNvPicPr/></pic:nvPicPr>"
+            f'<pic:blipFill><a:blip r:embed="{identity}"/>'
+            "<a:stretch><a:fillRect/></a:stretch></pic:blipFill>"
+            f'<pic:spPr><a:xfrm><a:off x="0" y="0"/>'
+            f'<a:ext cx="{_PIC_CX}" cy="{_PIC_CY}"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+            "</pic:pic></a:graphicData></a:graphic>"
+            "</wp:inline></w:drawing></w:r></w:p>")
 
 
 def _runs(text: str) -> str:
@@ -260,6 +308,7 @@ def _content_types(parts: dict[str, str]) -> str:
     listed = ['<Default Extension="rels" ContentType="application/vnd.'
               'openxmlformats-package.relationships+xml"/>',
               '<Default Extension="xml" ContentType="application/xml"/>',
+              '<Default Extension="png" ContentType="image/png"/>',
               '<Override PartName="/docProps/core.xml" ContentType="application/'
               'vnd.openxmlformats-package.core-properties+xml"/>']
     for name in sorted(parts):
@@ -279,6 +328,22 @@ def _rels(pairs: list[tuple[str, str, str]]) -> str:
         + "/>" for i, t, g in pairs)
     return (f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<Relationships xmlns="{_PKG}">{body}</Relationships>')
+
+
+def _uri(value: str) -> str:
+    """**外部リンクの飛び先**。日本語をそのまま置かない。
+
+    OPC の関係の ``Target`` は URI（RFC 3986）でなければならない ―― ASCII の
+    外はパーセント符号化が要る。`承認フロー.xlsx` を生の UTF-8 で書くと、
+    **arp4 は zip の関係を辿るだけなのでパースは通り、Word で開いたときにだけ
+    「問題があるため開けません」になる**（`deck.py` の頭に書いてあるのと同じ
+    失敗が、Word では 1 冊まるごとの形で出る）。中身は全部正しいのに、
+    開いた人は何が書いてあるはずだったかを 1 文字も確かめられない。
+
+    符号化しないのは区切り記号（``/`` ``:`` ``?`` ``#`` など）だけである
+    ―― そこを潰すと URI の構造が壊れる。
+    """
+    return quote(value, safe="/:?#[]@!$&'()*+,;=~-._")
 
 
 def _esc(value: Any) -> str:

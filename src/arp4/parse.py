@@ -95,6 +95,7 @@ from dataclasses import dataclass, field, replace as _replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple
+from urllib.parse import unquote
 
 from arp4 import mdio, ocr, yamlio
 from arp4.finding import Finding
@@ -3620,10 +3621,34 @@ def _link(cell: Any) -> str:
     target = (getattr(link, "target", "") or "").strip()
     location = (getattr(link, "location", "") or "").strip()
     if target and location:
-        return f"{target}#{location}"
+        return f"{readable_link(target)}#{location}"
     if location:
         return location if location.startswith("#") else f"#{location}"
-    return target
+    return readable_link(target)
+
+
+def readable_link(target: str) -> str:
+    """飛び先を**人が読める字**に戻す（パーセント符号化を解く）。
+
+    OPC の関係の ``Target`` は URI なので、**日本語のファイル名は必ず符号化
+    されて入っている** ―― Excel も Word も PowerPoint も、リンクを張った
+    時点でそう書く。そのまま出すと整理層に渡るのは
+    ``…/%E6%89%BF%E8%AA%8D%E3%83%95%E3%83%AD%E3%83%BC.xlsx`` で、**まだ手元に
+    無いのがどの資料かを誰も言えない**（未読取を宣言する先も名指しできない）。
+
+    画面に見えているのは符号化前の字なので、そちらへ寄せる ―― この規律は
+    `_value` が Excel の書式でやっているのと同じものである。
+
+    **戻せないものは戻さない。** 古い道具は Shift_JIS のまま符号化することが
+    あり、UTF-8 として読むと化ける ―― そのときは符号化されたままのほうが、
+    少なくとも元へ戻せる形で残る。
+    """
+    if "%" not in target:
+        return target
+    try:
+        return unquote(target, errors="strict")
+    except UnicodeDecodeError:
+        return target
 
 
 def _value(cell: Any) -> str:
