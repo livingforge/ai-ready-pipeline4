@@ -120,11 +120,20 @@ def test_フォルダ構造で一意になる(project: Paths, round_: Round) -> 
 
 
 def test_読めない形式はP001(project: Paths, round_: Round) -> None:
-    write(sources_dir(project) / "a.docx", "x")
+    """**読めない形式は数えて申告する**（黙って飛ばさない）。
+
+    検体を `.vsdx`（Visio）にしてあるのは、**業務フローが Visio で届く**のが
+    実案件で普通だからである ―― `.docx` や `.csv` のように「いつか読む側」に
+    回るものを使うと、読めるようになった日にこのテストが**読めることを失敗と
+    して報告する。**
+    """
+    write(sources_dir(project) / "業務フロー.vsdx", "x")
     targets, findings = parse.plan(round_, [sources_dir(project)], sources_dir(project))
 
     assert not targets
     assert [f.code for f in findings] == ["P001"]
+    # **何が読めるかまで言う。**「読めません」で終わる申告は拾い直されない。
+    assert ".xlsx" in findings[0].message and ".docx" in findings[0].message
 
 
 def test_書けない1本があっても残りを書く(project: Paths, round_: Round) -> None:
@@ -1730,3 +1739,27 @@ parser.add_argument("path")
     targets, _ = parse.plan(round_, [source], sources_dir(project))
 
     assert not [c for c in targets[0].doc.chunks if c.anchor == "p1"]
+
+
+def test_no_ocrでもスキャンしたページの絵は出す(project: Paths,
+                                                round_: Round) -> None:
+    """**`--no-ocr` が落とすのは機械の読みだけである。**
+
+    実体を渡さないことではない ―― 整理層は絵を開いて読めるので、そこまで
+    止めると**読める資料を読めなくする**（Excel の貼り付け画像を `--no-ocr`
+    でも `images/` へ出しているのと同じ規律）。読みにいっていないことは
+    `o1` に必ず書くので、「読めなかった」と「読まなかった」は混ざらない。
+    """
+    import paper
+
+    path = sources_dir(project) / "受入確認書.pdf"
+    paper.build(path, {"ページ": [{"スキャン": True}]})
+    targets, findings = parse.plan(round_, [path], sources_dir(project),
+                                   use_ocr=False)
+
+    assert len(targets) == 1
+    anchors = {c.anchor: c for c in targets[0].doc.chunks}
+    assert set(anchors) == {"p1-i1", "p1-o1"}
+    assert targets[0].images                       # 実体が出ている
+    assert "読みにいっていません" in anchors["p1-o1"].text
+    assert [f.code for f in findings if f.code == "P017"] == ["P017"]

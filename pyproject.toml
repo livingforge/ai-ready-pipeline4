@@ -15,9 +15,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 資料の取り込み（arp4 parse）。Excel を読むときだけ import する。
+# 資料の取り込み（arp4 parse）。**どれも使うときだけ import する。**
+#
+# Word・PowerPoint・CSV に追加の依存は要らない ―― OOXML は zip と XML なので
+# 標準ライブラリで足り、CSV も同じである。PDF だけが読み手を必要とする
+# （pypdfium2 が本文とページの画像化、Pillow がその PNG 化）。どちらも
+# `render` が既に使っているものなので、新しく増えた依存は 1 つも無い。
 parse = [
     "openpyxl>=3.1",
+    "pypdfium2>=4.30",
+    "Pillow>=10.0",
 ]
 
 # シートの画像化（arp4 render）。Windows + Microsoft Excel が前提で、

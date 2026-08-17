@@ -3,11 +3,12 @@
 **この文書は利用者向けである。**エージェントへの手順書は `surface/` にあり、
 `build/build.py` が `.claude` / `.github` へ展開する。
 
-既存資産 ―― Excel の設計書・ソースコード・DDL・Markdown の設計メモ ―― を起点に、
+既存資産 ―― Excel・Word・PowerPoint・PDF・CSV の設計書、ソースコード、DDL、
+Markdown の設計メモ ―― を起点に、
 **仕様をリレーショナルな正本データ**にする。設計書はそこから生成する。
 
 ```
-既存資産（Excel・コード・DDL・Markdown）―― いまある場所のまま
+既存資産（文書・コード・DDL）―― いまある場所のまま
     │  arp4 parse            機械：資料 → パース結果（意味を判断しない）
     ▼
 .arp/rounds/r001/parsed/**.md   編集可・git 管理
@@ -359,16 +360,24 @@ Excel はバイナリなので、**中身がコードで読める形**でしか�
 | 資材 | 規模 | 何のためにあるか |
 | --- | --- | --- |
 | `examples/from-excel` | 資料 2 冊 | `parse → 整理 → freeze → build → publish` を**通しで**確かめる最小サンプル（`tests/test_example.py` が同じ道を通る） |
+| `examples/from-documents` | 資料 4 冊 | **Excel 以外の見本**（`.pptx` `.docx` `.pdf` `.csv` を 1 冊ずつ）。中身は `tests/dataset/` の検体そのもので、**開いて何が読めるかを確かめる**ためにある |
 | `tests/corpus.py` | 20 冊 / 35 シート | **パースの検体**。数式・非表示・貼り付け画像・マクロ付き・シート名衝突・壊れたブックなど、実物によくある書かれ方を集めたもの |
 | `examples/sales-corpus` | 30 冊 / 201 シート ＋ 追加資料 8 冊 / 56 シート ＋ Java 114 本 | **架空の新販売管理システム一式**。日本の SIer の設計書の形（2 段見出し・縦結合・図形＋コネクタ・結合セル作図）と、矛盾・粒度差・表記ゆれ・重複を仕込んである。`追加資料/` は**2 ラウンド目の検体**（食い違いの決着とあとから足りた仕様）→ [README](examples/sales-corpus/README.md) |
 | `examples/kotonoha` | Python 110 本 / DDL 7 本 / 設計メモ 22 本 ＋ Excel 8 冊 | **架空の社内エンベディング基盤一式**。`sales-corpus` の鏡像で、**実装が先にあって文書が後追い**の検体である。`draft` が主役になり、`.sql` / `test_*.py` / `.md` があるのでテーブル定義書・テスト仕様書・課題管理表の語彙がここから立つ → [README](examples/kotonoha/README.md) |
 
 ```bash
-python examples/make_sample.py                  # 最小サンプルの資料 2 冊
+python examples/make_sample.py                  # 配る見本（Excel 2 冊 ＋ 文書 4 冊）
 python tests/corpus.py <ディレクトリ>            # パースの検体
 python examples/sales-corpus/build.py --clean   # 資料 30 冊・追加資料 8 冊・実装 116 ファイル
 python examples/kotonoha/build.py --clean       # Excel 8 冊（コード・DDL・設計メモは生成物ではない）
 ```
+
+**`examples/*/資料/` の実ファイルは git に入っている。** `arp4` が何を読めるのかは、
+生成器のコードより**開いた 1 冊**のほうが早く分かる ―― Python を動かさずに確かめ
+られることに価値があるので、ここだけはバイナリを置く。`tests/` の検体は置かない
+（61 本・11MB あり、変更のたびに全部差し替わる）。**数と変更頻度が違うから、置き方も
+違う。** 置く以上は再生成しても差分が出ないようにしてあり（`build/reproducible.py`）、
+古くなっていないかは `tests/test_example.py` が見ている。
 
 `tests/corpus.py` と `sales-corpus` は役割が違う。**前者は 1 つの欠陥を 1 つのシートで突く
 検体**（壊れ方が特定できる）、**後者は 30 冊を丸ごと通したときに何が起きるかの検体**（現場の
@@ -461,7 +470,7 @@ python build/deploy.py --no-git            # コピーだけして git は触ら
 
 | | 中身 |
 | --- | --- |
-| [docs/decisions.md](docs/decisions.md) | **決定記録** ― 何をどういう理由で決めたか（104 件 ―― 決定 0 から数えている） |
+| [docs/decisions.md](docs/decisions.md) | **決定記録** ― 何をどういう理由で決めたか（106 件 ―― 決定 0 から数えている） |
 | [docs/parsed.md](docs/parsed.md) | パース結果の形式・アンカー・編集の規律・Excel とコードの非対称 |
 | [docs/organized.md](docs/organized.md) | 整理①②の契約（レコード形式・concept・矛盾） |
 | [docs/freeze.md](docs/freeze.md) | 凍結ゲート・ラウンド運用・凍結後の手当て |
@@ -470,8 +479,11 @@ python build/deploy.py --no-git            # コピーだけして git は触ら
 
 ## 実装していないもの
 
-- **Word・PDF・PowerPoint。** 2 側にある。**移すまでは「無い」と言う**
-  （ただし**貼り付け画像の中の文字は読む** ―― Windows OCR。下記）
+- **画像・PDF からの表の復元**（罫線と桁を読んで表に戻す）。**当てにいけば
+  列がずれた表が「読めた」顔で出る**（→ 決定 104）。中の**文字**は読む
+  （Windows OCR）
+- **旧形式**（`.xls` / `.xlsb` / `.doc` / `.ppt`）。zip ではないので開けない ――
+  `P001` で「新しい形式として保存し直してください」まで言う
 - **構文木は Python と Java だけ。** C# は未対応
 - **矛盾の専用経路。** 整理②が `_concepts.yml` に書いた `contradictions` は課題
   （`open-issue`）になるが、3 の `contradict`（値の食い違い・引用したうえで覆す）にあたる

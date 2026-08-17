@@ -24,10 +24,14 @@ from __future__ import annotations
 import posixpath
 import re
 import shutil
+import sys
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "build"))
+import reproducible  # noqa: E402
 from xml.sax.saxutils import escape
 
 from openpyxl import Workbook
@@ -541,12 +545,20 @@ _CT_DRAWING = "application/vnd.openxmlformats-officedocument.drawing+xml"
 
 
 def save(wb: Workbook, path: Path, diagrams: list[Diagram] | None = None) -> Path:
-    """ブックを保存し、図があれば drawing 部を注入する。"""
+    """ブックを保存し、図があれば drawing 部を注入する。
+
+    **書き出したものは git に入る**（`examples/*/資料/`）ので、保存時刻と zip の
+    エントリ日時を固定する ―― 揃えないと、中身が 1 文字も変わっていなくても
+    生成器を回すたびに全冊が差分に出て、**見本が古いかどうかを誰も判定
+    できなくなる**（`build/reproducible.py`）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    reproducible.stamp(wb)
     wb.save(str(path))
+    reproducible.restamp(path)
     if diagrams:
         _inject_diagrams(path, diagrams)
-    return path
+    return reproducible.freeze(path)
 
 
 def _inject_diagrams(path: Path, diagrams: list[Diagram]) -> None:

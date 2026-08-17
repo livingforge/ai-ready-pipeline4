@@ -1,11 +1,11 @@
 # arp4 ― 既存資産を仕様データの正本にする
 
 設計書を書かない。仕様をデータとして持ち、設計書はそこから生成する。
-起点になるのは既存資産で、Excel の設計書・ソースコード（Python / Java）・DDL・
-Markdown の設計メモを指す。
+起点になるのは既存資産で、Excel・Word・PowerPoint・PDF・CSV の設計書と、
+ソースコード（Python / Java）・DDL・Markdown の設計メモを指す。
 
 ```
-既存資産（Excel・コード・DDL・Markdown）   いまある場所のまま
+既存資産（文書・コード・DDL）              いまある場所のまま
     │  arp4 parse             機械：資料 → パース結果（意味を判断しない）
     ▼
 .arp/rounds/r001/parsed/**.md    編集可・git 管理

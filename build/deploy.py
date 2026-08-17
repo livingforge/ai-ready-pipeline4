@@ -61,6 +61,10 @@ def resilient_output() -> None:
 INCLUDE = (
     ".claude",          # Claude Code 向けスキル（surface から生成）
     ".github",          # GitHub Copilot 向けスキル（surface から生成）
+    # **これを出さないと、公開側だけで見本の PDF が壊れる。** git は中身を見て
+    # テキストか binary かを決めるので、ほとんど ASCII の PDF はテキストと
+    # 判定され、Windows で clone すると改行が変換されて開けなくなる。
+    ".gitattributes",
     ".gitignore",
     "README.md",
     "build",            # 展開スクリプト（build.py・deploy.py）

@@ -94,19 +94,33 @@ import zipfile
 from dataclasses import dataclass, field, replace as _replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple
+from typing import Any, Callable, Iterable, NamedTuple
 
 from arp4 import mdio, ocr, yamlio
 from arp4.finding import Finding
 from arp4.paths import Round
 
 #: 読める拡張子。増やすときはここと :func:`_parse_one` を対で足す。
-SUPPORTED = (".xlsx", ".xlsm", ".py", ".md", ".txt", ".sql", ".ddl", ".java")
+SUPPORTED = (".xlsx", ".xlsm", ".pptx", ".pptm", ".docx", ".docm", ".pdf",
+             ".csv", ".tsv",
+             ".py", ".md", ".txt", ".sql", ".ddl", ".java")
 
 #: Excel として開くもの。``.xlsm`` は**マクロが付いているだけで中身は同じ**である。
 #: 実案件の設計書はマクロ付きで配られることが珍しくないので、これを弾いていたぶん
 #: **読めるものを「読めない」と言っていた**。
 _EXCEL = (".xlsx", ".xlsm")
+
+#: PowerPoint として開くもの。``.pptm`` は ``.xlsm`` と同じ理由で読む
+#: （マクロが付いているだけで、スライドの中身は変わらない）。
+_SLIDES = (".pptx", ".pptm")
+
+#: Word として開くもの。``.docm`` は ``.xlsm`` と同じ理由で読む。
+_WORDS = (".docx", ".docm")
+
+#: 区切りで割るテキスト。**長らく「Excel で開き直してください」で終わっていた**
+#: ―― 助言そのものは正しいが、移行データの一覧は数百本の CSV で配られるので、
+#: 1 本ずつ開き直す作業を誰も引き受けず、**数百本が 1 件も仕様にならなかった**。
+_CSV = (".csv", ".tsv")
 
 #: 素のテキストとして読むもの。**設計の正本が Markdown で置かれている**現場は
 #: もう珍しくない（このリポジトリ自身の正本が `docs/` と `surface/` である）。
@@ -123,20 +137,9 @@ _SQL = (".sql", ".ddl")
 _ADVICE = {
     ".xls": "旧形式（BIFF）です。Excel で開いて .xlsx として保存し直してください",
     ".xlsb": "バイナリ形式です。Excel で開いて .xlsx として保存し直してください",
-    # **CSV は表なのに、「Word・PDF は 2 側にあります」と言われて終わっていた**
-    # ―― 2 側は文書の側なので、そこへ回しても誰も読まない。移行データの一覧・
-    # コード値の一覧は CSV で配られることがごく普通にある。
-    #
-    # **機械が読まないのは、区切りと文字コードが資料ごとに違うからである。**
-    # カンマかタブか、cp932 か UTF-8 か、引用符の中に改行があるか ―― どれも
-    # 当てにいけば値が変わる（`,` 区切りだと思って読んだ住所は列がずれる）。
-    # Excel で開けば人がそれを見て決められるので、そこを通してもらう。
-    ".csv": "CSV です。Excel で開いて .xlsx として保存し直してください"
-            "（区切りと文字コードは資料ごとに違うので、機械が当てると"
-            "値が変わります）",
-    ".tsv": "TSV です。Excel で開いて .xlsx として保存し直してください"
-            "（区切りと文字コードは資料ごとに違うので、機械が当てると"
-            "値が変わります）",
+    # **旧 OLE 形式。** `.xls` と同じで、中身は zip ではないので開けない。
+    ".ppt": "旧形式です。PowerPoint で開いて .pptx として保存し直してください",
+    ".doc": "旧形式です。Word で開いて .docx として保存し直してください",
     # **圧縮したまま置かれた資料。** 客先からの受け渡しはこの形が普通で、
     # 展開し忘れると**中の 30 冊がまるごと 1 行の申告になる。**
     ".zip": "圧縮ファイルです。展開してから sources/ に置いてください"
@@ -159,7 +162,8 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
      "パスワードで保護されたブックのどちらかです。Excel で開き、"
      "保護を外して .xlsx として保存し直してください"),
     (b"%PDF", "中身は PDF です（拡張子だけが .xlsx になっています）。"
-              "PDF は 2 側（docextract）にあります"),
+              "PDF は読めるので、拡張子を .pdf に直してから"
+              "もう一度 arp4 parse に渡してください"),
     (b"\x89PNG", "中身は PNG 画像です（拡張子だけが .xlsx になっています）"),
     (b"{\\rt", "中身は RTF です（拡張子だけが .xlsx になっています）"),
 )
@@ -273,8 +277,7 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
                 "warn", "P001", path.name,
                 f"読めない形式です: {path.suffix}"
                 + (f"（{advice}）" if advice else
-                   f"（いまは {'、'.join(SUPPORTED)} だけ。"
-                   "Word・PDF は 2 側にあります）")))
+                   f"（読めるのは {'、'.join(SUPPORTED)} です）")))
             continue
         try:
             docs, said, media = _parse_one(path, base, use_ocr)
@@ -783,7 +786,25 @@ def _why(path: Path, exc: Exception) -> str:
         return _unopenable(path)
     if suffix == ".py":
         return _unskeletal(exc)
+    if suffix == ".pdf":
+        return _unreadable_pdf(exc)
     return ""
+
+
+def _unreadable_pdf(exc: Exception) -> str:
+    """**PDF が開けない理由は 2 つで、やることが正反対である。**
+
+    パスワードが掛かっているなら外してもらい直す（資料は壊れていない）。
+    途中で切れているなら受け渡しをやり直す ―― どちらか分からないまま
+    「読み込みに失敗しました」だけを出すと、その 1 冊は拾い直されない。
+    """
+    said = str(exc).lower()
+    if "password" in said or "encrypt" in said:
+        return ("（パスワードで保護されています。資料は壊れていません ―― "
+                "保護を外して保存し直したものをもらい直してください）")
+    return ("（PDF として開けません。受け渡しの途中で切れたか、"
+            "拡張子だけを付け替えた資料です。先頭が `%PDF` で"
+            "始まっているかを確かめてください）")
 
 
 def _unskeletal(exc: Exception) -> str:
@@ -858,6 +879,23 @@ def _parse_one(path: Path, base: Path, use_ocr: bool = True
     if path.suffix.lower() in _EXCEL:
         # 空なら `_excel` が P009 を出す
         return _excel(path, relative, use_ocr)
+    if path.suffix.lower() in _SLIDES:
+        # **読み込むのは使うときだけ**（:mod:`arp4.pptx` はこちらを import する）。
+        from arp4 import pptx as pptx_module
+
+        return pptx_module.read(path, relative, use_ocr)
+    if path.suffix.lower() == ".pdf":
+        from arp4 import pdf as pdf_module
+
+        return pdf_module.read(path, relative, use_ocr)
+    if path.suffix.lower() in _WORDS:
+        from arp4 import docx as docx_module
+
+        return docx_module.read(path, relative, use_ocr)
+    if path.suffix.lower() in _CSV:
+        made, said = _csv(path, relative)
+        made, empty = _empty_note(made, path)
+        return made, said + empty, {}
     if path.suffix.lower() in _TEXT:
         return (*_empty_note(_markdown(path, relative), path), {})
     if path.suffix.lower() in _SQL:
@@ -1548,7 +1586,8 @@ def _readings(drawings: dict[str, Drawing], bodies: dict[str, bytes]
 
 def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
               bodies: dict[str, bytes],
-              readings: dict[str, ocr.Reading] | None = None
+              readings: dict[str, ocr.Reading] | None = None,
+              prefix: str = "s"
               ) -> tuple[list[Media], mdio.Chunk | None, mdio.Chunk | None]:
     """貼り付け画像を取り出して名前を付ける。``(出す画像, 画像の塊, 読んだ字の塊)``。
 
@@ -1591,11 +1630,11 @@ def _pictures(index: int, title: str, relative: Path, drawing: Drawing,
     up = "../" * (len(relative.parts) + 1)
     where = f"{up}images/{relative.as_posix()}"
     return shots, mdio.Chunk(
-        anchor=f"s{index}-i1", at=f"画像 {len(shots)} 枚",
+        anchor=f"{prefix}{index}-i1", at=f"画像 {len(shots)} 枚",
         heading="画像（ブックから取り出したファイル）",
         cells=listed,
         text="\n".join(f"![{one.name}]({where}/{one.name})" for one in shots)), \
-        _read_chunk(index, shots, readings is not None)
+        _read_chunk(index, shots, readings is not None, prefix)
 
 
 #: 読んだ字を出すときの見出し。**「機械が読んだ」と毎回書く** ―― 出典として
@@ -1614,8 +1653,8 @@ _OCR_BLANK = ("文字は見つかりませんでした（図・写真・網点�
               "こうなります）。開いて見るのは整理層の仕事です。")
 
 
-def _read_chunk(index: int, shots: list[Media], attempted: bool
-                ) -> mdio.Chunk | None:
+def _read_chunk(index: int, shots: list[Media], attempted: bool,
+                prefix: str = "s") -> mdio.Chunk | None:
     """読んだ字を ``s<番号>-o1`` へ。**必ず 1 枚ずつ、画像の名前と対で出す。**
 
     まとめて 1 つの塊にしないのは、読んだ字が**どの画像から出たか**を整理層が
@@ -1644,7 +1683,7 @@ def _read_chunk(index: int, shots: list[Media], attempted: bool
             said = one.reading.text
         body += [f"    {line}" for line in said.splitlines()]
         body.append("")
-    return mdio.Chunk(anchor=f"s{index}-o1", at=f"画像 {len(shots)} 枚",
+    return mdio.Chunk(anchor=f"{prefix}{index}-o1", at=f"画像 {len(shots)} 枚",
                       heading=_OCR_HEADING, text="\n".join(body).rstrip())
 
 
@@ -1679,7 +1718,76 @@ _NS = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
        "pkg": "http://schemas.openxmlformats.org/package/2006/relationships",
        "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-       "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram"}
+       "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram",
+       # スライドの図形（``p:sp``）。**中身は Excel とまったく同じ DrawingML**
+       # で、違うのは外側の名前空間だけである（→ :data:`_SPREADSHEET`）。
+       "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+       # Word の本文。**図形の入れ物としては Excel とも PowerPoint とも違う**
+       # （``wps:wsp`` / ``pic:pic`` で、接続子そのものが無い）ので、
+       # :func:`_shapes` は使わない ―― 使うのは申告のほうだけである。
+       "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+
+@dataclass(frozen=True)
+class Holder:
+    """図形の**入れ物**。``a:`` の側は 1 つも変わらないので、ここだけが形式差である。
+
+    Excel の描画は ``xdr:sp`` / ``xdr:cxnSp``、PowerPoint のスライドは
+    ``p:sp`` / ``p:cxnSp`` と、**外側の名前空間だけが違う**。箱の中の文字
+    （``a:t``）も接続の端点（``a:stCxn``）も矢羽根（``a:headEnd``）も線の見た目も
+    まったく同じものなので、:func:`_shapes` を 2 本書くと**同じ規律を 2 度書いて
+    片方だけ直した状態**が必ず生まれる。
+
+    **持たせるのは「次にやること」が形式で変わるところだけ**である。図形の
+    申告（:func:`_shape_note`）は「読めなかったものをどう見るか」まで書くのが
+    仕事で、そこは Excel と PowerPoint で本当に違う ―― `arp4 render` は
+    Excel を起こして撮るので、スライドには使えない。案内どおりにやって届かない
+    申告は、申告しないのと同じである。
+    """
+
+    #: 入れ物の名前空間（``xdr`` / ``p``）。
+    ns: str
+    #: 申告に出す言葉（``このシートには`` / ``このスライドには``）。
+    label: str
+    #: アンカーの接頭辞（``s1-g1`` の ``s``）。**申告はアンカーを名指しする**
+    #: ので、ここが実物と食い違うと**存在しない出典を案内する**ことになる
+    #: ―― 案内どおりに開いて無いのは、申告していないのと同じである。
+    prefix: str
+    #: 目で見る手立て。``…読み`` ``…読んでください`` に続けられる形にしてある。
+    look: str
+    #: 繋がっていない線をどう見るかの 1 文。
+    trace: str
+    #: 貼り付け画像は撮り直しても変わらない、に当たる 1 文。
+    reshoot: str
+    #: グラフの値がどこにあるか。Excel は同じブックの別シート、PowerPoint は
+    #: **スライドの中に埋め込まれたブック**（`ppt/embeddings/`）にある。
+    chart_data: str
+
+
+#: Excel の描画（``xl/drawings/*.xml``）。
+_SPREADSHEET = Holder(
+    ns=_NS["xdr"], label="シート", prefix="s", look="`arp4 render` で絵にして",
+    trace="どこへ向かう線かは `arp4 render` で絵にすれば読めます。",
+    reshoot="`arp4 render` で撮り直しても中身は変わりません。",
+    chart_data="系列が指しているのは別のシートの値です")
+
+#: PowerPoint のスライド（``ppt/slides/slide*.xml``）。**`arp4 render` は使えない**
+#: ―― あれは Excel を起こして印刷する仕掛けなので、スライドは撮れない。
+_SLIDE = Holder(
+    ns=_NS["p"], label="スライド", prefix="s", look="PowerPoint で開いて",
+    trace="どこへ向かう線かは PowerPoint で開けば読めます。",
+    reshoot="実体を `images/` に出してあるので、開いて見てください。",
+    chart_data="値はスライドに埋め込まれたブック（`ppt/embeddings/`）にあり、"
+               "そこは取り出していません")
+
+#: Word の本文（節 1 つぶん）。**図形の取り出しは :mod:`arp4.docx` が自前で行う**
+#: ―― ここで使うのは申告の言葉だけである（:func:`_shape_note`）。
+_WORD = Holder(
+    ns=_NS["w"], label="節", prefix="w", look="Word で開いて",
+    trace="どこへ向かう線かは Word で開けば読めます。",
+    reshoot="実体を `images/` に出してあるので、開いて見てください。",
+    chart_data="値は文書に埋め込まれたブック（`word/embeddings/`）にあり、"
+               "そこは取り出していません")
 
 #: 関係の種別。**種別で絞る**（拡張子で絞らない）―― シートの ``.rels`` には
 #: ハイパーリンクも並んでおり、リンク先がたまたま ``.xml`` だと描画として
@@ -1757,7 +1865,8 @@ class Part:
 
 
 def _related_many(path: Path, wants: dict[str, tuple[str, str]],
-                  trouble: list[str] | None = None
+                  trouble: list[str] | None = None,
+                  parts_of: "Callable[[zipfile.ZipFile], dict[str, str]] | None" = None
                   ) -> dict[str, dict[str, list[Part]]]:
     """欲しいパートを**まとめて**取る（``種別 → {シート名: [本文]}``）。
 
@@ -1770,6 +1879,11 @@ def _related_many(path: Path, wants: dict[str, tuple[str, str]],
     「そういうパートは無い」として飲む（読めなかったことより、資料が落ちる
     ほうが痛い）。**ただし飲んだことは ``trouble`` に置く** ―― 黙ると
     「図の無いブック」と見分けが付かない（:func:`_drawing_gap_note`）。
+
+    ``parts_of`` は**出発点の一覧だけ**を差し替える（既定は
+    :func:`_sheet_parts`）。PowerPoint のスライドも「入れ物 → ``.rels`` →
+    描画・画像」という同じ道を歩くので、歩き方まで書き直す理由が 1 つも無い
+    ―― 違うのは 1 歩目をどこから始めるかだけである。
     """
     empty: dict[str, dict[str, list[Part]]] = {key: {} for key in wants}
     try:
@@ -1788,6 +1902,12 @@ def _related_many(path: Path, wants: dict[str, tuple[str, str]],
                         if (got := _resolve(_part_dir(part), target)) in names}
 
             def follow(part: str, want: str) -> list[str]:
+                # **取りに行く先が自分自身のこともある。** Excel の図形は
+                # シートから ``/drawing`` で繋がった別のパートに入っているが、
+                # PowerPoint の図形は**スライドの XML そのもの**に入っている
+                # ―― 道が 0 歩なだけで、そこから先（画像・グラフ）は同じである。
+                if not want:
+                    return [part] if part in names else []
                 # **同じ道を二度歩かない。** 描画へは 3 種類（図形・SmartArt・
                 # グラフ）が同じ 1 歩目で入る。
                 if (part, want) in walked:
@@ -1803,7 +1923,7 @@ def _related_many(path: Path, wants: dict[str, tuple[str, str]],
 
             got: dict[str, dict[str, list[Part]]] = {key: {} for key in wants}
             bodies: dict[str, bytes] = {}
-            for title, part in _sheet_parts(archive).items():
+            for title, part in (parts_of or _sheet_parts)(archive).items():
                 for key, (kind, through) in wants.items():
                     parts = follow(part, kind)
                     if through:
@@ -2267,8 +2387,8 @@ class Drawing:
 
     **画像を図形と混ぜない。** 貼り付けたスクリーンショットは
     「テキストの取れない図形」ではなく「そもそもテキストを持たないもの」で、
-    :mod:`arp4.render` で撮り直しても中身は読めるようにならない
-    （読むなら 2 側の OCR が要る）。
+    :mod:`arp4.render` で撮り直しても中身は読めるようにならない ―― 絵は絵の
+    ままである。**中の字のほうは :mod:`arp4.ocr` が読む**（``o1``）。
     """
 
     shapes: int = 0                                    # 図形（``xdr:sp``）
@@ -2309,17 +2429,23 @@ class Drawing:
     #: ので数える ―― ここを黙ると、図の描いてあるシートが「図の無いシート」
     #: として出てくる（`未読取` を宣言する先も出ない）。
     unreadable: int = 0
+    #: 図形として置かれた**表**（``a:tbl``）の中身。**Excel には出てこない**
+    #: ―― あちらの表はセルの面であって図形ではない。PowerPoint の一覧は
+    #: すべてこの形になるので、埋め込みオブジェクトとして数えて中身を捨てると、
+    #: **スライドの表が 1 つも仕様にならない。**
+    tables: list[list[list[str]]] = field(default_factory=list)
 
     @property
     def total(self) -> int:
         return (self.shapes + self.pictures + self.connectors
-                + self.charts + self.diagrams + self.objects)
+                + self.charts + self.diagrams + self.objects + len(self.tables))
 
     @property
     def summary(self) -> str:
         """``図形 3 個・接続子 1 本・画像 2 枚``。**数えたものだけを言う。**"""
         boxes = f"（箱 {self.diagram_boxes} 個）" if self.diagram_boxes else ""
         parts = [f"図形 {self.shapes} 個" if self.shapes else "",
+                 f"表 {len(self.tables)} 枚" if self.tables else "",
                  f"接続子 {self.connectors} 本" if self.connectors else "",
                  f"SmartArt {self.diagrams} 個{boxes}" if self.diagrams else "",
                  f"グラフ {self.charts} 個" if self.charts else "",
@@ -2356,8 +2482,13 @@ _BOTH = "↔"
 _PLAIN = "―"
 
 
-def _shapes(part: Part, into: Drawing) -> Drawing:
+def _shapes(part: Part, into: Drawing,
+            holder: Holder = _SPREADSHEET) -> Drawing:
     """描画パート 1 本を読む。**テキストと接続の両方を取る。**
+
+    ``holder`` は**入れ物の名前空間だけ**を差し替える（→ :class:`Holder`）。
+    既定が Excel なのは、ここが 30 冊ぶん回る既定の道だからである ―― スライドを
+    読むときは :data:`_SLIDE` を明示して渡す。
 
     テキストは**図形ごと**に集める（アンカーごとではない） ―― グループ化された
     業務フローはアンカー 1 個の中に箱が 10 個入っていることがあり、まとめてしまうと
@@ -2376,12 +2507,12 @@ def _shapes(part: Part, into: Drawing) -> Drawing:
         into.unreadable += 1
         return into
 
-    for picture in root.iter(f"{{{_NS['xdr']}}}pic"):
+    for picture in root.iter(f"{{{holder.ns}}}pic"):
         into.pictures += 1
         # **代替テキストは人が書いた文字である。** 貼り付け画像の中身は取れない
         # ままだが、「受注入力画面のイメージ」と書いてあれば**何の画像かは
         # 分かる** ―― 名前（``Picture 1``）は Excel が自動で振るので取らない。
-        alt = _shape_alt(picture)
+        alt = _shape_alt(picture, holder)
         if alt:
             into.picture_alts += 1
             into.alts.append(("画像", alt))
@@ -2392,7 +2523,7 @@ def _shapes(part: Part, into: Drawing) -> Drawing:
         if embedded and (where := part.links.get(embedded)):
             into.media.append((where, alt))
 
-    for frame in root.iter(f"{{{_NS['xdr']}}}graphicFrame"):
+    for frame in root.iter(f"{{{holder.ns}}}graphicFrame"):
         # **グラフ・SmartArt・埋め込みオブジェクトは ``xdr:sp`` ではない。**
         # 数えていなかったぶん、グラフだけのシートは図形 0 個・セル 0 個になり、
         # **ファイルが 1 本も出なかった** ―― シートが存在したことすら伝わらない。
@@ -2405,20 +2536,25 @@ def _shapes(part: Part, into: Drawing) -> Drawing:
         elif kind.endswith("/diagram"):
             into.diagrams += 1
             label = "SmartArt"
+        elif kind.endswith("/table"):
+            # **PowerPoint の一覧はここに入る。** 埋め込みオブジェクトとして
+            # 数えて中身を捨てていたら、スライドの表は 1 枚も仕様にならない。
+            into.tables.append(_shape_table(frame))
+            label = "表"
         else:
             into.objects += 1
             # **貼り込まれた Word・PDF は開けない**が、代替テキストに何の資料か
             # 書いてあれば、`sources/` に足すべきファイルの名前が分かる。
             label = "埋め込みオブジェクト"
-        alt = _shape_alt(frame)
+        alt = _shape_alt(frame, holder)
         if alt:
             into.alts.append((label, alt))
 
     names: dict[str, str] = {}
-    for shape in root.iter(f"{{{_NS['xdr']}}}sp"):
+    for shape in root.iter(f"{{{holder.ns}}}sp"):
         into.shapes += 1
         text = _shape_text(shape)
-        identity = _shape_id(shape)
+        identity = _shape_id(shape, holder)
         if identity:
             names[identity] = text
         if text:
@@ -2426,18 +2562,18 @@ def _shapes(part: Part, into: Drawing) -> Drawing:
         # **図形にも代替テキストは書ける。** 画像からは取るのに図形から取って
         # いなかったぶん、箱の文字にも表にも無い 1 文（「現用／待機の 2 系統。
         # DR は別紙 5」）が、**そこにしか書かれていないまま落ちていた**。
-        alt = _shape_alt(shape)
+        alt = _shape_alt(shape, holder)
         if alt:
             into.alts.append(("図形", alt))
 
-    for group in root.iter(f"{{{_NS['xdr']}}}grpSp"):
+    for group in root.iter(f"{{{holder.ns}}}grpSp"):
         # **群に書かれた代替テキストは図全体の説明である。** 構成図に 1 文だけ
         # 添えるのはこの形になる（箱ごとではなくゾーンごとに書く）。
-        alt = _shape_alt(group)
+        alt = _shape_alt(group, holder)
         if alt:
             into.alts.append(("図形の群", alt))
 
-    for connector in root.iter(f"{{{_NS['xdr']}}}cxnSp"):
+    for connector in root.iter(f"{{{holder.ns}}}cxnSp"):
         into.connectors += 1
         start = _endpoint(connector, "stCxn")
         end = _endpoint(connector, "endCxn")
@@ -2456,7 +2592,8 @@ def _shapes(part: Part, into: Drawing) -> Drawing:
         if arrow == _BACK:                             # 矢羽根が始点側にある
             source, target, arrow = target, source, _ARROW
         into.links.append(_Link(source, arrow, target,
-                                _shape_name(connector), *_line(connector)))
+                                _shape_name(connector, holder),
+                                *_line(connector, holder)))
     return into
 
 
@@ -2609,12 +2746,39 @@ def _shape_text(shape: ET.Element) -> str:
     return "\n".join(paragraphs)
 
 
-def _shape_id(shape: ET.Element) -> str:
-    element = shape.find(f".//{{{_NS['xdr']}}}cNvPr")
+def _shape_table(frame: ET.Element) -> list[list[str]]:
+    """``a:tbl`` を行の並びにする。**縦結合はセルの面と同じ規律で下へ広げる。**
+
+    ``a:gridSpan`` / ``a:hMerge``（横）と ``a:rowSpan`` / ``a:vMerge``（縦）は
+    Excel の結合セルとまったく同じ意味で、**openpyxl が左上にしか値を返さない
+    のと同じことが XML でも起きる** ―― 続きのセルは空で入っている。
+
+    **広げるのは縦だけである**（:func:`_cells` と同じ）。分類列の「同上」を
+    回復するのは忠実性の話だが、1 行だけの横結合は表題であって、広げると
+    同じ語が 5 列に並ぶ。
+    """
+    rows: list[list[str]] = []
+    above: list[str] = []
+    for row in frame.iter(f"{{{_NS['a']}}}tr"):
+        line: list[str] = []
+        for index, cell in enumerate(row.findall(f"{{{_NS['a']}}}tc")):
+            text = _shape_text(cell)
+            if not text and cell.get("vMerge") and index < len(above):
+                # **縦結合の続き**（画面では上の値が全行に掛かって見えている）。
+                text = above[index]
+            line.append(text)
+        if line:
+            rows.append(line)
+            above = line
+    return rows
+
+
+def _shape_id(shape: ET.Element, holder: Holder = _SPREADSHEET) -> str:
+    element = shape.find(f".//{{{holder.ns}}}cNvPr")
     return (element.get("id") or "") if element is not None else ""
 
 
-def _shape_name(shape: ET.Element) -> str:
+def _shape_name(shape: ET.Element, holder: Holder = _SPREADSHEET) -> str:
     """名前（``cNvPr/@name``）を**そのまま**返す。**接続子にだけ使う。**
 
     :func:`_shape_alt` は「名前は取らない」と決めている ―― 図形の名前は
@@ -2631,11 +2795,11 @@ def _shape_name(shape: ET.Element) -> str:
     綴り（``コネクタ`` / ``Straight Arrow Connector``）に依るので、資料の言語が
     変わるだけで人の付けた名前を捨てる。ここは転記に徹する。
     """
-    element = shape.find(f".//{{{_NS['xdr']}}}cNvPr")
+    element = shape.find(f".//{{{holder.ns}}}cNvPr")
     return (element.get("name") or "") if element is not None else ""
 
 
-def _shape_alt(shape: ET.Element) -> str:
+def _shape_alt(shape: ET.Element, holder: Holder = _SPREADSHEET) -> str:
     """代替テキスト（``descr``）。**Excel は自動で入れない**ので、あれば人の言葉。
 
     名前（``name``）を取らないのはその裏返しである ―― ``Picture 1`` `` 図 3``
@@ -2643,7 +2807,7 @@ def _shape_alt(shape: ET.Element) -> str:
     **接続子だけは例外**で、線は代替テキストもテキスト枠も持たないぶん名前が
     言葉の唯一の在り処になる（→ :func:`_shape_name`）。
     """
-    element = shape.find(f".//{{{_NS['xdr']}}}cNvPr")
+    element = shape.find(f".//{{{holder.ns}}}cNvPr")
     if element is None:
         return ""
     title = (element.get("title") or "").strip()
@@ -2743,7 +2907,8 @@ _DASH = {"solid": "実線",
 _EMU_PER_POINT = 12700
 
 
-def _line(connector: ET.Element) -> tuple[str, str, str]:
+def _line(connector: ET.Element,
+          holder: Holder = _SPREADSHEET) -> tuple[str, str, str]:
     """接続子の線 ``(線種, 線色, 太さ)``。**分からないものは空で返す。**
 
     体制図・業務フロー図は「実線＝指揮命令 / 破線＝委託」のように**線種で意味を
@@ -2751,7 +2916,8 @@ def _line(connector: ET.Element) -> tuple[str, str, str]:
     いなかった ―― 実測（kotonoha r001）で体制図の接続 7 本はどれが委託か決め
     られず、**通し実行で唯一の「未読取」1 件**になった。
 
-    読むのは ``xdr:cxnSp/xdr:spPr/a:ln`` に**書いてあるものだけ**である。
+    読むのは ``cxnSp/spPr/a:ln`` に**書いてあるものだけ**である（入れ物の
+    名前空間は ``holder`` が決める ―― PowerPoint も同じ形で持っている）。
 
     ==================  ========================================================
     ``a:prstDash``      あればその値（``dash`` → 破線）
@@ -2765,14 +2931,14 @@ def _line(connector: ET.Element) -> tuple[str, str, str]:
     やっていないので空のまま出す ―― 「実線」と埋めてしまうと、破線で描き分けて
     ある図が全部同じに見え、しかも**申告が嘘になる。**
     """
-    line = connector.find(f"./{{{_NS['xdr']}}}spPr/{{{_NS['a']}}}ln")
+    line = connector.find(f"./{{{holder.ns}}}spPr/{{{_NS['a']}}}ln")
     if line is None:
         return "", "", ""
     dash = line.find(f"{{{_NS['a']}}}prstDash")
     if dash is not None:
         raw = dash.get("val") or ""
         style = _DASH.get(raw, raw)
-    elif connector.find(f"./{{{_NS['xdr']}}}style") is None:
+    elif connector.find(f"./{{{holder.ns}}}style") is None:
         style = _DASH["solid"]
     else:
         style = ""                                     # テーマ由来 ―― 解決しない
@@ -2804,16 +2970,17 @@ def _line_width(line: ET.Element) -> str:
 
 
 def _shape_note(index: int, drawing: Drawing,
-                readings: dict[str, ocr.Reading] | None = None) -> str:
+                readings: dict[str, ocr.Reading] | None = None,
+                holder: Holder = _SPREADSHEET) -> str:
     """図形について何が取れて何が取れなかったかの申告。**黙って空を返さない。**"""
     if drawing.unreadable:
         # **XML として開けなかった描画パートは、図形 0 個と同じ形で出てくる。**
         # 数だけでも言っておかないと、図の描いてあるシートが「図の無いシート」
         # として読まれる ―― しかも `arp4 render` は撮れるので、絵にすれば読める。
-        return (f"このシートの描画パート {drawing.unreadable} 本は"
+        return (f"この{holder.label}の描画パート {drawing.unreadable} 本は"
                 "XML として読めませんでした（ほかに"
                 f" {drawing.summary}）。図が無いのではありません。"
-                f"アンカー `s{index}-g1` を `arp4 render` で絵にして読み、"
+                f"アンカー `{holder.prefix}{index}-g1` を{holder.look}読み、"
                 "それでも確定できないなら out_of_scope に kind: 未読取 で"
                 "宣言してください。")
     if not drawing.labels and not drawing.links:
@@ -2825,31 +2992,31 @@ def _shape_note(index: int, drawing: Drawing,
             # **グラフしか無いシートで「中身は取れていません」と言わない。**
             # 隣の `k1` にタイトルも参照範囲も出ているのに読めていないと言うと、
             # 申告のほうが信用されなくなる（:func:`_chart_note` が別に言う）。
-            return (f"このシートには {drawing.summary} があります"
-                    f"（中身は `s{index}-k1`）。セルの値は 1 つもありません。")
+            return (f"この{holder.label}には {drawing.summary} があります"
+                    f"（中身は `{holder.prefix}{index}-k1`）。セルの値は 1 つもありません。")
         if not drawn and drawing.pictures and not drawing.objects:
             # **画像しか無いシートに `arp4 render` を勧めない。** 撮り直しても
             # 絵が絵のまま出るだけで、中の文字は読めるようにならない ――
             # 案内どおりにやって届かない申告は、申告しないのと同じである
             # （表紙の会社ロゴ・スキャンした帳票見本がまさにこの形になる）。
-            return (f"このシートには {drawing.summary} があります。"
+            return (f"この{holder.label}には {drawing.summary} があります。"
                     "文字を持つ図形はありません。"
-                    + _picture_note(index, drawing, readings))
-        return (f"このシートには {drawing.summary} があります。"
+                    + _picture_note(index, drawing, readings, holder))
+        return (f"この{holder.label}には {drawing.summary} があります。"
                 + ("テキストも接続も取れていません（業務フロー・ER 図・"
                    "状態遷移図・画面レイアウトはここに描かれていることが多い）。"
                    if drawn else
                    "文字を持つ図形はありません。中身は取れていません。")
-                + f"アンカー `s{index}-g1` を `arp4 render` で絵にして"
+                + f"アンカー `{holder.prefix}{index}-g1` を{holder.look}"
                 "読んでください。それでも確定できないなら out_of_scope に "
                 "kind: 未読取 で宣言してください。")
 
     got: list[str] = []
     if drawing.labels:
-        got.append(f"{len(drawing.labels)} 個からテキスト（`s{index}-g1`）")
+        got.append(f"{len(drawing.labels)} 個からテキスト（`{holder.prefix}{index}-g1`）")
     if drawing.links:
-        got.append(f"接続 {len(drawing.links)} 本（`s{index}-c1`）")
-    note = f"このシートには {drawing.summary} があり、{'、'.join(got)}を取り出しました。"
+        got.append(f"接続 {len(drawing.links)} 本（`{holder.prefix}{index}-c1`）")
+    note = f"この{holder.label}には {drawing.summary} があり、{'、'.join(got)}を取り出しました。"
 
     if drawing.diagrams:
         # **SmartArt は箱の文字しか取れない。** 親子・順序は内部の点への参照に
@@ -2860,7 +3027,7 @@ def _shape_note(index: int, drawing: Drawing,
         # 系列もタイトルも読めなかったグラフだけがここに来る（読めたぶんは
         # :func:`_chart_note` が別に言う）。
         note += (f"グラフ {drawing.charts} 個の中身は取れていません"
-                 "（系列が指しているのは別のシートの値です）。")
+                 f"（{holder.chart_data}）。")
     if drawing.objects:
         note += (f"埋め込みオブジェクト {drawing.objects} 個の中身は取れていません"
                  "（Word・PDF などが貼り込まれている場合、元ファイルを "
@@ -2872,22 +3039,23 @@ def _shape_note(index: int, drawing: Drawing,
         # どこへ向かう線か読める**（次にやることが正反対である）。
         note += (f"ただし接続子 {drawing.unnamed} 本は、繋がってはいますが"
                  "相手の図形が文字を持ちません（ゾーンの囲み枠・装飾）。"
-                 "どこへ向かう線かは `arp4 render` で絵にすれば読めます。")
+                 f"{holder.trace}")
     if drawing.loose:
         # **繋がっていない線は取れない。** 座標から当てるのは意味の判断になる。
         note += (f"接続子 {drawing.loose} 本はどこにも繋がっていません"
                  "（線を目分量で置いた図）。両端の id が資料に無いので、"
                  "どこからどこへの線かは絵にしても決まりません。")
     if drawing.pictures:
-        note += _picture_note(index, drawing, readings)
+        note += _picture_note(index, drawing, readings, holder)
     note += ("取れていないのは配置です。枠で括られたゾーン・段組み・注記の"
-             "位置が仕様なら、`arp4 render` で絵にして読み、それでも確定できない"
+             f"位置が仕様なら、{holder.look}読み、それでも確定できない"
              "ときに out_of_scope に kind: 未読取 で宣言してください。")
     return note
 
 
 def _picture_note(index: int, drawing: Drawing,
-                  readings: dict[str, ocr.Reading] | None = None) -> str:
+                  readings: dict[str, ocr.Reading] | None = None,
+                  holder: Holder = _SPREADSHEET) -> str:
     """**画像は撮り直しても読めるようにならない。取り出して渡し、字は読む。**
 
     :mod:`arp4.render` は「人が見て読む」ための絵であって、貼り付け画像の中の
@@ -2914,16 +3082,16 @@ def _picture_note(index: int, drawing: Drawing,
     missing = drawing.pictures - len(drawing.media)
     note = (f"貼り付け画像 {drawing.pictures} 枚は絵のままです"
             "（表のスクリーンショットなら、セルの値としては 1 つも取れていません）。"
-            "`arp4 render` で撮り直しても中身は変わりません。"
+            f"{holder.reshoot}"
             "図形と違い、画像は絵にする以前から絵です。")
     if drawing.media:
-        note += (f"実体は `s{index}-i1` に出してあります（`images/` の中）。"
+        note += (f"実体は `{holder.prefix}{index}-i1` に出してあります（`images/` の中）。"
                  "開いて読むのは整理層の仕事です。読み取った内容を整理結果へ"
-                 f"書くときは、出典に `s{index}-i1` を指してください。")
-        note += _ocr_said(index, drawing, readings)
+                 f"書くときは、出典に `{holder.prefix}{index}-i1` を指してください。")
+        note += _ocr_said(index, drawing, readings, holder)
     if drawing.picture_alts:
         note += (f"うち {drawing.picture_alts} 枚には代替テキストがあるので、"
-                 f"何の画像かは `s{index}-a1` でも分かります。")
+                 f"何の画像かは `{holder.prefix}{index}-a1` でも分かります。")
     if blind and not drawing.media:
         note += (f"うち {blind} 枚は代替テキストも無く、何の画像かも資料からは"
                  "分かりません。元の画像ファイル（または紙）を当たるか、"
@@ -2939,7 +3107,8 @@ def _picture_note(index: int, drawing: Drawing,
 
 
 def _ocr_said(index: int, drawing: Drawing,
-              readings: dict[str, ocr.Reading] | None) -> str:
+              readings: dict[str, ocr.Reading] | None,
+              holder: Holder = _SPREADSHEET) -> str:
     """OCR が何枚から字を読めたかの申告。**枚数で言う**（中身は ``o1`` にある）。
 
     **「読めた」も申告である。** 読めなかったものを数えるのと同じ理由で、
@@ -2951,7 +3120,7 @@ def _ocr_said(index: int, drawing: Drawing,
     """
     if readings is None:
         return ("画像の中の文字は読みにいっていません（`--no-ocr`）。"
-                f"`s{index}-o1` にもそう書いてあります。")
+                f"`{holder.prefix}{index}-o1` にもそう書いてあります。")
     parts = {part for part, _ in drawing.media}
     got = [readings[part] for part in sorted(parts) if part in readings]
     if not got:
@@ -2960,12 +3129,12 @@ def _ocr_said(index: int, drawing: Drawing,
     troubled = [one for one in got if one.trouble]
     if read:
         note = (f"うち {len(read)} 枚からは Windows OCR が文字を読み出しました"
-                f"（`s{index}-o1`）。読み違えが混ざります（`ORDER-001` が "
+                f"（`{holder.prefix}{index}-o1`）。読み違えが混ざります（`ORDER-001` が "
                 "`ORDER-OOI` になるなど）ので、値として使う前に画像そのものを"
                 "確かめてください。")
     else:
         note = ("Windows OCR では文字を 1 つも読めませんでした"
-                f"（`s{index}-o1`）。")
+                f"（`{holder.prefix}{index}-o1`）。")
     if troubled:
         note += (f"うち {len(troubled)} 枚は読みにいって失敗しました"
                  f"（{troubled[0].trouble}）。")
@@ -4274,6 +4443,236 @@ def _markdown(path: Path, relative: Path) -> list[tuple[Path, mdio.Doc]]:
     if not doc.chunks:
         return []
     return [(Path(*relative.parts[:-1]) / f"{relative.name}{mdio.EXT}", doc)]
+
+
+# ── CSV ─────────────────────────────────────────────────────────
+#: 区切りの候補。**この 4 つに絞る**のは、当てにいく幅がそのまま「値が変わる
+#: 危険」だからである ―― 空白区切りまで候補に入れると、住所やコメントの中の
+#: 空白で列が割れた表が「読めた」顔で出てくる。
+_DELIMITERS = (",", "\t", ";", "|")
+
+#: 先頭に BOM があるとき、**文字コードは資料自身が名乗っている**（当てにいく
+#: 必要が無い）。Excel の「CSV UTF-8」は BOM 付きで書き出し、「Unicode テキスト」は
+#: UTF-16LE ＋ タブ区切りで書き出す ―― どちらも実物にごく普通にある。
+_CSV_BOMS = (
+    (b"\xef\xbb\xbf", "utf-8-sig", "UTF-8（BOM 付き）"),
+    (b"\xff\xfe", "utf-16", "UTF-16 LE（BOM 付き）"),
+    (b"\xfe\xff", "utf-16", "UTF-16 BE（BOM 付き）"),
+)
+
+#: BOM が無いときに試す順。**UTF-8 を厳密に試してから cp932** へ落ちる
+#: （:func:`_source` と同じ順）―― 日本語は cp932 と UTF-8 のどちらでも「読めて
+#: しまう」ことがあるが、UTF-8 として妥当なバイト列が cp932 でもあることは
+#: まず無いので、この順なら取り違えない。
+_CSV_ENCODINGS = (("utf-8", "UTF-8"), ("cp932", "cp932（Shift_JIS）"))
+
+#: 区切りが決まったと言ってよい**揃い方**。全行一致を求めないのは、実物の CSV に
+#: 注記の行（``※ 桁あふれは切り捨て``）や小計の行が 1 本混ざるからである ――
+#: そこで表にしないと、**揃っている 500 行まで道連れになる。**
+#:
+#: 5 行に 1 行が違う（8 割）ところで切るのは、そこから先は「区切りがこの資料の
+#: 構造を言い当てていない」ほうが疑わしいからである。**通した後も割合はそのまま
+#: 申告する**（``80% が 4 列``）ので、最後に決めるのは読む側である。
+_CSV_AGREE = 0.8
+
+#: 「大きい」と申告する行数。Excel の塊と同じ理由で**切り詰めはしない**が、
+#: 先頭だけ読んで終わりにされると残りが `未読取` にも上がらないまま消える。
+_CSV_BIG_ROWS = 1000
+
+
+#: 半角カタカナ（``｡`` 〜 ``ﾟ``）。**cp932 では 1 バイト**（0xA1〜0xDF）である。
+_HALFWIDTH_KANA = re.compile(r"[｡-ﾟ]")
+
+#: 半角カタカナがこれ以上を占めたら「化けている」と言う。実物の資料に半角
+#: カタカナが混ざることはあるが（旧システムの項目名）、**本文の 3 割を超える
+#: ことは無い** ―― 超えるのは EUC-JP を cp932 として読んだときだけである。
+_KANA_MOJIBAKE = 0.3
+
+
+def _mojibake(text: str) -> str:
+    """cp932 として**読めてしまった**化けの申告。**空なら化けていない。**
+
+    ここは CSV でいちばん静かに壊れるところである ―― EUC-JP の日本語は
+    0xA1〜0xFE を使い、cp932 ではその範囲が**半角カタカナ 1 文字ずつ**に当たる。
+    つまり ``受注番号`` は例外を出さずに ``ｼｳﾃﾞﾁﾔﾝｺﾞｳ`` のような字に化けて、
+    **「読めました」という顔で表に入る**。:func:`_csv_text` は例外でしか異常を
+    知れないので、ここだけは読めた中身を見る必要がある。
+
+    **判定しているのは字種の割合だけ**である（意味は見ていない）ので、
+    「これは EUC-JP だ」とは言わない ―― 言うのは「半角カタカナばかりです」と
+    いう数えた事実と、それが起きる典型的な理由である。決めるのは人である。
+    """
+    body = "".join(text.split())
+    if not body:
+        return ""
+    if len(_HALFWIDTH_KANA.findall(body)) / len(body) < _KANA_MOJIBAKE:
+        return ""
+    return ("cp932 として読めましたが、**中身が半角カタカナばかりです**"
+            "（本文の 3 割以上）。EUC-JP で保存された資料を cp932 として読むと"
+            "この形になります ―― 例外が出ないので「読めた」ように見えますが、"
+            "**ここに並んでいる字は資料の字ではありません**。"
+            "UTF-8 で保存し直してから取り込み直してください。")
+
+
+def _csv_text(path: Path) -> tuple[str, str, str]:
+    """``(本文, 文字コードの名前, 申告)``。**当てた結果を必ず言う。**
+
+    ここが CSV でいちばん危ないところである ―― `,` 区切りだと思って読んだ住所は
+    列がずれ、cp932 を UTF-8 として読んだ品名は化けるが、**どちらも「読めた」
+    顔で出てくる**。だから決めた結果を捨てずに持ち回り、パース結果の頭に書く。
+
+    最後の砦（``errors="replace"``）まで落ちたときだけ申告を返す ―― 化けた字は
+    資料の字ではないので、黙って表に入れてはいけない。
+    """
+    body = path.read_bytes()
+    for mark, encoding, name in _CSV_BOMS:
+        # **BOM があるなら当てにいかない。** 資料が自分で名乗っているものを
+        # 機械が疑う理由は 1 つも無い。
+        if body.startswith(mark):
+            try:
+                return body.decode(encoding), name, ""
+            except UnicodeDecodeError:
+                break                      # 名乗りと中身が違う。当てにいく
+    for encoding, name in _CSV_ENCODINGS:
+        try:
+            text = body.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        # **例外の出ない失敗がある。** cp932 は EUC-JP のバイト列を半角カタカナ
+        # として読み切ってしまうので、ここだけは読めた中身を見る。
+        return text, name, (_mojibake(text) if encoding == "cp932" else "")
+    return (body.decode(_FALLBACK, errors="replace"), f"{_FALLBACK}（読めない字あり）",
+            "UTF-8 でも cp932 でも読めないバイトがあります"
+            "（EUC-JP・UTF-16 で保存された資料がこの形になります）。"
+            "読めなかった字は `�` に置き換わっているので、"
+            "**その欄の値は資料の値ではありません**。")
+
+
+def _csv_rows(text: str, delimiter: str) -> list[list[str]]:
+    """``csv`` 標準ライブラリで割る。**引用符の中の改行と区切りを守る。**"""
+    import csv as csv_module
+
+    return [row for row in csv_module.reader(text.splitlines(True),
+                                             delimiter=delimiter)]
+
+
+def _csv_fit(rows: list[list[str]]) -> tuple[int, float]:
+    """``(いちばん多い列数, その割合)``。**空行は数えない。**"""
+    counts = [len(row) for row in rows if any(cell.strip() for cell in row)]
+    if not counts:
+        return 0, 0.0
+    modal = max(set(counts), key=counts.count)
+    return modal, counts.count(modal) / len(counts)
+
+
+def _csv_delimiter(text: str, path: Path) -> tuple[str, str, str]:
+    """``(区切り, 呼び名, 決められなかった理由)``。**当たらなければ当てない。**
+
+    `.tsv` は**拡張子が区切りを名乗っている**ので当てにいかない（資料が言って
+    いることを機械が疑う理由が無い）。`.csv` は候補を 1 つずつ実際に割ってみて、
+    **行ごとの列数が揃うか**で決める ―― 区切り文字の出現数だけで決めると、
+    コメント欄にセミコロンの多い 1 冊で `;` を選ぶ。
+
+    2 つ以上の候補が同じだけ揃ったら**決めない** ―― 1 列しか無い CSV（コードの
+    一覧）はどの区切りでも「揃って」見えるので、そこで先頭の候補を選ぶのは
+    偶然に賭けているだけである。
+    """
+    if path.suffix.lower() == ".tsv":
+        return "\t", "タブ", ""
+
+    scored: list[tuple[float, int, str]] = []
+    for candidate in _DELIMITERS:
+        columns, agreement = _csv_fit(_csv_rows(text, candidate))
+        if columns >= _MIN_TABLE and agreement >= _CSV_AGREE:
+            scored.append((agreement, columns, candidate))
+    if not scored:
+        return "", "", ("どの区切り（" + "・".join(f"`{d}`" for d in _DELIMITERS)
+                        + "）でも、行ごとの列数が揃いませんでした")
+    best = max(scored)
+    tied = [one for one in scored if one[0] == best[0] and one[1] == best[1]]
+    if len(tied) > 1:
+        return "", "", ("区切りの候補が絞れませんでした（"
+                        + "・".join(f"`{one[2]}`" for one in tied)
+                        + " のどれでも同じだけ揃います）")
+    return best[2], _DELIMITER_NAMES.get(best[2], f"`{best[2]}`"), ""
+
+
+#: 申告に出す区切りの呼び名。**画面に見えない文字は名前で言う**（`\t` と書いても
+#: 読み手には伝わらない）。
+_DELIMITER_NAMES = {",": "`,`（カンマ）", "\t": "タブ", ";": "`;`（セミコロン）",
+                    "|": "`|`（縦棒）"}
+
+
+def _csv(path: Path, relative: Path) -> tuple[list[tuple[Path, mdio.Doc]],
+                                              list[Finding]]:
+    """CSV / TSV を表 1 枚にする。**当てた区切りと文字コードを必ず申告する。**
+
+    長らくここは「Excel で開いて .xlsx として保存し直してください」だけを返して
+    いた。理由は正しい（区切りと文字コードは資料ごとに違い、当てにいけば値が
+    変わる）が、**その助言に従える人がいる現場ばかりではない** ―― 移行データの
+    一覧・コード値の一覧は数百本の CSV で配られ、1 本ずつ Excel で開き直す作業を
+    誰も引き受けない。実際には、その数百本が 1 件も仕様にならないまま終わる。
+
+    **当てるのをやめたのではなく、当てた結果を黙らないことにした。** 決めた区切り
+    と文字コードと、行ごとの列数がどれだけ揃ったかをパース結果の頭に書く ――
+    整理層はそれを見て、値を信じるか原本を開くかを決められる。**決められなかった
+    ときは表にしない**（`P018`）―― 揃わない表を幅だけ揃えて出すと、**足りない列が
+    「資料が空欄」に見える**。
+    """
+    posix = relative.as_posix()
+    doc = mdio.Doc(title=posix, source=posix)
+    text, encoding, trouble = _csv_text(path)
+    if not text.strip():
+        return [], []                                  # 空なら `_empty_note` が言う
+
+    lines = len(text.splitlines())
+    delimiter, called, why = _csv_delimiter(text, path)
+    findings: list[Finding] = []
+    if trouble:
+        findings.append(Finding("warn", "P018", path.name, trouble))
+        doc.notes.append(trouble)
+
+    if not delimiter:
+        # **表にしない。** 割れていない事実のほうが、割れた顔の表より役に立つ。
+        doc.notes.append(
+            f"文字コードは {encoding} として読みました。**区切りは決められません**"
+            f"（{why}）。表にせず原文のまま出しています ―― 機械が当てて割ると、"
+            "列がずれた表が「読めた」顔で出ます。Excel で開いて確かめ、"
+            "`.xlsx` として保存し直すか、この写しを直接編集してください。")
+        doc.chunks.append(mdio.Chunk(anchor="x1", at=f"{posix}#L1-L{lines}",
+                                     heading="原文（区切りが決まっていません）",
+                                     text=text.strip()))
+        findings.append(Finding(
+            "warn", "P018", path.name,
+            f"区切りが決められないので表にしていません（{why}）。"
+            "原文のまま出してあるので、値は 1 つも落ちていません"))
+        return [(Path(*relative.parts[:-1]) / f"{relative.name}{mdio.EXT}", doc)], \
+            findings
+
+    rows = _csv_rows(text, delimiter)
+    columns, agreement = _csv_fit(rows)
+    rows = [row for row in rows if any(cell.strip() for cell in row)]
+    doc.notes.append(
+        f"文字コードは {encoding}、区切りは {called} として読みました"
+        f"（{len(rows)} 行のうち {round(agreement * 100)}% が {columns} 列）。"
+        "**どちらも機械が決めたものです** ―― 値そのもの（桁・コード値）を"
+        "使う前に、1 行だけでも原本と読み比べてください。")
+    if agreement < 1.0:
+        # **幅を揃えて出す以上、揃っていなかったことは言わなければならない。**
+        # `mdio._table` は短い行を空欄で埋めるので、黙ると資料が空欄に見える。
+        doc.notes.append(
+            f"{columns} 列でない行が {len(rows) - round(agreement * len(rows))} "
+            "行あります。表は幅を揃えて出しているので、**足りない列は空欄に"
+            "見えます** ―― そこは「資料が空欄」ではありません。")
+    if len(rows) >= _CSV_BIG_ROWS:
+        doc.notes.append(
+            f"{len(rows)} 行あります（大きい塊です）。**値は 1 つも切り詰めて"
+            "いません** ―― 先頭だけ読んで終わりにすると、残りが `未読取` にも"
+            "上がらないまま消えます。")
+    doc.chunks.append(mdio.Chunk(anchor="t1", at=f"{posix}#L1-L{lines}",
+                                 heading=f"表 {len(rows)} 行 × {columns} 列",
+                                 rows=rows))
+    return [(Path(*relative.parts[:-1]) / f"{relative.name}{mdio.EXT}", doc)], findings
 
 
 # ── DDL ─────────────────────────────────────────────────────────

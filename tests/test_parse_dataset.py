@@ -951,8 +951,8 @@ def test_開けない理由は先頭のバイトに書いてある(parsed) -> No
     """**「読めません」で終わる申告は、資料が 1 冊落ちたまま拾い直されない。**
 
     4 冊とも例外は「zip じゃない」か「部品が無い」しか言わないが、**次にやる
-    ことは 4 つとも違う** ―― 保護は外して保存し直す、PDF は 2 側へ回す、
-    .ods は Excel で保存し直す、切れた添付は取り出し直す。
+    ことは 4 つとも違う** ―― 保護は外して保存し直す、PDF は名前を直して
+    渡し直す、.ods は Excel で保存し直す、切れた添付は取り出し直す。
     先頭の数バイトに何であるかは書いてあるので、読むのは転記である。
     """
     _, findings = parsed
@@ -960,7 +960,8 @@ def test_開けない理由は先頭のバイトに書いてある(parsed) -> No
     assert len(said) == 5                              # 4 冊＋ソース 1 本
 
     assert "パスワードで保護" in said["受注実績（第2.0版）.xlsx"]
-    assert "2 側" in said["画面遷移図.xlsx"]
+    # **PDF はもう「よそへ回す」相手ではない。** 名前が違うだけで、直せば読める。
+    assert "拡張子を .pdf に直して" in said["画面遷移図.xlsx"]
     assert ".ods" in said["様式集.xlsx"]
     assert "添付" in said["添付_破損.xlsx"]
     # **取り違えないことのほうが大事である。** PDF に「保護を外して」と言うと、
@@ -977,7 +978,7 @@ def test_機械が置いたものは申告の山にしない(parsed) -> None:
     """
     docs, findings = parsed
     unreadable = {f.target for f in findings if f.code == "P001"}
-    assert unreadable == {"移行データ.csv", "一式.zip"}
+    assert unreadable == {"一式.zip"}
     assert not [name for name in docs if ".git" in name or "node_modules" in name]
 
 
@@ -1320,22 +1321,465 @@ def test_見出しはアンカーを偽造できない(tmp_path: Path, parsed) -
 
 
 def test_資料である読めない形式には次の一手を書く(parsed) -> None:
-    """**`.csv` と `.zip` は資料そのものである。**
+    """**`.zip` は資料そのものである。**
 
-    どちらも「いまは .xlsx だけ。Word・PDF は 2 側にあります」で終わっていた
-    ―― **2 側は文書の側なので、そこへ回しても誰も読まない**。zip のほうは、
-    展開し忘れると**中の 30 冊がまるごと 1 行の申告になる。**
-
-    機械が CSV を読まないのは怠慢ではない ―― 区切りと文字コードは資料ごとに
-    違い、当てにいけば値が変わる（`,` 区切りだと思って読んだ住所は列がずれる）。
-    人が Excel で開けばそこを決められるので、そこを通してもらう。
+    展開し忘れると**中の 30 冊がまるごと 1 行の申告になる** ―― 「読めません」で
+    終わる申告は、その 30 冊が誰にも拾い直されないまま終わる。
     """
     _, findings = parsed
     said = {f.target: f.message for f in findings if f.code == "P001"}
 
-    assert "保存し直して" in said["移行データ.csv"]
-    assert "機械が当てると" in said["移行データ.csv"]
     assert "展開してから" in said["一式.zip"]
+    # **`.csv` はもうこの山にいない。** 読むと決めた以上、`P001` に出てきては
+    # ならない（出ていたら、読めるものを「読めない」と言っている）。
+    assert not [name for name in said if name.endswith((".csv", ".tsv"))]
+
+
+def test_csvは当てた区切りと文字コードを必ず書く(parsed) -> None:
+    """**当てるのをやめたのではなく、当てた結果を黙らないことにした。**
+
+    区切りと文字コードは資料ごとに違い、当てにいけば値が変わる ―― だから
+    決めた結果をパース結果の頭に書く。整理層はそれを見て、値を信じるか原本を
+    開くかを決められる。**書いていない当て推量は、当て推量だと分からない。**
+    """
+    doc = _doc(parsed, "資料/N/得意先マスタ移行.csv.md")
+    said = " ".join(doc.notes)
+
+    assert "cp932" in said and "カンマ" in said
+    assert "100% が 4 列" in said
+    assert "機械が決めたもの" in said
+
+
+def test_csvの引用符の中の区切りと改行を守る(parsed) -> None:
+    """**素朴に `,` で割ると、住所の 1 行が丸ごとずれる。**
+
+    `東京都千代田区1-2-3, 丸の内ビル` にはカンマが、備考には改行が入っている
+    ―― どちらも実物の移行データにごく普通にある。`csv` 標準ライブラリに渡すのは
+    そのためで、自前で `split(",")` すると**列が 1 本増えた表が「読めた」顔で出る。**
+    """
+    table = _table(_doc(parsed, "資料/N/得意先マスタ移行.csv.md"))
+
+    assert [len(row) for row in table] == [4, 4, 4, 4]
+    assert table[1][2] == "東京都千代田区1-2-3, 丸の内ビル"
+    assert "取引停止" in table[2][3] and "与信枠は 0" in table[2][3]
+
+
+def test_tsvは拡張子が名乗る区切りを当てにいかない(parsed) -> None:
+    """**資料が名乗っているものを機械が疑う理由は 1 つも無い。**
+
+    この 1 本は説明文にカンマが入っているので、当てにいくと `,` を選んで列が
+    増える ―― 区分値は正本の `enum` の元になるので、1 文字ずれると仕様が変わる。
+    """
+    doc = _doc(parsed, "資料/N/区分値一覧.tsv.md")
+    table = _table(doc)
+
+    assert "タブ" in " ".join(doc.notes)
+    assert [row[0] for row in table] == ["区分コード", "01", "02", "03"]
+    assert table[1][2].startswith("受注を受け付けた状態。")
+
+
+def test_区切りは出現数ではなく列の揃い方で決める(parsed) -> None:
+    """**いちばん多く出てくる文字が区切りとは限らない。**
+
+    帳票ツールが欧州ロケールで吐いた 1 本で、区切りは `;` なのに**本文には
+    カンマのほうが多い**（`3,200 件`・`01:00, 02:00`）。出現数で決めると `,` を
+    選び、列数がばらばらの表が出る ―― 決め手は行ごとの列数が揃うかである。
+    """
+    doc = _doc(parsed, "資料/N/バッチ実行結果.csv.md")
+    table = _table(doc)
+
+    assert "セミコロン" in " ".join(doc.notes)
+    assert [len(row) for row in table] == [4, 4, 4, 4]
+    assert table[1][3] == "受注データを 3,200 件 取り込みました"
+
+
+def test_どの区切りでも揃わないなら表にしない(parsed) -> None:
+    """**1 列の CSV は、どの区切りでも「揃って」見える。**
+
+    運用手順を Excel の 1 列に書いて CSV に落とすとこうなる。そこで先頭の候補を
+    選ぶのは、揃ったから選んだのではなく**偶然に賭けている**だけである ――
+    表にせず原文のまま出す。値は 1 つも落ちていない。
+    """
+    doc = _doc(parsed, "資料/N/夜間停止手順.csv.md")
+
+    assert [c.anchor for c in doc.chunks] == ["x1"]
+    assert "バッチスケジューラを停止する" in doc.chunks[0].text
+    assert "区切りは決められません" in " ".join(doc.notes)
+
+
+def test_列が揃っていない行があることを言う(parsed) -> None:
+    """**表は幅を揃えて出すので、黙ると「資料が空欄」に見える。**
+
+    末尾に注記の 1 行（`※ 桁あふれは切り捨て`）が 1 列だけで残るのは実物では
+    普通のことで、そこで表にしないと**揃っている残りの行まで道連れになる**。
+    表にはするが、揃っていなかったことは必ず言う。
+    """
+    doc = _doc(parsed, "資料/N/項目対応表.csv.md")
+
+    assert "80% が 4 列" in " ".join(doc.notes)
+    assert "足りない列は空欄に見えます" in " ".join(doc.notes)
+    # **値としては 1 列しか無い**（機械は列を作らない）。
+    assert _table(doc)[-1] == ["※ 桁あふれは切り捨て"]
+    # **書き出すと 4 列に見える**（`mdio` が幅を揃える）。申告が要るのはここ。
+    assert "| ※ 桁あふれは切り捨て |  |  |  |" in mdio.dump(doc)
+
+
+def test_例外の出ない文字化けを申告する(parsed) -> None:
+    """**EUC-JP のかなは、すべて cp932 の半角カタカナの範囲に収まる。**
+
+    つまり `UnicodeDecodeError` が出ない ―― 「cp932 で読めました」と言いながら
+    `うけつけ` が `､ｦ､ｱ､ﾄ､ｱ` として表に入り、整理層はそれを資料の字として読む。
+    `�` すら出ないので、読めた中身のほうを見るしか気づく手が無い。
+    """
+    doc = _doc(parsed, "資料/N/かな索引.csv.md")
+    said = " ".join(doc.notes)
+
+    assert "半角カタカナばかり" in said
+    assert "資料の字ではありません" in said
+    # **数えた事実だけを言う。**「EUC-JP である」と決めつけない（決めるのは人）。
+    assert "EUC-JP で保存された資料を cp932 として読むとこの形になります" in said
+
+
+ACCEPT = "資料/Q/受注管理システム検収仕様書（第1.0版）.pdf"
+MINUTES = "資料/Q/受注管理システム移行判定会議_議事録.pdf"
+SCANNED = "資料/Q/受注管理システム受入確認書（押印済）.pdf"
+
+
+def test_PDFはしおりで節に割れる(parsed) -> None:
+    """**しおりは資料が持っている構造である。**
+
+    1 冊 1 本のまま出すと、200 ページの検収仕様書が 1 つのアンカーになり、
+    整理層はどの章の話かを言えない。最初のしおりより前（表紙・改訂履歴）を
+    捨てないのは、捨てるとアンカーの無いページができるからである。
+    """
+    docs, _ = parsed
+    made = sorted(name[len(ACCEPT) + 1:] for name in docs if name.startswith(ACCEPT))
+
+    assert made == ["01_（前書き）.md", "02_1 適用範囲.md",
+                    "03_2 確認項目.md", "04_3 検収の合否.md"]
+    # 表紙は前書きに入っている（落ちていない）
+    assert "株式会社あかつき商事" in _chunk(
+        docs[f"{ACCEPT}/01_（前書き）.md"], "p1-x1").text
+
+
+def test_PDFのアンカーはページ番号で振る(parsed) -> None:
+    """**PDF には番地が無い。** 唯一そこにあるのはページ番号なので、それで振る。
+
+    節の中に何ページ入っていても、出典は 1 ページを名指しできる。
+    """
+    doc = _doc(parsed, f"{ACCEPT}/01_（前書き）.md")
+
+    assert [c.anchor for c in doc.chunks] == ["p1-x1", "p2-x1"]
+    assert [c.at for c in doc.chunks] == ["p.1", "p.2"]
+
+
+def test_PDFの表は組み直さない(parsed) -> None:
+    """**PDF が持っているのは位置を持った文字だけ**で、列の切れ目は無い。
+
+    文字の隙間から当てにいくと、閾値の外れたところで**列がずれた表が
+    「読めた」顔で出る** ―― CSV の区切りを機械に当てさせないと決めたのと
+    同じ理由である。行のまま出し、組み直していないことを言う。
+    """
+    doc = _doc(parsed, f"{ACCEPT}/03_2 確認項目.md")
+
+    assert not [c for c in doc.chunks if c.rows]    # 表にはしていない
+    assert "得意先名が表示される" in _chunk(doc, "p4-x1").text
+    assert "表は組み直していません" in " ".join(doc.notes)
+
+
+def test_しおりが無ければ1本のまま出す(parsed) -> None:
+    """**割れないことを失敗にしない。**
+
+    議事録・メモを印刷した PDF にアウトラインは無く、それが普通である ――
+    ページ数で割ると、資料に無い切れ目を機械が作ることになる。
+    """
+    docs, _ = parsed
+    made = [name for name in docs if name.startswith(MINUTES)]
+
+    assert made == [f"{MINUTES}/01_全ページ.md"]
+    assert "しおり（アウトライン）がありません" in " ".join(docs[made[0]].notes)
+
+
+def test_テキスト層が無いページは絵にして字を読む(parsed) -> None:
+    """**「テキスト層が無い」は「字が無い」ではない。**
+
+    押印の要る書類は必ずスキャンで回ってくる ―― 黙って空のページを出すと
+    整理層は「資料に何も書いていない」と読む。絵は `i1`、機械の読みは `o1` に
+    分けるのは、**読み違えを資料の字と混ぜない**ためである（Excel と同じ）。
+    """
+    doc = _doc(parsed, f"{SCANNED}/01_全ページ.md")
+    anchors = [c.anchor for c in doc.chunks]
+
+    assert anchors == ["p1-x1", "p2-i1", "p2-o1", "p3-i1", "p3-o1"]
+    assert "p002.png" in _chunk(doc, "p2-i1").text
+
+    _, findings = parsed
+    said = {f.target: f.message for f in findings if f.code == "P017"}
+    assert "テキスト層の無いページが 2 ページあります" in said[SCANNED.rsplit("/", 1)[-1]]
+
+
+def test_字の出なかったページでも絵は出す(parsed) -> None:
+    """**「読んで字が無かった」と「絵が無い」は別である。**
+
+    OCR が 1 文字も返さなくても、絵は `images/` に出ている ―― 整理層は開いて
+    読めるので、そこで止めると**読める資料を読めなくする**。空の `o1` を
+    出さないのも同じ規律で、「文字は見つかりませんでした」と必ず書く。
+    """
+    doc = _doc(parsed, f"{SCANNED}/01_全ページ.md")
+
+    assert "![p003.png](" in _chunk(doc, "p3-i1").text
+    assert "文字は見つかりませんでした" in _chunk(doc, "p3-o1").text
+    assert _chunk(doc, "p3-o1").text.strip()       # 空の `o1` は出さない
+
+
+PAPER = "資料/P/受注登録機能仕様書（第1.2版）.docx"
+MEMO_DOC = "資料/P/受注管理システム操作手順（暫定）.docx"
+
+
+def test_Wordは見出し1で節に割れる(parsed) -> None:
+    """**Word は 1 冊が 1 本の流れである。**
+
+    そのまま出すと 200 ページが 1 本の md になり、出典として指せる先が「その
+    1 本」しか無くなる ―― 整理層はどの節の話かを言えず、`未読取` の宣言先も
+    1 つしか持てない。割るのは**資料自身が持っている構造**（見出し 1）だけで、
+    段落数や字数では割らない（それは資料に無い切れ目を機械が作ることになる）。
+    """
+    docs, _ = parsed
+    made = sorted(name[len(PAPER) + 1:] for name in docs if name.startswith(PAPER))
+
+    assert made == ["00_ヘッダとフッタ.md", "01_（前書き）.md", "02_1 機能概要.md",
+                    "03_2 画面項目.md", "04_3 業務ルール.md"]
+
+
+def test_見出しはスタイルidではなく名前で決める(parsed) -> None:
+    """**日本語版の Word は組み込みスタイルに `a3` のような id を自動生成する。**
+
+    `w:name` のほうには英語の綴り（`heading 1`）が入っており、画面に出る
+    「見出し 1」は表示名で XML には無い ―― id だけを見る実装はこの検体で
+    1 つも当たらず、**1 冊が丸ごと 1 本のまま出る**（割れなかったことに
+    気づけないので、いちばん静かな壊れ方になる）。
+    """
+    doc = _doc(parsed, f"{PAPER}/02_1 機能概要.md")
+
+    assert doc.title.endswith("2 1 機能概要")
+    assert "受注ヘッダと受注明細を登録する機能" in _chunk(doc, "w2-h1").text
+
+
+def test_見出しが無ければ1本のまま出す(parsed) -> None:
+    """**割れないことを失敗にしない。**
+
+    字を大きくしただけで見出しを表す手順書・議事録には、機械が読める構造が
+    1 つも無い ―― そのときは 1 本のまま出すのが正しく、「割る構造が資料に
+    無かった」という事実がそのまま形に出る。
+    """
+    docs, _ = parsed
+    made = [name for name in docs if name.startswith(MEMO_DOC)]
+
+    assert made == [f"{MEMO_DOC}/01_（本文）.md"]
+    assert "メニューから「受注登録」を選ぶ" in _chunk(docs[made[0]], "w1-h1").text
+
+
+def test_Wordの縦結合も下へ広げる(parsed) -> None:
+    """**`w:vMerge` の続きのセルは空で保存される**（Excel の結合セルと同じ）。
+
+    分類列の 2 行目以降だけが空欄になるが、画面では全行に掛かって見えている
+    ―― 広げるのは忠実性の回復であって、判断ではない。
+    """
+    table = _table(_doc(parsed, f"{PAPER}/03_2 画面項目.md"))
+
+    assert table[0] == ["区分", "項目名", "型", "必須", "備考"]
+    assert [row[0] for row in table[1:]] == ["ヘッダ", "ヘッダ", "明細", "明細"]
+
+
+def test_未確定の変更履歴を機械が確定させない(parsed) -> None:
+    """**レビュー中の版がそのまま棚卸しに回ってくる。**
+
+    `w:delText` を黙って残せば「まだ生きている」に見え、黙って落とせば
+    「もう消した」に見える ―― どちらも資料はまだ決めていない。本文は反映後の
+    姿にし、消された文字は `d1` に出して、決めるのは人に残す。
+    """
+    doc = _doc(parsed, f"{PAPER}/04_3 業務ルール.md")
+
+    assert "承認期限は 3 営業日以内とする。" in _chunk(doc, "w4-h1").text
+    assert "5 営業日" not in _chunk(doc, "w4-h1").text
+    assert _chunk(doc, "w4-d1").cells == [("1", "承認期限は 5 営業日以内とする。")]
+
+    _, findings = parsed
+    said = {f.target: f.message for f in findings if f.code == "P019"}
+    assert "変更履歴が確定していません" in said[PAPER.rsplit("/", 1)[-1]]
+
+
+def test_ヘッダとフッタは文書全体に掛かるので別の1本にする(parsed) -> None:
+    """**文書番号・版・機密区分はここにしか無い。**
+
+    ただし Word のヘッダ・フッタは**文書全体**に掛かるので、節ごとに写すと
+    同じ 3 行が節の数だけ並ぶ ―― Excel の印刷設定（シートごとに掛かる）とは
+    掛かり方が違う。
+    """
+    doc = _doc(parsed, f"{PAPER}/00_ヘッダとフッタ.md")
+    cells = dict(_chunk(doc, "p1").cells)
+
+    assert cells["フッタ"] == "文書番号 DS-2026-014 ／ 第 1.2 版 ／ 社外秘"
+    assert "文書全体に掛かります" in " ".join(doc.notes)
+    # ほかの節には出てこない（出ていたら、同じ 3 行が 5 本に並ぶ）
+    assert not [c for c in _doc(parsed, f"{PAPER}/02_1 機能概要.md").chunks
+                if c.anchor == "p1"]
+
+
+def test_コメントと脚注とリンク先は本文に出てこない(parsed) -> None:
+    """**どれも本文を読んだだけでは出てこない。**
+
+    コメントはレビュー指摘の置き場で本文より新しいことがあり、脚注は但し書き
+    （例外条件）の置き場で、リンクは**まだ手元に無い資料**の在り処である。
+    """
+    rules = _doc(parsed, f"{PAPER}/04_3 業務ルール.md")
+    outline = _doc(parsed, f"{PAPER}/02_1 機能概要.md")
+
+    assert "与信管理課長に変わりました" in _chunk(rules, "w4-m1").cells[0][1]
+    assert "100 万円未満は与信照会そのものを省略" in _chunk(outline, "w2-f1").cells[0][1]
+    assert _chunk(rules, "w4-l1").cells[0][1].endswith("承認フロー.xlsx")
+
+
+def test_申告は実在するアンカーを名指しする(parsed) -> None:
+    """**案内どおりに開いて無いのは、申告していないのと同じである。**
+
+    図形の申告は「アンカー `…-g1` を見てください」と書くが、接頭辞は形式ごとに
+    違う（Excel と PowerPoint は `s`、Word は `w`）―― 決め打つと、Word の写しが
+    **存在しない `s1-g1`** を案内する。
+    """
+    doc = _doc(parsed, f"{PAPER}/01_（前書き）.md")
+    said = " ".join(doc.notes)
+
+    assert "`w1-g1`" in said
+    assert "`s1-g1`" not in said
+    assert "w1-g1" in {c.anchor for c in doc.chunks}
+
+
+DECK = "資料/O/新販売管理システム方式提案（第2.1版）.pptx"
+
+
+def test_スライドは1枚がファイル1本になる(parsed) -> None:
+    """**Excel のシートとまったく同じ形にする。**
+
+    白紙のスライド（章の切れ目に置く 1 枚）と非表示のスライドは出さない ――
+    出すと「作業用の白紙がぜんぶパース結果になる」（Excel と同じ規律）。
+    名前に並び順を付けるのは、**スライドは順序が意味を持つ**からである
+    （シート名と違い、表題だけでは並べ直せない）。
+    """
+    docs, _ = parsed
+    made = sorted(name[len(DECK) + 1:] for name in docs if name.startswith(DECK))
+
+    assert made == ["01_全体構成（A 案）.md", "02_移行対象と件数.md",
+                    "03_体制と役割分担.md"]
+
+
+def test_スライドの図形と接続はExcelと同じ道で取れる(parsed) -> None:
+    """**`p:sp` / `p:cxnSp` は `xdr:sp` / `xdr:cxnSp` と名前空間しか違わない。**
+
+    箱の中の文字も、接続の端点（`a:stCxn`）も、矢羽根も、線種も同じものである
+    ―― だから `_shapes` は 1 本しか無い。線種を必ず出すのも Excel と同じ理由で、
+    体制図の凡例は「実線＝同期 / 破線＝夜間バッチ」と線で意味を描き分ける。
+    """
+    doc = _doc(parsed, f"{DECK}/01_全体構成（A 案）.md")
+    links = _chunk(doc, "s1-c1").rows
+
+    assert links[0] == ["元", "向き", "先", "名前", "線種"]
+    assert ["与信の枠内？", "→", "在庫引当", "夜間バッチ", "破線"] in links
+    # **箱の中の改行は残る**（`a:br`）―― 潰すと別々の語が 1 語に化ける。
+    assert "オーダー入力\n（Web／代行）" in [text for _, text in _chunk(doc, "s1-g1").cells]
+
+
+def test_繋がっていない線は本数だけ言う(parsed) -> None:
+    """**両端の id が資料に無い線は、どこからどこへの線か決まらない。**
+
+    目分量で置いた矢印は実物の構成図に普通に混ざる ―― 座標から当てるのは
+    意味の判断なので、取らずに本数を申告する（Excel とまったく同じ扱い）。
+    """
+    doc = _doc(parsed, f"{DECK}/01_全体構成（A 案）.md")
+    said = " ".join(doc.notes)
+
+    assert "接続子 1 本はどこにも繋がっていません" in said
+    assert len(_chunk(doc, "s1-c1").rows) == 4         # 見出し ＋ 取れた 3 本
+
+
+def test_スライドの表はa_tblから取る(parsed) -> None:
+    """**PowerPoint の一覧はすべて `a:tbl` に入っている。**
+
+    埋め込みオブジェクトとして数えて中身を捨てると、スライドの表は 1 枚も
+    仕様にならない。縦結合（`vMerge`）は Excel の結合セルと同じく下へ広げる
+    ―― 画面では上の「受注」が 2 行に掛かって見えている。
+    """
+    table = _table(_doc(parsed, f"{DECK}/02_移行対象と件数.md"))
+
+    assert table[0] == ["区分", "表名", "論理名", "件数"]
+    assert [row[0] for row in table[1:]] == ["受注", "受注", "マスタ"]
+
+
+def test_発表者ノートは別のアンカーに出す(parsed) -> None:
+    """**なぜそう決めたかがノートにしか書かれていないことがある。**
+
+    スライドの箱は結論だけを載せる書き方をするので、B 案を採らなかった理由は
+    スライドの上に 1 文字も出ていない。`g1` と混ぜないのは、**客先に見せた結論と
+    書いた人の手控え**を同じ出典にしないためである。
+    """
+    doc = _doc(parsed, f"{DECK}/01_全体構成（A 案）.md")
+    note = _chunk(doc, "s1-n1").text
+
+    assert "B 社の保守期限が 2027-03 で切れるため" in note
+    assert "採らなかった" in note
+    # スライドの側には出ていない（出ていたら、この検体の主張が崩れる）
+    assert "保守期限" not in " ".join(t for _, t in _chunk(doc, "s1-g1").cells)
+
+
+def test_スライドのコメントは本文より新しいことがある(parsed) -> None:
+    """**レビュー指摘の置き場**（Excel のセルのコメントと同じ役目）。
+
+    体制のスライドは「常駐 3 名」のままで、コメントに「2 名に減った」が付く
+    ―― 表にもスライドにも出てこないので、読まないと古い体制が正本になる。
+    """
+    cells = _chunk(_doc(parsed, f"{DECK}/03_体制と役割分担.md"), "s3-m1").cells
+
+    assert cells[0][0].startswith("鈴木（PMO）")
+    assert "常駐は 2 名に減りました" in cells[0][1]
+
+
+def test_非表示のスライドは読まないが言う(parsed) -> None:
+    """**旧版を隠して配るのは実案件でごく普通**（非表示シートと同じ事情）。
+
+    読まないので写しには 1 文字も出てこない ―― 中身が要るなら再表示して
+    取り込み直すという判断は、機械ではなく人がする。
+    """
+    _, findings = parsed
+    said = {f.target: f.message for f in findings if f.code == "P003"}
+    name = DECK.rsplit("/", 1)[-1]
+
+    assert "非表示のスライドが 1 枚あります" in said[name]
+    assert "4 全体構成（B 案・旧版）" in said[name]
+
+
+def test_レイアウトとマスターを読んでいないことを言う(parsed) -> None:
+    """**取ると全スライドに同じ文字が並び、資料が増えたように見える。**
+
+    が、黙ると「資料に無い」と読まれる ―― 文書番号・版・機密区分がフッタに
+    しか書かれていないことがあり、それは Excel の `p1` とまったく同じ事情である。
+    """
+    doc = _doc(parsed, f"{DECK}/02_移行対象と件数.md")
+
+    assert "レイアウトとマスターに書かれた文字" in " ".join(doc.notes)
+    assert "資料に無いのではありません" in " ".join(doc.notes)
+
+
+def test_読めないバイトは置き換えたことを言う(parsed) -> None:
+    """**EUC-JP の漢字は cp932 でも読み切れない**（`受` の 0xF5 が先導バイト）。
+
+    最後の砦（`errors="replace"`）まで落ちて `�` が並ぶ ―― その欄は資料の値
+    ではないので、表に入れる以上そう書く。
+    """
+    doc = _doc(parsed, "資料/N/旧コード表.csv.md")
+    said = " ".join(doc.notes)
+
+    assert "読めないバイトがあります" in said
+    assert "資料の値ではありません" in said
 
 
 def test_宣言の無いcp932のソースでも骨格が取れる(parsed) -> None:

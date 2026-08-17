@@ -381,3 +381,33 @@ def test_stakeholderの記録がdeveloperの記録を上書きしない(通し) 
     assert theirs.is_file(), "stakeholder 側の記録が残っていません"
     assert not {c for c in json.loads(theirs.read_text(encoding="utf-8"))["counts"]
                 if c.startswith("P")}, "stakeholder は P1xx を回さない"
+
+
+def test_配る見本が古くなっていない(tmp_path: Path) -> None:
+    """**コミットしてある見本と、いま生成したものが同じか。**
+
+    見本（`examples/*/資料/`）は git に入っている ―― Python を動かさずに開いて
+    確かめられることに価値があるからで、そのぶん**中身が古いまま置き去りに
+    なる**危険を負う。生成器を直したのに見本を作り直し忘れると、配っているのは
+    もう存在しない形式である。
+
+    バイト列で比べられるのは、生成を決定的にしてあるからである
+    （`build/reproducible.py` ―― 時刻で毎回差分が出る状態では、この検査は
+    最初から鳴りっぱなしで意味を持たない）。
+    """
+    spec = importlib.util.spec_from_file_location(
+        "make_sample", _EXAMPLES / "make_sample.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    fresh = (module.build(tmp_path / "from-excel" / "資料")
+             + module.build_documents(tmp_path / "from-documents" / "資料"))
+    assert len(fresh) == 6
+
+    stale: list[str] = []
+    for made in fresh:
+        committed = _EXAMPLES / made.relative_to(tmp_path)
+        if not committed.is_file() or committed.read_bytes() != made.read_bytes():
+            stale.append(committed.relative_to(_EXAMPLES).as_posix())
+    assert not stale, ("見本が古くなっています ―― `python examples/make_sample.py` "
+                       f"で作り直してコミットしてください: {stale}")

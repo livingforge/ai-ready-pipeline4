@@ -16,8 +16,13 @@
 そのまま Excel にするだけで、「この検体は何を突くか」は YAML の ``なぜ`` に
 書く（:mod:`corpus` の docstring と同じ役目である）。
 
-**バイナリは置かない**という約束は :mod:`corpus` と同じである ―― 中身が
+**検体のバイナリは置かない**という約束は :mod:`corpus` と同じである ―― 中身が
 読める形で残っていないと、その資料が何を写したものか半年後に誰にも分からない。
+
+**配る見本（`examples/*/資料/`）は逆に git へ入れてある**（→ :mod:`corpus` の
+docstring）。ここから 4 冊だけを書き出しているのがそれで（:func:`build` の
+``only``）、見本用に生成器を 2 本目書くと**テストが見ているものと配っている
+ものが別々に腐る。**
 
 ```bash
 python tests/dataset.py <ディレクトリ>   # 実ファイルとして書き出す
@@ -29,9 +34,10 @@ from __future__ import annotations
 import datetime as dt
 import re
 import shutil
+import sys
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 from openpyxl import Workbook
@@ -41,6 +47,12 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.utils.cell import coordinate_to_tuple, range_boundaries
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.hyperlink import Hyperlink
+
+#: 再生成しても同じバイト列にするための道具（`build/reproducible.py`）。
+#: **見本は git に入る**ので、時刻の差だけで差分が出ると更新の要否が読めなくなる。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "build"))
+import reproducible  # noqa: E402
+
 
 #: 検体の置き場。**1 ファイルに複数冊**（YAML の ``---`` 区切り）書ける。
 SPECS = Path(__file__).with_name("dataset")
@@ -97,9 +109,21 @@ def specs() -> list[dict[str, Any]]:
     return found
 
 
-def build(directory: Path) -> list[Path]:
-    """検体を書き出す。返すのは書いたファイルの一覧。"""
-    return [_book(directory, spec) for spec in specs()]
+def build(directory: Path, only: Iterable[str] | None = None) -> list[Path]:
+    """検体を書き出す。返すのは書いたファイルの一覧。
+
+    **同じ検体からは同じバイト列が出る**（:func:`reproducible.freeze`）――
+    検体そのものは git に入らないが、揃えておくと「出力が変わった」を
+    テストで押さえられるし、`examples/` の見本と扱いが割れない。
+
+    ``only`` に ``置き場`` を並べると**その検体だけ**を書く。使うのは
+    `examples/make_sample.py` で、**配る見本を検体そのものから作る**ため
+    である ―― 見本用に 2 本目の生成器を書くと、テストが見ているものと配って
+    いるものが別々に腐る。
+    """
+    wanted = None if only is None else set(only)
+    return [reproducible.freeze(_book(directory, spec)) for spec in specs()
+            if wanted is None or spec["置き場"] in wanted]
 
 
 def _book(directory: Path, spec: dict[str, Any]) -> Path:
@@ -120,9 +144,26 @@ def _book(directory: Path, spec: dict[str, Any]) -> Path:
                 archive.writestr(name, body)
         return path
 
-    if "本文" in spec:                           # ソースコード（Excel ではない）
+    if "本文" in spec:                           # ソースコード・CSV（Excel ではない）
         path.write_bytes(spec["本文"].encode(spec.get("文字コード", "utf-8")))
         return path
+
+    if "ページ" in spec:                         # PDF
+        import paper
+
+        return paper.build(path, spec)
+
+    if "文書" in spec:                           # Word
+        import document
+
+        return document.build(path, spec)
+
+    if "スライド" in spec:                       # PowerPoint
+        # **組み立て方は :mod:`deck` が持つ。** ここに置くと、Excel の作法と
+        # PowerPoint の作法が同じ関数の中で混ざる（:mod:`picture` と同じ切り方）。
+        import deck
+
+        return deck.build(path, spec)
 
     if "そのまま" in spec:
         # **資料ではないものも置き場には入っている。** 客先からもらったフォルダを
@@ -145,7 +186,12 @@ def _book(directory: Path, spec: dict[str, Any]) -> Path:
             _fill(sheet, sheet_spec)
         if sheet_spec.get("状態"):
             sheet.sheet_state = sheet_spec["状態"]
+    # **保存の前に日時を置く。** あとから `パーツ:` で `docProps/core.xml` を
+    # まるごと差し替える検体（`設計書.yml`）は、そちらが勝つ ―― 検体が自分で
+    # 書いたプロパティを、再現性の都合で消してはいけない。
+    reproducible.stamp(book)
     book.save(path)
+    reproducible.restamp(path)
     return _inject(path, spec)
 
 
