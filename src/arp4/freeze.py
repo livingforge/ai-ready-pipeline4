@@ -46,6 +46,7 @@ import datetime as _datetime
 import hashlib
 import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from arp4 import (mdio, metamodel as mm, organized as organized_module,
@@ -313,7 +314,16 @@ def _unread(result: organized_module.Organized,
     ことは機械が知っている**ので、そこだけは突く。
 
     warn に留めるのは、**絵を読んでもなお確定できないことがある**ためで、機械には
-    真偽が決められない（そのときは理由を「絵を見たが確定できない」に書き換える）。
+    真偽が決められない。**そのときの逃がし方は「絵の名前を `reason` に書く」**で
+    ある ―― 長いあいだ案内は「その旨を `reason` に書く」としか言っておらず、
+    こちらは `reason` の中身を 1 文字も見ていなかったので、**案内どおりに書き
+    直しても鳴り続けた**（実測で 1 束に 8 件、次のラウンドでも同じ 8 件が出る）。
+    案内どおりにやって消えない指摘は、読まれなくなるのと同じである。
+
+    見るのは**絵の名前が理由に出てくるか**だけで、文の意味は判断しない。名前は
+    機械が付けたもの（`p007.png`）なので、突き合わせは決定論で済み、そのうえ
+    **書くには写しを開くしかない** ―― 「見た」の宣言としては、真偽を判定できない
+    形容よりこちらのほうが確かである。
 
     絵はアンカー単位ではなく**パース結果 1 ファイル単位**で探す。宣言は表題のセル
     （`s4-x1`）に付き、絵は図形のアンカー（`s4-g1`）に貼られるのが普通で、
@@ -330,13 +340,17 @@ def _unread(result: organized_module.Organized,
                     for image in mdio.images(anchor)]
         if not pictures:
             continue
+        names = [PurePosixPath(image).name for image in pictures]
+        if any(name and name in entry.reason for name in names):
+            continue                         # 絵を開いたことが理由に書いてある
         findings.append(Finding(
             "warn", "G015", entry.anchor,
             f"未読取 と宣言していますが、このシートには絵があります（{pictures[0]}"
             + (f" ほか {len(pictures) - 1} 枚" if len(pictures) > 1 else "")
-            + "）。絵を読んだうえでの宣言ですか？"
-              "（読んで確定できたならレコードにする、絵でも確定できないなら"
-              "その旨を reason に書く）",
+            + "）。絵を読んだうえでの宣言ですか？ 読んで確定できたなら"
+              "レコードにしてください。絵でも確定できないなら、**開いた絵の名前を"
+              f"reason に書いてください**（`{names[0]} を開いたが…`）――"
+              "名前が入っていればこの指摘は出なくなります。",
             file=entry.path or None, line=entry.line or None))
     return findings
 

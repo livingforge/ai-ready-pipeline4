@@ -178,8 +178,11 @@ sections:
     relation: has-value
     group_by: from              # コード定義ごとに 1 表
     labels: { "to.description": コード値の補足, description: この行の補足 }
+    # **相手の出典を出す**（3.16.1 ―― → detail-design.yml「メソッド定義」）。
+    # コード値は区分値一覧（TSV・別冊）から起きることが多く、コード定義そのもの
+    # とは出典が割れる。
     columns: [order, "to.value", "to.name", "to.subsystem", "to.retention",
-              "to.statement", "to.description", description]
+              "to.statement", "to.description", description, "to.source"]
 
   # どのデータ項目がどのコード定義を使うか。コード定義だけでは「誰が使うか」が
   # 読めず、データ項目だけでは「取りうる値」が読めない ―― 対で意味を持つ。

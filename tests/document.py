@@ -149,6 +149,11 @@ def _table(rows: list[list[Any]]) -> str:
     Word が結合として扱わず、**検体のほうが実物と違う形**になる。開始かどうかは
     「下の行の同じ位置が続きか」で決まるので、検体に書かせずここで見る
     （`図.yml` に EMU を書かせないのと同じ理屈）。
+
+    **升は ``{文字: …, 削除: …, 挿入: …}`` とも書ける。** 変更履歴は段落だけに
+    入るものではなく、**一覧の升の中にも普通に入っている**（期限だけを書き換えて
+    レビューに回した表がその形になる）―― 段落からしか拾わない実装はそこを
+    黙って落とすが、落とせば「もう消した」に、残せば「まだ生きている」に見える。
     """
     out: list[str] = []
     for index, row in enumerate(rows):
@@ -158,11 +163,27 @@ def _table(rows: list[list[Any]]) -> str:
             starts = column < len(below) and below[column] is None
             merge = ("<w:vMerge/>" if value is None
                      else '<w:vMerge w:val="restart"/>' if starts else "")
-            text = "" if value is None else str(value)
             cells.append(f"<w:tc><w:tcPr>{merge}</w:tcPr>"
-                         f"<w:p>{_runs(text)}</w:p></w:tc>")
+                         f"<w:p>{_cell(value)}</w:p></w:tc>")
         out.append(f"<w:tr>{''.join(cells)}</w:tr>")
     return f"<w:tbl>{''.join(out)}</w:tbl>"
+
+
+def _cell(value: Any) -> str:
+    """升 1 つの中身。**素の値なら文字だけ、連想配列なら変更履歴も入る。**"""
+    if value is None:
+        return ""
+    if not isinstance(value, dict):
+        return _runs(str(value))
+    runs = _runs(str(value.get("文字") or ""))
+    if value.get("削除"):
+        runs += (f'<w:del w:id="92" w:author="森"><w:r><w:delText '
+                 f'xml:space="preserve">{_esc(value["削除"])}</w:delText>'
+                 "</w:r></w:del>")
+    if value.get("挿入"):
+        runs += (f'<w:ins w:id="93" w:author="森">{_runs(str(value["挿入"]))}'
+                 "</w:ins>")
+    return runs
 
 
 def _textbox(spec: Any) -> str:

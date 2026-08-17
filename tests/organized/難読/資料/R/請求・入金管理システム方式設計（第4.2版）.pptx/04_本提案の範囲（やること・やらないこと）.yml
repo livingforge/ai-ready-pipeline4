@@ -1,0 +1,7 @@
+records:
+  - concept: c-bill-範囲外
+    type: プロジェクト概要
+    name: 本提案の対象外
+    statement: 与信照会・会計パッケージの改修・取引先マスタの名寄せ・電子帳簿保存法の対応は本提案の対象としないこと
+    attrs: { overview_kind: 適用範囲外, owner: 請求・入金管理システム構築PT }
+    source: { anchor: s4-g1 }

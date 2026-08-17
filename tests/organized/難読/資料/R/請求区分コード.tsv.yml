@@ -1,0 +1,17 @@
+records:
+  # **同じ関係が 2 つの資料から張られる。** 区分値の一覧は方式設計 8 枚目にも
+  # あり、ここはその写しである ―― 定義を 2 度書くと食い違ったことになるので、
+  # 参照だけのレコードにする。
+  - concept: c-bill-請求ステータス
+    source: { anchor: t1 }
+    refs:
+      - { rel: has-value, to: c-bill-ステータス作成 }
+      - { rel: has-value, to: c-bill-ステータス発行済 }
+      - { rel: has-value, to: c-bill-ステータス一部入金 }
+      - { rel: has-value, to: c-bill-ステータス入金済 }
+      - { rel: has-value, to: c-bill-ステータス取消 }
+  - concept: c-bill-入金区分
+    source: { anchor: t1 }
+    refs:
+      - { rel: has-value, to: c-bill-入金区分-振込 }
+      - { rel: has-value, to: c-bill-入金区分-相殺 }

@@ -399,6 +399,38 @@ def test_絵があるのに未読取のままなら注意する(project: Paths, 
     assert "業務フロー.png" in unread[0].message
 
 
+def test_絵の名前を理由に書けば注意は消える(project: Paths, round_: Round,
+                                            model) -> None:
+    """**案内どおりにやったら消えること。**
+
+    長いあいだ案内は「絵でも確定できないならその旨を `reason` に書く」と
+    言っていたが、`_unread` は `reason` を 1 文字も見ていなかったので、
+    **書き直しても鳴り続けた**（実測で 1 束に 8 件、次のラウンドでも同じ 8 件）。
+    案内どおりにやって消えない指摘は、読まれなくなるのと同じである。
+
+    見るのは**絵の名前が理由に出てくるか**だけで、文の意味は判断しない ――
+    名前は機械が付けたもの（`業務フロー.png`）なので突き合わせは決定論で済み、
+    そのうえ**書くには写しを開くしかない。**
+    """
+    parsed(round_, "flow.md",
+           "# flow\n\n"
+           "## セル B2  <!-- a:s4-x1 at=B2 -->\n\n- `B2` 2. 業務フロー\n\n"
+           "## 図形（テキストのみ）  <!-- a:s4-g1 at=図形 19 個 -->\n\n"
+           "![業務フロー（A1:CC25）](../images/a.xlsx/業務フロー.png)\n\n"
+           "- `図形1` 受注登録\n")
+    organized(round_, "flow.yml",
+              "out_of_scope:\n"
+              "  - { anchor: s4-x1, kind: 未読取,\n"
+              "      reason: 業務フロー.png を開いたが、線の行き先が潰れていて確定できない }\n"
+              "  - { anchor: s4-g1, kind: 未読取, reason: 線の接続が取れていない }\n")
+
+    unread = [f for f in freeze.gate(round_, model, {}).findings
+              if f.code == "G015"]
+    assert [f.target for f in unread] == ["s4-g1"]   # 名前を書いた側だけ消える
+    # **次に何を書けばいいかを名指しする。**
+    assert "業務フロー.png を開いたが" in unread[0].message
+
+
 def test_絵が無ければ未読取は静かに通る(project: Paths, round_: Round, model) -> None:
     parsed(round_, "flow.md", "# flow\n\n## セル B2  <!-- a:s4-x1 at=B2 -->\n\n- `B2` x\n")
     organized(round_, "flow.yml",

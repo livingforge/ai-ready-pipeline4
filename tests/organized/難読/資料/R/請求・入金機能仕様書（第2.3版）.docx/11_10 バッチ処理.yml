@@ -1,0 +1,94 @@
+records:
+  - concept: c-bill-JOB101
+    type: バッチ処理
+    name: 入金明細取込
+    statement: 入金明細取込は毎日 01:00 と 13:00 に銀行入金明細を取り込むこと
+    attrs: { schedule: 日次, start_time: '01:00', trigger: 毎日 01:00 と 13:00,
+             recovery: 翌朝までに再実行 }
+    source: { anchor: w11-t1 }
+    refs:
+      - { rel: accesses, to: c-bill-T_PAYMENT, attrs: { crud: [C] } }
+      - { rel: triggers, to: c-bill-JOB102 }
+    known_gaps:
+      realizes:
+        reason: 3 節の機能要件は「取り込み、自動消込を行う」を 1 行にしており、取込だけを求める行が無い（実現先は JOB102 に張ってある）
+  - concept: c-bill-JOB102
+    type: バッチ処理
+    name: 自動消込
+    statement: 自動消込は入金明細取込の正常終了後に日次で実行すること
+    attrs: { schedule: 日次, trigger: JOB101 の正常終了後, recovery: 当日中に再実行 }
+    source: { anchor: w11-t1 }
+    refs:
+      - { rel: accesses, to: c-bill-T_MATCH, attrs: { crud: [C] } }
+      - { rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [R, U] } }
+      - { rel: has-step, to: c-bill-STP-明細読込 }
+      - { rel: has-step, to: c-bill-STP-請求番号突合 }
+      - { rel: has-step, to: c-bill-STP-金額突合 }
+      - { rel: has-step, to: c-bill-STP-結果書込 }
+      - { rel: triggers, to: c-bill-JOB103 }
+      - { rel: realizes, to: c-bill-FR-自動消込 }
+  - concept: c-bill-JOB103
+    type: バッチ処理
+    name: 入金消込一覧出力
+    statement: 入金消込一覧出力は自動消込の正常終了後に日次で実行すること
+    attrs: { schedule: 日次, trigger: JOB102 の正常終了後, recovery: 翌営業日に再実行 }
+    source: { anchor: w11-t1 }
+    refs: [{ rel: accesses, to: c-bill-T_MATCH, attrs: { crud: [R] } }]
+    known_gaps:
+      realizes:
+        reason: 帳票を出すだけのジョブで、3 節の機能要件に一覧の出力を求める行が無い
+  - concept: c-bill-JOB110
+    type: バッチ処理
+    name: 月次締め
+    statement: 月次締めは毎月 1 日 02:00 に月次で実行すること
+    attrs: { schedule: 月次, start_time: '02:00', recovery: 当日中に再実行 }
+    source: { anchor: w11-t2 }
+    refs: [{ rel: triggers, to: c-bill-JOB111 }]
+  - concept: c-bill-JOB111
+    type: バッチ処理
+    name: 請求データ作成
+    statement: 請求データ作成は月次締めの正常終了後に月次で実行すること
+    attrs: { schedule: 月次, trigger: JOB110 の正常終了後, recovery: 当日中に再実行 }
+    source: { anchor: w11-t2 }
+    refs:
+      - { rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [C] } }
+      - { rel: accesses, to: c-bill-T_INVOICE_D, attrs: { crud: [C] } }
+      - { rel: triggers, to: c-bill-JOB112 }
+      - { rel: realizes, to: c-bill-FR-請求データ作成 }
+  - concept: c-bill-JOB112
+    type: バッチ処理
+    name: 会計連携ファイル出力
+    statement: 会計連携ファイル出力は請求データ作成の正常終了後に月次で実行すること
+    attrs: { schedule: 月次, trigger: JOB111 の正常終了後, recovery: 当日中に再実行 }
+    source: { anchor: w11-t2 }
+    known_gaps:
+      realizes:
+        reason: 会計側へ渡すだけのジョブで、3 節の機能要件に会計連携を求める行が無い（範囲外として方式設計 4 枚目が挙げている）
+  - concept: c-bill-STP-明細読込
+    type: バッチステップ
+    name: 入金明細の読み込み
+    statement: 自動消込は入金明細を 1,000 件ごとに読み込むこと
+    attrs: { step_kind: Chunk, commit_interval: '1000', concurrency: '1' }
+    source: { anchor: w11-t3 }
+  - concept: c-bill-STP-請求番号突合
+    type: バッチステップ
+    name: 請求番号による突合
+    statement: 自動消込は入金明細の摘要から請求番号を取り出して突き合わせること
+    attrs: { step_kind: Chunk, commit_interval: '1000', concurrency: '4' }
+    source: { anchor: w11-t3 }
+    refs: [{ rel: calls, to: c-bill-MTD-match }]
+  - concept: c-bill-STP-金額突合
+    type: バッチステップ
+    name: 取引先と金額による突合
+    statement: 自動消込は請求番号が取れない入金を取引先と金額の組で突き合わせること
+    attrs: { step_kind: Chunk, commit_interval: '1000', concurrency: '4' }
+    source: { anchor: w11-t3 }
+  - concept: c-bill-STP-結果書込
+    type: バッチステップ
+    name: 消込結果の書き込み
+    statement: 自動消込は突合の結果を 1,000 件ごとに書き込むこと
+    attrs: { step_kind: Chunk, commit_interval: '1000', concurrency: '1' }
+    source: { anchor: w11-t3 }
+out_of_scope:
+  - { anchor: w11-h1, reason: 実行基盤を分ける旨（方式であって機能の仕様ではない） }
+  - { anchor: w11-f1, reason: 脚注（月初が休日の場合の繰り延べ。運用設計書 4.2 は未入手） }

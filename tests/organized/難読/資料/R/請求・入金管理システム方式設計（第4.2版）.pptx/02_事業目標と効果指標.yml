@@ -1,0 +1,27 @@
+records:
+  - concept: c-bill-目標-決算早期化
+    type: 事業目標
+    name: 月次決算の早期化
+    statement: 月次決算の確定までの日数を 9 営業日から 5 営業日へ短縮すること
+    attrs: { metric: 決算確定までの営業日, baseline: 9 営業日, target: 5 営業日,
+             due: '2029-03' }
+    source: { anchor: s2-t1 }
+    refs: [{ rel: addresses, to: c-bill-課題-手作業の消込 }]
+  - concept: c-bill-目標-債権可視化
+    type: 事業目標
+    name: 債権管理の可視化
+    statement: 滞留債権を把握するまでの日数を 15 日から 1 日へ短縮すること
+    attrs: { metric: 滞留債権の把握までの日数, baseline: 15 日, target: 1 日,
+             due: '2029-03' }
+    source: { anchor: s2-t1 }
+    refs: [{ rel: addresses, to: c-bill-課題-取引先コードの重複 }]
+  - concept: c-bill-目標-消込省力化
+    type: 事業目標
+    name: 消込業務の省力化
+    statement: 手作業で消し込む件数の割合を 62% から 20% 以下へ下げること
+    attrs: { metric: 手作業で消し込む件数の割合, baseline: 62%, target: 20% 以下,
+             due: '2029-06' }
+    source: { anchor: s2-t1 }
+    refs: [{ rel: addresses, to: c-bill-課題-手作業の消込 }]
+out_of_scope:
+  - { anchor: s2-g1, reason: スライドの表題（表の中身は s2-t1） }

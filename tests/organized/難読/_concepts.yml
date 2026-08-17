@@ -1,0 +1,39 @@
+# 整理② ―― **冊をまたいで初めて見えるもの**だけを書く。
+new:
+  - concept: c-bill-M_PARTNER
+    type: エンティティ
+    label: 得意先マスタ
+    aliases: [取引先マスタ, 顧客マスタ, 取引先, 得意先]
+    reason: >-
+      方式設計は「得意先マスタ」、機能仕様書 1 節は「取引先」、12 節は「顧客」と
+      書いているが、物理名はいずれも M_PARTNER で一致する（強い根拠）
+  - concept: c-bill-請求ステータス
+    type: コード定義
+    label: 請求ステータス
+    aliases: [INVOICE_STS, 区分コード]
+    reason: 方式設計 8 枚目・機能仕様書 8 節・請求区分コード.tsv でコード値が一致する（強い根拠）
+
+contradictions:
+  # **どちらの冊でも矛盾していない。** 1 冊ずつ読んでいるあいだは見つからない。
+  - subject: c-bill-保持期間
+    name: 請求データの保持期間が資料間で食い違う
+    positions:
+      - statement: 請求データは 7 年保持する
+        source:
+          file: 資料/R/請求・入金管理システム方式設計（第4.2版）.pptx/10_非機能要件の目標値
+          anchor: s10-t1
+      - statement: 請求ヘッダ・請求明細・入金・消込の保持期間は 5 年とする
+        source:
+          file: 資料/R/請求・入金機能仕様書（第2.3版）.docx/08_7 データモデル
+          anchor: w8-t1
+  - subject: c-bill-応答時間
+    name: 請求書発行の応答時間の目標値が資料間で食い違う
+    positions:
+      - statement: 請求書発行の応答時間は 2 秒以内とする
+        source:
+          file: 資料/R/請求・入金管理システム方式設計（第4.2版）.pptx/10_非機能要件の目標値
+          anchor: s10-t1
+      - statement: 請求書発行の応答は 2 秒では業務が回らない。3 秒で機能仕様書側と揃える
+        source:
+          file: 資料/R/請求・入金管理システム方式設計（第4.2版）.pptx/10_非機能要件の目標値
+          anchor: s10-m1

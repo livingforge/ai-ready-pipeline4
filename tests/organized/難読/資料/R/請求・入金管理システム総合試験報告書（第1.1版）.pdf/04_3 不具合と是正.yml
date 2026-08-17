@@ -1,0 +1,45 @@
+records:
+  - concept: c-bill-TR-請求金額の合計
+    type: テスト結果
+    name: 請求金額が明細の合計と一致する（2029-08-24 再試験）
+    statement: 請求金額と明細の合計の一致を 2029-08-24 に再試験し、期待結果と一致したこと
+    attrs: { result: 合格, executed_on: '2029-08-24', tester: 情報システム部,
+             defect: '3' }
+    source: { anchor: p12-x1 }
+    refs:
+      - { rel: executes, to: c-bill-TC-請求金額の合計 }
+      - { rel: finds, to: c-bill-ISS-請求金額の不一致 }
+  - concept: c-bill-TR-端数の自動消込
+    type: テスト結果
+    name: 差異 1,000 円以下は自動消込（2029-08-27 再試験）
+    statement: 端数の自動消込を 2029-08-27 に再試験し、期待結果と一致したこと
+    attrs: { result: 合格, executed_on: '2029-08-27', tester: 情報システム部,
+             defect: '9' }
+    source: { anchor: p12-x1 }
+    refs:
+      - { rel: executes, to: c-bill-TC-端数の自動消込 }
+      - { rel: finds, to: c-bill-ISS-端数が消し込まれない }
+  - concept: c-bill-ISS-請求金額の不一致
+    type: 課題
+    name: 請求金額が明細の合計と一致しない
+    statement: 請求金額が請求明細の合計と一致しない件を是正すること
+    attrs: { due: '2029-08-10', state: 完了, raised_on: '2029-08-05',
+             category: 重大度 A, raised_phase: 総合試験 }
+    source: { anchor: p11-x1 }
+    refs: [{ rel: disputes, to: c-bill-請求金額 }]
+  - concept: c-bill-ISS-端数が消し込まれない
+    type: 課題
+    name: 差異 1,000 円以下が自動消込されない
+    statement: 消込の差異が 1,000 円以下でも自動で消し込まれない件を是正すること
+    attrs: { due: '2029-08-14', state: 完了, raised_on: '2029-08-05',
+             category: 重大度 B, raised_phase: 総合試験 }
+    source: { anchor: p11-x1 }
+    refs: [{ rel: disputes, to: c-bill-RUL-端数の自動消込 }]
+  - concept: c-bill-ISS-相殺の保留
+    type: 課題
+    name: 相殺による消込が試験環境で確認できない
+    statement: 相殺による消込を試験環境で確認できないため、本番環境で確認すること
+    attrs: { due: '2029-09-15', state: 対応中, raised_on: '2029-08-05',
+             assignee: 経理部, raised_phase: 総合試験 }
+    source: { anchor: p11-x1 }
+    refs: [{ rel: disputes, to: c-bill-入金区分 }]

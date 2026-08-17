@@ -1,0 +1,37 @@
+records:
+  - concept: c-bill-IF101
+    type: 外部インターフェース
+    name: 銀行入金明細
+    statement: 銀行入金明細は全銀手順の固定長ファイルを日次 2 回受信し、日次 1 回送信すること
+    attrs: { direction: 双方向, partner: 銀行, protocol: 全銀手順, format: 固定長,
+             timing: 日次 2 回（受信）／日次 1 回（送信） }
+    source: { anchor: w12-t1 }
+    refs:
+      - { rel: interfaces, to: c-bill-T_PAYMENT,
+          attrs: { physical_name: NYUKIN_MEISAI, note: 摘要に請求番号が入ることがある } }
+      - { rel: triggers, to: c-bill-JOB101 }
+    known_gaps:
+      realizes:
+        reason: 3 節の機能要件は自動消込（FR-103）で一括りにしており、接続そのものを求める行が無い
+  - concept: c-bill-IF102
+    type: 外部インターフェース
+    name: 会計連携
+    statement: 会計連携は会計パッケージへ CSV を月次で送信すること
+    attrs: { direction: 送信, partner: 会計パッケージ, protocol: ファイル連携,
+             format: CSV, timing: 月次 }
+    source: { anchor: w12-t1 }
+    refs: [{ rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [R] } }]
+    known_gaps:
+      realizes:
+        reason: 会計パッケージ側の改修は方式設計 4 枚目で範囲外とされており、3 節の機能要件に対応する行が無い
+  - concept: c-bill-IF103
+    type: 外部インターフェース
+    name: 取引先ポータル連携
+    statement: 取引先ポータル連携は請求書 PDF を Web API（JSON）で都度送信すること
+    attrs: { direction: 送信, partner: 取引先ポータル, protocol: Web API,
+             format: JSON, timing: 都度 }
+    source: { anchor: w12-t1 }
+    refs: [{ rel: realizes, to: c-bill-FR-請求書配信 }]
+out_of_scope:
+  - { anchor: w12-h1, reason: 全銀手順の更改までは現行方式を継続する旨（時期の話） }
+  - { anchor: w12-f1, reason: 脚注（更改後の方式は未定。別紙 6 は未入手） }

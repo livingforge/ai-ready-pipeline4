@@ -1,0 +1,60 @@
+records:
+  - concept: c-bill-ISS101
+    type: 課題
+    name: 請求データの保持期間を 5 年とするか 7 年とするか
+    statement: 請求データの保持期間を 5 年とするか 7 年とするかを決めること
+    attrs: { raised_on: '2028-09-05', due: '2028-11-30', state: 対応中,
+             assignee: 請求・入金管理システム構築PT, raised_phase: 基本設計 }
+    source: { anchor: w15-t1 }
+    refs: [{ rel: disputes, to: c-bill-T_INVOICE }]
+  - concept: c-bill-ISS102
+    type: 課題
+    name: 請求書発行の応答時間を 2 秒とするか 3 秒とするか
+    statement: 請求書発行の応答時間の目標値を 2 秒とするか 3 秒とするかを決めること
+    attrs: { raised_on: '2028-09-06', due: '2028-11-30', state: 対応中,
+             assignee: 請求・入金管理システム構築PT, raised_phase: 基本設計 }
+    source: { anchor: w15-t1 }
+    refs: [{ rel: disputes, to: c-bill-応答時間 }]
+  - concept: c-bill-ISS103
+    type: 課題
+    name: 債権管理担当に与信残高を見せるか
+    statement: 債権管理担当に与信残高を見せるかを決めること
+    attrs: { raised_on: '2028-09-08', due: '2028-12-15', state: 対応中,
+             assignee: 請求・入金管理システム構築PT }
+    source: { anchor: w15-t1 }
+    refs: [{ rel: disputes, to: c-bill-債権管理担当 }]
+  - concept: c-bill-ISS104
+    type: 課題
+    name: 取引先マスタの名寄せを移行前に行うか
+    statement: 取引先マスタの名寄せを移行前に行うかを決めること
+    attrs: { raised_on: '2028-07-20', due: '2028-10-31', state: 完了 }
+    source: { anchor: w15-t1 }
+    refs: [{ rel: disputes, to: c-bill-M_PARTNER }]
+  - concept: c-bill-DEC101
+    type: 決定事項
+    name: 取引先マスタの名寄せは移行前に行わない
+    statement: 取引先マスタの名寄せは移行前に行わず、別プロジェクトで実施すること
+    attrs: { decided_on: '2028-08-06', decided_by: 請求・入金管理システム構築PT,
+             rationale: 移行の停止時間を延ばさないため,
+             alternatives: 移行前に名寄せを行う }
+    source: { anchor: w15-t2 }
+    refs:
+      - { rel: resolves, to: c-bill-ISS104 }
+      - { rel: establishes, to: c-bill-M_PARTNER }
+  - concept: c-bill-DEC102
+    type: 決定事項
+    name: 移行方式は段階移行とする
+    statement: 移行方式は段階移行とし、4 時間の停止を 3 回に分けて実施すること
+    attrs: { decided_on: '2028-08-20', decided_by: 請求・入金管理システム構築PT,
+             rationale: 切戻しの確実性を優先したため,
+             alternatives: 一括移行／並行稼働 }
+    source: { anchor: w15-t2 }
+    refs: [{ rel: establishes, to: c-bill-概要 }]
+out_of_scope:
+  - { anchor: w15-h1, reason: 表の前置き（課題の一覧は w15-t1） }
+  - { anchor: w15-h2, reason: 表の前置き（決定の一覧は w15-t2） }
+  - { anchor: w15-h3, reason: 期限を過ぎた課題の扱い（運用の取り決め） }
+  - { anchor: w15-m1, reason: コメント（ISS101 / ISS102 の決着の場は要件確定会議である旨） }
+  - { anchor: w15-d1, kind: 未読取,
+      reason: 変更履歴で消された文字（ISS103 の期限と決定の周知方法）。どちらが現行かは資料が決めていない }
+  - { anchor: w15-l1, reason: リンク（課題管理表・別紙 9 は未入手） }

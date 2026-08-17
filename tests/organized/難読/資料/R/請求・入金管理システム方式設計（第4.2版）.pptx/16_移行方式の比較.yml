@@ -1,0 +1,5 @@
+out_of_scope:
+  - { anchor: s16-t1, reason: 移行方式の比較（採否は機能仕様書 14 節の DEC102 が決めている） }
+  - { anchor: s16-m1, reason: コメント（停止時間の実測と評価の理由。矛盾は _concepts.yml に出した） }
+  - { anchor: s16-n1, reason: 発表者ノート（段階移行を推す理由） }
+  - { anchor: s16-g1, reason: スライドの表題（表の中身は s16-t1） }

@@ -1,0 +1,69 @@
+records:
+  - concept: c-bill-請求書発行画面
+    type: 画面
+    name: 請求書発行画面
+    statement: 請求書発行画面は取引先と請求年月を指定して請求書を発行し、赤伝で取り消せること
+    attrs: { screen_type: 入力 }
+    source: { anchor: w6-t1 }
+    refs:
+      - { rel: displays, to: c-bill-取引先コード,
+          attrs: { io: 入力, required_flag: 必須, control: テキスト,
+                   physical_name: PARTNER_CD } }
+      - { rel: displays, to: c-bill-請求年月,
+          attrs: { io: 入力, required_flag: 必須, control: テキスト,
+                   physical_name: INVOICE_YM } }
+      - { rel: displays, to: c-bill-請求番号,
+          attrs: { io: 出力, control: ラベル, physical_name: INVOICE_NO } }
+      - { rel: displays, to: c-bill-請求金額,
+          attrs: { io: 出力, control: 数値, physical_name: INVOICE_AMT } }
+      - { rel: displays, to: c-bill-取引先名,
+          attrs: { io: 出力, control: ラベル, note: 取引先コード入力後に自動表示 } }
+      - { rel: displays, to: c-bill-与信残高,
+          attrs: { io: 出力, control: 数値, note: 与信照会の権限を持つ利用者のみ } }
+      - { rel: displays, to: c-bill-支払期日,
+          attrs: { io: 出力, control: 日付, physical_name: DUE_DATE } }
+      - { rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [C, R, U] } }
+      - { rel: accesses, to: c-bill-M_PARTNER, attrs: { crud: [R] } }
+      - { rel: transitions, to: c-bill-入金消込画面,
+          attrs: { event: 明細行の選択, condition: 戻りあり } }
+      - { rel: realizes, to: c-bill-FR-請求書配信 }
+  - concept: c-bill-入金消込画面
+    type: 画面
+    name: 入金消込画面
+    statement: 入金消込画面は自動消込で消し込めなかった入金を一覧し、手作業で消し込めること
+    attrs: { screen_type: 一覧 }
+    source: { anchor: w6-t4 }
+    refs:
+      - { rel: accesses, to: c-bill-T_PAYMENT, attrs: { crud: [R] } }
+      - { rel: accesses, to: c-bill-T_MATCH, attrs: { crud: [C, R, U] } }
+      - { rel: transitions, to: c-bill-債権照会画面, attrs: { event: 差異の照会 } }
+      - { rel: realizes, to: c-bill-FR-手作業消込 }
+    known_gaps:
+      displays:
+        reason: 5 節が項目まで書いているのは請求書発行画面だけで、入金消込画面の項目表が資料に無い
+  - concept: c-bill-債権照会画面
+    type: 画面
+    name: 債権照会画面
+    statement: 債権照会画面は取引先ごとの債権と滞留の状況を照会できること
+    attrs: { screen_type: 照会 }
+    source: { anchor: w6-t4 }
+    refs: [{ rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [R] } }]
+    known_gaps:
+      realizes:
+        reason: 遷移先として名前が出てくるだけの画面で、3 節の機能要件にこの画面を求める行が無い
+      displays:
+        reason: 遷移先として名前が出てくるだけの画面で、項目表が資料に無い
+  - concept: c-bill-取引先名
+    type: データ項目
+    name: 取引先名
+    statement: 取引先名は文字列型（80 桁）の項目であり、取引先コードの入力後に自動表示すること
+    attrs: { data_type: 文字列, length: 80 }
+    source: { anchor: w6-t2 }
+  - concept: c-bill-与信残高
+    type: データ項目
+    name: 与信残高
+    statement: 与信残高は数値型（12 桁）の項目であり、与信照会の権限を持つ利用者にだけ表示すること
+    attrs: { data_type: 数値, length: 12 }
+    source: { anchor: w6-t2 }
+out_of_scope:
+  - { anchor: w6-t3, reason: ボタンの一覧（動作は業務ルールと画面の statement が持つ） }

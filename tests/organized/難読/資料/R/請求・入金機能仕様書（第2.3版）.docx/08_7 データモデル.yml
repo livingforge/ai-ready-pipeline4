@@ -1,0 +1,104 @@
+records:
+  - concept: c-bill-T_INVOICE
+    type: エンティティ
+    name: 請求ヘッダ
+    statement: 請求ヘッダ T_INVOICE は請求 1 件を 1 レコードで保持すること
+    attrs: { physical_name: T_INVOICE, entity_kind: トランザクション,
+             volume: '860000', retention: 5 年 }
+    source: { anchor: w8-t1 }
+    refs:
+      - { rel: has-column, to: c-bill-請求番号,
+          attrs: { physical_name: INVOICE_NO, pk: true, not_null: true,
+                   note: 締め処理で採番する } }
+      - { rel: has-column, to: c-bill-取引先コード,
+          attrs: { physical_name: PARTNER_CD, not_null: true } }
+      - { rel: has-column, to: c-bill-請求年月,
+          attrs: { physical_name: INVOICE_YM, not_null: true } }
+      - { rel: has-column, to: c-bill-請求金額,
+          attrs: { physical_name: INVOICE_AMT, not_null: true, note: 明細の合計 } }
+      - { rel: has-column, to: c-bill-請求ステータス列,
+          attrs: { physical_name: INVOICE_STS, not_null: true } }
+      - { rel: has-column, to: c-bill-支払期日, attrs: { physical_name: DUE_DATE } }
+      - { rel: has-index, to: c-bill-IX_INVOICE_01 }
+      - { rel: has-index, to: c-bill-IX_INVOICE_02 }
+  - concept: c-bill-T_INVOICE_D
+    type: エンティティ
+    name: 請求明細
+    statement: 請求明細 T_INVOICE_D は請求 1 件の明細 1 行を 1 レコードで保持すること
+    attrs: { physical_name: T_INVOICE_D, entity_kind: トランザクション,
+             volume: '3400000', retention: 5 年 }
+    source: { anchor: w8-t1 }
+    refs: [{ rel: references, to: c-bill-T_INVOICE,
+             attrs: { fk_columns: INVOICE_NO, cardinality: 1対多, required_flag: 必須 } }]
+    known_gaps:
+      has-column:
+        reason: 7 節が項目まで書いているのは請求ヘッダだけで、請求明細の項目一覧が資料に無い
+  - concept: c-bill-T_PAYMENT
+    type: エンティティ
+    name: 入金
+    statement: 入金 T_PAYMENT は銀行から受け取った入金明細 1 件を 1 レコードで保持すること
+    attrs: { physical_name: T_PAYMENT, entity_kind: トランザクション,
+             volume: '520000', retention: 5 年 }
+    source: { anchor: w8-t1 }
+  - concept: c-bill-M_PARTNER
+    type: エンティティ
+    name: 得意先マスタ
+    statement: 得意先マスタ M_PARTNER は取引先 1 件を 1 レコードで保持すること
+    attrs: { physical_name: M_PARTNER, entity_kind: マスタ, volume: '18400',
+             retention: 無期限 }
+    source: { anchor: w8-t1 }
+  - concept: c-bill-請求番号
+    type: データ項目
+    name: 請求番号
+    statement: 請求番号は文字列型（13 桁）の項目であり、締め処理で採番すること
+    attrs: { data_type: 文字列, length: 13 }
+    source: { anchor: w8-t2 }
+  - concept: c-bill-取引先コード
+    type: データ項目
+    name: 取引先コード
+    statement: 取引先コードは文字列型（6 桁）の項目であり、得意先マスタを参照すること
+    attrs: { data_type: 文字列, length: 6 }
+    source: { anchor: w8-t2 }
+  - concept: c-bill-請求年月
+    type: データ項目
+    name: 請求年月
+    statement: 請求年月は文字列型（6 桁）の項目であり、YYYYMM 形式であること
+    attrs: { data_type: 文字列, length: 6, format: YYYYMM }
+    source: { anchor: w8-t2 }
+  - concept: c-bill-請求金額
+    type: データ項目
+    name: 請求金額
+    statement: 請求金額は数値型（12 桁）の項目であり、明細の合計であること
+    attrs: { data_type: 数値, length: 12 }
+    source: { anchor: w8-t2 }
+  - concept: c-bill-請求ステータス列
+    type: データ項目
+    name: 請求ステータス
+    statement: 請求ステータスは文字列型（2 桁）の項目であり、請求ステータスのコード値を持つこと
+    attrs: { data_type: 文字列, length: 2 }
+    source: { anchor: w8-t2 }
+    refs: [{ rel: uses-code, to: c-bill-請求ステータス }]
+  - concept: c-bill-支払期日
+    type: データ項目
+    name: 支払期日
+    statement: 支払期日は日付型の項目であり、支払条件から計算すること
+    attrs: { data_type: 日付 }
+    source: { anchor: w8-t2 }
+  - concept: c-bill-IX_INVOICE_01
+    type: インデックス
+    name: IX_INVOICE_01
+    statement: IX_INVOICE_01 は取引先コードと請求年月による取引先ごとの請求一覧のための索引であること
+    attrs: { columns: 取引先コード＋請求年月, uniqueness: 非一意,
+             purpose: 取引先ごとの請求一覧 }
+    source: { anchor: w8-t3 }
+  - concept: c-bill-IX_INVOICE_02
+    type: インデックス
+    name: IX_INVOICE_02
+    statement: IX_INVOICE_02 は支払期日と請求ステータスによる滞留債権の抽出のための索引であること
+    attrs: { columns: 支払期日＋請求ステータス, uniqueness: 非一意,
+             purpose: 滞留債権の抽出 }
+    source: { anchor: w8-t3 }
+out_of_scope:
+  - { anchor: w8-h1, reason: 表の前置き（エンティティの一覧は w8-t1） }
+  - { anchor: w8-h2, reason: 表の前置き（項目の一覧は w8-t2） }
+  - { anchor: w8-f1, reason: 脚注（保持期間の食い違い。矛盾は _concepts.yml に出した） }

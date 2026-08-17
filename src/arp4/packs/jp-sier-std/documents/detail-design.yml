@@ -12,6 +12,14 @@ sections:
     columns: [module_id, subsystem, name, class_name, package, constants,
               statement, description, source]
 
+  # **相手の出典を出す**（3.16.1）。メソッド・バッチステップ・処理ステップは
+  # 関係の表にしか出てこない種別で、そこに出典列が無いあいだ、**正本には出典が
+  # あるのに生成物のどの行からも元資料へ辿れなかった** ―― 同じ種別が 2 冊に
+  # 出るわけではないので `P107`（出典列の有無が揃っていない）も鳴らず、
+  # `P110` / `P111` は関係と属性の話なので、この形の欠落を言う指摘は無かった。
+  #
+  # 出すのは `to.source`（相手のアイテムの出典）である ―― 関係そのものの出典
+  # （`source`）は親の側（モジュール一覧・バッチ処理一覧）に既に出ている。
   - heading: メソッド定義
     kind: relation
     relation: has-method
@@ -19,7 +27,7 @@ sections:
     labels: { "to.description": メソッドの補足, description: この行の補足 }
     columns: [order, "to.method_id", "to.name", "to.signature",
               "to.returns", "to.raises", "to.decorators", "to.statement",
-              "to.description", description]
+              "to.description", description, "to.source"]
 
   # ステップ 1 本 = has-step 関係 1 本。コミット間隔と多重度は再実行の単位を
   # 決めるので、運用へ渡す前にここで確定していなければならない。
@@ -30,7 +38,7 @@ sections:
     labels: { "to.description": ステップの補足, description: この行の補足 }
     columns: [order, "to.step_id", "to.name", "to.step_kind",
               "to.statement", "to.commit_interval", "to.concurrency",
-              "to.description", description]
+              "to.description", description, "to.source"]
 
   # 処理ステップ 1 本 = has-process-step 関係 1 本。オンライン処理の処理フロー
   # （処理仕様書の「3.処理フロー」）はここにしか出ない。**バッチ構成と分けてある**
@@ -46,7 +54,7 @@ sections:
     group_by: from
     labels: { "to.description": ステップの補足, description: この行の補足 }
     columns: [order, "to.step_id", "to.name", "to.step_kind", "to.statement",
-              "to.description", description]
+              "to.description", description, "to.source"]
 
   # 矢印 1 本 = proceeds-to 関係 1 本。**分岐条件は関係側に持つ** ―― ステップに
   # 書くと「どちらの枝の条件か」が消える（要件定義書の「業務フローの流れ」と

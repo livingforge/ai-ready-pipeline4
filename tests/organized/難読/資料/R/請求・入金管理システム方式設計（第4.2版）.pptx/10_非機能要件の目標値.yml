@@ -1,0 +1,54 @@
+records:
+  - concept: c-bill-応答時間
+    type: 非機能要件
+    name: 請求書発行の応答時間
+    statement: 請求書発行の応答時間は 2 秒以内であること
+    attrs: { nf_category: 性能・拡張性, metric: 2 秒以内,
+             measurement: 同時 30 セッションの 90 パーセンタイル }
+    source: { anchor: s10-t1 }
+  - concept: c-bill-自動消込の処理時間
+    type: 非機能要件
+    name: 自動消込バッチの処理時間
+    statement: 自動消込バッチの処理時間は 1 時間以内であること
+    attrs: { nf_category: 性能・拡張性, metric: 1 時間以内,
+             measurement: '入金明細 20,000 件／日' }
+    source: { anchor: s10-t1 }
+  - concept: c-bill-月次締めの処理時間
+    type: 非機能要件
+    name: 月次締めの処理時間
+    statement: 月次締めの処理時間は 6 時間以内であること
+    attrs: { nf_category: 性能・拡張性, metric: 6 時間以内,
+             measurement: '請求 90,000 件／月' }
+    source: { anchor: s10-t1 }
+  - concept: c-bill-稼働率
+    type: 非機能要件
+    name: 稼働率
+    statement: 稼働率は 99.9% 以上であること
+    attrs: { nf_category: 可用性, metric: 99.9% 以上, measurement: 計画停止を除く }
+    source: { anchor: s10-t1 }
+  - concept: c-bill-目標復旧時間
+    type: 非機能要件
+    name: 目標復旧時間
+    statement: 目標復旧時間は 2 時間であること
+    attrs: { nf_category: 可用性, metric: 2 時間, measurement: DR サイトへの切替を含む }
+    source: { anchor: s10-t1 }
+  - concept: c-bill-保持期間
+    type: 非機能要件
+    name: 請求データの保持期間
+    statement: 請求データは 7 年保持すること
+    attrs: { nf_category: 運用・保守性, metric: 7 年,
+             measurement: 法定保存期間に合わせる }
+    source: { anchor: s10-t1 }
+  # **向きは書いたまま残る。** 要件を実現するのは画面とバッチのほうである。
+  - concept: c-bill-請求書発行画面
+    source: { anchor: s10-t1 }
+    refs: [{ rel: realizes, to: c-bill-応答時間 }]
+  - concept: c-bill-JOB102
+    source: { anchor: s10-t1 }
+    refs: [{ rel: realizes, to: c-bill-自動消込の処理時間 }]
+  - concept: c-bill-JOB110
+    source: { anchor: s10-t1 }
+    refs: [{ rel: realizes, to: c-bill-月次締めの処理時間 }]
+out_of_scope:
+  - { anchor: s10-m1, reason: コメント（未測定である旨と応答時間の食い違い。矛盾は _concepts.yml に出した） }
+  - { anchor: s10-g1, reason: スライドの表題（表の中身は s10-t1） }

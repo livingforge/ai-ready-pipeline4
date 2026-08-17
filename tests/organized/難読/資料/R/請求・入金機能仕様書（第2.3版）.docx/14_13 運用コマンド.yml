@@ -1,0 +1,17 @@
+records:
+  - concept: c-bill-消込の再実行
+    type: コマンド
+    name: 消込の再実行
+    statement: 消込の再実行コマンドは指定日の自動消込をやり直すこと
+    attrs: { command_line: 'bill-recalc --date YYYY-MM-DD',
+             arguments: '--date 対象日', exit_code: 0 正常／1 異常 }
+    source: { anchor: w14-t1 }
+    refs: [{ rel: accesses, to: c-bill-T_MATCH, attrs: { crud: [C, R, U, D] } }]
+  - concept: c-bill-請求書の再発行
+    type: コマンド
+    name: 請求書の再発行
+    statement: 請求書の再発行コマンドは取消した請求を別番号で再発行すること
+    attrs: { command_line: 'bill-reissue --invoice BIL...',
+             arguments: '--invoice 請求番号', exit_code: 0 正常／2 対象なし }
+    source: { anchor: w14-t1 }
+    refs: [{ rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [C, R] } }]

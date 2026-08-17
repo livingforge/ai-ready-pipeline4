@@ -22,9 +22,12 @@ sections:
     relation: has-column
     group_by: from
     labels: { "to.description": データ項目の補足, description: この列の補足 }
+    # **相手の出典を出す**（3.16.1）。データ項目は関係の表にしか出てこない種別
+    # なので、ここに出典列が無いあいだ**正本には出典があるのに、生成物のどの行
+    # からも元資料へ辿れなかった**（→ detail-design.yml「メソッド定義」）。
     columns: [order, "to.name", physical_name, "to.data_type", "to.length",
               "to.decimals", pk, not_null, default_value, "to.statement",
-              "to.description", note, description]
+              "to.description", note, description, "to.source"]
 
   # 索引 1 本 = has-index 関係 1 本。テーブル定義書に索引の節が無いと、
   # 性能設計のレビューがこの表を離れて別ファイルに散る。
@@ -34,4 +37,4 @@ sections:
     group_by: from
     labels: { "to.description": 索引の補足, description: この行の補足 }
     columns: [order, "to.name", "to.columns", "to.uniqueness", "to.purpose",
-              "to.statement", "to.description", description]
+              "to.statement", "to.description", description, "to.source"]

@@ -1,0 +1,3 @@
+out_of_scope:
+  - { anchor: s14-t1, reason: 外部接続の一覧（機能仕様書 11 節の表がいちばん詳しい） }
+  - { anchor: s14-g1, reason: スライドの表題（表の中身は s14-t1） }

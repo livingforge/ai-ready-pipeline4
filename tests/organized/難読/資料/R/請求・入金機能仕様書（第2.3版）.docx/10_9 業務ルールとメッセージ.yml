@@ -1,0 +1,79 @@
+records:
+  - concept: c-bill-RUL-突合の順序
+    type: 業務ルール
+    name: 自動消込の突合の順序
+    statement: 自動消込は請求番号の一致を第一条件とし、一致しない場合は取引先と金額の組で突き合わせること
+    attrs: { rule_kind: processing, condition: 請求番号が一致しない場合,
+             action: 取引先と金額の組で突き合わせる }
+    source: { anchor: w10-h1 }
+    refs: [{ rel: constrains, to: c-bill-JOB102 }]
+  - concept: c-bill-RUL-端数の自動消込
+    type: 業務ルール
+    name: 端数の自動消込
+    statement: 消込の差異が 1,000 円以下の場合は端数として自動で消し込むこと
+    attrs: { rule_kind: calculation, condition: '消込の差異が 1,000 円以下の場合',
+             action: 端数として自動で消し込む }
+    source: { anchor: w10-h1 }
+    refs: [{ rel: constrains, to: c-bill-T_MATCH }]
+  - concept: c-bill-RUL-差異の一覧化
+    type: 業務ルール
+    name: 差異が 1,000 円を超える入金の扱い
+    statement: 消込の差異が 1,000 円を超える場合は手作業の消込対象として一覧に出すこと
+    attrs: { rule_kind: business, condition: '消込の差異が 1,000 円を超える場合',
+             action: 手作業の消込対象として一覧に出す }
+    source: { anchor: w10-t1 }
+    refs:
+      - { rel: constrains, to: c-bill-入金消込画面 }
+      - { rel: raises, to: c-bill-MSG-差異の警告 }
+  - concept: c-bill-RUL-差異の承認
+    type: 業務ルール
+    name: 差異が 10 万円を超える消込の承認
+    statement: 消込の差異が 10 万円を超える場合は経理課長の承認を得るまで消し込まないこと
+    attrs: { rule_kind: business, condition: 消込の差異が 10 万円を超える場合,
+             action: 経理課長の承認を得るまで消し込まない }
+    source: { anchor: w10-t1 }
+    refs: [{ rel: constrains, to: c-bill-入金消込画面 }]
+  - concept: c-bill-RUL-滞留の抽出
+    type: 業務ルール
+    name: 滞留債権の抽出条件
+    statement: 支払期日を 30 日過ぎた請求は滞留債権として抽出し、督促対象とすること
+    attrs: { rule_kind: processing, condition: 支払期日を 30 日過ぎた請求,
+             action: 滞留債権として抽出し督促対象とする }
+    source: { anchor: w10-t1 }
+    refs: [{ rel: constrains, to: c-bill-RPT103 }]
+  - concept: c-bill-MSG-取引先未登録
+    type: メッセージ
+    name: 取引先コード未登録
+    statement: 未登録の取引先コードが入力されたとき、エラーメッセージを表示すること
+    attrs: { severity: エラー,
+             body: 取引先コードが登録されていません。入力内容を確認してください。,
+             action: 入力内容を確認する }
+    source: { anchor: w10-t2 }
+  - concept: c-bill-MSG-締め中は発行不可
+    type: メッセージ
+    name: 締め処理中の発行不可
+    statement: 締め処理の実行中に発行ボタンが押されたとき、エラーメッセージを表示すること
+    attrs: { severity: エラー, body: 締め処理の実行中は請求書を発行できません。,
+             action: 締め処理の終了を待つ }
+    source: { anchor: w10-t2 }
+  - concept: c-bill-MSG-差異の警告
+    type: メッセージ
+    name: 消込の差異
+    statement: 消込の実行時に差異があるとき、金額を警告として表示すること
+    attrs: { severity: 警告, body: "消込の差異が {0} 円あります。" }
+    source: { anchor: w10-t2 }
+  - concept: c-bill-MSG-発行完了
+    type: メッセージ
+    name: 請求書の発行完了
+    statement: 請求書の発行が完了したとき、請求番号を情報として表示すること
+    attrs: { severity: 情報, body: "請求書を発行しました。請求番号は {0} です。" }
+    source: { anchor: w10-t2 }
+  - concept: c-bill-請求書発行画面
+    source: { anchor: w10-t2 }
+    refs:
+      - { rel: raises, to: c-bill-MSG-取引先未登録 }
+      - { rel: raises, to: c-bill-MSG-締め中は発行不可 }
+      - { rel: raises, to: c-bill-MSG-発行完了 }
+out_of_scope:
+  - { anchor: w10-d1, kind: 未読取,
+      reason: 変更履歴で消された文言（端数の扱い）。本文は反映後の姿で、どちらが現行かは資料が決めていない }

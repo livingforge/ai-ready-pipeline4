@@ -1,0 +1,19 @@
+records:
+  # **移行の対象かどうかと移行方式は、この表にしか書かれていない。**
+  # 想定件数のほうは機能仕様書 7 節が持っているので、ここでは定義し直さない。
+  - concept: c-bill-T_INVOICE
+    source: { anchor: s7-t1 }
+    refs:
+      - { rel: references, to: c-bill-M_PARTNER,
+          attrs: { fk_columns: PARTNER_CD, cardinality: 1対多, required_flag: 必須 } }
+  - concept: c-bill-T_MATCH
+    type: エンティティ
+    name: 消込
+    statement: 消込 T_MATCH は入金と請求の突合の結果を 1 件 1 レコードで保持すること
+    attrs: { physical_name: T_MATCH, entity_kind: トランザクション }
+    source: { anchor: s7-t1 }
+    known_gaps:
+      volume:
+        reason: 件数と移行方式の升が丸ごと落ちた行で、この表には値が無い（機能仕様書 7 節には 780000 とある）
+out_of_scope:
+  - { anchor: s7-g1, reason: スライドの表題（表の中身は s7-t1） }

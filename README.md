@@ -361,6 +361,7 @@ Excel はバイナリなので、**中身がコードで読める形**でしか�
 | --- | --- | --- |
 | `examples/from-excel` | 資料 2 冊 | `parse → 整理 → freeze → build → publish` を**通しで**確かめる最小サンプル（`tests/test_example.py` が同じ道を通る） |
 | `examples/from-documents` | 資料 4 冊 | **Excel 以外の見本**（`.pptx` `.docx` `.pdf` `.csv` を 1 冊ずつ）。中身は `tests/dataset/` の検体そのもので、**開いて何が読めるかを確かめる**ためにある。実案件の 1 冊に近い密度にしてある ―― 12 枚のスライド（ゾーンで括った構成図・**群の中の群**・貼り付け画像・フェーズ計画・権限マトリクス・**1 枚に表 2 枚**のコード体系・コメント 3 件）、10 節の Word（見出し 2 段・箇条書き 3 段・貼り付け画像 2 枚・テキスト枠の機能構成図・**升の中の改行と `|`**・変更履歴・脚注・コメント）、16 ページの PDF（2 階層のしおり・**しおりの無い巻末の章**・綴じ込まれたスキャン 1 枚）、引用符と改行とカンマが同時に入り**末尾の升が落ちた行**と重複コードもある CSV。4 冊で写し 31 本 / アンカー 90 件になる |
+| `tests/dataset/難読.yml` ＋ `tests/organized/難読/` | 資料 6 冊 / 整理結果 42 本 | **束としての通し**。`from-documents` と同じ 4 形式（＋ TSV）で、**1 案件ぶんが企画から管理まで揃っている** ―― メタモデルの**32 種別・36 関係がすべて立つ**（見本の通しで立つのは 16 種別）。冊をまたぐ表記ゆれと食い違いも入れてある → `tests/test_dataset_pipeline.py` |
 | `tests/corpus.py` | 20 冊 / 35 シート | **パースの検体**。数式・非表示・貼り付け画像・マクロ付き・シート名衝突・壊れたブックなど、実物によくある書かれ方を集めたもの |
 | `examples/sales-corpus` | 30 冊 / 201 シート ＋ 追加資料 8 冊 / 56 シート ＋ Java 114 本 | **架空の新販売管理システム一式**。日本の SIer の設計書の形（2 段見出し・縦結合・図形＋コネクタ・結合セル作図）と、矛盾・粒度差・表記ゆれ・重複を仕込んである。`追加資料/` は**2 ラウンド目の検体**（食い違いの決着とあとから足りた仕様）→ [README](examples/sales-corpus/README.md) |
 | `examples/kotonoha` | Python 110 本 / DDL 7 本 / 設計メモ 22 本 ＋ Excel 8 冊 | **架空の社内エンベディング基盤一式**。`sales-corpus` の鏡像で、**実装が先にあって文書が後追い**の検体である。`draft` が主役になり、`.sql` / `test_*.py` / `.md` があるのでテーブル定義書・テスト仕様書・課題管理表の語彙がここから立つ → [README](examples/kotonoha/README.md) |
@@ -392,7 +393,7 @@ python examples/kotonoha/build.py --clean       # Excel 8 冊（コード・DDL�
 
 ```bash
 .venv/Scripts/python -m pip install -e ".[parse,check]" pytest
-python -m pytest -q            # 874 件
+python -m pytest -q            # 945 件
 python build/build.py --check  # スキルの展開が古くないか
 ```
 
@@ -470,7 +471,7 @@ python build/deploy.py --no-git            # コピーだけして git は触ら
 
 | | 中身 |
 | --- | --- |
-| [docs/decisions.md](docs/decisions.md) | **決定記録** ― 何をどういう理由で決めたか（106 件 ―― 決定 0 から数えている） |
+| [docs/decisions.md](docs/decisions.md) | **決定記録** ― 何をどういう理由で決めたか（113 件 ―― 決定 0 から数えている） |
 | [docs/parsed.md](docs/parsed.md) | パース結果の形式・アンカー・編集の規律・Excel とコードの非対称 |
 | [docs/organized.md](docs/organized.md) | 整理①②の契約（レコード形式・concept・矛盾） |
 | [docs/freeze.md](docs/freeze.md) | 凍結ゲート・ラウンド運用・凍結後の手当て |

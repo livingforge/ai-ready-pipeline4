@@ -1,0 +1,5 @@
+out_of_scope:
+  - { anchor: s5-g1, reason: 構成図の箱（配置は方式であって仕様ではない。機能は機能仕様書が定める） }
+  - { anchor: s5-c1, reason: 構成図の線（同上） }
+  - { anchor: s5-a1, reason: ゾーンの代替テキスト（前提の説明） }
+  - { anchor: s5-n1, reason: 発表者ノート（実行基盤を分けた経緯） }

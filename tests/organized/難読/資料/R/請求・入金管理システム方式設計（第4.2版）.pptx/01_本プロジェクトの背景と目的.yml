@@ -1,0 +1,10 @@
+records:
+  - concept: c-bill-概要
+    type: プロジェクト概要
+    name: 請求・入金管理システムの統合
+    statement: 請求から入金消込までを 1 つの基盤へ統合し、月次決算の早期化と債権管理の可視化を実現すること
+    attrs: { overview_kind: 背景, owner: 請求・入金管理システム構築PT }
+    source: { anchor: s1-g1 }
+out_of_scope:
+  - { anchor: s1-n1, reason: 発表者ノート（採否の経緯であって仕様ではない） }
+  - { anchor: s1-a1, reason: 代替テキスト（図の説明） }

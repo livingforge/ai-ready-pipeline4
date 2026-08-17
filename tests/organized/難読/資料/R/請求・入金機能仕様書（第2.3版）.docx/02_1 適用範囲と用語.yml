@@ -1,0 +1,33 @@
+records:
+  - concept: c-bill-適用範囲
+    type: プロジェクト概要
+    name: 機能仕様書の適用範囲
+    statement: 本書の対象は請求データの作成、請求書の発行、入金消込、滞留債権の抽出であること
+    attrs: { overview_kind: 適用範囲, owner: 請求・入金管理システム構築PT }
+    source: { anchor: w2-h1 }
+  - concept: c-bill-用語-消込
+    type: 用語
+    name: 消込
+    statement: 消込とは入金と請求を突き合わせて債権を落とすことをいう
+    attrs: { reading: けしこみ }
+    source: { anchor: w2-t1 }
+  - concept: c-bill-用語-滞留債権
+    type: 用語
+    name: 滞留債権
+    statement: 滞留債権とは支払期日を過ぎても入金の無い請求のことをいう
+    attrs: { reading: たいりゅうさいけん }
+    source: { anchor: w2-t1 }
+  - concept: c-bill-用語-赤伝
+    type: 用語
+    name: 赤伝
+    statement: 赤伝とは取消・返品を表す伝票のことをいい、金額は負で計上する
+    attrs: { reading: あかでん }
+    source: { anchor: w2-t1 }
+  - concept: c-bill-用語-取引先
+    type: 用語
+    name: 取引先
+    statement: 取引先とは請求の相手方をいい、法人・個人事業主の別を問わない
+    attrs: { reading: とりひきさき }
+    source: { anchor: w2-t1 }
+out_of_scope:
+  - { anchor: w2-f1, reason: 脚注（名寄せが別プロジェクトである旨。範囲外は方式設計 4 枚目が言っている） }

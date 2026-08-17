@@ -1,0 +1,33 @@
+records:
+  - concept: c-bill-TC-応答時間
+    type: テストケース
+    name: 請求書発行の応答時間を測る
+    statement: 同時 30 セッションで請求書発行の応答時間を測り、目標値を満たすこと
+    attrs: { expected: 2 秒以内, level: 総合, category: 性能,
+             steps: 同時 30 セッションで請求書を発行し、90 パーセンタイルを測る }
+    source: { anchor: p13-x1 }
+    refs: [{ rel: verifies, to: c-bill-応答時間 }]
+  - concept: c-bill-TR-応答時間
+    type: テスト結果
+    name: 請求書発行の応答時間（2029-08-20 実施）
+    statement: 請求書発行の応答時間を 2029-08-20 に測り、3.4 秒で目標を満たさなかったこと
+    attrs: { result: 不合格, executed_on: '2029-08-20', tester: 情報システム部 }
+    source: { anchor: p13-x1 }
+    refs:
+      - { rel: executes, to: c-bill-TC-応答時間 }
+      - { rel: finds, to: c-bill-ISS102 }
+  - concept: c-bill-TC-自動消込の処理時間
+    type: テストケース
+    name: 自動消込バッチの処理時間を測る
+    statement: 入金明細 20,000 件で自動消込バッチの処理時間を測り、目標値を満たすこと
+    attrs: { expected: 1 時間以内, level: 総合, category: 性能,
+             steps: '入金明細 20,000 件を取り込み、自動消込を実行して所要時間を測る' }
+    source: { anchor: p13-x1 }
+    refs: [{ rel: verifies, to: c-bill-自動消込の処理時間 }]
+  - concept: c-bill-TR-自動消込の処理時間
+    type: テスト結果
+    name: 自動消込バッチの処理時間（2029-08-20 実施）
+    statement: 自動消込バッチの処理時間を 2029-08-20 に測り、52 分で目標を満たしたこと
+    attrs: { result: 合格, executed_on: '2029-08-20', tester: 情報システム部 }
+    source: { anchor: p13-x1 }
+    refs: [{ rel: executes, to: c-bill-TC-自動消込の処理時間 }]

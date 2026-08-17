@@ -1,0 +1,59 @@
+records:
+  - concept: c-bill-経理担当
+    type: 利用者・ロール
+    name: 経理担当
+    statement: 経理担当は請求書発行画面と入金消込画面で登録・更新を行えること
+    attrs: { actor_kind: 利用者 }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-bill-請求書発行画面,
+          attrs: { permission: [参照, 登録, 更新] } }
+      - { rel: operates, to: c-bill-入金消込画面,
+          attrs: { permission: [参照, 登録, 更新] } }
+      - { rel: reports-to, to: c-bill-経理課長 }
+  - concept: c-bill-経理課長
+    type: 利用者・ロール
+    name: 経理課長
+    statement: 経理課長は締め処理を実行でき、10 万円を超える差異の消込を承認すること
+    attrs: { actor_kind: 利用者 }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-bill-JOB110, attrs: { permission: [実行] } }
+      - { rel: operates, to: c-bill-請求書発行画面, attrs: { permission: [参照] } }
+  - concept: c-bill-債権管理担当
+    type: 利用者・ロール
+    name: 債権管理担当
+    statement: 債権管理担当は滞留債権を照会し、督促の対象を決めること
+    attrs: { actor_kind: 利用者,
+             description: 入金消込・債権照会・締め処理の升が丸ごと落ちた行で、その 3 つの権限は資料に無い（発表者ノートに「2028-08 時点で未確定」とある） }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-bill-RPT103, attrs: { permission: [参照] } }
+  - concept: c-bill-営業担当
+    type: 利用者・ロール
+    name: 営業担当
+    statement: 営業担当は担当する取引先の債権を照会できること
+    attrs: { actor_kind: 利用者 }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-bill-RPT102, attrs: { permission: [参照] } }
+  - concept: c-bill-運用担当
+    type: 利用者・ロール
+    name: 運用担当
+    statement: 運用担当はバッチの実行と再実行を行い、帳票の印刷を委託先へ出すこと
+    attrs: { actor_kind: 運用者 }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-bill-消込の再実行, attrs: { permission: [実行] } }
+      - { rel: outsources-to, to: c-bill-印刷委託先 }
+  - concept: c-bill-印刷委託先
+    type: 利用者・ロール
+    name: 印刷委託先
+    statement: 印刷委託先は請求書の印刷と封入を行うこと
+    attrs: { actor_kind: 組織 }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-bill-RPT101, attrs: { permission: [参照] } }
+out_of_scope:
+  - { anchor: s9-g1, reason: スライドの表題（表の中身は s9-t1） }
+  - { anchor: s9-n1, reason: 発表者ノート（債権管理担当の権限が未確定である旨。課題は機能仕様書 14 節の ISS103） }

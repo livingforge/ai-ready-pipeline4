@@ -1,0 +1,49 @@
+records:
+  - concept: c-bill-FR-請求データ作成
+    type: 機能要件
+    name: 請求データの自動作成
+    statement: 締め処理の完了後、請求データを取引先ごとに自動で作成すること
+    attrs: { priority: 必須 }
+    source: { anchor: w4-t1 }
+    refs:
+      - { rel: contributes-to, to: c-bill-目標-決算早期化 }
+      - { rel: supports, to: c-bill-請求業務フロー }
+  - concept: c-bill-FR-請求書配信
+    type: 機能要件
+    name: 請求書の PDF 出力と配信
+    statement: 請求書を PDF で出力し、取引先ポータルへ配信できること
+    attrs: { priority: 必須 }
+    source: { anchor: w4-t1 }
+    refs: [{ rel: addresses, to: c-bill-課題-様式が不統一 }]
+  - concept: c-bill-FR-自動消込
+    type: 機能要件
+    name: 入金明細の取込と自動消込
+    statement: 銀行入金明細を取り込み、請求番号または金額で自動消込を行うこと
+    attrs: { priority: 必須 }
+    source: { anchor: w4-t1 }
+    refs:
+      - { rel: contributes-to, to: c-bill-目標-消込省力化 }
+      - { rel: addresses, to: c-bill-課題-当日入金が見えない }
+  - concept: c-bill-FR-手作業消込
+    type: 機能要件
+    name: 手作業による消込
+    statement: 消し込めなかった入金を一覧し、手作業で消込できること
+    attrs: { priority: 必須 }
+    source: { anchor: w4-t1 }
+    refs: [{ rel: refines, to: c-bill-FR-自動消込 }]
+  - concept: c-bill-FR-滞留債権抽出
+    type: 機能要件
+    name: 滞留債権の抽出
+    statement: 支払期日を過ぎた請求を滞留債権として抽出できること
+    attrs: { priority: 任意 }
+    source: { anchor: w4-t1 }
+    refs: [{ rel: contributes-to, to: c-bill-目標-債権可視化 }]
+  - concept: c-bill-BR-決算確定
+    type: 業務要件
+    name: 月次決算の確定期限
+    statement: 月次決算の確定を 5 営業日以内とすること
+    attrs: { priority: 必須 }
+    source: { anchor: w4-h1 }
+    refs: [{ rel: contributes-to, to: c-bill-目標-決算早期化 }]
+out_of_scope:
+  - { anchor: w4-m1, reason: コメント（請求書の発行だけなら 2 営業日という指摘。別要件として立てるかは未決） }

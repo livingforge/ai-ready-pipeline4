@@ -1,0 +1,21 @@
+records:
+  - concept: c-bill-費用-設計製造
+    type: 費用項目
+    name: 設計・製造
+    statement: 設計・製造の費用は 180 百万円（2028 年度）であること
+    attrs: { amount: 180 百万円, category: 初期, fiscal_year: '2028' }
+    source: { anchor: s12-t1 }
+  - concept: c-bill-費用-移行試験
+    type: 費用項目
+    name: 移行・試験
+    statement: 移行・試験の費用は 45 百万円（2029 年度）であること
+    attrs: { amount: 45 百万円, category: 初期, fiscal_year: '2029' }
+    source: { anchor: s12-t1 }
+  - concept: c-bill-費用-保守
+    type: 費用項目
+    name: 保守（年額）
+    statement: 保守の費用は年額 24 百万円（2029 年度から）であること
+    attrs: { amount: 24 百万円, category: 運用, fiscal_year: '2029' }
+    source: { anchor: s12-t1 }
+out_of_scope:
+  - { anchor: s12-g1, reason: スライドの表題（表の中身は s12-t1） }

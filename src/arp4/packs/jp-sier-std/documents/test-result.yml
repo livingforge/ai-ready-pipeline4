@@ -36,10 +36,15 @@ sections:
     labels: { "to.name": テストケース, "from.name": 実施の名称,
               "to.category": 分類,
               "from.description": 実施記録の補足, description: この行の補足 }
+    # **実施の出典を出す**（3.16.1）。テスト結果は関係の表にしか出てこない種別
+    # なので、ここに出典列が無いあいだ**どの試験報告の何ページの記録なのかが
+    # 生成物から辿れなかった** ―― 出すのは `from.source`（実施記録の出典）で、
+    # ケース側の出典はテスト仕様書「テストケース」が既に出している。
     columns: ["to.test_id", "to.level", "to.name", "from.run_id",
               "from.name", "to.category", "from.result",
               "from.executed_on", "from.tester",
-              "from.defect", "from.statement", "from.description", description]
+              "from.defect", "from.statement", "from.description", description,
+              "from.source"]
 
   # **結果と指摘は対で 1 つの点検である**（3.16.0）。点検表は結果 10 件それぞれに
   # 「指摘 N を参照」と書き、指摘 6 件は別シートにある ―― 受け皿が無いあいだ、

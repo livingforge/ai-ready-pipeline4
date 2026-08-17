@@ -1,0 +1,61 @@
+records:
+  - concept: c-bill-請求ステータス
+    type: コード定義
+    name: 請求ステータス
+    statement: 請求ステータスは作成・発行済・一部入金・入金済・取消の 5 値であること
+    attrs: { physical_name: INVOICE_STS, managed_by: 固定 }
+    source: { anchor: s8-t1 }
+    refs:
+      - { rel: has-value, to: c-bill-ステータス作成 }
+      - { rel: has-value, to: c-bill-ステータス発行済 }
+      - { rel: has-value, to: c-bill-ステータス一部入金 }
+      - { rel: has-value, to: c-bill-ステータス入金済 }
+      - { rel: has-value, to: c-bill-ステータス取消 }
+  - concept: c-bill-ステータス作成
+    type: コード値
+    name: 作成
+    statement: 請求ステータス 01 は請求データを作成し、まだ発行していない状態であること
+    attrs: { value: '01' }
+    source: { anchor: s8-t1 }
+  - concept: c-bill-ステータス発行済
+    type: コード値
+    name: 発行済
+    statement: 請求ステータス 02 は請求書を発行し、取引先へ送付した状態であること
+    attrs: { value: '02' }
+    source: { anchor: s8-t1 }
+  - concept: c-bill-ステータス一部入金
+    type: コード値
+    name: 一部入金
+    statement: 請求ステータス 03 は請求額の一部が入金され消し込まれた状態であること
+    attrs: { value: '03' }
+    source: { anchor: s8-t1 }
+  - concept: c-bill-ステータス入金済
+    type: コード値
+    name: 入金済
+    statement: 請求ステータス 04 は請求額の全額が消し込まれた状態であること
+    attrs: { value: '04' }
+    source: { anchor: s8-t1 }
+  - concept: c-bill-ステータス取消
+    type: コード値
+    name: 取消
+    statement: 請求ステータス 09 は赤伝で取り消した状態であり、再発行は別番号になること
+    attrs: { value: '09' }
+    source: { anchor: s8-t1 }
+  # **採番規則は別の表**（`s8-t2`）である ―― 同じスライドでも出典は割れる。
+  - concept: c-bill-請求番号の採番
+    type: 業務ルール
+    name: 請求番号の採番規則
+    statement: 請求番号は BIL と西暦 4 桁と通番 6 桁の 13 桁で採番すること
+    attrs: { rule_kind: processing, action: BIL＋西暦 4 桁＋通番 6 桁で採番する,
+             rationale: 採番テーブルで一意にするため }
+    source: { anchor: s8-t2 }
+    refs: [{ rel: constrains, to: c-bill-T_INVOICE }]
+  - concept: c-bill-取引先コードの採番
+    type: 業務ルール
+    name: 取引先コードの採番規則
+    statement: 取引先コードは P と通番 5 桁の 6 桁で採番し、前ゼロを残すこと
+    attrs: { rule_kind: processing, action: P＋通番 5 桁で手採番する（前ゼロを残す） }
+    source: { anchor: s8-t2 }
+    refs: [{ rel: constrains, to: c-bill-M_PARTNER }]
+out_of_scope:
+  - { anchor: s8-g1, reason: スライドの表題（表の中身は s8-t1 / s8-t2） }

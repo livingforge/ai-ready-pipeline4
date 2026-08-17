@@ -1,0 +1,27 @@
+records:
+  - concept: c-bill-リスク-名寄せ未了
+    type: リスク
+    name: 取引先マスタの名寄せが移行までに終わらない
+    statement: 取引先マスタの名寄せが移行までに終わらないおそれがあること
+    attrs: { probability: 中, impact: 大,
+             mitigation: 名寄せ前のコードのまま移行し、稼働後に統合する }
+    source: { anchor: s13-t1 }
+    refs: [{ rel: threatens, to: c-bill-MS-本番稼働 }]
+  - concept: c-bill-リスク-全銀更改
+    type: リスク
+    name: 銀行の全銀手順が更改時期と重なる
+    statement: 銀行の全銀手順の更改が本プロジェクトの移行時期と重なるおそれがあること
+    attrs: { probability: 低, impact: 大,
+             mitigation: 2029-04 までに銀行側の予定を確認する }
+    source: { anchor: s13-t1 }
+    refs: [{ rel: threatens, to: c-bill-IF101 }]
+  - concept: c-bill-リスク-要員確保
+    type: リスク
+    name: 経理部門の要員が繁忙期に確保できない
+    statement: 経理部門の要員が繁忙期に確保できないおそれがあること
+    attrs: { probability: 高, impact: 中,
+             mitigation: 受入試験を 2029-06 の閑散期に前倒しする }
+    source: { anchor: s13-t1 }
+    refs: [{ rel: threatens, to: c-bill-MS-総合試験完了 }]
+out_of_scope:
+  - { anchor: s13-g1, reason: スライドの表題（表の中身は s13-t1） }

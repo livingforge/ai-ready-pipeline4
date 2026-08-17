@@ -1,0 +1,70 @@
+records:
+  - concept: c-bill-TC-取引先コード
+    type: テストケース
+    name: 取引先コードに 6 桁を入力
+    statement: 請求書発行画面で取引先コードに 6 桁を入力すると取引先名が表示されること
+    attrs: { expected: 取引先名が表示される, level: 総合,
+             steps: 請求書発行画面で取引先コードに 6 桁を入力する }
+    source: { anchor: p5-x1 }
+    refs: [{ rel: verifies, to: c-bill-請求書発行画面 }]
+  - concept: c-bill-TC-締め中の発行
+    type: テストケース
+    name: 締め処理中に発行を押す
+    statement: 締め処理の実行中に発行ボタンを押すとエラーとなること
+    attrs: { expected: エラーとなる, level: 総合,
+             precondition: 月次締めが実行中であること,
+             steps: 請求書発行画面で発行ボタンを押す }
+    source: { anchor: p5-x1 }
+    refs: [{ rel: verifies, to: c-bill-CST-締め中は発行しない }]
+  - concept: c-bill-TC-請求金額の合計
+    type: テストケース
+    name: 請求金額が明細の合計と一致する
+    statement: 請求金額が請求明細の合計と一致すること
+    attrs: { expected: 明細の合計と一致する, level: 総合,
+             steps: 請求書発行画面で請求金額を確認する }
+    source: { anchor: p5-x1 }
+    refs: [{ rel: verifies, to: c-bill-T_INVOICE }]
+  - concept: c-bill-TC-請求書PDF
+    type: テストケース
+    name: 請求書 PDF の様式が新様式である
+    statement: 出力した請求書 PDF が新様式であり、押印欄が無いこと
+    attrs: { expected: 押印欄が無い, level: 総合,
+             steps: 請求書 PDF を出力して様式を確認する }
+    source: { anchor: p6-x1 }
+    refs: [{ rel: verifies, to: c-bill-RPT101 }]
+  - concept: c-bill-TC-自動消込
+    type: テストケース
+    name: 請求番号の一致で自動消込される
+    statement: 入金明細の請求番号が請求と一致するとき、自動で消込済になること
+    attrs: { expected: 消込済になる, level: 総合,
+             steps: 入金明細を取り込み、自動消込を実行する }
+    source: { anchor: p9-x1 }
+    refs:
+      - { rel: verifies, to: c-bill-JOB102 }
+      - { rel: uses-specimen, to: c-bill-MOD-PaymentMatcher }
+  - concept: c-bill-TC-端数の自動消込
+    type: テストケース
+    name: 差異 1,000 円以下は自動消込
+    statement: 消込の差異が 1,000 円以下のとき、端数として自動で消し込むこと
+    attrs: { expected: 端数として消し込む, level: 総合,
+             steps: '差異が 1,000 円以下になる入金明細を取り込み、自動消込を実行する' }
+    source: { anchor: p9-x1 }
+    refs: [{ rel: verifies, to: c-bill-RUL-端数の自動消込 }]
+  - concept: c-bill-TC-滞留の抽出
+    type: テストケース
+    name: 支払期日 30 日超が抽出される
+    statement: 支払期日を 30 日過ぎた請求が滞留債権一覧に出ること
+    attrs: { expected: 一覧に出る, level: 総合,
+             steps: 支払期日を 30 日過ぎた請求を作り、滞留債権を抽出する }
+    source: { anchor: p10-x1 }
+    refs: [{ rel: verifies, to: c-bill-RUL-滞留の抽出 }]
+out_of_scope:
+  - { anchor: p4-x1, reason: 区分ごとの件数の集計（個々の試験結果は 3 節と 4 節が持つ） }
+  - { anchor: p7-i1, kind: 未読取,
+      reason: 押印して綴じ込んだ判定書。p007.png を開いても判定印の日付と押印者しか写っておらず、試験の内容は確定できない }
+  - { anchor: p7-o1, kind: 未読取,
+      reason: 絵の中の字（機械の読み）。p007.png を開いて突き合わせたが、押印で潰れており資料の字として採れない }
+  - { anchor: p8-i1, kind: 未読取,
+      reason: 押印して綴じ込んだ判定書（2 枚目）。p008.png も 1 枚目と同じ様式で、試験の内容は確定できない }
+  - { anchor: p8-o1, kind: 未読取,
+      reason: 絵の中の字（機械の読み）。p008.png を開いて突き合わせたが、押印で潰れており資料の字として採れない }

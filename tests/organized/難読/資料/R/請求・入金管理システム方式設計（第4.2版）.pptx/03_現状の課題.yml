@@ -1,0 +1,29 @@
+records:
+  - concept: c-bill-課題-様式が不統一
+    type: 現状課題
+    name: 請求書の様式が部門ごとに異なる
+    statement: 請求書の発行が部門ごとに分かれており様式が統一されていないこと
+    attrs: { category: 業務, impact: 取引先からの問い合わせが月 40 件発生している }
+    source: { anchor: s3-t1 }
+  - concept: c-bill-課題-手作業の消込
+    type: 現状課題
+    name: 入金消込を手作業で行っている
+    statement: 入金消込を手作業で行っており、月末に 3 名を専任で充てていること
+    attrs: { category: 業務, impact: 月次決算が 9 営業日まで延びている }
+    source: { anchor: s3-t1 }
+    refs: [{ rel: affects, to: c-bill-経理担当 }]
+  - concept: c-bill-課題-取引先コードの重複
+    type: 現状課題
+    name: 同じ取引先が別コードで登録されている
+    statement: 3 つの部門システムに同じ取引先が別コードで登録されていること
+    attrs: { category: システム, impact: 与信残高と滞留債権を全社で合算できない }
+    source: { anchor: s3-t1 }
+  - concept: c-bill-課題-当日入金が見えない
+    type: 現状課題
+    name: 当日の入金が翌日まで見えない
+    statement: 銀行入金明細の取込が日次バッチのみで、当日入金が翌日まで見えないこと
+    attrs: { category: システム, impact: 入金確認の電話が月 120 件発生している }
+    source: { anchor: s3-t1 }
+    refs: [{ rel: affects, to: c-bill-債権管理担当 }]
+out_of_scope:
+  - { anchor: s3-g1, reason: スライドの表題（表の中身は s3-t1） }

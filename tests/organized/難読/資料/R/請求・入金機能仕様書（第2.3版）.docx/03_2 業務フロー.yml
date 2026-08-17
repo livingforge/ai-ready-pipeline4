@@ -1,0 +1,70 @@
+records:
+  - concept: c-bill-請求業務フロー
+    type: 業務フロー
+    name: 請求から入金消込までの業務フロー
+    statement: 月次締めから請求書の発行、入金明細の取込、入金消込、滞留債権の督促までを 1 本の流れとすること
+    attrs: { trigger: 毎月 1 日の月次締め, phase: 新規 }
+    source: { anchor: w3-t1 }
+    refs:
+      - { rel: has-flow-step, to: c-bill-FS-締め }
+      - { rel: has-flow-step, to: c-bill-FS-請求データ作成 }
+      - { rel: has-flow-step, to: c-bill-FS-請求書送付 }
+      - { rel: has-flow-step, to: c-bill-FS-入金明細取込 }
+      - { rel: has-flow-step, to: c-bill-FS-入金消込 }
+      - { rel: has-flow-step, to: c-bill-FS-督促 }
+  - concept: c-bill-FS-締め
+    type: 業務フローのステップ
+    name: 月次締め
+    statement: 経理部が毎月 1 日 02:00 に月次締めを行うこと
+    attrs: { owner_role: 経理部, step_kind: 開始 }
+    source: { anchor: w3-t1 }
+    refs: [{ rel: leads-to, to: c-bill-FS-請求データ作成,
+             attrs: { condition: 締めの正常終了後 } }]
+  - concept: c-bill-FS-請求データ作成
+    type: 業務フローのステップ
+    name: 請求データ作成
+    statement: 締めの正常終了後に請求データを取引先ごとに作成すること
+    attrs: { owner_role: 経理部, step_kind: 処理 }
+    source: { anchor: w3-t1 }
+    refs: [{ rel: leads-to, to: c-bill-FS-請求書送付 }]
+  - concept: c-bill-FS-請求書送付
+    type: 業務フローのステップ
+    name: 請求書の発行と送付
+    statement: 締め後 2 営業日以内に請求書を発行し、取引先へ送付すること
+    attrs: { owner_role: 経理部, step_kind: 処理 }
+    source: { anchor: w3-t1 }
+    refs: [{ rel: leads-to, to: c-bill-FS-入金明細取込 }]
+  - concept: c-bill-FS-入金明細取込
+    type: 業務フローのステップ
+    name: 入金明細の取込
+    statement: 毎日 01:00 と 13:00 に銀行入金明細を取り込むこと
+    attrs: { owner_role: 経理部, step_kind: 処理 }
+    source: { anchor: w3-t1 }
+    refs: [{ rel: leads-to, to: c-bill-FS-入金消込,
+             attrs: { condition: 取込の正常終了後 } }]
+  - concept: c-bill-FS-入金消込
+    type: 業務フローのステップ
+    name: 入金消込
+    statement: 取込の正常終了後に入金と請求を突き合わせて消し込むこと
+    attrs: { owner_role: 経理部, step_kind: 判定 }
+    source: { anchor: w3-t1 }
+    refs: [{ rel: leads-to, to: c-bill-FS-督促,
+             attrs: { condition: 支払期日の 30 日後まで入金が無い場合 } }]
+  - concept: c-bill-FS-督促
+    type: 業務フローのステップ
+    name: 滞留債権の抽出と督促
+    statement: 債権管理課が支払期日の 30 日後に滞留債権を抽出し、督促すること
+    attrs: { owner_role: 債権管理課, step_kind: 終了 }
+    source: { anchor: w3-t1 }
+  # **手作業の消込の承認は箇条書きにしか無い**（表には「一部自動」としかない）。
+  - concept: c-bill-RUL-手消込の承認
+    type: 業務ルール
+    name: 手作業の消込の承認
+    statement: 手作業の消込は経理担当が行い、10 万円を超える差異は経理課長が承認すること。ただし取引先からの入金通知が届いている場合は金額に関わらず承認を省略すること
+    attrs: { rule_kind: business, condition: 手作業で消し込む差異が 10 万円を超える場合,
+             action: 経理課長の承認を得る,
+             rationale: 取引先からの入金通知があるときは省略する }
+    source: { anchor: w3-h2 }
+    refs: [{ rel: constrains, to: c-bill-入金消込画面 }]
+out_of_scope:
+  - { anchor: w3-h1, reason: 表の前置き（網掛けの意味の説明） }

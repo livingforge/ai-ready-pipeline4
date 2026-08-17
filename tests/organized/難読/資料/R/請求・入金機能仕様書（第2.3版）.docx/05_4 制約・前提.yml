@@ -1,0 +1,25 @@
+records:
+  - concept: c-bill-CST-法定保存
+    type: 制約・前提
+    name: 請求データの法定保存期間
+    statement: 請求データは法定保存期間である 7 年のあいだ保存すること
+    attrs: { category: 法令, quantity: 7 年, rationale: 法人税法 }
+    source: { anchor: w5-t1 }
+    refs: [{ rel: constrains, to: c-bill-T_INVOICE }]
+  - concept: c-bill-CST-締め中は発行しない
+    type: 制約・前提
+    name: 締め処理中の請求書発行の禁止
+    statement: 締め処理の実行中は請求書の発行を行わないこと
+    attrs: { category: 運用, rationale: 運用設計書 4.2 }
+    source: { anchor: w5-t1 }
+    refs: [{ rel: constrains, to: c-bill-請求書発行画面 }]
+  - concept: c-bill-CST-同時接続数
+    type: 制約・前提
+    name: 同時接続数の上限
+    statement: 同時接続数は 30 セッションを上限とすること
+    attrs: { category: 技術, quantity: '30', rationale: ライセンス数 }
+    source: { anchor: w5-t1 }
+    refs: [{ rel: constrains, to: c-bill-応答時間 }]
+out_of_scope:
+  - { anchor: w5-h1, reason: 勘定科目コードを変更できない旨（会計パッケージ側の話で、本システムの仕様ではない） }
+  - { anchor: w5-f1, reason: 脚注（会計パッケージの更改予定。決まっていない） }

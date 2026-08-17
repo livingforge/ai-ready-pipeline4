@@ -1,0 +1,51 @@
+records:
+  # **見出しが 2 段になっている。** 1 段目（取引先／請求／入金）は列の束を
+  # 括っているだけで、列の名前は 2 段目にしかない ―― 束のほうがどのテーブルの
+  # 話かを言っているので、列は 3 つのエンティティへ配る。
+  #
+  # **CSV が言っているのは見出し行にどの列があるかだけ**である ――
+  # 消込そのものを定義しているのは方式設計 7 枚目のほうである。
+  - concept: c-bill-T_MATCH
+    source: { anchor: t1 }
+    refs:
+      - { rel: has-column, to: c-bill-請求番号,
+          attrs: { physical_name: INVOICE_NO, not_null: true } }
+      - { rel: has-column, to: c-bill-消込区分,
+          attrs: { physical_name: MATCH_KBN, not_null: true } }
+  - concept: c-bill-T_PAYMENT
+    source: { anchor: t1 }
+    refs:
+      - { rel: has-column, to: c-bill-入金額,
+          attrs: { physical_name: PAYMENT_AMT, not_null: true } }
+      - { rel: has-column, to: c-bill-請求番号,
+          attrs: { physical_name: INVOICE_NO, note: 摘要から取り出したもので、空のことがある } }
+  - concept: c-bill-M_PARTNER
+    source: { anchor: t1 }
+    refs:
+      - { rel: has-column, to: c-bill-取引先コード,
+          attrs: { physical_name: PARTNER_CD, pk: true, not_null: true } }
+      - { rel: has-column, to: c-bill-取引先名,
+          attrs: { physical_name: PARTNER_NAME, not_null: true } }
+      - { rel: has-column, to: c-bill-取引先カナ名,
+          attrs: { physical_name: PARTNER_KANA } }
+  - concept: c-bill-取引先カナ名
+    type: データ項目
+    name: 取引先カナ名
+    statement: 取引先カナ名は文字列型の項目であり、旧システムから来た半角カタカナが入ること
+    attrs: { data_type: 文字列 }
+    source: { anchor: t1 }
+  - concept: c-bill-入金額
+    type: データ項目
+    name: 入金額
+    statement: 入金額は数値型の項目であること
+    attrs: { data_type: 数値 }
+    source: { anchor: t1 }
+  - concept: c-bill-消込区分
+    type: データ項目
+    name: 消込区分
+    statement: 消込区分は自動・手作業・一部入金・相殺のいずれかを持つ文字列型の項目であること
+    attrs: { data_type: 文字列 }
+    source: { anchor: t1 }
+    known_gaps:
+      uses-code:
+        reason: 消込区分の値は移行データにしか出てこず、コード定義の表（機能仕様書 8 節）に無い

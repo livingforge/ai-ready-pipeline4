@@ -1,0 +1,3 @@
+out_of_scope:
+  - { anchor: p1-x1, reason: 表紙（文書の表題と版） }
+  - { anchor: p2-x1, reason: 改訂履歴（この 1 冊の版の推移であって、システムの仕様ではない） }

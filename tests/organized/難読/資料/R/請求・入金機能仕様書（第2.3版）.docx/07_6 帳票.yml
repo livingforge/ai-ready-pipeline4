@@ -1,0 +1,37 @@
+records:
+  - concept: c-bill-RPT101
+    type: 帳票
+    name: 請求書
+    statement: 請求書は請求書の発行時に取引先ポータルまたは郵送で 1 通出力すること
+    attrs: { media: PDF, timing: 請求書発行時 }
+    source: { anchor: w7-t1 }
+    refs:
+      - { rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [R] } }
+      - { rel: displays, to: c-bill-請求金額, attrs: { io: 出力 } }
+      - { rel: realizes, to: c-bill-FR-請求書配信 }
+  - concept: c-bill-RPT102
+    type: 帳票
+    name: 入金消込一覧
+    statement: 入金消込一覧は日次バッチで経理部プリンタへ 1 部出力すること
+    attrs: { media: 印刷, timing: 日次バッチ }
+    source: { anchor: w7-t1 }
+    refs: [{ rel: accesses, to: c-bill-T_MATCH, attrs: { crud: [R] } }]
+    known_gaps:
+      realizes:
+        reason: 日次の確認用の帳票で、3 節の機能要件にこの帳票を求める行が無い
+      displays:
+        reason: 6 節の表は帳票の一覧だけで、出力項目の表が 1 枚も無い（現物の見本は貼ってあるが読めない）
+  - concept: c-bill-RPT103
+    type: 帳票
+    name: 滞留債権一覧
+    statement: 滞留債権一覧は月次バッチで債権管理課へ 2 部出力すること
+    attrs: { media: 印刷, timing: 月次バッチ }
+    source: { anchor: w7-t1 }
+    refs:
+      - { rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [R] } }
+      - { rel: realizes, to: c-bill-FR-滞留債権抽出 }
+    known_gaps:
+      displays:
+        reason: 6 節の表は帳票の一覧だけで、出力項目の表が 1 枚も無い
+out_of_scope:
+  - { anchor: w7-h1, reason: 表の前置き（部数は w7-t1 が持つ） }

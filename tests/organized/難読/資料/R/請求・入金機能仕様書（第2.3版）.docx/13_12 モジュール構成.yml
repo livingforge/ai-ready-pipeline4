@@ -1,0 +1,70 @@
+records:
+  - concept: c-bill-MOD-InvoiceService
+    type: モジュール
+    name: 請求サービス
+    statement: 請求サービスは請求データの作成と請求書の発行を行うこと
+    attrs: { class_name: InvoiceService, tier: Service,
+             package: jp.co.example.bill.invoice }
+    source: { anchor: w13-t1 }
+    refs:
+      - { rel: has-method, to: c-bill-MTD-issue }
+      - { rel: accesses, to: c-bill-T_INVOICE, attrs: { crud: [C, R, U] } }
+      - { rel: realizes, to: c-bill-FR-請求データ作成 }
+  - concept: c-bill-MOD-PaymentMatcher
+    type: モジュール
+    name: 消込サービス
+    statement: 消込サービスは入金明細と請求の突合を行うこと
+    attrs: { class_name: PaymentMatcher, tier: Service,
+             package: jp.co.example.bill.payment }
+    source: { anchor: w13-t1 }
+    refs:
+      - { rel: has-method, to: c-bill-MTD-match }
+      - { rel: has-method, to: c-bill-MTD-diff }
+      - { rel: calls, to: c-bill-MOD-InvoiceService }
+      - { rel: has-process-step, to: c-bill-PS-請求番号突合 }
+      - { rel: has-process-step, to: c-bill-PS-金額突合 }
+      - { rel: has-process-step, to: c-bill-PS-差異判定 }
+  - concept: c-bill-MTD-match
+    type: メソッド
+    name: 自動消込を行う
+    statement: 自動消込を行うメソッドは入金明細 1 件を受け取り、突合の結果を返すこと
+    attrs: { signature: 'match(PaymentDetail detail)', returns: MatchResult,
+             raises: MatchFailedException }
+    source: { anchor: w13-t2 }
+  - concept: c-bill-MTD-diff
+    type: メソッド
+    name: 差異を算出する
+    statement: 差異を算出するメソッドは請求と入金を受け取り、差額を返すこと
+    attrs: { signature: 'diff(Invoice invoice, Payment payment)', returns: BigDecimal }
+    source: { anchor: w13-t2 }
+    refs: [{ rel: raises, to: c-bill-MSG-差異の警告 }]
+  - concept: c-bill-MTD-issue
+    type: メソッド
+    name: 請求書を発行する
+    statement: 請求書を発行するメソッドは請求番号を受け取り、請求書 PDF を返すこと
+    attrs: { signature: 'issue(String invoiceNo)', returns: InvoicePdf,
+             raises: IssueDeniedException }
+    source: { anchor: w13-t2 }
+  - concept: c-bill-PS-請求番号突合
+    type: 処理ステップ
+    name: 請求番号の突合
+    statement: 入金明細の摘要から請求番号を取り出して突き合わせること
+    attrs: { step_kind: 処理 }
+    source: { anchor: w13-t3 }
+    refs: [{ rel: proceeds-to, to: c-bill-PS-金額突合,
+             attrs: { condition: 請求番号が取れない場合 } }]
+  - concept: c-bill-PS-金額突合
+    type: 処理ステップ
+    name: 取引先と金額の突合
+    statement: 請求番号が取れない入金を取引先と金額の組で突き合わせること
+    attrs: { step_kind: 処理 }
+    source: { anchor: w13-t3 }
+    refs: [{ rel: proceeds-to, to: c-bill-PS-差異判定 }]
+  - concept: c-bill-PS-差異判定
+    type: 処理ステップ
+    name: 差異の判定
+    statement: 差異が 1,000 円以下なら端数として消し込むこと
+    attrs: { step_kind: 判定 }
+    source: { anchor: w13-t3 }
+out_of_scope:
+  - { anchor: w13-h1, reason: 表の前置き（モジュールの一覧は w13-t1） }

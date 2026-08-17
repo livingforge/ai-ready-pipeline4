@@ -1,0 +1,22 @@
+records:
+  - concept: c-bill-入金区分
+    type: コード定義
+    name: 入金区分
+    statement: 入金区分は振込・相殺の 2 値であること
+    attrs: { physical_name: PAYMENT_KBN, managed_by: 固定 }
+    source: { anchor: w9-t1 }
+    refs:
+      - { rel: has-value, to: c-bill-入金区分-振込 }
+      - { rel: has-value, to: c-bill-入金区分-相殺 }
+  - concept: c-bill-入金区分-振込
+    type: コード値
+    name: 振込
+    statement: 入金区分 1 は銀行振込による入金であること
+    attrs: { value: '1' }
+    source: { anchor: w9-t2 }
+  - concept: c-bill-入金区分-相殺
+    type: コード値
+    name: 相殺
+    statement: 入金区分 2 は買掛との相殺による消込であること
+    attrs: { value: '2' }
+    source: { anchor: w9-t2 }

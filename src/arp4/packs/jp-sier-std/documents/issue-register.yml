@@ -34,11 +34,15 @@ sections:
   # 弾かれることを確認した` のように、**何を見て確かめたかがそこにしか無い。**
   # 日付だけの列は「誰かが何かを確かめた」以上のことを言わない。資料の並び
   # （指摘 → 回答 → 確認）どおり `answer` の右、`confirmed_on` の左に置く。
+  # **出典を出す**（3.16.1）。同じファイルの「決定事項」は出典を出しているのに
+  # 課題だけが出しておらず、**課題の 1 行から元資料へ辿れなかった** ―― 起票日も
+  # 起票者も資料の申告で、食い違いの両論は資料の字そのものである。どの資料が
+  # そう言っているのかは、いちばん問い合わせの来る欄である。
   - heading: 課題一覧
     type: open-issue
     columns: [issue_id, raised_on, raised_phase, category, name, statement,
               answer, verification, confirmed_on, positions, description,
-              assignee, due, state]
+              assignee, due, state, source]
     labels: { category: 区分, raised_phase: 工程 }
 
   # **`state` をここにも出す。** 資料が「完了」と言っているのに `resolves` が

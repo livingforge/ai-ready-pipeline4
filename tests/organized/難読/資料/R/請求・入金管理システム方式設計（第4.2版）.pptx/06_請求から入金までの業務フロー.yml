@@ -1,0 +1,3 @@
+out_of_scope:
+  - { anchor: s6-g1, reason: 業務フローの箱（機能仕様書 2 節の表がいちばん詳しい） }
+  - { anchor: s6-c1, reason: 業務フローの線（同上） }

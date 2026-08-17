@@ -1,0 +1,21 @@
+records:
+  - concept: c-bill-DEC-条件付き合格
+    type: 決定事項
+    name: 総合試験は条件付き合格とする
+    statement: 性能の 1 項目が未達であるため条件付き合格とし、請求書発行の応答時間の目標値を要件確定会議で確定すること
+    attrs: { decided_on: '2029-08-31', decided_by: 情報システム部,
+             rationale: 不具合 2 件は是正され再試験で一致したが、性能の 1 項目が未達であるため,
+             alternatives: 不合格として再試験をやり直す }
+    source: { anchor: p14-x1 }
+    refs:
+      - { rel: resolves, to: c-bill-ISS102 }
+      - { rel: establishes, to: c-bill-応答時間 }
+  # **しおりの無い巻末の章**（`6 残課題`）は、直前の節に吸い込まれている。
+  - concept: c-bill-ISS111
+    type: 課題
+    name: 相殺による消込の本番確認
+    statement: 相殺による消込を本番環境で確認し、稼働判定会議までに決着させること
+    attrs: { due: '2029-09-15', state: 対応中, raised_on: '2029-08-31',
+             assignee: 経理部, raised_phase: 総合試験 }
+    source: { anchor: p15-x1 }
+    refs: [{ rel: disputes, to: c-bill-入金消込画面 }]
