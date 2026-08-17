@@ -52,8 +52,8 @@ python -m venv .venv
 
 | extras | 何のために | 前提 |
 | --- | --- | --- |
-| （なし） | 検証・生成。依存は PyYAML 1 本 | ― |
-| `[parse]` | `arp4 parse` が Excel を読む（openpyxl） | ― |
+| （なし） | 検証・生成と、Word・PowerPoint・PDF・CSV の取り込み（PDF の読み手はここに入っている） | ― |
+| `[parse]` | `arp4 parse` が **Excel** を読む（openpyxl） | ― |
 | `[render]` | `arp4 render` がシートを画像化する | **Windows ＋ Microsoft Excel** |
 
 **Excel の資料を扱うなら `[parse]` は要る。**`[render]` に代替は無く、入っていない環境

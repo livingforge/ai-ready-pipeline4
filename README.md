@@ -77,8 +77,8 @@ arp4 --help
 
 | extras | 何のために | 前提 |
 | --- | --- | --- |
-| （なし） | メタモデル・正本・検証・生成。依存は PyYAML 1 本 | ― |
-| `[parse]` | `arp4 parse` が Excel を読む（openpyxl） | ― |
+| （なし） | メタモデル・正本・検証・生成と、Word・PowerPoint・PDF・CSV の取り込み。依存は PyYAML と PDF の読み手（pypdfium2 / Pillow） | ― |
+| `[parse]` | `arp4 parse` が **Excel** を読む（openpyxl） | ― |
 | `[render]` | `arp4 render` がシートを画像化する | **Windows ＋ Microsoft Excel** |
 | `[check]` | 開発用（生成した Markdown を人と同じ規則で読み戻す） | ― |
 

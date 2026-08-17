@@ -9,31 +9,34 @@ description = "既存資産（Excel・コード）を LLM が整理し、機械�
 requires-python = ">=3.11"
 license = { text = "MIT" }
 
-# 中核（メタモデル・正本・検証・生成）の依存は YAML 1 本に留める。
+# 中核（メタモデル・正本・検証・生成）が使うのは YAML だけである。そこへ PDF の
+# 読み手（`pypdfium2` と、焼いたページを PNG にする `Pillow`）を足してある ――
+# **PDF は常に読める**と決めたので、入っているかどうかで振る舞いが変わる余地を
+# 残さない。追加依存にしていたあいだは「読めた 1 冊」と「読めなかった 1 冊」が
+# 環境で入れ替わり、申告・テストの飛ばし・正解の除外を**3 か所で同じ判定**して
+# いた ―― 分岐そのものを消すほうが安い。
 dependencies = [
     "PyYAML>=6.0",
+    "pypdfium2>=4.30",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
-# 資料の取り込み（arp4 parse）。**どれも使うときだけ import する。**
+# 資料の取り込み（arp4 parse）。**使うときだけ import する。**
 #
-# Word・PowerPoint・CSV に追加の依存は要らない ―― OOXML は zip と XML なので
-# 標準ライブラリで足り、CSV も同じである。PDF だけが読み手を必要とする
-# （pypdfium2 が本文とページの画像化、Pillow がその PNG 化）。どちらも
-# `render` が既に使っているものなので、新しく増えた依存は 1 つも無い。
+# Word・PowerPoint・PDF・CSV に追加の依存は要らない ―― OOXML は zip と XML なので
+# 標準ライブラリで足り、CSV も同じで、PDF の読み手は本体依存にした。ここに残るのは
+# Excel を読む openpyxl だけである。
 parse = [
     "openpyxl>=3.1",
-    "pypdfium2>=4.30",
-    "Pillow>=10.0",
 ]
 
 # シートの画像化（arp4 render）。Windows + Microsoft Excel が前提で、
-# 図形・罫線・塗りを見た目どおり撮れるのは Excel 自身だけなので代替は無い。
+# 図形・罫線・塗りを見た目どおり撮れるのは Excel 自身だけなので代替は無い
+# （PDF へ書き出してから焼く道具は本体依存にある）。
 render = [
     "openpyxl>=3.1",
     "pywin32>=306",
-    "pypdfium2>=4.30",
-    "Pillow>=10.0",
 ]
 
 # テストだけで使う。**設計書の Markdown を人が見るのと同じ規則で読み戻す**ため

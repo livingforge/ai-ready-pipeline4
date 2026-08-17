@@ -726,13 +726,8 @@ def _rasterize(pdf: Path, target_px: int) -> Any:
     起きないが、手動の改ページが残っていると割れることがあり、そのとき捨てると
     区画の一部が黙って消える。
     """
-    try:
-        import pypdfium2 as pdfium
-        from PIL import Image
-    except ImportError as exc:
-        raise RenderUnavailableError(
-            "PDF の画像化には pypdfium2 と Pillow が要ります"
-            '（pip install "ai-ready-pipeline4[render]"）') from exc
+    import pypdfium2 as pdfium                      # 依存は使うときだけ読む
+    from PIL import Image
 
     document = pdfium.PdfDocument(str(pdf))
     try:
@@ -783,7 +778,7 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 def png_size(path: Path) -> tuple[int, int]:
-    """PNG の ``(幅, 高さ)``。**読めなければ (0, 0)**（Pillow は入れない）。
+    """PNG の ``(幅, 高さ)``。**読めなければ (0, 0)**（ヘッダの 24 バイトだけ読む）。
 
     実測を出すためだけでなく、**空撮の検知**にも使う ―― 貼り付けが空振りしたときは
     ここが極端に小さくなる。

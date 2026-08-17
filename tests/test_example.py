@@ -233,7 +233,7 @@ def 通し(tmp_path: Path):
 
 
 @pytest.fixture
-def 通し_文書(tmp_path: Path, pdf_reader):
+def 通し_文書(tmp_path: Path):
     """Excel 以外の 4 形式で、整理結果まで用意した 1 ラウンド。
 
     残りのアンカーは `declare` でまとめて対象外にする ―― **実際の使われ方が

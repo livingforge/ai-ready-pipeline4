@@ -50,10 +50,7 @@ def read(path: Path, relative: Path, use_ocr: bool = True
          ) -> tuple[list[tuple[Path, mdio.Doc]], list[Finding],
                     dict[Path, list[parse.Media]]]:
     """1 冊を読む。戻すのは :func:`arp4.parse._parse_one` と同じ 3 つ組。"""
-    try:
-        import pypdfium2 as pdfium                  # 依存は使うときだけ読む
-    except ImportError:
-        return [], _unavailable(path), {}
+    import pypdfium2 as pdfium                      # 依存は使うときだけ読む
 
     document = pdfium.PdfDocument(str(path))
     try:
@@ -136,13 +133,6 @@ def _look(document: Any, scanned: list[Page]) -> None:
     ―― 機械が読めないことと、この資料が誰にも読まれないことは別である
     （貼り付け画像を ``images/`` へ出したのと同じ理由）。
     """
-    try:
-        from PIL import Image                       # noqa: F401
-    except ImportError:
-        for one in scanned:
-            one.trouble = ("焼くには Pillow が要ります"
-                           '（pip install "ai-ready-pipeline4[parse]"）')
-        return
     for one in scanned:
         try:
             page = document[one.number - 1]
@@ -348,15 +338,6 @@ def _properties_note(path: Path, core: list[tuple[str, str]]) -> list[Finding]:
                     f"PDF のプロパティ（{listed}）。本文にも表にも出てきません。"
                     "**何から書き出された PDF か**がここに残っていることが"
                     "あり（作成アプリ）、原本を当たれるかどうかが変わります。")]
-
-
-def _unavailable(path: Path) -> list[Finding]:
-    """**読める道具が入っていない。** 環境の話なので `P016` と同じ形で言う。"""
-    return [Finding("warn", "P020", path.name,
-                    "PDF を読むには pypdfium2 が要ります"
-                    '（pip install "ai-ready-pipeline4[parse]"）。'
-                    "この 1 冊は 1 行もパースできていません ―― 資料に中身が"
-                    "無いのではありません。")]
 
 
 def _nothing_note(path: Path, pages: list[Page],

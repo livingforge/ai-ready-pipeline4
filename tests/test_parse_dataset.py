@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import ast
-import importlib
 import os
 import re
 import time
@@ -704,20 +703,11 @@ def test_形式ごとの1冊は正解のとおり(parsed) -> None:
     理由である）。書き直すときは `ARP4_GOLDEN=write` を渡し、**差分を読んで
     から**コミットすること。
 
-    PDF だけは追加依存（`pypdfium2`）が要るので、入っていない環境ではその
-    1 冊を母集合から外す ―― 環境の話であって振る舞いの話ではない
-    （→ `conftest.pdf_reader`）。**外したことは黙らない。**
+    PDF の 1 冊も同じように掛ける ―― 読み手（`pypdfium2`）は本体依存なので、
+    「入っていない環境では外す」という母集合の揺れはもう無い。
     """
     docs, _ = parsed
     frozen = set(FROZEN)
-    try:
-        # **arp4 自身とまったく同じ判定にする**（`arp4.pdf.read` の入口）――
-        # `find_spec` で見ると、**在るのに読み込めない**入り方（壊れた
-        # インストール）で判定が割れ、正解だけが残って照合が落ちる。
-        importlib.import_module("pypdfium2")
-    except ImportError:
-        frozen.discard(ACCEPT)
-        print(f"pypdfium2 が無いので {ACCEPT} を照合から外しました")
 
     made = {name: mdio.dump(doc) for name, doc in docs.items()
             if _owner(name) in frozen}
@@ -1511,7 +1501,7 @@ MINUTES = "資料/Q/受注管理システム移行判定会議_議事録.pdf"
 SCANNED = "資料/Q/受注管理システム受入確認書（押印済）.pdf"
 
 
-def test_PDFはしおりで節に割れる(parsed, pdf_reader) -> None:
+def test_PDFはしおりで節に割れる(parsed) -> None:
     """**しおりは資料が持っている構造である。**
 
     1 冊 1 本のまま出すと、200 ページの検収仕様書が 1 つのアンカーになり、
@@ -1528,7 +1518,7 @@ def test_PDFはしおりで節に割れる(parsed, pdf_reader) -> None:
         docs[f"{ACCEPT}/01_（前書き）.md"], "p1-x1").text
 
 
-def test_PDFのアンカーはページ番号で振る(parsed, pdf_reader) -> None:
+def test_PDFのアンカーはページ番号で振る(parsed) -> None:
     """**PDF には番地が無い。** 唯一そこにあるのはページ番号なので、それで振る。
 
     節の中に何ページ入っていても、出典は 1 ページを名指しできる。
@@ -1539,7 +1529,7 @@ def test_PDFのアンカーはページ番号で振る(parsed, pdf_reader) -> No
     assert [c.at for c in doc.chunks] == ["p.1", "p.2"]
 
 
-def test_PDFの表は組み直さない(parsed, pdf_reader) -> None:
+def test_PDFの表は組み直さない(parsed) -> None:
     """**PDF が持っているのは位置を持った文字だけ**で、列の切れ目は無い。
 
     文字の隙間から当てにいくと、閾値の外れたところで**列がずれた表が
@@ -1553,7 +1543,7 @@ def test_PDFの表は組み直さない(parsed, pdf_reader) -> None:
     assert "表は組み直していません" in " ".join(doc.notes)
 
 
-def test_しおりが無ければ1本のまま出す(parsed, pdf_reader) -> None:
+def test_しおりが無ければ1本のまま出す(parsed) -> None:
     """**割れないことを失敗にしない。**
 
     議事録・メモを印刷した PDF にアウトラインは無く、それが普通である ――
@@ -1566,7 +1556,7 @@ def test_しおりが無ければ1本のまま出す(parsed, pdf_reader) -> None
     assert "しおり（アウトライン）がありません" in " ".join(docs[made[0]].notes)
 
 
-def test_テキスト層が無いページは絵にして字を読む(parsed, pdf_reader) -> None:
+def test_テキスト層が無いページは絵にして字を読む(parsed) -> None:
     """**「テキスト層が無い」は「字が無い」ではない。**
 
     押印の要る書類は必ずスキャンで回ってくる ―― 黙って空のページを出すと
@@ -1584,7 +1574,7 @@ def test_テキスト層が無いページは絵にして字を読む(parsed, pd
     assert "テキスト層の無いページが 2 ページあります" in said[SCANNED.rsplit("/", 1)[-1]]
 
 
-def test_字の出なかったページでも絵は出す(parsed, pdf_reader) -> None:
+def test_字の出なかったページでも絵は出す(parsed) -> None:
     """**「読んで字が無かった」と「絵が無い」は別である。**
 
     OCR が 1 文字も返さなくても、絵は `images/` に出ている ―― 整理層は開いて
