@@ -165,18 +165,37 @@ def _table(rows: list[list[Any]]) -> str:
     return f"<w:tbl>{''.join(out)}</w:tbl>"
 
 
-def _textbox(text: str) -> str:
-    """テキスト枠（`wps:wsp`）。**Word の図形は Excel とも PowerPoint とも違う。**"""
-    body = "".join(f"<a:p><a:r><a:t>{_esc(line)}</a:t></a:r></a:p>"
-                   for line in str(text).split("\n"))
+def _textbox(spec: Any) -> str:
+    """テキスト枠（`wps:wsp`）。**Word の図形は Excel とも PowerPoint とも違う。**
+
+    **箱の中の文字は Word の段落**（``w:txbxContent`` の ``w:p``）で入る。
+    DrawingML の ``a:p`` を ``wps:txBody`` に置いていたあいだ、`a:t` を読む
+    arp4 は文字を取れていたが、**その要素は wps のスキーマに無い** ―― Word は
+    パッケージごと拒み、「ファイルを開こうとして、エラーが発生しました」で
+    1 文字も表示しなかった。読めることと開けることは別である。
+
+    ``代替`` は箱ごとに書ける。**1 冊に箱が 2 つあれば説明も 2 つある**ので、
+    ここで決め打つと**別々の図形が同じ説明を名乗る** ―― 代替テキストは
+    「どの図の説明か」を読み手が突き合わせるためのものなので、そこが同じ字だと
+    突き合わせようがない。
+    """
+    if not isinstance(spec, dict):
+        spec = {"文字": spec}
+    text = str(spec.get("文字") or "")
+    alt = str(spec.get("代替") or "現行画面のイメージ（別紙 3 と同じもの）")
+    body = "".join(f"<w:p>{_runs(line)}</w:p>"
+                   for line in text.split("\n"))
     return (f'<w:p><w:r><w:drawing><wp:inline xmlns:wp="{_WP}">'
             '<wp:extent cx="2000000" cy="900000"/>'
             '<wp:docPr id="10" name="テキスト ボックス 1" '
-            'descr="現行画面のイメージ（別紙 3 と同じもの）"/>'
+            f'descr="{_esc(alt)}"/>'
             f'<a:graphic xmlns:a="{_A}"><a:graphicData uri="{_WPS}">'
-            f'<wps:wsp xmlns:wps="{_WPS}"><wps:spPr/>'
-            f"<wps:txbx><w:txbxContent/></wps:txbx>"
-            f"<wps:bodyPr/><wps:txBody>{body}</wps:txBody></wps:wsp>"
+            f'<wps:wsp xmlns:wps="{_WPS}"><wps:cNvSpPr txBox="1"/>'
+            '<wps:spPr><a:xfrm><a:off x="0" y="0"/>'
+            '<a:ext cx="2000000" cy="900000"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr>'
+            f"<wps:txbx><w:txbxContent>{body}</w:txbxContent></wps:txbx>"
+            "<wps:bodyPr/></wps:wsp>"
             "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>")
 
 

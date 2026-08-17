@@ -307,9 +307,15 @@ def _text(element: ET.Element) -> str:
 
     箇条書きの深さは行頭の全角空白で表す（図形の段落と同じ ―― 親子が字下げに
     しか現れない書き方は日本の資料でごく普通である）。
+
+    **テキスト枠の中（``w:txbxContent``）へは降りない。** 実物の Word は箱の
+    文字を本文の段落と同じ ``w:p`` で、しかも**その箱を置いた段落の中に**
+    書く ―― まとめて読むと、箱 1 つが本文の 1 行として節に紛れ込む。図形の
+    文字は :func:`_drawing` が図形の一覧へ出すと決めてあり（どの節にあったかは
+    機械が決めない）、両方から出すと**同じ 1 行が 2 か所に増える。**
     """
     pieces: list[str] = []
-    for node in element.iter():
+    for node in _walk(element):
         if node.tag == f"{{{_W}}}delText":
             continue
         if node.tag == f"{{{_W}}}t":
@@ -320,6 +326,15 @@ def _text(element: ET.Element) -> str:
             pieces.append("\n")
     body = "".join(pieces).rstrip()
     return "　" * _indent(element) + body if body.strip() else body
+
+
+def _walk(element: ET.Element):
+    """``element`` 以下を上から。**テキスト枠の中身は飛ばす**（→ :func:`_text`）。"""
+    yield element
+    for child in element:
+        if child.tag == f"{{{_W}}}txbxContent":
+            continue
+        yield from _walk(child)
 
 
 def _indent(element: ET.Element) -> int:
@@ -561,7 +576,13 @@ def _drawing(body: ET.Element, images: dict[str, str]) -> parse.Drawing:
     drawing = parse.Drawing()
     for shape in body.iter(f"{{{_WPS}}}wsp"):
         drawing.shapes += 1
-        text = parse._shape_text(shape)
+        # **箱の中の文字は Word の段落で入る**（``w:txbxContent``）。DrawingML の
+        # ``a:t`` だけを見ていたぶん、**実物の Word が書いたテキスト枠は空に
+        # 見えていた** ―― 機能構成図を 1 つの箱で書いた資料はまるごと落ちる。
+        # VML と同じ取り出し方をし、``a:t`` は残す（図形の中に貼られた図など、
+        # DrawingML で文字が入る書かれ方もあるため）。
+        text = "\n".join(_text(p) for p in shape.iter(f"{{{_W}}}p")).strip()
+        text = text or parse._shape_text(shape)
         if text:
             drawing.labels.append(text)
     for shape in body.iter(f"{{{_VML}}}shape"):

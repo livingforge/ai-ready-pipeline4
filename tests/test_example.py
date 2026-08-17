@@ -184,6 +184,16 @@ records:
              steps: 受注登録画面で数量に 0 を入力する }
     source: { anchor: p4-x1 }
     refs: [{ rel: verifies, to: c-受注登録画面 }]
+  # **子しおりの中身も同じ節に入っている**（`2.1 画面の確認` は割り先に
+  # ならないが、落ちてもいない）―― 出典はその節のページを指す。
+  - concept: c-金額計算の確認
+    type: テストケース
+    name: 金額が自動計算される
+    statement: 受注登録画面で数量を入力すると数量 × 単価が金額に表示されること
+    attrs: { expected: 数量 × 単価が表示される, level: 受入,
+             steps: 受注登録画面で数量を入力する }
+    source: { anchor: p5-x1 }
+    refs: [{ rel: verifies, to: c-受注登録画面 }]
 """,
     # CSV ―― **1 ファイルが 1 本**なので、アンカーに接頭辞が無い（`t1`）。
     "資料/得意先マスタ移行.csv.yml": """\
@@ -204,6 +214,219 @@ records:
     attrs: { data_type: 文字列 }
     source: { anchor: t1 }
 """,
+    # ── ここから下は**同じ 4 冊の後ろ半分**から起こしたもの ───────
+    #
+    # 前半（上の 5 本）は「形式ごとのアンカーが通るか」を見る。こちらは
+    # **正本の語彙のほうを広げる** ―― 種別が 5 つ（エンティティ・データ項目・
+    # 画面・業務ルール・テストケース）しか出てこないあいだ、`build` も
+    # `publish` も**その 5 つで閉じた経路しか通っていなかった。**
+    # PowerPoint ―― 権限マトリクス（スライド 9 枚目）。
+    "資料/方式提案.pptx/09_利用者と権限.yml": """\
+records:
+  - concept: c-営業担当
+    type: 利用者・ロール
+    name: 営業担当
+    statement: 営業担当は受注登録画面で受注を登録できること
+    attrs: { actor_kind: 利用者 }
+    source: { anchor: s9-t1 }
+    refs: [{ rel: operates, to: c-受注登録画面 }]
+  - concept: c-営業部長
+    type: 利用者・ロール
+    name: 営業部長
+    statement: 営業部長は与信枠を超える受注を承認できること
+    attrs: { actor_kind: 利用者 }
+    source: { anchor: s9-t1 }
+    refs:
+      - { rel: operates, to: c-受注登録画面 }
+      - { rel: reports-to, to: c-与信管理課長 }
+  - concept: c-与信管理課長
+    type: 利用者・ロール
+    name: 与信管理課長
+    statement: 与信管理課長は与信枠の設定と与信超過の承認を行うこと
+    attrs: { actor_kind: 利用者 }
+    source: { anchor: s9-t1 }
+""",
+    # PowerPoint ―― **1 枚に表が 2 枚**あるスライド（コード体系と採番規則）。
+    # 出典が `s10-t1` / `s10-t2` と割れているので、区分値と採番規則は
+    # **同じスライドでも別々の出典を名乗れる。**
+    "資料/方式提案.pptx/10_コード体系と採番規則.yml": """\
+records:
+  - concept: c-受注ステータス
+    type: コード定義
+    name: 受注ステータス
+    statement: 受注ステータスは受付・与信中・確定・出荷済・取消の 5 値であること
+    attrs: { physical_name: ORDER_STATUS, managed_by: 固定 }
+    source: { anchor: s10-t1 }
+    refs:
+      - { rel: has-value, to: c-ステータス受付 }
+      - { rel: has-value, to: c-ステータス確定 }
+  - concept: c-ステータス受付
+    type: コード値
+    name: 受付
+    statement: 受注ステータス 01 は受注を受け付けた状態であること
+    attrs: { value: '01' }
+    source: { anchor: s10-t1 }
+  - concept: c-ステータス確定
+    type: コード値
+    name: 確定
+    statement: 受注ステータス 03 は与信 OK かつ在庫引当済みの状態であること
+    attrs: { value: '03' }
+    source: { anchor: s10-t1 }
+  - concept: c-受注ステータス列
+    type: データ項目
+    name: 受注ステータス
+    statement: 受注ステータスは受注ステータスのコード値を持つ文字列型（2 桁）の項目であること
+    attrs: { data_type: 文字列, length: 2 }
+    source: { anchor: s10-t1 }
+    refs: [{ rel: uses-code, to: c-受注ステータス }]
+  # **採番規則は別の表**（`s10-t2`）に書いてある ―― 同じスライドでも
+  # 出典は割れる。
+  - concept: c-受注番号の採番
+    type: 業務ルール
+    name: 受注番号の採番規則
+    statement: 受注番号は ORD と年の下 2 桁と通番 5 桁で採番すること
+    attrs: { rule_kind: processing, action: ORD＋年下 2 桁＋通番 5 桁で採番する }
+    source: { anchor: s10-t2 }
+    refs: [{ rel: constrains, to: c-T_ORDER }]
+""",
+    # PowerPoint ―― 非機能要件の目標値（スライド 12 枚目）。**現行実測に
+    # 空欄がある**が、空欄は「測っていない」であって 0 ではないので書かない。
+    "資料/方式提案.pptx/12_非機能要件の目標値.yml": """\
+records:
+  - concept: c-受注登録の応答時間
+    type: 非機能要件
+    name: 受注登録の応答時間
+    statement: 受注登録の応答時間は 3 秒以内であること
+    attrs: { nf_category: 性能・拡張性, metric: 3 秒以内,
+             measurement: 同時 50 セッションの 90 パーセンタイル }
+    source: { anchor: s12-t1 }
+  # **向きは書いたまま残る。** 要件を実現するのは画面のほうなので、
+  # `realizes` は画面から張る（逆に書くと、トレース表から丸ごと落ちる）。
+  - concept: c-受注登録画面
+    source: { anchor: s12-t1 }
+    refs: [{ rel: realizes, to: c-受注登録の応答時間 }]
+  - concept: c-稼働率
+    type: 非機能要件
+    name: 稼働率
+    statement: 稼働率は 99.5% 以上であること
+    attrs: { nf_category: 可用性, metric: 99.5% 以上, measurement: 計画停止を除く }
+    source: { anchor: s12-t1 }
+""",
+    # Word ―― メッセージ一覧（8 節目）。**升の中で改行した文言**がそのまま
+    # 値になる（`mdio` の `<br>` は写しの都合で、資料の字ではない）。
+    "資料/受注登録機能仕様書.docx/08_7 メッセージ.yml": """\
+records:
+  - concept: c-MSG001
+    type: メッセージ
+    name: 得意先コード未登録
+    statement: 未登録の得意先コードが入力されたとき、エラーメッセージを表示すること
+    attrs: { severity: エラー, body: 得意先コードが登録されていません。入力内容を確認してください。,
+             action: 入力内容を確認する }
+    source: { anchor: w8-t1 }
+  - concept: c-MSG002
+    type: メッセージ
+    name: 与信残高の表示
+    statement: 与信照会の権限を持つ利用者に与信残高を警告として表示すること
+    attrs: { severity: 警告, body: "与信残高が {0} 円です。" }
+    source: { anchor: w8-t1 }
+  # **業務ルールがメッセージを出す。** 与信の判定と画面の文言は別のもので、
+  # 繋いでおかないとトレース表で切れる。
+  - concept: c-与信枠超過の承認
+    source: { anchor: w8-t1 }
+    refs: [{ rel: raises, to: c-MSG002 }]
+""",
+    # Word ―― バッチ処理（9 節目）。**見出し 2 が 2 つある節**で、表も 2 枚
+    # （`w9-t1` 日次 / `w9-t2` 月次）―― 出典はどちらの表かまで指せる。
+    "資料/受注登録機能仕様書.docx/09_8 バッチ処理.yml": """\
+records:
+  - concept: c-JOB002
+    type: バッチ処理
+    name: 売上計上
+    statement: 売上計上は受注データ受信の正常終了後に日次で実行すること
+    attrs: { schedule: 日次, trigger: JOB001 の正常終了後,
+             recovery: 当日中に再実行 }
+    source: { anchor: w9-t1 }
+    refs:
+      - { rel: accesses, to: c-T_ORDER, attrs: { crud: [R] } }
+      - { rel: has-step, to: c-売上明細の作成 }
+  - concept: c-売上明細の作成
+    type: バッチステップ
+    name: 売上明細の作成
+    statement: 売上計上は受注明細から売上明細を作成すること
+    attrs: { step_kind: Chunk }
+    source: { anchor: w9-t1 }
+  - concept: c-JOB010
+    type: バッチ処理
+    name: 請求締め
+    statement: 請求締めは毎月 1 日 02:00 に月次で実行すること
+    attrs: { schedule: 月次, start_time: 02:00, recovery: 当日中に再実行 }
+    source: { anchor: w9-t2 }
+""",
+    # Word ―― 用語と課題（10 節目）。**課題と決定事項は管理の段**である
+    # （基本設計書には出ず、課題管理表に出る）。
+    "資料/受注登録機能仕様書.docx/10_9 用語と課題.yml": """\
+records:
+  - concept: c-与信枠
+    type: 用語
+    name: 与信枠
+    statement: 与信枠とは得意先ごとに設定した取引金額の上限をいう
+    attrs: { reading: よしんわく }
+    source: { anchor: w10-t1 }
+  - concept: c-ISS001
+    type: 課題
+    name: 営業事務に与信照会を見せるか
+    statement: 営業事務ロールに与信照会の権限を与えるかを決めること
+    attrs: { due: '2026-08-31', state: 対応中, raised_on: '2026-07-20',
+             assignee: 受注管理システム更改PT }
+    source: { anchor: w10-t2 }
+    refs: [{ rel: disputes, to: c-営業担当 }]
+  - concept: c-ISS002
+    type: 課題
+    name: 得意先マスタの名寄せを移行前に行うか
+    statement: 得意先マスタの名寄せを移行前に行うかを決めること
+    attrs: { due: '2026-08-15', state: 完了, raised_on: '2026-07-22' }
+    source: { anchor: w10-t2 }
+    refs: [{ rel: disputes, to: c-M_CUSTOMER }]
+  - concept: c-名寄せは移行前に行わない
+    type: 決定事項
+    name: 名寄せは移行前に行わない
+    statement: 得意先マスタの名寄せは移行前に行わず、別プロジェクトで実施すること
+    attrs: { decided_on: '2026-08-06', decided_by: 受注管理システム更改PT,
+             rationale: 移行の停止時間を延ばさないため,
+             alternatives: 移行前に名寄せを行う }
+    source: { anchor: w10-m1 }
+    refs: [{ rel: resolves, to: c-ISS002 }]
+""",
+    # PDF ―― 試験実施記録（7 節目）。**テストの段**が正本に入る。
+    "資料/検収仕様書.pdf/07_6 試験実施記録.yml": """\
+records:
+  - concept: c-数量0の確認の実施
+    type: テスト結果
+    name: 数量に 0 を入力（2028-05-08 実施）
+    statement: 数量に 0 を入力する確認を 2028-05-08 に実施し、合格したこと
+    attrs: { result: 合格, executed_on: '2028-05-08', tester: 情報システム部 }
+    source: { anchor: p12-x1 }
+    refs: [{ rel: executes, to: c-数量0の確認 }]
+  # **試験は課題を見つける。** `executes` と `finds` が繋がって初めて、
+  # テスト結果報告書から課題管理表まで 1 本で辿れる。
+  - concept: c-金額計算の確認の実施
+    type: テスト結果
+    name: 金額が自動計算される（2028-05-08 実施）
+    statement: 金額の自動計算を 2028-05-08 に確認し、不合格となったこと
+    attrs: { result: 不合格, executed_on: '2028-05-08', tester: 情報システム部,
+             defect: '7' }
+    source: { anchor: p13-x1 }
+    refs:
+      - { rel: executes, to: c-金額計算の確認 }
+      - { rel: finds, to: c-金額の四捨五入 }
+  - concept: c-金額の四捨五入
+    type: 課題
+    name: 金額の自動計算が四捨五入になっている
+    statement: 金額の自動計算が切り捨てではなく四捨五入になっている件を是正すること
+    attrs: { due: '2028-05-15', state: 完了, raised_on: '2028-05-08' }
+    source: { anchor: p13-x1 }
+    refs: [{ rel: disputes, to: c-受注登録画面 }]
+""",
 }
 
 #: 形式ごとの出典。**設計書の出典欄にこの形で出る**（ラウンド名＋パース結果の
@@ -215,6 +438,22 @@ _DOCUMENT_SOURCES = (
     "資料/受注登録機能仕様書.docx/04_3 業務ルール#w4-h1",
     "資料/検収仕様書.pdf/03_2 確認項目#p4-x1",
     "資料/得意先マスタ移行.csv#t1",
+    # **1 枚のスライドに表が 2 枚**あるとき、出典はどちらの表かまで指す ――
+    # `s10-t1`（区分値）と `s10-t2`（採番規則）が同じ字になっていたら、
+    # 読み手はスライドを開いてどちらの話かを当てることになる。
+    "資料/方式提案.pptx/10_コード体系と採番規則#s10-t1",
+    "資料/方式提案.pptx/10_コード体系と採番規則#s10-t2",
+    # **見出し 2 が 2 つある節**でも、表ごとに別の出典になる。
+    "資料/受注登録機能仕様書.docx/09_8 バッチ処理#w9-t1",
+    "資料/受注登録機能仕様書.docx/09_8 バッチ処理#w9-t2",
+    # **コメントは本文と別のアンカー**である（決定事項の出典はここ）。
+    "資料/受注登録機能仕様書.docx/10_9 用語と課題#w10-m1",
+    # PDF は**子しおりでは割らない**が落としてもいない ―― `2.1 画面の確認`
+    # は 3 節目の 2 ページ目に入っており、出典はそのページを指す。
+    "資料/検収仕様書.pdf/03_2 確認項目#p5-x1",
+    # PowerPoint の権限マトリクスと目標値。
+    "資料/方式提案.pptx/09_利用者と権限#s9-t1",
+    "資料/方式提案.pptx/12_非機能要件の目標値#s12-t1",
 )
 
 
@@ -266,6 +505,13 @@ def test_Excel以外の4形式が設計書まで通る(通し_文書) -> None:
     （落ちるのは、Excel 以外を実際に流した人のところである）。アンカーの
     接頭辞は形式ごとに違う（`w3-` `p4-` `s2-` と、CSV の接頭辞なし）ので、
     **どこかが `s` を決め打っていればここで止まる。**
+
+    **種別は 5 つでは足りない。** 長いあいだこの通しはエンティティ・データ
+    項目・画面・業務ルール・テストケースの 5 種別しか起こしておらず、
+    `build` も `publish` も**その 5 つで閉じた経路しか通っていなかった** ――
+    工程で言えば基本設計とテストだけである。要件定義（利用者・要件・用語）・
+    詳細設計（バッチステップ）・管理（課題・決定事項）は、資料の側には最初から
+    書いてあるのに 1 度も通っていなかった。
     """
     paths, root = 通し_文書
 
@@ -273,8 +519,20 @@ def test_Excel以外の4形式が設計書まで通る(通し_文書) -> None:
         assert cli.main([step, "--root", root]) == 0, f"{step} で止まりました"
 
     # 4 形式ぶんの正本が組み上がっている（種別は形式ではなく資料の中身で決まる）。
-    for kind in ("entity", "screen", "data-item", "business-rule", "test-case"):
+    for kind in ("entity", "screen", "data-item", "business-rule", "test-case",
+                 # 要件定義の段 ―― 権限マトリクスと目標値と用語はここから出る。
+                 "actor", "requirement", "glossary-term",
+                 # 基本設計の段（コード定義・メッセージ・バッチ）。
+                 "code-master", "code-value", "message", "batch",
+                 # 詳細設計・テスト・管理の段。
+                 "batch-step", "test-run", "open-issue", "decision"):
         assert (paths.items / f"{kind}.yml").is_file(), kind
+
+    # **工程をまたいで設計書が出る。** 1 つの段（基本設計）だけで閉じている
+    # あいだは、工程ごとのフォルダ分けも束の帯も**実際には試されていない。**
+    layers = {path.parent.name for path in paths.out.rglob("*.md")
+              if path.parent != paths.out}
+    assert len(layers) >= 5, f"工程が {sorted(layers)} しかありません"
 
     # **出典は形式ごとのアンカーのまま設計書に出る。**
     # 見るのは HTML である ―― Markdown の原文では `03_2 画面項目` が

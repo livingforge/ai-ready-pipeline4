@@ -25,6 +25,11 @@ from typing import Any
 #: 名前空間。
 _P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 _A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+#: 表の ``a:graphicData`` が名乗る URI。**``_A`` の下ではない** ―― DrawingML の
+#: 本体は `drawingml/2006/main` だが、表は `drawingml/2006/table` という別の
+#: 名前で登録されている。`{_A}/table` と綴っていたあいだ、パースは `a:tbl` を
+#: タグで拾うので通り、**PowerPoint だけが表のあるスライドを丸ごと拒んでいた。**
+_TBL = "http://schemas.openxmlformats.org/drawingml/2006/table"
 _R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _PKG = "http://schemas.openxmlformats.org/package/2006/relationships"
 _CT = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -46,6 +51,12 @@ _TITLE = (700000, 500000, _WIDTH - 1400000, 1000000)
 #: 表の枠（箱と重ならない高さから始める）。
 _TABLE = (700000, 1900000, _WIDTH - 1400000)
 _ROW_H = 370000
+
+#: 表と表のあいだ。**1 枚に表が 2 枚あるスライドは実在する**（コード体系の
+#: 「区分の一覧」と「採番の規則」）ので、2 枚目を 1 枚目の下へ送る ――
+#: 同じ番地に重ねると、arp4 は 2 枚とも読むので**パースは通り、PowerPoint で
+#: 開いた人にだけ下の表が見えない。**
+_TABLE_GAP = 300000
 
 #: 1 px ぶんの EMU。**貼り付け画像の画素数は枠から決める**（`dataset.py` と
 #: 同じ理屈 ―― 検体に px を書かせると、箱を 1 つ動かすたびに数え直しになる）。
@@ -85,9 +96,15 @@ def build(path: Path, spec: dict[str, Any]) -> Path:
     if authors:
         parts["ppt/commentAuthors.xml"] = _authors_part(authors)
     if notes:
+        # **マスター 1 つにテーマ 1 つ。** ノートマスタにスライドマスタと同じ
+        # `theme1.xml` を持たせていたあいだ、PowerPoint は**発表者ノートのある
+        # 1 冊を丸ごと開かなかった** ―― 関係も申告も揃っているので、パースも
+        # OPC の検査も通る。テーマの中身は同じでよく、**パートが別であること**
+        # だけが要る。
         parts["ppt/notesMasters/notesMaster1.xml"] = _notes_master()
+        parts["ppt/theme/theme2.xml"] = _theme("arp4 検体 ノート")
         parts["ppt/notesMasters/_rels/notesMaster1.xml.rels"] = _rels([
-            ("rId1", f"{_R}/theme", "../theme/theme1.xml")])
+            ("rId1", f"{_R}/theme", "../theme/theme2.xml")])
 
     for order, slide in enumerate(slides, start=1):
         media: list[tuple[str, str]] = []
@@ -247,8 +264,10 @@ def _slide(spec: dict[str, Any], order: int, parts: dict[str, Any],
     for line in spec.get("接続") or []:
         shapes.append(_line(ids.next_shape(), line, where))
 
+    top = _TABLE[1]
     for table in spec.get("表") or []:
-        shapes.append(_table(ids.next_shape(), table))
+        shapes.append(_table(ids.next_shape(), table, top))
+        top += _ROW_H * len(table) + _TABLE_GAP
 
     return (f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<p:sld xmlns:a="{_A}" xmlns:r="{_R}" xmlns:p="{_P}"{shown}>'
@@ -278,11 +297,17 @@ def _group(box: dict[str, Any], ids: _Ids, where: dict[str, int], order: int,
     **群の中にしか無い箱と、群をまたぐ線**がある。子を別の座標系（``chOff``）に
     置くと親の枠と食い違うので、ここは親の ``chOff`` / ``chExt`` を自分の枠に
     揃えて**中も外も同じ番地**にしてある。
+
+    **枠は「子が使った枠の合併」であって、子の数ではない。** 子の数だけ遡って
+    いたあいだ、**群の中に群がある図**（ゾーンの中をさらに区切るのは提案書の
+    定型である）で親の枠が中身より小さくなった ―― 孫の箱は群の外にはみ出し、
+    PowerPoint で群ごと動かすと**図が崩れる。**使った枠は数えずに控える。
     """
     identity = ids.next_shape()
+    first = ids.slot
     inner = [_shape(child, ids, where, order, parts, media)
              for child in box["群"]]
-    rects = [_grid(slot) for slot in range(ids.slot - len(box["群"]), ids.slot)]
+    rects = [_grid(slot) for slot in range(first, ids.slot)]
     left = min(r[0] for r in rects)
     top = min(r[1] for r in rects)
     rect = (left, top,
@@ -377,11 +402,13 @@ def _line(identity: int, spec: dict[str, Any], where: dict[str, int]) -> str:
             "</p:spPr></p:cxnSp>")
 
 
-def _table(identity: int, rows: list[list[Any]]) -> str:
+def _table(identity: int, rows: list[list[Any]], top: int = _TABLE[1]) -> str:
     """表 1 枚（``a:tbl``）。``なし`` と書いた升は**縦結合の続き**にする。
 
     実物の一覧は分類列を縦に結合してあり、続きのセルは空で入っている ――
     Excel の結合セルとまったく同じことが XML でも起きる。
+
+    ``top`` は置き始める高さ ―― **1 枚に表が 2 枚あるとき**に要る（→ ``_slide``）。
     """
     width = max(len(row) for row in rows)
     grid = "".join(f'<a:gridCol w="{(_TABLE[2]) // width}"/>' for _ in range(width))
@@ -395,12 +422,12 @@ def _table(identity: int, rows: list[list[Any]]) -> str:
                          f"{_paragraphs('' if value is None else str(value))}"
                          '</a:txBody><a:tcPr/></a:tc>')
         body.append(f'<a:tr h="{_ROW_H}">{"".join(cells)}</a:tr>')
-    at = (_TABLE[0], _TABLE[1], _TABLE[2], _ROW_H * len(rows))
+    at = (_TABLE[0], top, _TABLE[2], _ROW_H * len(rows))
     return (f"<p:graphicFrame><p:nvGraphicFramePr>"
             f'<p:cNvPr id="{identity}" name="表 {identity}"/>'
             "<p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>"
             f"<p:xfrm>{_offset(at)}</p:xfrm>"
-            f'<a:graphic><a:graphicData uri="{_A}/table">'
+            f'<a:graphic><a:graphicData uri="{_TBL}">'
             f'<a:tbl><a:tblPr/><a:tblGrid>{grid}</a:tblGrid>{"".join(body)}</a:tbl>'
             "</a:graphicData></a:graphic></p:graphicFrame>")
 
@@ -496,7 +523,7 @@ _SCHEME = (("dk1", "000000"), ("lt1", "FFFFFF"), ("dk2", "44546A"),
            ("accent6", "70AD47"), ("hlink", "0563C1"), ("folHlink", "954F72"))
 
 
-def _theme() -> str:
+def _theme(name: str = "arp4 検体") -> str:
     colors = "".join(f'<a:{tag}><a:srgbClr val="{value}"/></a:{tag}>'
                      for tag, value in _SCHEME)
     font = ('<a:latin typeface="Yu Gothic"/><a:ea typeface="Yu Gothic"/>'
@@ -505,7 +532,7 @@ def _theme() -> str:
     line = (f'<a:ln w="6350" cap="flat" cmpd="sng" algn="ctr">{fill}'
             '<a:prstDash val="solid"/></a:ln>')
     return (f'<?xml version="1.0" encoding="UTF-8"?>'
-            f'<a:theme xmlns:a="{_A}" name="arp4 検体">'
+            f'<a:theme xmlns:a="{_A}" name="{name}">'
             f'<a:themeElements><a:clrScheme name="arp4">{colors}</a:clrScheme>'
             f'<a:fontScheme name="arp4"><a:majorFont>{font}</a:majorFont>'
             f"<a:minorFont>{font}</a:minorFont></a:fontScheme>"
