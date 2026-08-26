@@ -368,7 +368,12 @@ def nonconforming(spec: Spec, abbrev: dict[str, str] | None = None) -> list[Find
                     "warn", "W042", str(item.get("id")),
                     f"{trouble}。overridden で承知している: {reason}"))
             else:
-                findings.append(Finding("error", "E028", str(item.get("id")), trouble))
+                findings.append(Finding(
+                    "error", "E028", str(item.get("id")), trouble,
+                    hint="元資料から持ってきた番号なら overridden に理由を書く"
+                         "（顧客との対応表であることがあり、"
+                         "arp4 number --fix-format は**宣言していない番号を"
+                         "書き換えます** ―― 書き換えると復元できません）"))
     return findings
 
 

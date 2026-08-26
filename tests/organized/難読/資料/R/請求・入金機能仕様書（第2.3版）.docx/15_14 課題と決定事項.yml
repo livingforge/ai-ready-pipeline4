@@ -55,6 +55,10 @@ out_of_scope:
   - { anchor: w15-h2, reason: 表の前置き（決定の一覧は w15-t2） }
   - { anchor: w15-h3, reason: 期限を過ぎた課題の扱い（運用の取り決め） }
   - { anchor: w15-m1, reason: コメント（ISS101 / ISS102 の決着の場は要件確定会議である旨） }
-  - { anchor: w15-d1, kind: 未読取,
-      reason: 変更履歴で消された文字（ISS103 の期限と決定の周知方法）。どちらが現行かは資料が決めていない }
   - { anchor: w15-l1, reason: リンク（課題管理表・別紙 9 は未入手） }
+
+revisions:
+  - { anchor: w15-d1,
+      dropped: 変更履歴で消された文字（ISS103 の期限と決定の周知方法）,
+      reason: 本文は反映後の姿で出ているのでそちらを写した。どちらが現行かは資料が
+              決めていない }

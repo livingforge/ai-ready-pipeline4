@@ -170,3 +170,33 @@ def test_表の外は拾わない(tmp_path: Path) -> None:
 
     assert mdio.rows(mdio.read(path).anchors[0]) == [
         ["論理名", "物理名"], ["受注番号", "ORDER_NO"]]
+
+
+def test_申告も読み戻す(tmp_path: Path) -> None:
+    """**塊を 1 つ切り出して渡す口**（:mod:`arp4.show`）ができると要る。
+
+    申告はファイルの頭にしか無いので、読み戻しで捨てていると
+    「資料に無い」と「機械が読めていない」が塊だけからは区別できない。
+    """
+    doc = _doc()
+    doc.notes = ["このシートには 図形 19 個 があり、12 個からテキストを取り出しました。"]
+    path = mdio.write(tmp_path / "受注テーブル.md", doc)
+
+    again = mdio.read(path)
+
+    assert again.notes == doc.notes
+    assert [a.id for a in again.anchors] == ["s1-t1", "s1-x1"]
+
+
+def test_塊の中の引用を申告に混ぜない(tmp_path: Path) -> None:
+    """Markdown の資料は本文に ``>`` を持つ。**申告の居場所は 1 つ目のアンカーより前**。"""
+    path = write(tmp_path / "notes.md", "# メモ\n\n"
+                 "<!-- source: docs/memo.md -->\n\n"
+                 "> 読めなかったものの申告\n\n"
+                 "## 本文  <!-- a:m1 at=docs/memo.md -->\n\n"
+                 "> これは資料に書いてある引用である\n")
+
+    again = mdio.read(path)
+
+    assert again.notes == ["読めなかったものの申告"]
+    assert "これは資料に書いてある引用である" in again.by_id["m1"].body

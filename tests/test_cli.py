@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import sys
 from pathlib import Path
@@ -55,6 +56,29 @@ def test_出せなかった文字と資料のクエスチョンを混ぜない(m
 
     assert "\\xa5" in shown                             # 出せなかった文字
     assert "区分は ? のまま" in shown                    # 資料にある ? は ? のまま
+
+
+# ── 上書きの確認 ────────────────────────────────────────────────
+def test_返事が返らなくても落ちない(monkeypatch) -> None:
+    """**端末に見えても、返事が返ってこないことがある**（pty 越しの CI・エージェント）。
+
+    `isatty()` は「端末か」しか答えないので、返事が来ないことは `input()` を
+    呼んで初めて分かる ―― そこで落ちると、**読めた資料が 1 本も書かれない。**
+    守る側へ倒して先へ進む。
+    """
+    from arp4 import parse as parse_module
+
+    def _target(name: str) -> parse_module.Target:
+        return parse_module.Target(path=Path(name), doc=parse_module.mdio.Doc("", ""),
+                                   exists=True, dirty=True)
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(EOFError))
+    args = argparse.Namespace(yes=False)
+
+    chosen, skipped = cli._confirm([_target("a.md"), _target("b.md")], args)
+
+    assert chosen == [] and len(skipped) == 2          # 2 件とも守る（落ちない）
 
 
 # ── arp4 model の採番行 ────────────────────────────────────────

@@ -346,6 +346,29 @@ def test_declareが書いた整理結果をloadが読む(round_: Round) -> None:
     assert {o.anchor for o in result.out_of_scope} == {"s1-x1", "s1-x2"}
 
 
+def test_declareは旧版の冊子をrevisionsへ書く(round_: Round) -> None:
+    """**旧版の冊子はシートの数だけ同じ宣言が要る**ので、事情は表紙と同じ。
+
+    `out_of_scope` ではなく `revisions` へ書く ―― `対象外` と `未読取` を
+    分けているのは「次のラウンドで拾い直すか」の 1 軸で、版はその軸に乗らない
+    （→ 決定 112）。`adopted` は書かない（塊ごと写していない、の意味になる）。
+    """
+    from conftest import parsed
+    parsed(round_, "__init__.py.md", _PARSED)
+
+    plans, _ = organized_module.plan_declare(
+        round_, ["__init__.py"], "第3.2版に置き換わっている", dropped="第2.0版")
+    organized_module.write_declarations(plans)
+    result, findings = organized_module.load(round_)
+
+    assert not findings
+    assert not result.out_of_scope
+    assert {v.anchor for v in result.revisions} == {"s1-x1", "s1-x2"}
+    assert all(v.whole and v.dropped == "第2.0版" for v in result.revisions)
+    # 塊ごと写していない宣言は、未整理（`G001`）も消す。
+    assert result.claimed == {("__init__.py", "s1-x1"), ("__init__.py", "s1-x2")}
+
+
 def test_直下の見慣れない予約名は飛ばすが必ず言う(round_: Round) -> None:
     """打ち間違い（`_concept.yml`）は黙って消える側に倒さない ―― 整理②の
     横断結果がまるごと無かったことになり、気づく手がかりが 1 つも残らない。

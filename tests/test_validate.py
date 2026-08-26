@@ -479,3 +479,21 @@ def test_conflictsはメタモデルに無い属性と言われない(model: mm.
     """``overridden`` / ``known_gaps`` と同じ予約キーである ―― `W010` を出すと、
     構築が毎回書くものについて「直せ」と言い続けることになる。"""
     assert "W010" not in codes(validate(_conflicted(model)))
+
+
+def test_資料の値を直す指摘は戻ることを言う(model: mm.Metamodel) -> None:
+    """**直したはずのものが戻る**のに、戻ったことは端末にも残らない。
+
+    整理結果は凍結されていて直せないので、残る道は正本側の修正である。ところが
+    `merge_item` が守るのは `overridden` に挙げた欄だけで、資料が値を持っている
+    欄は次の `arp4 build` が上書きする。
+    """
+    spec = _spec(model)
+    spec.items.append({"id": "req-1", "type": "requirement", "status": "review",
+                       "req_id": "FR-001", "name": "受注する",
+                       "statement": "受注できること", "kind": "存在しない区分"})
+
+    said = [f for f in validate(spec) if f.code == "E011"]
+
+    assert said and "overridden" in (said[0].hint or "")
+    assert "戻ります" in (said[0].hint or "")

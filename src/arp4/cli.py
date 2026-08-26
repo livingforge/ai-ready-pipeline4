@@ -63,6 +63,7 @@ from arp4 import render as render_module
 from arp4 import report as report_module
 from arp4 import sequence as sequence_module
 from arp4 import shape as shape_module
+from arp4 import show as show_module
 from arp4 import spec as spec_module
 from arp4 import trace as trace_module
 from arp4.finding import Finding, counts, order
@@ -302,10 +303,17 @@ def _parse(args: argparse.Namespace) -> int:
     if len(written) > 20:
         print(f"  …ほか {len(written) - 20} ファイル")
     if skipped:
-        # **黙って飛ばさない。** 編集済みを守ったことは必ず見えるようにする。
-        print(f"\n編集済みのため上書きしませんでした: {len(skipped)} ファイル")
+        # **黙って飛ばさない。** 守ったことは必ず見えるようにする。文句は
+        # 2 通りある ―― 「編集済みを守った」と「編集の有無が分からないので
+        # 守った」は別のことで、後者を前者の顔で言うと**確かめていないことが
+        # 確かめた顔で出る**（`P021` と同じ線引き）。
+        why = ("編集の有無を確かめられないため"
+               if all(t.unverified for t in skipped) else "編集済みのため")
+        print(f"\n{why}上書きしませんでした: {len(skipped)} ファイル")
         for target in skipped[:10]:
             print(f"  {target.path.relative_to(round_.parsed).as_posix()}")
+        if len(skipped) > 10:
+            print(f"  …ほか {len(skipped) - 10} ファイル")
         print("  上書きするなら --yes、資料が更新されたなら新しいラウンドを起こす")
     print("次にやること: エージェントが parsed/ を読んで organized/ を書く → arp4 freeze")
     return 1 if failed else 0
@@ -632,8 +640,19 @@ def _confirm(targets: list[parse_module.Target],
         if not interactive:
             skipped.append(target)
             continue
-        answer = input(f"{target.path} は編集されています。上書きしますか？"
-                       " [y/N/a(すべて)] ").strip().lower()
+        try:
+            answer = input(f"{target.path} は編集されています。上書きしますか？"
+                           " [y/N/a(すべて)] ").strip().lower()
+        except EOFError:
+            # **端末に見えても、返事が返ってこないことがある**（pty 越しの
+            # エージェント・CI）。`isatty()` は「端末か」しか答えないので、
+            # ここで初めて分かる ―― 落ちると**読めた資料が 1 本も書かれない**
+            # ので、残り全部を守る側へ倒して先へ進む。
+            print()
+            print("（返事が返らないので、残りは守って進みます）")
+            interactive = False
+            skipped.append(target)
+            continue
         if answer == "a":
             always = True
             chosen.append(target)
@@ -658,7 +677,7 @@ def _declare(args: argparse.Namespace) -> int:
         return 1
 
     plans, findings = organized_module.plan_declare(
-        round_, args.pattern, args.reason, args.kind)
+        round_, args.pattern, args.reason, args.kind, args.dropped)
     for finding in order(findings):
         print(finding.render())
     if not plans:
@@ -667,8 +686,9 @@ def _declare(args: argparse.Namespace) -> int:
         return 0
 
     total = sum(len(p.anchors) for p in plans)
+    label = f"{args.dropped} の旧版" if args.dropped else args.kind
     print(f"\n{len(plans)} ファイル / アンカー {total} 件を "
-          f"{args.kind} として宣言します（理由: {args.reason}）")
+          f"{label} として宣言します（理由: {args.reason}）")
     # **一括で仕様の外へ出す操作なのに、全部を確かめる手が無かった。** 既定の
     # 先頭 20 件は打ち間違いの確認には足りる（実測 54 ファイル / 189 アンカーの
     # うち 34 ファイルが「…ほか」に畳まれた）が、**パターンが余計なシートに
@@ -1145,8 +1165,9 @@ def _build(args: argparse.Namespace) -> int:
 
     items, relations = build_module.apply(spec, plan)
     applied_items, applied_relations = build_module.apply_issues(spec, issues)
+    dropped: list[Path] = []
     written = spec_module.save_in_place(spec, items | applied_items,
-                                        relations | applied_relations)
+                                        relations | applied_relations, dropped)
     concepts_module.save(paths, known)
     # **build も判断を残す。** 採らなかった値（B024）・決められなかった向き（B026）・
     # 矛盾からの自動起票は、これまで端末に流れて消えるだけだった ―― Excel だけの
@@ -1158,6 +1179,7 @@ def _build(args: argparse.Namespace) -> int:
     if logged or decisions_module.path_of(round_).is_file():
         decisions_module.replace(round_, "build", logged)
     print(f"\n{len(written)} ファイルを更新しました（status: review で登録）")
+    _said_dropped(dropped, paths)
     if logged:
         print(f"  機械が下した判断 {len(logged)} 件 → "
               f"{decisions_module.path_of(round_).relative_to(paths.root)}"
@@ -1255,9 +1277,10 @@ def _number(args: argparse.Namespace) -> int:
         return 0
 
     changed = sequence_module.apply(spec, assignments)
-    written = spec_module.save_in_place(spec, changed)
+    dropped: list[Path] = []
+    written = spec_module.save_in_place(spec, changed, dropped=dropped)
     print(f"\n{len(assignments)} 件を採番し、{len(written)} ファイルを更新しました")
-    print("注意: 書き戻したファイルのコメントは失われます（差分で確認してください）")
+    _said_dropped(dropped, spec.paths)
     return 0
 
 
@@ -1551,6 +1574,212 @@ def _attribute_hint(name: str, attr: dict, groups: str = "") -> str:
     if groups:
         marks.append(f"※設計書の節になる: {groups}")
     return f"{name}（{'、'.join([kind] + marks)}）"
+
+
+def _show(args: argparse.Namespace) -> int:
+    """**設計書を索引として使うときの、引く側。** → :mod:`arp4.show`
+
+    受けるのは 3 つ ―― 出典セルの字そのまま・アンカーを省いた形・表示 ID。
+    どれも**生成物の画面に出ている字**であって、内部 ID でもパスでもない。
+
+    引数を ``nargs="+"`` にしてあるのは、出典セルの字に**空白が入っている**
+    からである（``r001 資料/…``）。引用符で囲ませると、囲み忘れた人には
+    「そんなラウンドはありません」ではなく usage が出る ―― 貼るだけで引ける
+    ことがこの口の値打ちなので、貼り方を覚えさせない。
+    """
+    paths = paths_module.resolve(args.root)
+    key = " ".join(args.reference).strip()
+    bare = "/" not in key and "#" not in key      # 表示 ID として読める形か
+    # **正本は要るときだけ読む。** 塊を 1 つ開くだけなら正本は要らない ――
+    # 読みに行くのは表示 ID を引くときと `--used` のときだけである。
+    spec = _spec_or_none(args) if (bare or args.used) else None
+    uses = spec if args.used else None
+
+    if spec is not None and bare:
+        found = show_module.by_key(spec, key)
+        if found is not None:
+            return _show_found(paths, found, args.around, uses)
+
+    found_refs, folded = show_module.references(key, paths)
+    if not found_refs:
+        print(f"{key} は出典としても表示 ID としても読めませんでした",
+              file=sys.stderr)
+        print("  出典セルの字をそのまま貼れます: "
+              "arp4 show r001 資料/A/基本設計書.xlsx/受注テーブル#s1-t1",
+              file=sys.stderr)
+        return 1
+
+    code = _show_refs(paths, found_refs, folded, args.around, uses)
+    if code and bare:
+        # 出典としても表示 ID としても外した ―― **どちらで外したかを言う。**
+        # 写しの名前だと決めつけて「ありません」だけ言うと、表示 ID を渡した人は
+        # 正本を疑わない（正本にその ID が無いことこそ、いちばん知りたい）。
+        print(file=sys.stderr)
+        print(f"{key} は正本の表示 ID としても見つかりませんでした"
+              "（arp4 check で採番の状態が出ます）", file=sys.stderr)
+    return code
+
+
+def _spec_or_none(args: argparse.Namespace) -> spec_module.Spec | None:
+    """正本を読む。**まだ無くても塊は開ける**ので、読めなければ黙って諦める。"""
+    try:
+        spec, _ = _load(args)
+    except (FileNotFoundError, paths_module.ArpNotFound, YamlError):
+        return None
+    return spec
+
+
+def _show_found(paths: paths_module.Paths, found: show_module.Found,
+                around: int, spec: spec_module.Spec | None = None) -> int:
+    """表示 ID から出典全件。**畳みが無い**のがセルを辿るのとの違いである。"""
+    label = " ".join(x for x in (found.display, found.type, found.name) if x)
+    print(f"{label}  （{found.id}）")
+    if not found.references:
+        print("  出典がありません（人が正本へ直接書いたアイテムです）")
+        return 0
+    print(f"  出典 {len(found.references)} 件")
+    return _show_refs(paths, found.references, 0, around, spec)
+
+
+def _show_refs(paths: paths_module.Paths, refs: list[show_module.Reference],
+               folded: int, around: int,
+               spec: spec_module.Spec | None = None) -> int:
+    misses = 0
+    for index, reference in enumerate(refs):
+        result = show_module.open_anchor(paths, reference, around=around)
+        misses += isinstance(result, show_module.Missing)
+        if index:
+            print()                       # 塊と塊の境目だけを空ける
+        for line in show_module.render(result, paths.root):
+            print(line)
+        # **塊 1 つと写し 1 本では言うことが違う。** 一覧に「この塊は正本に
+        # ありません」と出すと、写しぜんぶが未整理だと読める。
+        if spec is not None and isinstance(result, show_module.Opened):
+            for line in show_module.render_uses(
+                    show_module.used_by(spec, result.reference)):
+                print(line)
+        elif spec is not None and isinstance(result, show_module.Listing):
+            for line in show_module.render_listing(spec, result):
+                print(line)
+
+    if folded:
+        # **畳まれた出典は数しか残っていない。** 黙って終わると、読み手は
+        # 出したものが全部だと読む（出典セルの `ほか N 件` と同じ規律）。
+        print(f"\n畳まれた出典 {folded} 件は、この字からは開けません"
+              "。表示 ID で引くと全件出ます: arp4 show <表示 ID>")
+    return 1 if misses else 0
+
+
+#: 当たりを並べる上限（``freeze`` の作業キューと同じ規律 ―― 畳むのは表示だけ）。
+_HITS = 40
+
+
+def _grep(args: argparse.Namespace) -> int:
+    """**索引から引く側**。当たりを塊に帰属させて返す → :func:`arp4.show.search`
+
+    素の ``grep`` を掛けても当たった行がどの塊のものかは出ないので、**そのままでは
+    出典として書けない**。ここが出す 1 行目は ``arp4 show`` にも整理結果の
+    ``source`` にもそのまま貼れる。
+    """
+    paths = paths_module.resolve(args.root)
+    pattern = " ".join(args.pattern)
+    try:
+        hits = show_module.search(paths, pattern, args.round,
+                                  regex=args.regex, ignore_case=args.ignore_case)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if not hits:
+        print(f"{pattern} は束のどの塊にもありません"
+              f"（写し {len(show_module.corpus(paths, args.round))} 本を見ました）")
+        return 1
+
+    if args.files:
+        # **写しの単位で知りたいことがある**（どの資料を開くか決めるとき）。
+        for file, count in _by_file(hits):
+            print(f"{count:>4} 件  {file}")
+        return 0
+
+    shown = hits if args.all else hits[:_HITS]
+    for hit in shown:
+        print(f"{hit.reference}  {hit.heading}")
+        for line in hit.lines:
+            print(f"  {line}")
+        if hit.total > len(hit.lines):
+            print(f"  ―― ほか {hit.total - len(hit.lines)} 行")
+
+    total = sum(h.total for h in hits)
+    print()
+    print(f"塊 {len(hits)} 件 / 行 {total} 件"
+          + (f"（{len(shown)} 件まで表示。全部出すには --all）"
+             if len(shown) < len(hits) else ""))
+    return 0
+
+
+def _by_file(hits: list) -> list[tuple[str, int]]:
+    """写しごとの当たり数。**多い順**（次に開く 1 本を決めるための並び）。"""
+    counted: dict[str, int] = {}
+    for hit in hits:
+        key = str(show_module.Reference(file=hit.reference.file,
+                                        round=hit.reference.round))
+        counted[key] = counted.get(key, 0) + hit.total
+    return sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _index(args: argparse.Namespace) -> int:
+    """束が持っている塊を全部並べる ―― **索引そのもの**。
+
+    Markdown で出すのは、**書き出せば読める文書になる**からである
+    （``arp4 index --root . > 索引.md``）。arp4 の側では保存しない ――
+    保存した索引は `parsed/` を人が編集した瞬間に古くなり、写しと索引の
+    どちらが本当かを読み手が決められなくなる（→ :func:`arp4.show.catalogue`）。
+    """
+    paths = paths_module.resolve(args.root)
+    if args.round and not paths.round(args.round).exists():
+        # **間違いの在り処を取り違えない。** ラウンド名の打ち間違いを
+        # 「パース結果がありません」と言うと、読み手は parse をやり直す。
+        known = "・".join(r.name for r in paths.rounds()) or "（1 つもありません）"
+        print(f"ラウンド {args.round} がありません（あるラウンド: {known}）",
+              file=sys.stderr)
+        return 1
+
+    entries = show_module.catalogue(paths, args.round)
+    if not entries:
+        print("パース結果がありません（arp4 parse で資料を取り込んでください）")
+        return 1
+
+    rounds = sorted({e.reference.round for e in entries})
+    print(f"# パース結果の索引（{'・'.join(rounds)}）")
+    print()
+    print(f"塊 {len(entries)} 件 / 写し "
+          f"{len({e.reference.file for e in entries})} 本"
+          "。出典の欄は `arp4 show` にそのまま貼れます。")
+    print()
+    print("| 出典 | 見出し | 位置 | 行 |")
+    print("|---|---|---|---|")
+    for entry in entries:
+        print(f"| {entry.reference} | {entry.heading} | {entry.at or '―'}"
+              f" | {entry.lines} |")
+    return 0
+
+
+def _said_dropped(dropped: list[Path], paths: paths_module.Paths) -> None:
+    """コメントを保てなかったファイルを**名指しで**言う（→ :mod:`arp4.comments`）。
+
+    書き戻しでコメントが落ちるのは長く既定の振る舞いで、しかも**値が 1 つも
+    変わらない**ので差分を見ても気づけなかった。いまは保つ道が既定なので、
+    落ちるのは異例である ―― 異例が黙って通ると、保てているのか落ちているのかを
+    利用者が確かめる手立てが無い。
+    """
+    if not dropped:
+        return
+    print(f"  コメントを保てませんでした: {len(dropped)} ファイル"
+          "（値は変わっていません。git の差分で確かめてください）")
+    for path in dropped[:5]:
+        print(f"    {_relative(path, paths.root)}")
+    if len(dropped) > 5:
+        print(f"    …ほか {len(dropped) - 5} ファイル")
 
 
 def _grouping(chain: list) -> dict[str, dict[str, str]]:
@@ -1859,6 +2088,9 @@ def main(argv: list[str] | None = None) -> int:
     declare.add_argument("--kind", default=organized_module.SCOPE_DEFAULT,
                          choices=list(organized_module.SCOPE_KINDS),
                          help="対象外＝資料に仕様が無い / 未読取＝機械が読めていない")
+    declare.add_argument("--dropped", default="", metavar="<版>",
+                         help="旧版の冊子をまとめて落とす（写さなかった版を"
+                              " revisions に宣言する。--kind とは併用しない）")
     declare.add_argument("--round", metavar="<名前>", help="対象のラウンド（既定: 最新）")
     declare.add_argument("--dry-run", action="store_true",
                          help="書き込まずに対象だけ出す")
@@ -1961,6 +2193,38 @@ def main(argv: list[str] | None = None) -> int:
                        help="プロジェクト外で実行するときの既定パック")
     model.add_argument("--attributes", "-a", action="store_true",
                        help="属性の kind・enum の値・書式まで出す（関係の属性も）")
+
+    show = add("show", "設計書の出典からパース結果の塊を開く", _show, strict=False)
+    show.add_argument("reference", nargs="+", metavar="<出典|表示ID>",
+                      help="設計書の出典セルの字そのまま"
+                           "（r001 資料/A/基本設計書.xlsx/受注テーブル#s1-t1）"
+                           "。アンカーを省くとその写しの塊一覧、"
+                           "表示 ID（NFR-002）を渡すと出典全件")
+    show.add_argument("--around", type=int, default=0, metavar="<件数>",
+                      help="前後の塊も出す（既定 0）")
+    show.add_argument("--used", action="store_true",
+                      help="その塊から起きた正本のレコードも出す"
+                           "（まだ整理されていないかが分かる）")
+
+    grep = add("grep", "パース結果を横断して探す（当たりは塊で返る）", _grep,
+               strict=False)
+    grep.add_argument("pattern", nargs="+", metavar="<語>",
+                      help="探す語。**既定は部分一致**"
+                           "（資料の語は正規表現の記号を普通に含むため）")
+    grep.add_argument("--round", metavar="<名前>",
+                      help="そのラウンドだけを見る"
+                           "（既定: 同じ写しは新しいラウンドのものを見る）")
+    grep.add_argument("--regex", action="store_true", help="正規表現として読む")
+    grep.add_argument("--ignore-case", "-i", action="store_true",
+                      help="英数の大小を区別しない")
+    grep.add_argument("--files", action="store_true",
+                      help="当たった写しと件数だけを出す（多い順）")
+    grep.add_argument("--all", action="store_true",
+                      help="当たった塊を全部出す（既定は 40 件で切る）")
+
+    index = add("index", "パース結果の索引（塊の一覧）を出す", _index, strict=False)
+    index.add_argument("--round", metavar="<名前>",
+                       help="そのラウンドだけを並べる")
 
     args = parser.parse_args(argv)
     try:

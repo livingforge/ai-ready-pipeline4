@@ -161,11 +161,45 @@ class OutOfScope:
 
 
 @dataclass
+class Revision:
+    """版の判断。**旧版を正本に入れず、落とした跡だけを残す。**
+
+    正本は「いま有効な仕様」の集合であって、仕様の歴史ではない（歴史は git と
+    ラウンドが持つ）。旧版を入れると同じ concept に 2 つの ``statement`` が
+    集まり、``build`` は「長いほうを採る」（``B023``）でしか決められない ――
+    **新旧と無関係な基準で現行仕様が決まる。**
+
+    ``out_of_scope`` と分けてあるのは、**塊の中で割れる**ためである。「旧仕様 /
+    新仕様」の対比表は 1 つのアンカーの中に両方が入っており、まるごと対象外に
+    すると現行仕様まで消える。
+    """
+
+    anchor: str
+    reason: str
+    file: str
+    adopted: str = ""                    # 写した版（資料の語のまま）
+    dropped: str = ""                    # 写さなかった版。空なら版の別は無かった
+    path: str = ""
+    line: int = 0
+
+    @property
+    def whole(self) -> bool:
+        """塊ごと写していないか。**この 1 行がアンカーを覆う。**
+
+        ``dropped`` だけがあるのは「この塊は旧版なので 1 行も写していない」で
+        ある。``reason`` だけの宣言（``G034`` の打ち消し）は何も落としていない
+        ので、アンカーは覆わない ―― 覆うと**整理していない塊が整理済みになる。**
+        """
+        return bool(self.dropped) and not self.adopted
+
+
+@dataclass
 class Organized:
     """ラウンド 1 つぶんの整理結果。"""
 
     records: list[Record] = field(default_factory=list)
     out_of_scope: list[OutOfScope] = field(default_factory=list)
+    revisions: list[Revision] = field(default_factory=list)
     concepts: dict[str, Any] = field(default_factory=dict)
     metamodel_add: dict[str, Any] = field(default_factory=dict)
     files: list[str] = field(default_factory=list)
@@ -191,7 +225,10 @@ class Organized:
     def claimed(self) -> set[tuple[str, str]]:
         """``(ファイル, アンカー)`` の集合。**網羅の検査に使う。**"""
         return ({(r.file, r.anchor) for r in self.records}
-                | {(o.file, o.anchor) for o in self.out_of_scope})
+                | {(o.file, o.anchor) for o in self.out_of_scope}
+                # **塊ごと旧版**の宣言も未整理を 0 にする。同じことを
+                # `out_of_scope` にも書かせると、同じ判断が 2 行に割れる。
+                | {(v.file, v.anchor) for v in self.revisions if v.whole})
 
 
 def load(round_: Round,
@@ -303,6 +340,7 @@ def load(round_: Round,
             continue
         _records(result, data, report, relative, location, marks)
         _out_of_scope(result, data, report, relative, location, marks)
+        _revisions(result, data, report, relative, location, marks)
 
     return result, findings
 
@@ -376,6 +414,16 @@ def _out_of_scope(result: Organized, data: dict[str, Any], report: shape.Report,
             path=location, line=marks.line("out_of_scope", index) or 0))
 
 
+def _revisions(result: Organized, data: dict[str, Any], report: shape.Report,
+               relative: str, location: str, marks: yamlio.Marks) -> None:
+    for index, entry in report.kept(("revisions",), data.get("revisions")):
+        result.revisions.append(Revision(
+            anchor=str(entry["anchor"]), reason=str(entry.get("reason") or ""),
+            file=relative, adopted=str(entry.get("adopted") or ""),
+            dropped=str(entry.get("dropped") or ""),
+            path=location, line=marks.line("revisions", index) or 0))
+
+
 # ── 一括の対象外宣言 ────────────────────────────────────────────
 @dataclass
 class Declaration:
@@ -389,12 +437,17 @@ class Declaration:
 
 
 def plan_declare(round_: Round, patterns: list[str], reason: str,
-                 kind: str = SCOPE_DEFAULT) -> tuple[list[Declaration], list[Finding]]:
+                 kind: str = SCOPE_DEFAULT,
+                 dropped: str = "") -> tuple[list[Declaration], list[Finding]]:
     """同じ構成のシートをまとめて対象外にする案を作る。
 
     表紙・改訂履歴は**資料の数だけ同じ宣言が要る**（25 冊なら 50 ファイル）。
     1 枚ずつ書くのは意味の判断ではなく作業なので、機械にやらせる。ただし
     **理由は人が与える** ―― 理由を機械が埋めたら、宣言は黙って飛ばすのと同じになる。
+
+    ``dropped`` を与えると ``out_of_scope`` ではなく ``revisions`` を書く
+    （**旧版の冊子はシートの数だけ同じ宣言が要る**ので、事情は表紙と同じ）。
+    ``adopted`` は書かない ―― 塊ごと写していないという意味になる。
     """
     result, findings = load(round_)
     claimed = result.claimed
@@ -413,9 +466,13 @@ def plan_declare(round_: Round, patterns: list[str], reason: str,
         loaded = yamlio.load(target) if target.is_file() else None
         data = dict(loaded) if isinstance(loaded, dict) else {}
         entry: dict[str, Any] = {"anchor": "", "reason": reason}
-        if kind != SCOPE_DEFAULT:
+        section = "out_of_scope"
+        if dropped:
+            section, entry = "revisions", {"anchor": "", "dropped": dropped,
+                                           "reason": reason}
+        elif kind != SCOPE_DEFAULT:
             entry["kind"] = kind
-        data["out_of_scope"] = list(data.get("out_of_scope") or []) + [
+        data[section] = list(data.get(section) or []) + [
             {**entry, "anchor": anchor} for anchor in anchors]
         plans.append(Declaration(path=target, file=relative, anchors=anchors,
                                  data=data, existed=target.is_file()))

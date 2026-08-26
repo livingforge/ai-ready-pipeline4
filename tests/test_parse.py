@@ -432,6 +432,55 @@ def test_編集済みは確認が要る(project: Paths, round_: Round,
     assert edited[0].needs_confirm
 
 
+def test_無視された置き場では番人を安全側に倒す(project: Paths, round_: Round,
+                                                monkeypatch: pytest.MonkeyPatch
+                                                ) -> None:
+    """**「見えていない」と「編集されていない」は別である。**
+
+    ``git status`` は無視対象を 1 行も出さないので、返るのは空集合 ―― これを
+    「聞けたが 1 件も編集されていない」と読むと、``.arp/`` を丸ごと無視して
+    いるプロジェクトで**手で直したパース結果が確認なしで消える**。
+    「git が使えない」は最初から安全側に倒してあったのに、**「見えていない」
+    だけが倒れていなかった。**
+    """
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+    parse.write(parse.plan(round_, [source], sources_dir(project))[0])
+
+    monkeypatch.setattr(parse, "ignored", lambda root: True)
+    targets, findings = parse.plan(round_, [source], sources_dir(project))
+
+    assert all(t.needs_confirm and t.unverified for t in targets)
+    said = [f for f in findings if f.code == "P021"]
+    assert said and ".gitignore" in said[0].message      # 理由まで言う
+    assert ".arp/out/" in (said[0].hint or "")           # 次の一手まで言う
+
+
+def test_初回のparseでは番人の不在を言わない(project: Paths, round_: Round,
+                                             monkeypatch: pytest.MonkeyPatch
+                                             ) -> None:
+    """上書きする相手がいないので、見えていてもいなくても結果が同じである。"""
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+    monkeypatch.setattr(parse, "ignored", lambda root: True)
+
+    _, findings = parse.plan(round_, [source], sources_dir(project))
+
+    assert not [f for f in findings if f.code == "P021"]
+
+
+def test_確かめられないのを編集済みと言い換えない(project: Paths, round_: Round,
+                                                 monkeypatch: pytest.MonkeyPatch
+                                                 ) -> None:
+    """申告の文句が違う ―― **確かめていないことを確かめた顔で言わない。**"""
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+    parse.write(parse.plan(round_, [source], sources_dir(project))[0])
+
+    monkeypatch.setattr(parse, "_dirty_paths",
+                        lambda root: ({source.resolve()}, ""))
+    targets, _ = parse.plan(round_, [source], sources_dir(project))
+
+    assert not any(t.unverified for t in targets)   # 聞けている（守るのは編集済みだけ）
+
+
 def test_コードはASTで骨格だけ取る(project: Paths, round_: Round) -> None:
     """**意図の層は出さない**（整理層が原本を直接読む）。"""
     source = write(sources_dir(project) / "order" / "service.py", '''

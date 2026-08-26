@@ -99,6 +99,7 @@ def gate(round_: Round, model: Metamodel, known: dict[str, Concept]) -> Report:
     report.findings += _unclaimed(round_, result, parsed, report)
     report.findings += _orphans(result, parsed)
     report.findings += _unread(result, parsed)
+    report.findings += _revisions(result, parsed)
     report.findings += _vocabulary(result, model)
     report.findings += _concepts(round_, result, known)
     report.findings += _defined(result, known)
@@ -125,6 +126,10 @@ def gate(round_: Round, model: Metamodel, known: dict[str, Concept]) -> Report:
         "references": sum(1 for r in result.records if not r.complete),
         "out_of_scope": len(result.out_of_scope),
         "unreadable": sum(1 for o in result.out_of_scope if o.unreadable),
+        # **落とした版は数に出す。** 宣言で指摘を 1 件消す仕組みなので、
+        # 件数を言わないと「版が無かった」と「宣言で降ろした」が画面から
+        # 区別できない（`known_gaps` と同じ規律）。
+        "revisions": len(result.revisions),
         "unclaimed": len(report.unclaimed),
         # **宣言したぶんは必ず数に出す。** `known_gaps` は指摘を 1 件消す仕組み
         # なので、件数を言わないと「直したから減った」と「宣言で降ろした」が
@@ -213,6 +218,9 @@ def lint(round_: Round, model: Metamodel, known: dict[str, Concept],
             parsed[file] = mdio.read(path)
 
     report.findings += _orphans(result, parsed)
+    # 版の判断（`G034`）は 1 ファイルで決まる ―― 見るのは相方のパース結果
+    # だけである。**書いた手元で鳴らないと、気づくのは凍結の後**になる。
+    report.findings += _revisions(result, parsed)
     report.findings += _vocabulary(result, model)
     report.findings += _pairs(result, model, known)
     report.findings += _anchors(result, parsed)
@@ -250,6 +258,7 @@ def lint(round_: Round, model: Metamodel, known: dict[str, Concept],
         "references": sum(1 for r in result.records if not r.complete),
         "out_of_scope": len(result.out_of_scope),
         "unreadable": sum(1 for o in result.out_of_scope if o.unreadable),
+        "revisions": len(result.revisions),
         # **書いた宣言が読まれたことを数で言う。** `G020` は `lint` では出ない
         # （関係は別のファイルにありうる）ので、宣言が効いたかどうかを確かめる
         # 手がかりが件数しか無い ―― 0 なら、書いた場所か綴りが違う。
@@ -352,6 +361,85 @@ def _unread(result: organized_module.Organized,
               f"reason に書いてください**（`{names[0]} を開いたが…`）――"
               "名前が入っていればこの指摘は出なくなります。",
             file=entry.path or None, line=entry.line or None))
+    return findings
+
+
+#: 版の別が書かれている印。**両方の版が 1 つの塊に並んでいる**書き方と、明示的な
+#: 廃止だけを拾う。裸の版番号（`v1`）は拾わない ―― コードにも設定にも普通に出る
+#: ので、鳴らしても**誰も読まなくなる**（案内どおりにやって消えない指摘と同じ
+#: ところへ落ちる → 決定 112）。
+_REVISION_MARK = re.compile(
+    r"旧仕様|新仕様|旧版|新版|改訂前|改訂後|変更前|変更後|修正前|修正後|廃止"
+    r"|第\d+(?:\.\d+)*版|[Vv][Ee][Rr]\.?\s*\d")
+
+#: 取り消し線の塊（`s3-d1`）。**線を引かれた行は表にそのまま出ている。**
+_STRUCK = re.compile(r"-d\d+$")
+
+
+def _revisions(result: organized_module.Organized,
+               parsed: dict[str, mdio.ParsedFile]) -> list[Finding]:
+    """**版が併記された塊を、判断しないまま仕様にしていないか。**
+
+    1 冊の中に旧版と新版が並ぶのは、日本の設計書では普通の書かれ方である
+    （「旧仕様 / 新仕様」の対比表・取り消し線・`（廃止）`）。整理層がそれに
+    気づかないまま両方をレコードにすると、**同じ concept に 2 つの
+    ``statement`` が集まり、``build`` は「長いほうを採る」（``B023``）でしか
+    決められない** ―― 新旧と無関係な基準で現行仕様が決まる。しかも
+    ``publish`` は正本のとおりに出すだけなので、**どこも止まらない。**
+
+    機械は**どちらが新しいかを決めない。**「版の別が書いてある塊を、版の判断を
+    せずに写した」ことだけを言う ―― 新旧の語は資料の書き手の言葉で統一されて
+    おらず、判定できるのは整理層だけである（意味の判断は整理層だけ、の線は
+    動かさない）。
+
+    降りる口は 1 つで、``revisions`` に理由つきで書けば消える。**誤検出にも口が
+    ある**（``reason`` だけの宣言 ―― 「廃止」が帳票の廃止申請だったときに、
+    嘘の版を書かせないため）。
+
+    取り消し線は**ファイル 1 件で言う。** 宣言は表の塊（`s3-t1`）に付き、線の
+    番地は別の塊（`s3-d1`）に出るので、アンカーを揃えて探すと**いちばん多い形を
+    取りこぼす**（``_unread`` が絵をファイル単位で探すのと同じ事情である）。
+    """
+    findings: list[Finding] = []
+    declared = {(v.file, v.anchor) for v in result.revisions}
+    judged = {v.file for v in result.revisions}
+    written: dict[str, list[organized_module.Record]] = {}
+    for record in result.records:
+        written.setdefault(record.file, []).append(record)
+
+    for file, records in sorted(written.items()):
+        document = parsed.get(file)
+        if document is None:
+            continue                      # ファイル単位で _orphans が 1 件だけ言う
+        hit = False
+        for record in records:
+            anchor = document.by_id.get(record.anchor)
+            if anchor is None or (file, record.anchor) in declared:
+                continue
+            found = _REVISION_MARK.search(anchor.text)
+            if not found:
+                continue
+            hit = True
+            findings.append(Finding(
+                "error", "G034", record.subject,
+                f"版の別が書かれた塊です（「{found.group()}」）。どの版を仕様と"
+                "して写したかを `revisions` で宣言してください"
+                f"（`{{ anchor: {record.anchor}, adopted: …, dropped: …, "
+                "reason: … }`）。版の別ではなかったなら `reason` だけの宣言で"
+                "打ち消せます",
+                file=record.path or None, line=record.line or None))
+        if hit or file in judged:
+            continue
+        struck = [a.id for a in document.anchors if _STRUCK.search(a.id)]
+        if not struck:
+            continue
+        findings.append(Finding(
+            "error", "G034", struck[0],
+            f"取り消し線のある塊があります（{'・'.join(struck)}）。**線の掛かった"
+            "行は表には生きた行と同じに出ている**ので、写した版を `revisions` で"
+            "宣言してください。消し忘れ・未実装で現行仕様のことがあるので、"
+            "線が引いてあるだけで落とさないこと",
+            file=result.locations.get(file)))
     return findings
 
 
@@ -1010,6 +1098,14 @@ def _anchors(result: organized_module.Organized,
                                     f"{_moved(entry.anchor, document)}",
                                     file=entry.path or None,
                                     line=entry.line or None))
+    for entry in result.revisions:
+        document = parsed.get(entry.file)
+        if document is not None and entry.anchor not in document.by_id:
+            findings.append(Finding("error", "G004", entry.anchor,
+                                    "版の判断のアンカーがありません"
+                                    f"{_moved(entry.anchor, document)}",
+                                    file=entry.path or None,
+                                    line=entry.line or None))
     return findings
 
 
@@ -1415,11 +1511,66 @@ def apply(round_: Round, report: Report, today: str | None = None) -> dict[str, 
     return manifest
 
 
+def _amendments(round_: Round, manifest: dict
+                ) -> tuple[dict[str, set[str]], list[Finding]]:
+    """手当ての宣言を ``写し → 承知したハッシュ`` に。**壊れた宣言は免除しない。**
+
+    ``now`` の無い宣言を「ファイル名だけで免除」に倒すと、**穴がそのまま戻る**
+    ―― しかも戻ったことは誰にも見えない（免除は成功の顔をしている）。
+    ``reason`` を必須にしているのと同じ規律で、**書き方が足りない宣言は
+    宣言として数えない**（``out_of_scope`` の ``reason``・``known_gaps`` の
+    ``reason`` と揃える）。
+
+    ``was`` は照合しない ―― 手当ての前のハッシュはもう手元に無いので、
+    確かめようがないものを確かめた顔で通さない。履歴として残すだけである。
+    """
+    found: dict[str, set[str]] = {}
+    findings: list[Finding] = []
+    for entry in manifest.get("amendments") or []:
+        if not isinstance(entry, dict):
+            continue
+        file = str(entry.get("file") or "")
+        now = str(entry.get("now") or "")
+        reason = str(entry.get("reason") or "").strip()
+        if not file:
+            continue
+        where = _relative(round_, round_.frozen)
+        if not now:
+            findings.append(Finding(
+                "error", "G033", file,
+                "手当ての宣言に now（直したあとのハッシュ）がありません"
+                "（免除しません ―― 何を承知したのかが決まらないため）",
+                file=where,
+                hint="arp4 freeze を打ち直すとハッシュが固定されます。"
+                     "その値を now に書いてください"))
+            continue
+        if not reason:
+            findings.append(Finding(
+                "error", "G033", file,
+                "手当ての宣言に reason がありません"
+                "（免除しません ―― 理由の無い手当ては、黙って書き換えるのと"
+                "区別が付きません）", file=where))
+            continue
+        found.setdefault(file, set()).add(now)
+    return found, findings
+
+
 def verify(round_: Round) -> list[Finding]:
     """凍結後に整理結果が編集されていないか。
 
     **凍結しているからこそ、例外的な手当てが例外として見える。** 利用者の指示で
     直したのなら、``.frozen.yml`` の ``amendments`` に理由を残して固定し直す。
+
+    **手当ては 1 回きりである。** 長いあいだここは ``file`` だけを見て免除して
+    いた ―― 文書は最初から ``was`` / ``now`` を書く形を示しているのに、
+    **コードはその 2 つを一度も読んでいなかった。** 一度でも手当てを書いた
+    整理結果は、以後どう書き換えても ``G009`` が鳴らない ―― つまり「利用者の
+    指示で 1 か所直した」ことが「**そのファイルの番人を恒久的に外す**」ことに
+    なっていた。凍結の値打ちは「例外が例外として見える」ことにしかないので、
+    これはその値打ちを 1 ファイルぶんずつ削っていく穴である。
+
+    いまは ``now`` と現物のハッシュが一致したときだけ免除する。手当ての履歴が
+    何件並んでいてもよい（どれか 1 つに当たれば、そこまでは承知の変更である）。
     """
     if not round_.frozen.is_file():
         return []
@@ -1427,14 +1578,12 @@ def verify(round_: Round) -> list[Finding]:
     recorded = {str(k): str(v) for k, v in (manifest.get("files") or {}).items()}
     current = hashes(round_)
 
-    amended = {str(a.get("file")) for a in (manifest.get("amendments") or [])
-               if isinstance(a, dict)}
-    findings: list[Finding] = []
+    amended, findings = _amendments(round_, manifest)
     for name in sorted(set(recorded) | set(current)):
         if recorded.get(name) == current.get(name):
             continue
-        if name in amended:
-            continue
+        if current.get(name) in amended.get(name, set()):
+            continue                          # 手当てで承知した中身そのもの
         # 消えたファイルにも位置は載せる ―― **無いことを確かめに行く先**である。
         where = _relative(round_, round_.organized / name)
         if name not in current:

@@ -74,6 +74,9 @@ records:
       - { rel: raises, to: c-bill-MSG-取引先未登録 }
       - { rel: raises, to: c-bill-MSG-締め中は発行不可 }
       - { rel: raises, to: c-bill-MSG-発行完了 }
-out_of_scope:
-  - { anchor: w10-d1, kind: 未読取,
-      reason: 変更履歴で消された文言（端数の扱い）。本文は反映後の姿で、どちらが現行かは資料が決めていない }
+revisions:
+  # **消された文言は「機械が読めなかったもの」ではない。** 読めているし、
+  # 資料にも残っている ―― 決まっていないのは**どちらが現行か**である。
+  - { anchor: w10-d1, dropped: 変更履歴で消された文言（端数の扱い）,
+      reason: 本文は反映後の姿で出ているのでそちらを写した。確定していないことは
+              w15-t1 の課題として起票済み }

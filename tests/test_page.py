@@ -89,7 +89,7 @@ def test_出典は実在する写しへのリンクになる(spec_with_copies: S
     publish_module.publish(spec_with_copies, out, names=["要件定義書"])
     page = (out / _phase(spec_with_copies) / "要件定義書.html").read_text(encoding="utf-8")
 
-    assert ('<a href="../../rounds/r001/parsed/資料/A.xlsx/受注.md" '
+    assert ('<a href="../../rounds/r001/parsed/資料/A.xlsx/受注.md#s1-t1" '
             'target="_blank">' in page)
     # 飛び先が実在すること ―― リンクの形だけ合っていても意味が無い
     target = (out / _phase(spec_with_copies)
@@ -107,14 +107,30 @@ def test_写しが無い出典はリンクにしない(spec_with_copies: Spec) -
     assert "消えた.xlsx/シート.md" not in page        # リンクにはしない
 
 
-def test_アンカーは飛び先に付けない(spec_with_copies: Spec) -> None:
-    """写しのアンカーは HTML コメントなので、断片識別子としては動かない。"""
+def test_アンカーは飛び先に付く(spec_with_copies: Spec) -> None:
+    """**飛び先は写しの先頭ではなくその塊**。
+
+    長く付けていなかった ―― 写しのアンカーが HTML コメントだけだったころは、
+    断片識別子として当たらなかったからである。当たらない原因はリンクの側では
+    なく**写しの側**だったので、そちらに実体を書いた（→ `mdio._element`）。
+    """
     out = spec_with_copies.paths.out
     publish_module.publish(spec_with_copies, out, names=["要件定義書"])
     page = (out / _phase(spec_with_copies) / "要件定義書.html").read_text(encoding="utf-8")
 
-    assert 'href="../../rounds/r001/parsed/資料/A.xlsx/受注.md#s1-t1"' not in page
-    assert "受注#s1-t1</a>" in page                   # 升の文字にはアンカーが残る
+    assert 'href="../../rounds/r001/parsed/資料/A.xlsx/受注.md#s1-t1"' in page
+    assert "受注#s1-t1</a>" in page                   # 升の文字にもアンカーが残る
+
+
+def test_出典はmdでもリンクになる(spec_with_copies: Spec) -> None:
+    """**片方だけ辿れる形にしない。** md しか読まない読み手は珍しくない。"""
+    out = spec_with_copies.paths.out
+    publish_module.publish(spec_with_copies, out, names=["要件定義書"])
+    md = (out / _phase(spec_with_copies) / "要件定義書.md").read_text(encoding="utf-8")
+
+    assert "(<../../rounds/r001/parsed/資料/A.xlsx/受注.md#s1-t1>)" in md
+    assert "資料/消えた.xlsx/シート" in md             # 写しが無ければ文字のまま
+    assert "消えた.xlsx/シート.md>)" not in md
 
 
 # ── 概要 ────────────────────────────────────────────────────────
@@ -309,7 +325,7 @@ def test_ページの外へ出るリンクは新しいタブで開く(spec_with_
     page = (out / _phase(spec_with_copies) / "要件定義書.html").read_text(encoding="utf-8")
     index = (out / "目次.html").read_text(encoding="utf-8")
 
-    assert ('<a href="../../rounds/r001/parsed/資料/A.xlsx/受注.md" '
+    assert ('<a href="../../rounds/r001/parsed/資料/A.xlsx/受注.md#s1-t1" '
             'target="_blank">' in page)
     assert '<a href="../目次.html" target="_blank">' in page
     assert (f'<a href="{_phase(spec_with_copies)}/要件定義書.html" '

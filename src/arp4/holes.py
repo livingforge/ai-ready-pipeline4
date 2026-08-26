@@ -7,6 +7,7 @@
 設計要素に繋がらない要件      トレーサビリティ・マトリクス §3
 資料に定義が無いと宣言        各設計書の脚注（``known_gaps``）
 機械が読めなかった            整理層の ``out_of_scope: kind: 未読取``
+版差で写さなかった            整理層の ``revisions``
 ``--force`` で通したこと      **どこにも無い**
 ============================  ==============================================
 
@@ -123,6 +124,7 @@ def _sections(spec: Spec, findings: list[Finding],
             _disputes(spec),
             _conflicts(spec),
             _unread(spec),
+            _versions(spec),
             _declared_gaps(spec),
             _folded(folded or []),
             _misdirected([r for r in (misdirected or [])
@@ -358,6 +360,34 @@ def _unread(spec: Spec) -> tuple[str, str, list[list[str]], list[str]]:
             "空欄に見えても「資料に無い」ではありません。次のラウンドで"
             "拾い直す対象です（`arp4 render` で絵にして読みます）。",
             rows, ["ラウンド", "資料", "アンカー", "読めなかった理由"])
+
+
+def _versions(spec: Spec) -> tuple[str, str, list[list[str]], list[str]]:
+    """**版差で写さなかったもの。**「資料に無い」と混ぜない。
+
+    正本は「いま有効な仕様」の集合であって、仕様の歴史ではない ―― 旧版は入れ
+    ない。だが**落とした跡を出さないと、読み手には ``W046``（資料に無い）と
+    区別が付かない。**値はあるのに無いと報告されるのが、いちばん悪い形である。
+
+    ここが 1 枚あって初めて、束は「どの版を写したか」を言える。
+    """
+    rows: list[list[str]] = []
+    if spec.paths is not None:
+        for round_ in spec.paths.rounds():
+            data, _ = organized_module.load(round_)
+            for entry in data.revisions:
+                if not entry.dropped:
+                    continue             # 版の別ではなかった（打ち消しの宣言）
+                rows.append([round_.name, entry.file, entry.anchor,
+                             entry.adopted or "―（塊ごと写していない）",
+                             entry.dropped, entry.reason])
+    rows.sort()
+    return ("版差で写さなかったもの",
+            "同じ資料に複数の版が書かれていたので、現行と判断した版だけを写して"
+            "います。**「資料に無い」ではありません** ―― 落とした版が要るなら"
+            "元資料のその塊を開いてください。",
+            rows, ["ラウンド", "資料", "アンカー", "写した版", "写していない版",
+                   "現行と決めた根拠"])
 
 
 def _declared_gaps(spec: Spec) -> tuple[str, str, list[list[str]], list[str]]:

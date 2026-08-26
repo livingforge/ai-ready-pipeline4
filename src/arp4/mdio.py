@@ -5,7 +5,7 @@ YAML の配列で持つ形はエージェントも人も読みにくく、diff �
 
 アンカーは HTML コメントで持ち、本文を汚さない::
 
-    ## 表 B8:J20  <!-- a:s1-t1 at=B8:J20 -->
+    ## 表 B8:J20  <!-- a:s1-t1 at=B8:J20 --><a id="s1-t1"></a>
 
     | 論理名 | 物理名 | 型 |
     |---|---|---|
@@ -13,6 +13,10 @@ YAML の配列で持つ形はエージェントも人も読みにくく、diff �
 
 ``a:`` が識別子、``at=`` が元資料の位置である。**行番号ではなく ID** にするのは、
 OCR を 1 行直しただけでそれ以降の出典が全部ずれるのを避けるためである。
+
+末尾の空の ``<a id=…>`` は**同じ id の複製**で、設計書の出典から飛べるように
+するためだけにある（→ :func:`_element`）。**正はコメントのほう**で、読み戻しは
+そちらしか見ない。
 
 読み戻しは「アンカー行から次のアンカー行まで」を本文とみなす。見出しの文言や表の
 体裁が編集で変わっても、アンカーさえ残っていれば出典は追える ―― **編集に強い形を
@@ -41,6 +45,11 @@ _ANCHOR = re.compile(r"<!--\s*a:(?P<id>[^\s>]+)(?:\s+at=(?P<at>[^>]*?))?\s*-->")
 
 #: 見出し行のコメント（``<!-- source: … -->``）。
 _SOURCE = re.compile(r"<!--\s*source:\s*(?P<source>.+?)\s*-->")
+
+#: 見出しに複製した実体のアンカー（→ :func:`_element`）。**見出しの字ではない**
+#: ので読み戻しで剥がす ―― 残すと `arp4 show` の一覧や `G005`（本文に語が無い）
+#: の検査に、資料に一度も書かれていない字が混ざる。
+_ELEMENT = re.compile(r'<a\s+id="[^"]*"\s*></a>')
 
 
 @dataclass
@@ -97,6 +106,13 @@ class ParsedFile:
     title: str
     source: str
     anchors: list[Anchor] = field(default_factory=list)
+    #: **機械が読めなかったものの申告**（:attr:`Doc.notes` の読み戻し）。
+    #: 長く捨てていた ―― 読み手が :func:`read` を使うのは出典の照合
+    #: （:mod:`arp4.trace`）だけで、そこには要らなかったからである。
+    #: 塊を 1 つ切り出して渡す口（:mod:`arp4.show`）ができると話が変わる ――
+    #: 申告はファイルの頭にしか無いので、**塊だけを渡すと「資料に無い」と
+    #: 「機械が読めていない」が読み手から区別できなくなる。**
+    notes: list[str] = field(default_factory=list)
 
     @property
     def by_id(self) -> dict[str, Anchor]:
@@ -123,7 +139,15 @@ def dump(doc: Doc) -> str:
         heading = _safe_comment(chunk.heading) or chunk.at or chunk.anchor
         marker = (f"<!-- a:{chunk.anchor}"
                   + (f" at={_safe_comment(chunk.at)}" if chunk.at else "") + " -->")
-        out += [f"## {heading}  {marker}", ""]
+        # **同じ id を実体としても書く。** 出典（`…/受注テーブル#s1-t1`）を
+        # 飛び先にできるのは、断片識別子が実在するときだけである ―― アンカーを
+        # HTML コメントだけで持っていたあいだ、設計書からのリンクは**写しの
+        # 先頭にしか着けず**、読み手はそこから目で探していた（→ :mod:`arp4.show`）。
+        #
+        # **正はコメントのまま**である。ここは書き出しの複製で、読み戻し
+        # （:func:`read`）は見向きもしない ―― 資料のセルが `<a id=…>` を
+        # 偽造できても、狂うのはブラウザのスクロール位置だけで出典は狂わない。
+        out += [f"## {heading}  {marker}{_element(chunk.anchor)}", ""]
         if chunk.rows:
             out += _table(chunk.rows) + [""]
         for at, value in chunk.cells:
@@ -135,6 +159,16 @@ def dump(doc: Doc) -> str:
             # 触らない ―― ここを整形すると、原本と読み比べたときに差が出る。
             out += [_safe_comment(chunk.text).rstrip(), ""]
     return "\n".join(out).rstrip() + "\n"
+
+
+def _element(anchor: str) -> str:
+    """見出しに置く実体のアンカー。**画面には何も出ない**（空の ``<a>``）。
+
+    GitHub でもエディタのプレビューでも断片識別子として当たる書き方である。
+    生の ``.md`` をそのまま開いたときは当たらない（そのときは何も起きない
+    ―― 写しの先頭に着く、いままでと同じ振る舞いに戻るだけである）。
+    """
+    return f'<a id="{anchor}"></a>'
 
 
 def write(path: Path, doc: Doc) -> Path:
@@ -194,6 +228,7 @@ def read(path: Path) -> ParsedFile:
 
     title = ""
     source = ""
+    notes: list[str] = []
     anchors: list[Anchor] = []
     current: Anchor | None = None
     body: list[str] = []
@@ -214,17 +249,24 @@ def read(path: Path) -> ParsedFile:
                 current.body = "\n".join(body).strip()
                 anchors.append(current)
             current = Anchor(id=marker.group("id"), at=marker.group("at") or "", body="")
-            head = _ANCHOR.sub("", line).lstrip("# ").strip()
+            head = _ELEMENT.sub("", _ANCHOR.sub("", line)).lstrip("# ").strip()
             body = [head] if head else []
             continue
         if current is not None:
             body.append(line)
+            continue
+        # **1 つ目のアンカーより前**だけが申告の居場所である（:func:`dump` が
+        # そう書く）。塊の中の引用（Markdown の資料の ``>``）を拾わないのは
+        # この位置で切っているからで、行の形では見分けられない。
+        if line.startswith("> "):
+            notes.append(line[2:].strip())
 
     if current is not None:
         current.body = "\n".join(body).strip()
         anchors.append(current)
 
-    return ParsedFile(path=path, title=title, source=source, anchors=anchors)
+    return ParsedFile(path=path, title=title, source=source,
+                      anchors=anchors, notes=notes)
 
 
 #: GFM が要求する区切り行（``|---|---|``）。**資料には無い行**なので落とす。

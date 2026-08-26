@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+from arp4 import comments as comments_module
 from arp4 import metamodel as mm
 from arp4 import yamlio
 from arp4.finding import Finding
@@ -116,14 +117,24 @@ def relation_key(relation: dict[str, Any]) -> RelationKey:
 
 
 def save_in_place(spec: Spec, item_ids: set[str] | None = None,
-                  relation_keys: set[RelationKey] | None = None) -> list[Path]:
+                  relation_keys: set[RelationKey] | None = None,
+                  dropped: list[Path] | None = None) -> list[Path]:
     """読んだファイルへ書き戻す。**変更のあったファイルだけ**。
 
-    書き戻したファイルの**コメントは失われる**（YAML を読み書きで往復するため）。
-    対象を絞るのはその被害を最小にするためなので、アイテムと関係は**別の鍵で**
-    絞る ―― アイテムだけ触ったのに関係ファイルのコメントまで消してはならない。
+    書き戻したファイルの**コメントは保つ**（→ :mod:`arp4.comments`）。長らく
+    往復で落としており、`build` / `number` / 自動昇格が触った瞬間に「なぜこの
+    番号なのか」という申し送りだけが消えていた ―― 値は 1 つも変わらないので、
+    差分を見ても気づきにくい。保てなかったファイルは素の書き出しに落ちる
+    （**値を守るほうが先**である）。
+
+    対象を絞るのはそれでも被害を最小にするためなので、アイテムと関係は
+    **別の鍵で**絞る ―― アイテムだけ触ったのに関係ファイルまで書き直さない。
 
     両方 ``None`` のときだけ全ファイルを書き戻す。
+
+    ``dropped`` を渡すと、**コメントを保てなかったファイル**がそこへ入る ――
+    保てないのは異例（組み直しの検算が通らなかったとき）だが、黙って落ちると
+    「保てている」と「落ちている」が利用者から区別できない。
     """
     everything = item_ids is None and relation_keys is None
     written: list[Path] = []
@@ -132,16 +143,29 @@ def save_in_place(spec: Spec, item_ids: set[str] | None = None,
         if not everything and not any(
                 str(r.get("id") or "") in (item_ids or set()) for r in records):
             continue
-        yamlio.dump(path, records)
+        _dump(path, records, dropped)
         written.append(path)
 
     for path, records in spec.relation_files:
         if not everything and not any(
                 relation_key(r) in (relation_keys or set()) for r in records):
             continue
-        yamlio.dump(path, records)
+        _dump(path, records, dropped)
         written.append(path)
     return written
+
+
+def _dump(path: Path, records: list[dict[str, Any]],
+          dropped: list[Path] | None) -> None:
+    """コメントを保って書き戻す。**保てなかったファイルは名指しで残す。**
+
+    「保てなかった」を数えるのは**元からコメントがあったファイルだけ**である
+    ―― 無いものは保てなくても損が無い。判定は**書く前**に読む（書いたあとに
+    読むと、落ちたばかりの結果を見て「元から無かった」と言うことになる）。
+    """
+    had = comments_module.present(path)
+    if not comments_module.dump(path, records) and had and dropped is not None:
+        dropped.append(path)
 
 
 def save(spec: Spec, spec_dir: Path | None = None) -> list[Path]:

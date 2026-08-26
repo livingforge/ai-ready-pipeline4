@@ -430,11 +430,13 @@ def _values(target: str, record: dict[str, Any], attributes: dict[str, Any],
         kind = attr.get("kind")
         if kind == "bool" and not isinstance(value, bool):
             findings.append(Finding("error", "E014", target,
-                                    f"{name} は真偽値でなければなりません: {value!r}"))
+                                    f"{name} は真偽値でなければなりません: {value!r}",
+                                    hint=_OVERRIDE_HINT))
             continue
         if kind == "int" and (isinstance(value, bool) or not isinstance(value, int)):
             findings.append(Finding("error", "E014", target,
-                                    f"{name} は整数でなければなりません: {value!r}"))
+                                    f"{name} は整数でなければなりません: {value!r}",
+                                    hint=_OVERRIDE_HINT))
             continue
 
         if kind == "enum":
@@ -444,7 +446,7 @@ def _values(target: str, record: dict[str, Any], attributes: dict[str, Any],
             if pattern and not re.fullmatch(str(pattern), str(value)):
                 findings.append(Finding("error", "E013", target,
                                         f"{name} が書式に合いません: {value}"
-                                        f"（{pattern}）"))
+                                        f"（{pattern}）", hint=_OVERRIDE_HINT))
 
         if attr.get("unique"):
             bucket = unique.setdefault((unique_key, name), {})
@@ -452,10 +454,30 @@ def _values(target: str, record: dict[str, Any], attributes: dict[str, Any],
             if previous is not None:
                 findings.append(Finding("error", "E012", target,
                                         f"{name} が一意ではありません: {value}"
-                                        f"（{previous} と重複）"))
+                                        f"（{previous} と重複）",
+                                        hint="どちらかを直す。資料から来ている"
+                                             "番号を残すなら、残さないほうを"
+                                             "overridden に理由つきで書き換える"
+                                             "（arp4 number --renumber は"
+                                             "**宣言していない番号を書き換えます**）"))
             else:
                 bucket[str(value)] = target
     return findings
+
+
+#: 正本の値を直す人への一言。**資料から来ている欄は、直しても次の構築で戻る。**
+#:
+#: 整理結果は凍結されていて直せないので、残る道は正本側の修正である。ところが
+#: :func:`arp4.override.merge_item` が守るのは ``overridden`` に挙げた欄だけで、
+#: **資料が値を持っている欄は次の ``arp4 build`` が上書きする** ―― 直した人には
+#: 「直したはずのものが戻っている」としか見えず、しかも戻ったことは端末にも
+#: 残らない（実測で確かめた振る舞いである）。
+#:
+#: 資料に**欄そのものが無い**ものを埋めた場合は戻らない（derived にキーが無い
+#: ので上書きが起きない）。だからこの一言を付けるのは、**資料が値を持っている
+#: ことが分かっている指摘**だけである。
+_OVERRIDE_HINT = ("資料から来ている値を正本で直すなら overridden に理由を書く"
+                  "（書かないと次の arp4 build で資料の値へ戻ります）")
 
 
 def _enum(target: str, name: str, attr: dict[str, Any], value: Any) -> list[Finding]:
@@ -475,7 +497,7 @@ def _enum(target: str, name: str, attr: dict[str, Any], value: Any) -> list[Find
         return []
     return [Finding("error", "E011", target,
                     f"{name} が enum 外です: {candidate}"
-                    f"（{'、'.join(map(str, values))}）")
+                    f"（{'、'.join(map(str, values))}）", hint=_OVERRIDE_HINT)
             for candidate in candidates if candidate not in values]
 
 

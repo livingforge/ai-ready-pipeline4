@@ -81,7 +81,7 @@ arp4 init --root "$R"                        # ← 全コマンドに付ける
 | `arp4 draft` | コードの整理結果の骨格を機械生成 → [docs/code.md](docs/code.md) |
 | `arp4 auto <パス>…` | parse → publish を 1 コマンドで → [docs/code.md](docs/code.md) |
 | `arp4 render <パス>…` | 読めなかった範囲を絵にする → [docs/parse.md](docs/parse.md) |
-| `arp4 declare <型> --reason …` | 同じ構成のシートを一括で対象外宣言（表紙・改訂履歴） |
+| `arp4 declare <型> --reason …` | 同じ構成のシートを一括で対象外宣言（表紙）。`--dropped <版>` で旧版の冊子 |
 | `arp4 lint <パス>…` | 書いた 1 ファイルをその場で検査（`file:line`）→ [docs/freeze.md](docs/freeze.md) |
 | `arp4 freeze --dry-run` | 残作業の一覧 → [docs/freeze.md](docs/freeze.md) |
 | `arp4 freeze` | ② 凍結 |
@@ -90,6 +90,9 @@ arp4 init --root "$R"                        # ← 全コマンドに付ける
 | `arp4 check --strict` | 機械検証（`--summary` → `--code W043` で段階的に開く） |
 | （手で書く）`spec/derived/` | ★ AI の解釈層。PM・顧客向けはここからしか出ない → [docs/derived.md](docs/derived.md) |
 | `arp4 publish` | ⑥ 設計書を生成 → [docs/publish.md](docs/publish.md) |
+| `arp4 show <出典>` | 設計書の出典からパース結果の塊を開く → [docs/publish.md](docs/publish.md) |
+| `arp4 grep <語>` | パース結果を横断して探す（当たりは塊で返る） → [docs/parse.md](docs/parse.md) |
+| `arp4 index` | パース結果の索引（塊の一覧） → [docs/parse.md](docs/parse.md) |
 | `arp4 lock` / `conform` | 標準パック準拠（CI 用） |
 
 **検査系（`lint` / `check` / `conform`）の終了コードは 3 値である。**error = 1 /
@@ -114,7 +117,8 @@ arp4 schema --root "$R"                     # ★ 形
 arp4 parse  --root "$R" "$R"/src "$R"/ddl "$R"/資料      # ① パスは必須
 arp4 draft  --root "$R"                     #   コードの骨格（シートは触らない）
 arp4 render --root "$R" "$R"/資料           #   図形を絵にする（要 Excel）
-arp4 declare --root "$R" 表紙 改訂履歴 --reason "仕様ではない"    # Excel のときだけ
+arp4 declare --root "$R" 表紙 --reason "仕様ではない"       # Excel のときだけ
+#   ★ 改訂履歴はここに混ぜない ―― 版の判定材料はそこにしか無い（→ docs/sheets.md）
 arp4 freeze --root "$R" --dry-run           #   残作業の一覧
 #   ★ parsed/ を読んで organized/ を書く（整理①）。1 ファイル書くたびに arp4 lint
 #   ★ 全部書けたら横断整理（整理②）→ docs/reconcile.md
@@ -169,6 +173,11 @@ arp4 publish --root "$R"                    # ⑥
   元資料との照合が二度とできない。編集理由はコミットメッセージに残す（OCR の訂正と都合の
   いい書き換えは diff で区別がつかない）
 - **凍結後は正本側で直す**（`overridden` / `known_gaps`。どちらも理由必須）
+- **正本は「いま有効な仕様」の集合であって、仕様の歴史ではない。**歴史は git と
+  ラウンドが持つ。1 冊の中に旧版と新版が並んでいたら（対比表・取り消し線・`（廃止）`）、
+  **現行と決めたほうだけを写し、落とした版を `revisions` で宣言する**（`G034` で凍結が
+  止まる）。両方書くと同じ concept に `statement` が 2 つ集まり、`build` は「長いほうを
+  採る」でしか決められない → [docs/organize.md](docs/organize.md)
 - **迷うものはまとめない。**同じ概念か迷う 2 つは別の `concept` のままにする
 - **矛盾は自動解決しない。**食い違いは両論を残して課題にする
 - **承認は人だけ**（すべて `status: review` で入る）。**`.arp/out/` は直接編集しない**

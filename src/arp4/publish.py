@@ -40,6 +40,7 @@ from arp4 import mdio
 from arp4 import origins as origins_module
 from arp4 import pack as pack_module
 from arp4 import page as page_module
+from arp4 import show as show_module
 from arp4 import sequence as sequence_module
 from arp4 import yamlio
 from arp4.conform import matches
@@ -282,7 +283,8 @@ def publish(spec: Spec, out_dir: Path, names: Iterable[str] | None = None,
         title = str(definition.get("title") or md.stem)
         brief = _brief(spec, blocks)
         brief.refers = _refers(blocks, owners, page, prepared)
-        md.write_text(_markdown(spec, definition, blocks, meta, gate, depth, brief),
+        md.write_text(_markdown(spec, definition, blocks, meta, gate, depth,
+                                brief, copies, md),
                       encoding="utf-8", newline="\n")
         page.write_text(_html(spec, definition, blocks, meta, owners, page, index,
                               gate, depth, copies, brief),
@@ -1625,7 +1627,8 @@ def _md_cell(value: str) -> str:
 
 def _markdown(spec: Spec, definition: dict[str, Any], blocks: list[Block],
               meta: dict[str, Any], gate: gate_module.Gate | None = None,
-              depth: int = 0, brief: Brief | None = None) -> str:
+              depth: int = 0, brief: Brief | None = None,
+              copies: "Copies | None" = None, here: Path | None = None) -> str:
     title = str(definition.get("title") or definition.get("name"))
     lines = [f"# {title}", ""]
 
@@ -1682,7 +1685,13 @@ def _markdown(spec: Spec, definition: dict[str, Any], blocks: list[Block],
             lines.append("| " + " | ".join(_md_cell(c) for c in block.columns) + " |")
             lines.append("|" + "|".join(["---"] * len(block.columns)) + "|")
             for row in block.rows:
-                lines.append("| " + " | ".join(_md_cell(c) for c in row) + " |")
+                # **出典の升だけ**リンクにする（HTML と同じ飛び先）。ほかの升は
+                # 記号を逃がすだけで、リンクの骨は組まない ―― 資料の値に出てくる
+                # 角括弧をリンクとして読み始めると、升の字が変わる。
+                lines.append("| " + " | ".join(
+                    _source_md(cell, copies, here)
+                    if index in block.source_columns else _md_cell(cell)
+                    for index, cell in enumerate(row)) + " |")
             lines.append("")
         for note in block.notes:               # 畳んだ行・列は表の下に必ず出す
             lines += [f"> {note}", ""]
@@ -2547,10 +2556,21 @@ class Copies:
     出る ―― 「資料に無い」と「機械が出していない」を混ぜないという規律は、
     リンクにも当てはまる。
 
-    **飛び先に ``#アンカー`` は付けない。** 写しのアンカーは HTML コメント
-    （``<!-- a:s1-t1 -->``）なので、ブラウザの断片識別子としては動かない。
-    動かない飛び先を付けるくらいなら、升の文字にアンカーを残して人が探すほうが
-    嘘が無い（升には既に ``#s1-t1`` と書いてある）。
+    **飛び先に ``#アンカー`` を付ける。** ここには長く「付けない ―― 写しの
+    アンカーは HTML コメント（``<!-- a:s1-t1 -->``）なので、ブラウザの断片識別子
+    としては動かない。動かない飛び先を付けるくらいなら人が探すほうが嘘が無い」と
+    書いてあった。**判断は正しかったが、直す先を取り違えていた** ―― 動かないのは
+    リンクの側ではなく**写しの側にアンカーの実体が無い**ことのほうで、そちらは
+    書き足せる（→ :func:`arp4.mdio._element`）。実体を書いたので、飛び先は
+    写しの先頭ではなく**その塊**に着く。
+
+    実体を持たない古い写し（この変更より前に ``arp4 parse`` したもの）では
+    断片が当たらず**先頭に着く** ―― いままでと同じ振る舞いで、悪くはならない。
+    ``arp4 parse`` をやり直せば当たるようになる。
+
+    リンクの当たらない読み方（生の ``.md`` をそのまま開く）も残るので、**升の
+    文字は ``#s1-t1`` のまま**にしてある ―― その字は ``arp4 show`` にそのまま
+    貼れる（→ :mod:`arp4.show`）。
     """
 
     parsed: dict[tuple[str, str], Path] = field(default_factory=dict)
@@ -2561,14 +2581,16 @@ class Copies:
                     for (round_name, file), round_
                     in origins_module.copies(spec).items()})
 
-    def href(self, round_name: str, file: str, here: Path | None) -> str | None:
+    def href(self, round_name: str, file: str, here: Path | None,
+             anchor: str = "") -> str | None:
         target = self.parsed.get((round_name, file))
         if target is None or here is None or not here.is_absolute():
             return None
         try:
-            return os.path.relpath(target, here.parent).replace(os.sep, "/")
+            path = os.path.relpath(target, here.parent).replace(os.sep, "/")
         except ValueError:                  # 別ドライブ（Windows）
             return None
+        return path + (f"#{anchor}" if anchor else "")
 
 
 def _source_html(cell: str, copies: Copies | None, here: Path | None) -> str:
@@ -2583,9 +2605,32 @@ def _source_html(cell: str, copies: Copies | None, here: Path | None) -> str:
         return escape(cell).replace("\n", "<br>")
     pieces: list[str] = []
     for piece in cell.split(" / "):
-        round_name, space, rest = piece.partition(" ")
-        file = rest.partition("#")[0]
-        href = copies.href(round_name, file, here) if space else None
+        # **開く側と同じ割り方をする**（→ :func:`arp4.show.split`）。別々に
+        # 割っていたころ、シート名に ``#`` を持つ写しはリンクだけが外していた。
+        round_name, file, anchor = show_module.split(piece)
+        href = copies.href(round_name, file, here, anchor) if round_name else None
         pieces.append(f'<a href="{escape(href)}"{page_module.NEW_TAB}>'
                       f"{escape(piece)}</a>" if href else escape(piece))
     return " / ".join(pieces).replace("\n", "<br>")
+
+
+def _source_md(cell: str, copies: "Copies | None", here: Path | None) -> str:
+    """出典のセルを、**Markdown でもリンクにする**（HTML と同じ飛び先）。
+
+    md 側だけ文字列のままだったのは、升を作るのが :func:`_md_cell` 1 本で、
+    そこは**記号を逃がす**係だからである ―― そこに ``[…](…)`` を組ませると、
+    資料の値に出てくる角括弧まで意味を持ってしまう。組む係を分けたので、
+    逃がすのは升の**文字**だけで、リンクの骨はここが組む。
+
+    行き先は ``<…>`` で囲む。写しのパスには空白も括弧も普通に入っていて
+    （``資料/A/基本設計書 (改訂).xlsx/…``）、裸で置くと**そこでリンクが切れる。**
+    """
+    if copies is None:
+        return _md_cell(cell)
+    pieces: list[str] = []
+    for piece in cell.split(" / "):
+        round_name, file, anchor = show_module.split(piece)
+        href = copies.href(round_name, file, here, anchor) if round_name else None
+        label = _md_cell(piece)
+        pieces.append(f"[{label}](<{href}>)" if href else label)
+    return " / ".join(pieces)

@@ -229,6 +229,10 @@ class Target:
     doc: mdio.Doc
     exists: bool = False
     dirty: bool = False            # git 上で編集されているか
+    #: 編集の有無を**確かめられなかった**（git が使えない・置き場が無視されている）。
+    #: :attr:`dirty` と分けるのは、**申告の文句が違う**からである ―― 「編集済みを
+    #: 守りました」と言うと、確かめていないことが確かめた顔で出る。
+    unverified: bool = False
     #: 元にした原本。**1 冊が何枚ものパース結果になる**ので、書き出し先からは
     #: 逆に辿れない（``受注.xlsx`` → ``受注/一覧.md`` ほか 8 枚）。指紋を残すのは
     #: 原本 1 件につき 1 つなので、ここで持って :func:`record` へ渡す。
@@ -264,7 +268,7 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
     """
     targets: list[Target] = []
     findings: list[Finding] = []
-    dirty = _dirty_paths(round_.parsed)
+    dirty, blind = _dirty_paths(round_.parsed)
     missed: list[tuple[Path, str]] = []
 
     expanded = sorted(expand(sources, missed))
@@ -296,12 +300,14 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
             where = round_.images / relative.parent
             targets.append(Target(path=out, doc=doc, exists=out.is_file(),
                                   dirty=out.is_file() and _edited(out, dirty),
+                                  unverified=bool(blind) and out.is_file(),
                                   origin=path,
                                   images=[(where / one.name, one.body)
                                           for one in media.get(relative, [])]))
 
     findings += _missed_note(missed)
     findings += _ocr_note(targets, use_ocr)
+    findings += _blind_note(round_, targets, blind)
     targets, clashes = _unique(targets, dirty)
     findings += [Finding("warn", "P002", was.name,
                          f"書き出し先が重なったので名前を変えました → {now.name}"
@@ -717,6 +723,28 @@ def relative_path(path: Path, base: Path) -> Path:
         return Path(path.name)
 
 
+def _blind_note(round_: Round, targets: list[Target], blind: str) -> list[Finding]:
+    """上書きの番人が**見えていない**ことの申告（``P021``）。
+
+    黙ると、確認なしで飛ばされた側にも、確認を求められた側にも理由が残らない
+    ―― パース結果は編集してよい面なので、「編集の有無が分からない」は
+    **資料が読めなかったのと同じ重さ**である。
+
+    初回の parse では言わない（上書きする相手がいないので、番人が見えていても
+    いなくても結果が同じである）。
+    """
+    if not blind or not any(t.exists for t in targets):
+        return []
+    return [Finding(
+        "warn", "P021", round_.name,
+        f"編集の有無を確かめられません（{blind}）。"
+        "手で直したパース結果を黙って上書きしないため、既にあるものは"
+        "**すべて編集済みとして扱います**",
+        hint=".arp/ を丸ごと無視しているなら .arp/out/ だけに狭めてください"
+             "（そうすれば編集したものだけが確認の対象になります）。"
+             "承知のうえで上書きするなら --yes")]
+
+
 def _edited(path: Path, dirty: set[Path] | None) -> bool:
     """git 上で編集されているか。**``None`` は「git が使えない」**の意味である。
 
@@ -726,8 +754,35 @@ def _edited(path: Path, dirty: set[Path] | None) -> bool:
     return True if dirty is None else path.resolve() in dirty
 
 
-def _dirty_paths(root: Path) -> set[Path] | None:
-    """``root`` の下で git が「変わっている」と言うパス。**1 度で全部聞く。**
+def ignored(root: Path) -> bool:
+    """``root`` が丸ごと ``.gitignore`` されているか。
+
+    **これを聞かないと、上書きの番人が黙って無効になる。** ``git status`` は
+    無視対象を 1 行も出さないので、返ってくるのは空集合 ―― :func:`_dirty_paths`
+    から見ると「聞けたが 1 件も編集されていない」と**区別が付かない**。
+    ``.arp/`` を丸ごと無視しているプロジェクトでは、手で直したパース結果が
+    確認なしで上書きされる（実測でそうなっていた）。
+
+    「git が使えない」（``None``）は最初から安全側に倒してあったのに、
+    **「見えていない」だけが安全側に倒れていなかった** ―― 危ないほうが
+    静かなのは、arp4 がいちばん避けたい形である。
+    """
+    try:
+        found = subprocess.run(["git", "check-ignore", "-q", str(root)],
+                               capture_output=True, cwd=root, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False                               # 判定できない → _dirty_paths へ
+    return found.returncode == 0                   # 0 = 無視されている
+
+
+def _dirty_paths(root: Path) -> tuple[set[Path] | None, str]:
+    """``root`` の下で git が「変わっている」と言うパス**と、聞けなかった理由**。
+
+    理由を一緒に返すのは、**申告の文句が理由で変わる**からである（``P021``）
+    ―― 「置き場が無視されている」と「git が無い」では読み手の次の一手が違う。
+    ここで返さないと、申告を書くときにもう一度 git を起こすことになる。
+
+    パスの側は **1 度で全部聞く。**
 
     以前は 1 ファイルにつき ``git status`` を 1 回起動していた。1 件 23ms は
     どうということのない数だが、**シート 1 枚がファイル 1 本**なので 30 冊
@@ -742,12 +797,14 @@ def _dirty_paths(root: Path) -> set[Path] | None:
     （空集合は「聞けたが 1 件も編集されていない」）。
     """
     if not root.exists():
-        return set()                               # 最初のラウンド（まだ何も無い）
+        return set(), ""                           # 最初のラウンド（まだ何も無い）
+    if ignored(root):
+        return None, "置き場が .gitignore されています"   # 見えていない
     try:
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                              capture_output=True, text=True, cwd=root, timeout=10)
         if top.returncode != 0:
-            return None
+            return None, "git の作業ツリーではありません"
         # ``-z`` は NUL 区切りで**引用も退避もしない** ―― 日本語のファイル名が
         # 普通に並ぶこの置き場では、既定の引用形式だと自前で戻す羽目になる。
         # ``--untracked-files=all`` はフォルダにまとめさせないため（まとめられると
@@ -757,15 +814,16 @@ def _dirty_paths(root: Path) -> set[Path] | None:
              "--untracked-files=all", "--", str(root)],
             capture_output=True, cwd=root, timeout=60)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, "git を起動できません"
     if status.returncode != 0:
-        return None
+        return None, "git status が失敗しました"
     try:
         text = status.stdout.decode("utf-8")
     except UnicodeDecodeError:
-        return None                                # 読めないなら安全側（全部確認）
+        return None, "git の出力が読めません"        # 安全側（全部確認）
     base = Path(top.stdout.strip())
-    return {(base / entry[3:]).resolve() for entry in text.split("\0") if entry}
+    return {(base / entry[3:]).resolve()
+            for entry in text.split("\0") if entry}, ""
 
 
 def _why(path: Path, exc: Exception) -> str:

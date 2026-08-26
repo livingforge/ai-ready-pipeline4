@@ -49,7 +49,7 @@ def test_全部整理されていれば通る(round_: Round, model: Metamodel) -
     assert not report.blocked
     assert report.metrics == {"parsed_files": 1, "anchors": 2, "records": 1,
                               "references": 0, "out_of_scope": 1,
-                              "unreadable": 0, "unclaimed": 0,
+                              "unreadable": 0, "revisions": 0, "unclaimed": 0,
                               "known_gaps": 0, "known_gaps_silenced": 0}
 
 
@@ -356,20 +356,67 @@ def test_凍結後の編集はG009(round_: Round, model: Metamodel) -> None:
     assert codes(findings) == ["G009"]
 
 
+def _amend(round_: Round, file: str, **extra) -> None:
+    """``.frozen.yml`` に手当てを 1 件書く。"""
+    from arp4 import yamlio
+    manifest = yamlio.load(round_.frozen)
+    manifest["amendments"] = [{"file": file, **extra}]
+    yamlio.dump(round_.frozen, manifest)
+
+
 def test_理由を残せば凍結後の修正も通る(round_: Round, model: Metamodel) -> None:
     """**例外の経路は用意する。** ただし理由が残り、例外として見える。"""
     _setup(round_)
     freeze.apply(round_, freeze.gate(round_, model, {}))
-    path = round_.organized / "資料/a.xlsx/受注テーブル.yml"
+    name = "資料/a.xlsx/受注テーブル.yml"
+    path = round_.organized / name
     write(path, path.read_text(encoding="utf-8").replace("文字列", "数値"))
 
-    from arp4 import yamlio
-    manifest = yamlio.load(round_.frozen)
-    manifest["amendments"] = [{"file": "資料/a.xlsx/受注テーブル.yml",
-                               "reason": "利用者の指示により型を修正"}]
-    yamlio.dump(round_.frozen, manifest)
+    _amend(round_, name, now=freeze.hashes(round_)[name],
+           reason="利用者の指示により型を修正")
 
     assert freeze.verify(round_) == []
+
+
+def test_手当ては1回きりで番人を外さない(round_: Round, model: Metamodel) -> None:
+    """**「1 か所直した」が「そのファイルの番人を恒久的に外す」ことにならない。**
+
+    長いあいだ ``file`` だけを見て免除していた ―― 文書は最初から ``was`` /
+    ``now`` を書く形を示しているのに、コードはその 2 つを一度も読んでいなかった。
+    一度でも手当てを書けば、以後どう書き換えても `G009` が鳴らなかった。
+    """
+    _setup(round_)
+    freeze.apply(round_, freeze.gate(round_, model, {}))
+    name = "資料/a.xlsx/受注テーブル.yml"
+    path = round_.organized / name
+    write(path, path.read_text(encoding="utf-8").replace("文字列", "数値"))
+    _amend(round_, name, now=freeze.hashes(round_)[name],
+           reason="利用者の指示により型を修正")
+    assert freeze.verify(round_) == []                 # 承知した中身そのもの
+
+    write(path, path.read_text(encoding="utf-8")
+          + "# 誰も頼んでいない書き換え" + chr(10))
+
+    assert codes(freeze.verify(round_)) == ["G009"]    # ここが黙っていた
+
+
+def test_nowの無い手当ては免除しない(round_: Round, model: Metamodel) -> None:
+    """**書き方が足りない宣言は宣言として数えない**（`reason` と同じ規律）。
+
+    ファイル名だけで免除に倒すと**穴がそのまま戻る** ―― しかも戻ったことは
+    誰にも見えない（免除は成功の顔をしている）。
+    """
+    _setup(round_)
+    freeze.apply(round_, freeze.gate(round_, model, {}))
+    name = "資料/a.xlsx/受注テーブル.yml"
+    path = round_.organized / name
+    write(path, path.read_text(encoding="utf-8").replace("文字列", "数値"))
+
+    _amend(round_, name, reason="now を書き忘れた")
+    assert codes(freeze.verify(round_)) == ["G033", "G009"]
+
+    _amend(round_, name, now=freeze.hashes(round_)[name])   # 今度は理由が無い
+    assert codes(freeze.verify(round_)) == ["G033", "G009"]
 
 
 def test_絵があるのに未読取のままなら注意する(project: Paths, round_: Round,
@@ -1054,3 +1101,134 @@ records:
 """)
 
     assert "G005" in codes(freeze.gate(round_, model, {}).findings)
+
+
+# ── 版の判断（G034） ────────────────────────────────────────────
+#: 旧版と新版が 1 つの塊に並んだパース結果。**日本の設計書では普通の書かれ方**
+#: である（改訂で行を消さず、対比表にして残す）。
+_VERSIONED = """# a.xlsx / 受注テーブル
+
+<!-- source: 資料/a.xlsx / シート: 受注テーブル -->
+
+## 表 B5:H8  <!-- a:s1-t1 at=B5:H8 -->
+
+| 項目 | 旧仕様 | 新仕様 |
+|---|---|---|
+| 受注データの保持期間 | 5 年 | 7 年 |
+
+## セル B2  <!-- a:s1-x1 at=B2 -->
+
+- `B2` 受注テーブル定義書
+"""
+
+_VERSIONED_ORGANIZED = """records:
+  - concept: c-受注データの保持期間
+    type: 業務ルール
+    name: 受注データの保持期間
+    statement: 受注データは 7 年間保持すること
+    attrs: { rule_kind: business }
+    source: { anchor: s1-t1 }
+out_of_scope:
+  - { anchor: s1-x1, reason: 表題 }
+"""
+
+
+def _versioned(round_: Round, organized_body: str = _VERSIONED_ORGANIZED) -> None:
+    parsed(round_, "資料/a.xlsx/受注テーブル.md", _VERSIONED)
+    organized(round_, "資料/a.xlsx/受注テーブル.yml", organized_body)
+
+
+def test_版が併記された塊を判断せずに写したらG034(round_: Round,
+                                                  model: Metamodel) -> None:
+    """**同じ concept に 2 つの statement が集まると、`build` は「長いほうを
+    採る」（`B023`）でしか決められない。** 新旧と無関係な基準で現行仕様が
+    決まり、`publish` は正本のとおり出すだけなので**どこも止まらない。**
+    """
+    _versioned(round_)
+    report = freeze.gate(round_, model, {})
+
+    assert "G034" in codes(report.findings)
+    assert report.blocked
+
+
+def test_版を宣言すればG034は消える(round_: Round, model: Metamodel) -> None:
+    _versioned(round_, _VERSIONED_ORGANIZED + """revisions:
+  - { anchor: s1-t1, adopted: 新仕様, dropped: 旧仕様（5 年）,
+      reason: 改訂履歴 s2-t1 で第 3.2 版に置き換わっている }
+""")
+    report = freeze.gate(round_, model, {})
+
+    assert not report.blocked
+    assert report.metrics["revisions"] == 1
+
+
+def test_版の別ではなかったときは理由だけで打ち消せる(round_: Round,
+                                                      model: Metamodel) -> None:
+    """**誤検出に降りる口が無いと、嘘の版を書かせることになる。**「廃止」が
+    帳票の廃止申請のことである資料は普通にある ―― そこで `dropped` を必須に
+    すると、書く人は無い版を作るか、指摘を読まなくなるかのどちらかへ行く。
+    """
+    _versioned(round_, _VERSIONED_ORGANIZED + """revisions:
+  - { anchor: s1-t1, reason: 「旧仕様」は移行元システムの説明で、この資料の版ではない }
+""")
+    report = freeze.gate(round_, model, {})
+
+    assert not report.blocked
+
+
+def test_塊ごと旧版なら宣言1行で未整理も消える(round_: Round,
+                                              model: Metamodel) -> None:
+    """**同じ判断を 2 行に割らない。** `out_of_scope` にも書かせると、版の
+    台帳と対象外宣言のどちらが正かが後から決まらなくなる。
+    """
+    _versioned(round_, """revisions:
+  - { anchor: s1-t1, dropped: 第2.0版, reason: 第3.2版の同じ表に置き換わっている }
+  - { anchor: s1-x1, dropped: 第2.0版, reason: 同上 }
+""")
+    report = freeze.gate(round_, model, {})
+
+    assert "G001" not in codes(report.findings)
+    assert not report.blocked
+
+
+def test_打ち消しの宣言はアンカーを覆わない(round_: Round,
+                                            model: Metamodel) -> None:
+    """`reason` だけの宣言は何も落としていない ―― 覆うと**整理していない塊が
+    整理済みになる。**"""
+    _versioned(round_, """revisions:
+  - { anchor: s1-t1, reason: 版の別ではない }
+  - { anchor: s1-x1, reason: 版の別ではない }
+""")
+    report = freeze.gate(round_, model, {})
+
+    assert "G001" in codes(report.findings)
+
+
+def test_取り消し線のあるファイルはファイル1件でG034(round_: Round,
+                                                    model: Metamodel) -> None:
+    """宣言は表の塊（`s1-t1`）に付き、線の番地は別の塊（`s1-d1`）に出る ――
+    アンカーを揃えて探すと**いちばん多い形を取りこぼす。**
+    """
+    parsed(round_, "資料/a.xlsx/受注テーブル.md", _PARSED + """
+## 取り消し線 B7  <!-- a:s1-d1 at=B7 -->
+
+- `B7` 受注番号（廃止）
+""")
+    organized(round_, "資料/a.xlsx/受注テーブル.yml", _ORGANIZED + """  - { anchor: s1-d1, reason: 取り消し線の番地 }
+""")
+    report = freeze.gate(round_, model, {})
+
+    said = [f for f in report.findings if f.code == "G034"]
+    assert len(said) == 1 and said[0].target == "s1-d1"
+
+
+def test_版の判断のアンカーが実在しなければG004(round_: Round,
+                                              model: Metamodel) -> None:
+    """**幻覚の最頻形は「存在しない出典」。** 版の宣言も例外ではない。"""
+    _versioned(round_, _VERSIONED_ORGANIZED + """revisions:
+  - { anchor: s9-t9, adopted: 新仕様, dropped: 旧仕様, reason: 改訂で置き換わった }
+""")
+    report = freeze.gate(round_, model, {})
+
+    assert "G004" in codes(report.findings)
+
