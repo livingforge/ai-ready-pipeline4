@@ -1,0 +1,162 @@
+name: program-design
+title: プログラム設計書
+output: プログラム設計書
+phase: プログラム設計      # out/ のフォルダはこれで決まる
+# **詳細設計書とは読み手が違う。** あちらは設計を承認する人が読む完成物で、
+# ここは**実装する側（人でも生成器でも）が、決めなくてよいことを決めずに済ませる
+# ための表**である ―― 引数の実名・SQL・URL・疑似コードを向こうへ混ぜると、
+# 承認の単位に実装の細目が入って読めなくなる（→ metamodel.yml の layers）。
+#
+# **向こうにある欄はここへ写さない。** モジュールの仕様・メソッドのシグネチャ・
+# 処理フローの並びは詳細設計書が出しており、写すと `P106`（同じ本文が 2 冊）に
+# なる ―― 詳細設計書がメッセージの定義について「表示 ID で参照するだけにする」と
+# 書いているのと同じ規律である。ここが出すのは**実装の座標と契約だけ**である。
+sections:
+  # 規約 1 条 = 1 行。**この表が 1 枚あるかどうかで、生成の揺れがいちばん動く**
+  # ―― 言語・配置・命名・型写像が決まっていなければ、同じ正本から出したものが
+  # 毎回違う場所に違う名前で落ちる。`group_by` で割らない（区分ごとに 1〜2 行
+  # しかない案件が普通で、節が中身より多くなる）。
+  # **型写像の 3 欄（論理型・綴り・桁が無いときの綴り）も同じ表に出す。**
+  # 章を分けたほうが読みやすいが、分けると**どちらの章にも出ない欄ができる**
+  # ―― 規約の側は写像の 3 欄を、写像の側は `rule` / `example` を落とすので、
+  # そこへ書いた値が束のどこにも現れない（`P111`。`business-rule` を 2 冊へ
+  # 振り分けたときに `subsystem` 54 件が消えたのと同じ形である）。
+  # 使わない欄は publish が「全行が空だったので省略」で畳む。
+  #
+  # **`arp4 emit` が読むのは写像の 3 欄である**（散文の `rule` ではない）。
+  - heading: 実装規約
+    type: implementation-standard
+    columns: [standard_id, standard_kind, language, name, rule, example,
+              logical_type, physical_type, default_type,
+              statement, description, source]
+
+  # **座標だけを出す。** 名称・仕様・クラス名・パッケージは詳細設計書の
+  # 「モジュール一覧」にあり、ここに要るのは「どの言語で、どのファイルに出るか」
+  # である。`name` は行を引くための鍵として残す（ID だけの表は照合できない）。
+  - heading: モジュールの実装
+    type: module
+    columns: [module_id, name, language, source_path]
+
+  # **契約はシグネチャとは別のものである。** 詳細設計書の「メソッド定義」は
+  # 資料に書かれた `signature` / `returns` / `raises` を写す表で、そこには
+  # **呼ぶ前に成り立っていること**も**呼んだあと保証されること**も無い ――
+  # 疑似コードの中に混ぜると、検証の対象でなくなる。
+  #
+  # `method_name` を別に出すのは、`name`（日本語の見出し）でも `signature`
+  # （資料の写し）でも**実名が確定していなかった**ためである。
+  - heading: メソッドの契約
+    type: method
+    columns: [method_id, name, method_name, visibility,
+              precondition, postcondition]
+
+  # 引数 1 本 = has-parameter 関係 1 本。**並びが仕様である**（呼び出しの順）。
+  - heading: 引数
+    kind: relation
+    relation: has-parameter
+    group_by: from
+    labels: { "to.name": 引数の名称, "to.description": 引数の補足,
+              description: この行の補足 }
+    columns: [order, "to.param_name", "to.name", "to.impl_type", "to.direction",
+              "to.optional", "to.nullable", "to.default_value", "to.statement",
+              "to.description", description, "to.source"]
+
+  # **型は正本の語彙で指す。** ここに行がある引数は、実装型を言語ごとに書かなくて
+  # よい（実装規約の型写像が決める）―― `impl_type` が埋まっているのは、正本に
+  # 相手が無い型（`Path` / `list[str]` / フレームワークの型）だけである。
+  - heading: 引数の型
+    kind: relation
+    relation: typed-as
+    labels: { "from.name": 引数の名称, to: 型, description: 補足 }
+    columns: ["from.param_name", "from.name", to, description]
+
+  # **引数と分けてある。** 1 表に畳むと `from` の列だけで引数と戻り値を読み分ける
+  # ことになる（関係の章は `where` を適用しない）。
+  - heading: 戻り値の型
+    kind: relation
+    relation: returns-type
+    labels: { "from.name": メソッド, to: 型, description: 補足 }
+    columns: ["from.method_id", "from.name", to, description]
+
+  # **呼出関係（詳細設計書）とは別のものである。** 呼ぶことと持つことは違う ――
+  # 注入する相手はコンストラクタに現れ、呼ばないメソッドがあっても消えない。
+  # 両端が同じ種別なので `labels` で名指しする（呼出関係と同じ形）。
+  - heading: 依存
+    kind: relation
+    relation: depends-on
+    labels: { "from.name": 依存する側, to: 依存先, description: 補足 }
+    columns: ["from.name", to, "to.class_name", injection, field_name,
+              description]
+
+  # **CRUD 図では問い合わせを組めない。** あちらは「このモジュールがこの表を
+  # 触る」までで、どの列をどの条件でどの順に引くかは決まらない ―― 実測の
+  # 4 言語すべてで、ここが空白なら生成のたびに違う問い合わせが出る。
+  - heading: 問い合わせ
+    type: query
+    columns: [query_id, name, operation, select_columns, condition, order_by,
+              row_limit, lock, sql, statement, description, source]
+
+  - heading: 問い合わせの対象
+    kind: relation
+    relation: queries
+    labels: { "from.name": 問い合わせ, to: 対象テーブル, description: 補足 }
+    columns: ["from.query_id", "from.name", to, "to.physical_name", description]
+
+  # 使う側は メソッド / バッチステップ / 処理ステップ の 3 種別に跨がるので、
+  # **表示 ID の列を出す**（種別が読めないと、同じ名前の行が並んだときに引けない）。
+  - heading: 問い合わせの利用
+    kind: relation
+    relation: uses-query
+    labels: { from: 使う側, "from.name": 使う側の名称, to: 問い合わせ,
+              "to.name": 問い合わせの名称, description: 補足 }
+    columns: [from, "from.name", to, "to.name", description]
+
+  # **`screen.route` では足りない。** あれは画面 1 枚の識別子で、1 画面が叩く口は
+  # 普通 3 本も 4 本もある ―― JS / TS を生成の対象に入れた時点で、画面側と
+  # 実装側が同じものを見る必要がある。
+  - heading: エンドポイント
+    type: endpoint
+    columns: [endpoint_id, name, http_method, path, media_type, status_codes,
+              auth, statement, description, source]
+
+  - heading: 公開するモジュール
+    kind: relation
+    relation: exposes
+    labels: { "from.name": 公開するモジュール, to: API, "to.name": APIの名称,
+              description: 補足 }
+    columns: [order, "from.name", to, "to.name", description]
+
+  - heading: APIの処理
+    kind: relation
+    relation: handles
+    labels: { "from.name": API, to: 処理するメソッド, description: 補足 }
+    columns: ["from.endpoint_id", "from.name", to, "to.method_name", description]
+
+  # 電文の項目 1 行 = carries 関係 1 本。画面項目定義書（`displays`）・
+  # 外部インターフェース（`interfaces`）と同じ形である ―― **その口でしか通じない
+  # 名前と要否は関係側に持つ。** 同じデータ項目が要求では必須、応答では省略という
+  # 形で普通に出る。
+  - heading: 電文の項目
+    kind: relation
+    relation: carries
+    labels: { "from.name": API, "to.name": 項目, description: この行の補足 }
+    columns: [order, "from.name", part, "to.name", physical_name, required_flag,
+              "to.data_type", "to.length", note, description, "to.source"]
+
+  - heading: 画面・外部IFが呼ぶAPI
+    kind: relation
+    relation: serves
+    labels: { from: 呼ぶ側, "from.name": 呼ぶ側の名称, to: API,
+              "to.name": APIの名称, description: 補足 }
+    columns: [from, "from.name", to, "to.name", description]
+
+  # **論理はここで止める。** 1 文 = 1 レコードの形式アクション言語にすると
+  # 正本が YAML で書いたソースコードになり、設計書として読めるものが出せなくなる
+  # ―― 代わりに、上の表で呼び出しの境界（引数・戻り値・問い合わせ・
+  # エンドポイント・例外）を全部固めたうえで、残りを疑似コードで書く。
+  # そうすると**揺れはメソッドの内側に閉じ、隣のモジュールへ伝播しない。**
+  #
+  # 手順の並びと分岐は詳細設計書の「処理フロー」「処理フローの分岐」にある
+  # （`has-process-step` / `proceeds-to`）―― ここはその 1 手順の中身だけを出す。
+  - heading: 疑似コード
+    type: process-step
+    columns: [step_id, name, pseudo, source]

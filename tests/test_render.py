@@ -57,6 +57,54 @@ def test_分割は数行ぶん重ねる() -> None:
         assert following.rows[0] > previous.rows[0]        # かつ必ず前へ進む
 
 
+def test_端数の1枚は手前と分け合う() -> None:
+    """予算まで詰めて余りを送ると **1380 px と 200 px** のように割れる。
+
+    薄いほうは「境界を跨いだ図形の下端」しか写らない細長い帯になり、長辺を
+    :data:`TARGET_PX` へ揃えるところでその帯だけが引き伸ばされる（実測 ――
+    `3.業務フロー` で 1552x200 の区画が出た）。**枚数は変えずに厚みを分ける。**
+    """
+    tiles = render.plan_worksheet(_sheet(rows=77), max_px=1400, overlap=2)
+
+    assert len(tiles) == 2                              # 枚数は増やさない
+    assert tiles[0].rows == (1, 38) and tiles[1].rows == (37, 77)
+    assert min(tile.height_px for tile in tiles) >= 1400 * render.TAIL_RATIO
+    assert max(tile.height_px for tile in tiles) <= 1400
+
+
+def test_重なりしか無い1枚は作らない() -> None:
+    """**新しく見えるものが無い 1 枚は撮っても仕方がない。**
+
+    厚みがあっても、手前の 1 枚に無い行が重ね幅ぶんしか無ければ中身はほぼ重複
+    である（実測 ―― `ER図` の右端は 3 列のうち 2 列が重なりだった）。
+    """
+    sheet = _sheet(rows=72)
+    for row in (71, 72):
+        sheet.row_dimensions[row].height = 150.0        # 200 px ―― 薄くはない
+
+    tiles = render.plan_worksheet(sheet, max_px=1400, overlap=2)
+
+    assert len(tiles) == 2
+    assert tiles[1].rows[1] - tiles[0].rows[1] > 2      # 重ね幅より多く進む
+    assert max(tile.height_px for tile in tiles) <= 1400
+
+
+def test_逃げ列だけの短冊は作らない() -> None:
+    """右の逃げ（:data:`MARGIN_PX`）は**撮る対象ではないので予算に数えない。**
+
+    数えると合計が :data:`WIDE_PX` を越えた拍子に横へ割れ、値も図形も無い短冊が
+    1 枚できる ―― しかも**横に割ることそのものが最後の手段**なのに、逃げの都合で
+    1 行が 2 枚に分かれる。
+    """
+    sheet = _sheet(rows=5, cols=33)                     # 33 列 x 64 px = 2112 px
+
+    tiles = render.plan_worksheet(sheet, wide_px=2200)
+
+    assert len(tiles) == 1, "逃げ列のぶんだけで横に割れている"
+    assert tiles[0].cols[1] > 33                        # 逃げは付いている
+    assert tiles[0].width_px > 2200                     # 予算の外で付いている
+
+
 def test_横は広いときだけ切る() -> None:
     """1 行が 2 枚に分かれると対応が取れないので、横は最後の手段。"""
     wide = _sheet(rows=5, cols=25)                          # 25 列 x 64 px

@@ -37,6 +37,7 @@ def parsed(corpus_source: Path, tmp_path_factory: pytest.TempPathFactory):
     class _Round:
         parsed = tmp_path_factory.mktemp("parsed")
         images = tmp_path_factory.mktemp("images")
+        prints = parsed.parent / "sources.yml"     # 撮った版の記録（まだ無い）
 
     targets, findings = parse.plan(_Round(), [corpus_source], corpus_source)
     docs = {t.path.relative_to(_Round.parsed).as_posix(): t.doc for t in targets}
@@ -86,6 +87,7 @@ def test_旧形式は何をすれば読めるかまで言う(tmp_path: Path) -> 
     class _Round:
         parsed = tmp_path / "parsed"
         images = tmp_path / "images"
+        prints = tmp_path / "sources.yml"
 
     (tmp_path / "旧.xls").write_bytes(b"legacy")
     _, findings = parse.plan(_Round(), [tmp_path], tmp_path)
@@ -160,6 +162,7 @@ def test_番地を並べきれないときは省いたと言う(tmp_path: Path) 
     class _Round:
         parsed = tmp_path / "parsed"
         images = tmp_path / "images"
+        prints = tmp_path / "sources.yml"
 
     book = Workbook()
     for row in range(1, 26):

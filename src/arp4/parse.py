@@ -87,7 +87,6 @@ import datetime as dt
 import hashlib
 import os
 import re
-import subprocess
 import warnings
 import xml.etree.ElementTree as ET
 import zipfile
@@ -193,6 +192,14 @@ _SPARSE = 8
 #: ―― 3 行 3 列に値が 3 つは**書きかけの表**であって工程表ではない。
 _SPARSE_AREA = 100
 
+#: 結合 1 つを**升として数える上限**（行 × 列）。これを超えるものは升ではなく
+#: **帯や枠**である ―― 表紙の題字を用紙いっぱいに結合したもの、表の背景に敷いた
+#: 1 枚の箱がそれで、覆っているところを埋まっていると数えると**シート 1 枚が
+#: まるごと 1 つの塊**になる（使用範囲が 100 列 × 1,000 行なら、値 1 個の枠から
+#: 10 万升の格子が生える）。方眼紙の論理列は 1 行 × 数列、説明欄でも数行 × 数十列
+#: なので、ここで切っても表の升は 1 つも落ちない。
+_MERGE_AREA = 200
+
 
 @dataclass(frozen=True)
 class Media:
@@ -228,10 +235,12 @@ class Target:
     path: Path                     # 書き出し先
     doc: mdio.Doc
     exists: bool = False
-    dirty: bool = False            # git 上で編集されているか
-    #: 編集の有無を**確かめられなかった**（git が使えない・置き場が無視されている）。
-    #: :attr:`dirty` と分けるのは、**申告の文句が違う**からである ―― 「編集済みを
-    #: 守りました」と言うと、確かめていないことが確かめた顔で出る。
+    #: 手で直されているか ―― **手元の中身が、arp4 が書いた版と違う**。
+    dirty: bool = False
+    #: 編集の有無を**確かめられなかった**（arp4 が書いた版を記録していない
+    #: ラウンドで、中身が機械の出力と違う）。:attr:`dirty` と分けるのは、
+    #: **申告の文句が違う**からである ―― 「編集済みを守りました」と言うと、
+    #: 確かめていないことが確かめた顔で出る。
     unverified: bool = False
     #: 元にした原本。**1 冊が何枚ものパース結果になる**ので、書き出し先からは
     #: 逆に辿れない（``受注.xlsx`` → ``受注/一覧.md`` ほか 8 枚）。指紋を残すのは
@@ -268,7 +277,7 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
     """
     targets: list[Target] = []
     findings: list[Finding] = []
-    dirty, blind = _dirty_paths(round_.parsed)
+    machine = written_prints(round_)
     missed: list[tuple[Path, str]] = []
 
     expanded = sorted(expand(sources, missed))
@@ -298,17 +307,17 @@ def plan(round_: Round, sources: Iterable[Path], base: Path,
             # 揃えてあるので、どの md のどのアンカーの画像かを人が突き合わせ
             # ずに済む（:attr:`arp4.paths.Round.images`）。
             where = round_.images / relative.parent
+            edited, unverified = _state(out, doc, machine)
             targets.append(Target(path=out, doc=doc, exists=out.is_file(),
-                                  dirty=out.is_file() and _edited(out, dirty),
-                                  unverified=bool(blind) and out.is_file(),
+                                  dirty=edited, unverified=unverified,
                                   origin=path,
                                   images=[(where / one.name, one.body)
                                           for one in media.get(relative, [])]))
 
     findings += _missed_note(missed)
     findings += _ocr_note(targets, use_ocr)
-    findings += _blind_note(round_, targets, blind)
-    targets, clashes = _unique(targets, dirty)
+    findings += _unrecorded_note(round_, targets)
+    targets, clashes = _unique(targets, machine)
     findings += [Finding("warn", "P002", was.name,
                          f"書き出し先が重なったので名前を変えました → {now.name}"
                          "（シート名の記号を落とすと別のシートが同じファイル名に"
@@ -352,7 +361,7 @@ def _excluded(paths: list[Path], base: Path, patterns: list[str]
     return kept, findings
 
 
-def _unique(targets: list[Target], dirty: set[Path] | None
+def _unique(targets: list[Target], machine: dict[Path, str]
             ) -> tuple[list[Target], list[tuple[Path, Path]]]:
     """書き出し先を一意にする。**衝突を黙って上書きしない。**
 
@@ -377,8 +386,9 @@ def _unique(targets: list[Target], dirty: set[Path] | None
             index += 1
         taken.add(renamed)
         clashes.append((target.path, renamed))
+        edited, unverified = _state(renamed, target.doc, machine)
         fixed.append(_replace(target, path=renamed, exists=renamed.is_file(),
-                              dirty=renamed.is_file() and _edited(renamed, dirty),
+                              dirty=edited, unverified=unverified,
                               images=_restem(target, renamed.stem)))
     return fixed, clashes
 
@@ -450,9 +460,15 @@ def record(round_: Round, targets: Iterable[Target],
 
     既にある記録には**重ねる**（消さない）。``arp4 parse`` は資料の一部だけを
     撮り直す使い方をするので、置き換えにすると前に撮った 29 冊の指紋が消える。
+
+    ``written`` の側（**書いた版の指紋**）も同じところに残す。次の実行の番人は
+    これと手元の中身を突き合わせて編集の有無を決めるので（:func:`_state`）、
+    **書かなかったものの版は絶対に触らない** ―― 上書きを見送ったパース結果の版を
+    「いま書いた版」で更新すると、守った編集が次の実行で未編集に見える。
     """
     keep = None if written is None else {Path(p) for p in written}
     entries: dict[str, dict[str, Any]] = {}
+    prints: dict[str, str] = {}
     for target in targets:
         if target.origin is None:
             continue
@@ -468,6 +484,7 @@ def record(round_: Round, targets: Iterable[Target],
         name = target.path.relative_to(round_.parsed).as_posix()
         if name not in entry["parsed"]:
             entry["parsed"].append(name)
+        prints[name] = content_digest(mdio.dump(target.doc))
         # **取り出した画像も名前で残す。** パース結果と同じ理由である ―― 原本を
         # 撮り直したときに、前の版から出ていた画像がどれかが分からないと、
         # **消えた画像と、まだ出していない画像の区別が付かない。**
@@ -479,7 +496,11 @@ def record(round_: Round, targets: Iterable[Target],
         return None
 
     previous = yamlio.load(round_.prints) if round_.prints.is_file() else None
-    files = dict((previous or {}).get("files") or {}) if isinstance(previous, dict) else {}
+    previous = previous if isinstance(previous, dict) else {}
+    files = dict(previous.get("files") or {})
+    kept = previous.get("written")
+    written_prints_ = dict(kept) if isinstance(kept, dict) else {}
+    written_prints_.update(prints)
     for key, entry in entries.items():
         entry["parsed"] = sorted(entry["parsed"])
         # **画像の無い資料に空の欄を出さない。** 30 冊のうち画像があるのは
@@ -489,7 +510,9 @@ def record(round_: Round, targets: Iterable[Target],
         else:
             entry.pop("images")
         files[key] = entry
-    yamlio.dump(round_.prints, {"files": dict(sorted(files.items()))})
+    yamlio.dump(round_.prints,
+                {"files": dict(sorted(files.items())),
+                 "written": dict(sorted(written_prints_.items()))})
     return round_.prints
 
 
@@ -723,107 +746,115 @@ def relative_path(path: Path, base: Path) -> Path:
         return Path(path.name)
 
 
-def _blind_note(round_: Round, targets: list[Target], blind: str) -> list[Finding]:
-    """上書きの番人が**見えていない**ことの申告（``P021``）。
+def _unrecorded_note(round_: Round, targets: list[Target]) -> list[Finding]:
+    """**arp4 が書いた版を知らないまま守った**ことの申告（``P022``）。
 
-    黙ると、確認なしで飛ばされた側にも、確認を求められた側にも理由が残らない
-    ―― パース結果は編集してよい面なので、「編集の有無が分からない」は
-    **資料が読めなかったのと同じ重さ**である。
+    黙ると、守られた側にも上書きされた側にも理由が残らない ―― パース結果は
+    編集してよい面なので、「編集の有無が分からない」は**資料が読めなかったのと
+    同じ重さ**である（``P021`` を置いていたのと同じ線引きで、変わったのは
+    「分からない」の理由だけである）。
 
-    初回の parse では言わない（上書きする相手がいないので、番人が見えていても
-    いなくても結果が同じである）。
+    出るのは 2 つの場合だけで、どちらも**そのラウンドで 1 度書けば消える** ――
+    指紋を残す前の arp4 で撮ったラウンドと、arp4 自身の出力が変わったとき
+    （版を上げた・OCR の読みが環境で変わった）である。
     """
-    if not blind or not any(t.exists for t in targets):
+    unknown = [target for target in targets if target.unverified]
+    if not unknown:
         return []
     return [Finding(
-        "warn", "P021", round_.name,
-        f"編集の有無を確かめられません（{blind}）。"
-        "手で直したパース結果を黙って上書きしないため、既にあるものは"
-        "**すべて編集済みとして扱います**",
-        hint=".arp/ を丸ごと無視しているなら .arp/out/ だけに狭めてください"
-             "（そうすれば編集したものだけが確認の対象になります）。"
-             "承知のうえで上書きするなら --yes")]
+        "warn", "P022", round_.name,
+        f"arp4 が書いた版を記録していないパース結果があります（{len(unknown)} 件）。"
+        "手元の中身が機械の出力と違うので、**手で直したものとして守りました**",
+        hint="古い arp4 で撮ったラウンドか、arp4 の出力そのものが変わったときに"
+             "出ます。撮り直してよいなら --yes（1 度書けば sources.yml に版が"
+             "残るので、次からは編集の有無を断定できます）")]
 
 
-def _edited(path: Path, dirty: set[Path] | None) -> bool:
-    """git 上で編集されているか。**``None`` は「git が使えない」**の意味である。
+def content_digest(text: str) -> str:
+    """パース結果の中身の指紋。**改行を揃えてから取る。**
 
-    そのときは全部を「編集あり」に倒す ―― 分からないまま黙って上書きするより、
-    確認が 1 回多いほうがましである。
+    arp4 は LF で書くが、手元のファイルが CRLF になっていることがある
+    （``core.autocrlf`` の効いた Windows で clone し直した置き場）。バイト列の
+    まま取ると**改行だけで全ファイルが「編集済み」に化け**、番人が「守った」の
+    山を出して機能そのものが読み飛ばされる。
+
+    :func:`fingerprint` と桁を揃えてあるが、あちらは**原本**（zip のことがあるので
+    decode を挟めない）で、こちらは**書いたテキスト**である。
     """
-    return True if dirty is None else path.resolve() in dirty
+    return hashlib.sha256(
+        text.replace("\r\n", "\n").encode("utf-8")).hexdigest()[:12]
 
 
-def ignored(root: Path) -> bool:
-    """``root`` が丸ごと ``.gitignore`` されているか。
+def written_prints(round_: Round) -> dict[Path, str]:
+    """``sources.yml`` の ``written`` ―― **arp4 が最後に書いた版の指紋**。
 
-    **これを聞かないと、上書きの番人が黙って無効になる。** ``git status`` は
-    無視対象を 1 行も出さないので、返ってくるのは空集合 ―― :func:`_dirty_paths`
-    から見ると「聞けたが 1 件も編集されていない」と**区別が付かない**。
-    ``.arp/`` を丸ごと無視しているプロジェクトでは、手で直したパース結果が
-    確認なしで上書きされる（実測でそうなっていた）。
+    ``files`` の側（原本の指紋）とは向きが逆である。あちらは「撮った原本がその後
+    変わっていないか」（:func:`drifted`）を、こちらは「**書いたパース結果が
+    その後 人に直されていないか**」を見る。同じ ``sources.yml`` に並べるのは、
+    どちらも「撮った時点」の記録だからである。
 
-    「git が使えない」（``None``）は最初から安全側に倒してあったのに、
-    **「見えていない」だけが安全側に倒れていなかった** ―― 危ないほうが
-    静かなのは、arp4 がいちばん避けたい形である。
+    ``files`` の下に入れずに独立させたのは、**消えてはいけない向きが違う**から
+    である ―― ``files`` の entry は原本 1 件ぶんを撮り直すたびに置き換わるが、
+    ここは**上書きを見送ったパース結果の版も残り続けなければならない**（消えると
+    守った相手が次の実行で「記録の無いもの」に戻る）。
     """
+    if not round_.prints.is_file():
+        return {}
     try:
-        found = subprocess.run(["git", "check-ignore", "-q", str(root)],
-                               capture_output=True, cwd=root, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return False                               # 判定できない → _dirty_paths へ
-    return found.returncode == 0                   # 0 = 無視されている
+        manifest = yamlio.load(round_.prints) or {}
+    except yamlio.YamlError:
+        return {}                              # 壊れていても parse は止めない
+    written = manifest.get("written") if isinstance(manifest, dict) else None
+    if not isinstance(written, dict):
+        return {}
+    return {(round_.parsed / str(name)).resolve(): str(digest)
+            for name, digest in written.items()}
 
 
-def _dirty_paths(root: Path) -> tuple[set[Path] | None, str]:
-    """``root`` の下で git が「変わっている」と言うパス**と、聞けなかった理由**。
+def _state(out: Path, doc: mdio.Doc,
+           machine: dict[Path, str]) -> tuple[bool, bool]:
+    """上書きしてよいか。返すのは ``(編集済み, 確かめられない)`` である。
 
-    理由を一緒に返すのは、**申告の文句が理由で変わる**からである（``P021``）
-    ―― 「置き場が無視されている」と「git が無い」では読み手の次の一手が違う。
-    ここで返さないと、申告を書くときにもう一度 git を起こすことになる。
+    **判定は中身でやる。** 長いあいだここは ``git status`` に聞いていたが、git が
+    答えるのは「**直近のコミットとの差**」であって「**arp4 が書いたものと違うか**」
+    ではない ―― この 2 つは両方向にずれる。
 
-    パスの側は **1 度で全部聞く。**
+    ==========================================  ==============  ==============
+    手元のパース結果                            git の答え      本当のところ
+    ==========================================  ==============  ==============
+    手で直して**コミットした**                  変更なし        **編集済み**
+    parse が書いた直後（コミットしていない）    変更あり        未編集
+    ==========================================  ==============  ==============
 
-    以前は 1 ファイルにつき ``git status`` を 1 回起動していた。1 件 23ms は
-    どうということのない数だが、**シート 1 枚がファイル 1 本**なので 30 冊
-    201 シートの再実行では 201 プロセス ―― 実測 4.6 秒で、パース本体
-    （1.3 秒）より長い。まとめて 1 回なら 0.02 秒である。
+    上の行が危ないほうである ―― 実測で、手で直してコミットしたパース結果は
+    **確認なしで機械の出力に戻っていた**。番人が置いてあるのに、いちばん
+    普通の使い方（直した・コミットした・資料を 1 冊足して撮り直した）で
+    黙って消える。下の行はその逆で、**arp4 自身が書いたものを「編集済み」と
+    名乗って守り**、資料を足すたびに「守りました」の山を出していた。
 
-    ここは「遅いから通さない」が始まる場所である（使用範囲を端から端まで
-    回して 1 シート 7.5 秒かかっていたのと同じ形）―― **性能の問題が
-    網羅性の問題になる。**
+    いま見るのは 3 つだけである。
 
-    ``None`` を返すのは git が使えないときだけで、**空集合とは意味が違う**
-    （空集合は「聞けたが 1 件も編集されていない」）。
+    1. ``sources.yml`` の ``written`` に版がある → **中身と突き合わせて断定する**
+       （git も置き場の ``.gitignore`` も関係が無い）
+    2. 記録は無いが、いま出した機械の出力と 1 バイトも違わない → 未編集
+    3. どちらでもない → **守る**が、``確かめられない`` として申告する
+       （``P022``）―― 古い arp4 で撮ったラウンドか、arp4 の出力そのものが
+       変わったときなので、「編集済み」と断定はできない
     """
-    if not root.exists():
-        return set(), ""                           # 最初のラウンド（まだ何も無い）
-    if ignored(root):
-        return None, "置き場が .gitignore されています"   # 見えていない
+    if not out.is_file():
+        return False, False                    # 初めて書く（守る相手がいない）
     try:
-        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, cwd=root, timeout=10)
-        if top.returncode != 0:
-            return None, "git の作業ツリーではありません"
-        # ``-z`` は NUL 区切りで**引用も退避もしない** ―― 日本語のファイル名が
-        # 普通に並ぶこの置き場では、既定の引用形式だと自前で戻す羽目になる。
-        # ``--untracked-files=all`` はフォルダにまとめさせないため（まとめられると
-        # 書いたばかりのファイルが 1 件も出てこない）。
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "-z", "--no-renames",
-             "--untracked-files=all", "--", str(root)],
-            capture_output=True, cwd=root, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None, "git を起動できません"
-    if status.returncode != 0:
-        return None, "git status が失敗しました"
-    try:
-        text = status.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        return None, "git の出力が読めません"        # 安全側（全部確認）
-    base = Path(top.stdout.strip())
-    return {(base / entry[3:]).resolve()
-            for entry in text.split("\0") if entry}, ""
+        current = content_digest(out.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        # 読めないものを黙って上書きしない。**中身を見られないのだから、
+        # 編集済みかどうかも言えない**（守るが、断定はしない）。
+        return True, True
+    recorded = machine.get(out.resolve())
+    if recorded is not None:
+        return current != recorded, False
+    if current == content_digest(mdio.dump(doc)):
+        return False, False                    # 機械の出力そのもの
+    return True, True
 
 
 def _why(path: Path, exc: Exception) -> str:
@@ -1161,7 +1192,7 @@ def _excel(path: Path, relative: Path, use_ocr: bool = True
         if drawing.series:
             doc.notes.append(_chart_note(index, drawing))
         tables = texts = 0
-        for region in _regions(cells):
+        for region in _regions(cells, sheet_cells.covered):
             frame = _frame(cells, region)
             if not frame.height:
                 continue
@@ -3428,6 +3459,10 @@ class Cells:
     """
 
     values: dict[tuple[int, int], str] = field(default_factory=dict)
+    #: **結合が覆っているだけ**の升（値は入っていない）。塊を切るかどうかの
+    #: 判断にしか使わない ―― 値として出せば、画面に 1 つしか見えていない字を
+    #: 横に増やすことになる（→ :func:`_regions`）。
+    covered: set[tuple[int, int]] = field(default_factory=set)
     hidden: int = 0                                    # 非表示の行・列にあるセル数
     hidden_rows: int = 0
     hidden_columns: int = 0
@@ -3505,9 +3540,25 @@ def _cells(sheet: Any) -> Cells:
     # （`A2:A1048576`）ので、素直に最終行まで埋めると **3 行の表から 100 万行の
     # 表**が生える ―― 画面には 3 行しか見えていないのだから、忠実性の回復では
     # なく捏造である（実測でも 1 シート 1.6 秒・10 万行の Markdown になっていた）。
-    # 表の外に行は無いので、他のセルが 1 つでもある最終行で止める。
+    # 表の外に行も列も無いので、他のセルが 1 つでもある最終行・最終列で止める。
     last = max((row for row, _ in found.values), default=0)
+    edge = max((column for _, column in found.values), default=0)
     for merged in getattr(sheet, "merged_cells", _NO_MERGE).ranges:
+        value = found.values.get((merged.min_row, merged.min_col))
+        if not value:
+            continue
+        bottom = min(merged.max_row, last)
+        right = min(merged.max_col, edge)
+        box = (bottom - merged.min_row + 1) * (right - merged.min_col + 1)
+        # **覆っているところは空いていない。** 値は増やさないが、どこまでが 1 つの
+        # 塊かを決めるときだけは埋まっているものとして数える ―― 方眼紙の設計書は
+        # 論理列 1 本を数列ぶん結合して作るので、値は左上にしか無く、隣の列との
+        # 距離が結合の幅そのものになる。5 列の表が列 1 本ずつに砕けていた
+        # （→ :func:`_regions`）。
+        if box <= _MERGE_AREA:                       # 帯・枠は升ではない
+            found.covered.update(
+                (row, column) for row in range(merged.min_row, bottom + 1)
+                for column in range(merged.min_col, right + 1))
         if merged.max_row == merged.min_row:        # 横結合（1 行）は広げない
             continue
         # **広げるのは下だけである。** 区分の列を 2 列ぶんまとめて縦に結合するのは
@@ -3515,11 +3566,9 @@ def _cells(sheet: Any) -> Cells:
         # 全行に掛かって見えている ―― 幅 1 だけを展開していた頃は 2 行目以降が
         # 空欄になり、整理層には「区分の無い行」に見えた。横へ広げないのは、
         # **横結合は同上ではなく表題**だからである（値は 1 つしか見えていない）。
-        value = found.values.get((merged.min_row, merged.min_col))
-        if not value:
-            continue
-        for row in range(merged.min_row + 1, min(merged.max_row, last) + 1):
+        for row in range(merged.min_row + 1, bottom + 1):
             found.values.setdefault((row, merged.min_col), value)
+    found.covered -= set(found.values)               # 下へ広げたぶんは値である
     return found
 
 
@@ -3805,8 +3854,19 @@ def _percent(value: float, number_format: str) -> str:
     return f"{round(value * 100, digits):.{digits}f}%"
 
 
-def _regions(cells: dict[tuple[int, int], str]) -> list[list[tuple[int, int]]]:
+def _regions(cells: dict[tuple[int, int], str],
+             covered: set[tuple[int, int]] | frozenset = frozenset()
+             ) -> list[list[tuple[int, int]]]:
     """連結成分。空白 1 行／列まではスペーサーとみなして繋ぐ。
+
+    **結合が覆っている升は空白ではない。** 値を持つ升だけで繋いでいたころ、
+    方眼紙で作った表（論理列 1 本を 3 列ぶん結合するのが日本の設計書で
+    いちばん多い書き方）は**列 1 本ずつに砕けていた** ―― 値は結合の左上にしか
+    無いので、隣の列までの距離が結合の幅そのものになり、幅 3 で :data:`_GAP` を
+    超える。砕けた破片は幅 1 なので表にもならず、:data:`_MIN_TABLE` に届かずに
+    番地付きの箇条書きで出ていた（しかも幅 1 は「すかすか」にも「大きい」にも
+    当たらないので、**申告が 1 つも出ない**）。資料には隙間が無いのに、
+    機械が自分で隙間を作っていた。
 
     **並びは 1 度だけ作る。** 塊の起点を毎回 ``min(remaining)`` で探していたが、
     それは残りセル全部を走るので、**塊の数 × セルの数**になる ―― 方眼紙で描いた
@@ -3814,10 +3874,10 @@ def _regions(cells: dict[tuple[int, int], str]) -> list[list[tuple[int, int]]]:
     5,000 セルのシート 1 枚に 0.30 秒かかっていた（0.02 秒になる）。塊の中身は
     変わらないので、出来上がりは 1 セルも違わない。
     """
-    remaining = set(cells)
+    remaining = set(cells) | set(covered)
     regions: list[list[tuple[int, int]]] = []
 
-    for start in sorted(cells):
+    for start in sorted(remaining):
         if start not in remaining:
             continue
         stack, region = [start], []
@@ -3852,6 +3912,9 @@ class Frame(NamedTuple):
     columns: list[int]                 # 枠の列番号（間の空列も残す）
     at: str                            # ``B8:J20``
     addresses: list[tuple[str, str]]   # 実セルだけ（番地, 値）
+    #: 埋まっている升の数（値のある升＋**結合が覆っている升**）。すかすかかを
+    #: 見るのはこちらである ―― 結合の中は画面で空いていない。
+    filled: int = 0
 
     @property
     def height(self) -> int:
@@ -3863,9 +3926,17 @@ class Frame(NamedTuple):
 
     @property
     def sparse(self) -> bool:
-        """**表の格子で出す意味が無いほどすかすかか。** 大きさと密度の両方を見る。"""
+        """**表の格子で出す意味が無いほどすかすかか。** 大きさと密度の両方を見る。
+
+        数えるのは :attr:`filled`（値のある升＋結合が覆っている升）である。
+        値だけで数えていたころ、方眼紙で作った表は**結合が広いほどすかすかに
+        見え**、幅 9 を超えると表をやめて箇条書きに落ちていた ―― 工程表の
+        空白（そこには何も無い）と、結合の中（画面では 1 つの升）を同じものと
+        して数えていた。箇条書きにすると行と列の対応が消えるので、**表であるほど
+        失うものが大きい**。
+        """
         area = self.height * self.width
-        return area >= _SPARSE_AREA and area > len(self.addresses) * _SPARSE
+        return area >= _SPARSE_AREA and area > self.filled * _SPARSE
 
 
 def _frame(cells: dict[tuple[int, int], str], region: list[tuple[int, int]]
@@ -3886,19 +3957,23 @@ def _frame(cells: dict[tuple[int, int], str], region: list[tuple[int, int]]
     **番地は実セルだけを走って作る。** 枠を端から端まで舐めて
     ``if (row, column) in cells`` で拾っていたので、ここも枠の面積ぶんかかって
     いた ―― 中身は 1 セルも変わらない。
+
+    塊には**結合が覆っているだけの升**が混ざる（:func:`_regions`）。枠はそこまで
+    伸ばす（画面でその表が覆っている範囲は結合の右端までである）が、番地には
+    出さない ―― 値の無い升に番地を振れば、**資料に無い欄**を作ることになる。
     """
     rows = _span(sorted({r for r, _ in region}))
     columns = _span(sorted({c for _, c in region}))
     if not rows or not columns:
-        return Frame([], [], "", [])
+        return Frame([], [], "", [], 0)
 
     at = f"{column_name(columns[0])}{rows[0]}"
     if len(rows) > 1 or len(columns) > 1:
         at += f":{column_name(columns[-1])}{rows[-1]}"
 
     addresses = [(f"{column_name(column)}{row}", cells[(row, column)])
-                 for row, column in sorted(region)]
-    return Frame(rows, columns, at, addresses)
+                 for row, column in sorted(region) if (row, column) in cells]
+    return Frame(rows, columns, at, addresses, len(region))
 
 
 def _grid(cells: dict[tuple[int, int], str], frame: Frame) -> list[list[str]]:

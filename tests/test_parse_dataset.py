@@ -83,6 +83,7 @@ def parsed(dataset_source: Path, tmp_path_factory: pytest.TempPathFactory):
     class _Round:
         parsed = tmp_path_factory.mktemp("dataset-parsed")
         images = tmp_path_factory.mktemp("dataset-images")
+        prints = parsed.parent / "sources.yml"     # 撮った版の記録（まだ無い）
 
     targets, findings = parse.plan(_Round(), [dataset_source], dataset_source)
     docs = {t.path.relative_to(_Round.parsed).as_posix(): t.doc for t in targets}

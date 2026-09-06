@@ -270,6 +270,12 @@ class Paths:
     def out(self) -> Path:
         return self.arp / "out"
 
+    @property
+    def emit(self) -> Path:
+        """生成したコードの置き場。``out``（設計書）と同じ扱いで**再生成物**である
+        ―― 直接編集しない。手を入れたくなったら正本を直して出し直す。"""
+        return self.arp / "emit"
+
     # ── ファイル ────────────────────────────────────────────────
     @property
     def metamodel(self) -> Path:

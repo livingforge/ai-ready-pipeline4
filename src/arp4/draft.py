@@ -159,13 +159,14 @@ def _file_concept(file: str) -> str:
 
 
 # ── 1 ファイルの生成 ────────────────────────────────────────────
-#: メンバの表の欄（見出し行から引く）。
-_COLUMNS = {"name": "メンバ", "kind": "種類", "marks": "注釈",
+#: メンバの表の欄（見出し行から引く）。**`verify` と共有する** ―― 生成の側と
+#: 突き合わせの側が別々に見出しを覚えると、片方だけ古くなる。
+MEMBER_COLUMNS = {"name": "メンバ", "kind": "種類", "marks": "注釈",
             "signature": "シグネチャ", "returns": "戻り値", "raises": "例外",
             "line": "行", "decl": "宣言"}
 
 
-class _Table:
+class Table:
     """メンバの表 1 枚。見出しで欄を引く（並びを決め打ちにしない）。"""
 
     def __init__(self, rows: list[list[str]]) -> None:
@@ -173,7 +174,7 @@ class _Table:
         self.body = rows[1:] if rows else []
 
     def get(self, row: list[str], column: str) -> str:
-        name = _COLUMNS.get(column, column)
+        name = MEMBER_COLUMNS.get(column, column)
         if name not in self.header:
             return ""
         position = self.header.index(name)
@@ -281,7 +282,7 @@ class _Maker:
         """Java の ``package`` 宣言。取り込みの塊の転記である。"""
         if imports is None:
             return ""
-        table = _Table(mdio.rows(chunks[imports]))
+        table = Table(mdio.rows(chunks[imports]))
         for row in table.body:
             text = table.get(row, "取り込み")
             if text.startswith("package "):
@@ -364,7 +365,7 @@ class _Maker:
         found = next((i for i, h in headings.items() if h == "定数"), None)
         if found is None:
             return ""
-        table = _Table(mdio.rows(chunks[found]))
+        table = Table(mdio.rows(chunks[found]))
         names = [table.get(row, "name") for row in table.body
                  if table.get(row, "kind") == "定数"
                  and not table.get(row, "name").startswith("_")]
@@ -382,7 +383,7 @@ class _Maker:
                      None)
         if found is None:
             return ""
-        table = _Table(mdio.rows(chunks[found]))
+        table = Table(mdio.rows(chunks[found]))
         private = dunder = helpers = 0
         for row in table.body:
             name = table.get(row, "name")
@@ -409,7 +410,7 @@ class _Maker:
 
     def _public_functions(self, anchor: mdio.Anchor) -> list[str]:
         """モジュール関数の塊の公開関数を method レコードに起こし、concept を返す。"""
-        table = _Table(mdio.rows(anchor))
+        table = Table(mdio.rows(anchor))
         out: list[str] = []
         if self.testing:
             # テストファイルの補助関数（fixture・ヘルパ）は起こさない ――
@@ -427,7 +428,7 @@ class _Maker:
     # ── クラス ──────────────────────────────────────────────────
     def _class_record(self, anchor: mdio.Anchor, head: str,
                       package: str = "") -> None:
-        table = _Table(mdio.rows(anchor))
+        table = Table(mdio.rows(anchor))
         name = head.split(": ", 1)[1] if ": " in head else head
         if self.testing and head.startswith("テストクラス: "):
             self._test_cases(anchor, prefix=f"{name}.")
@@ -498,7 +499,7 @@ class _Maker:
                 return tier
         return ""
 
-    def _class_hidden(self, table: _Table, name: str) -> str:
+    def _class_hidden(self, table: Table, name: str) -> str:
         private = dunder = 0
         for row in table.body:
             member = table.get(row, "name")
@@ -519,7 +520,7 @@ class _Maker:
         return "・".join(parts) + "は公開名だけ載せる規約により起こしていない"
 
     # ── メソッド ────────────────────────────────────────────────
-    def _method(self, anchor: mdio.Anchor, row: list[str], table: _Table,
+    def _method(self, anchor: mdio.Anchor, row: list[str], table: Table,
                 concept: str) -> str:
         name = table.get(row, "name")
         record: dict[str, Any] = {
@@ -546,7 +547,7 @@ class _Maker:
 
     # ── テスト ──────────────────────────────────────────────────
     def _test_cases(self, anchor: mdio.Anchor, prefix: str = "") -> None:
-        table = _Table(mdio.rows(anchor))
+        table = Table(mdio.rows(anchor))
         refs = self._verifies(anchor)
         for row in table.body:
             name = table.get(row, "name")
@@ -609,7 +610,7 @@ class _Maker:
         当たる名前をどれかに決めるのは意味の判断なので、**張らずに決定ログへ
         残す**（黙って落とすと、依存が 1 本消えたことが誰にも見えない）。
         """
-        table = _Table(mdio.rows(anchor))
+        table = Table(mdio.rows(anchor))
         out: list[str] = []
         for row in table.body:
             source = table.get(row, "元")
@@ -650,7 +651,7 @@ class _Maker:
 
     # ── コマンド ────────────────────────────────────────────────
     def _commands(self, anchor: mdio.Anchor) -> None:
-        table = _Table(mdio.rows(anchor))
+        table = Table(mdio.rows(anchor))
         for row in table.body:
             if table.get(row, "kind") != "コマンド":
                 continue

@@ -676,15 +676,18 @@ def test_一括の対象外宣言で未整理が減る(通し) -> None:
     assert cli.main(["freeze", "--root", root]) == 0
 
 
-def test_編集済みのパース結果は上書きしない(通し, monkeypatch) -> None:
-    """**未編集のものは黙って上書きしてよい**が、編集済みは守って報告する。"""
+def test_編集済みのパース結果は上書きしない(通し) -> None:
+    """**未編集のものは黙って上書きしてよい**が、編集済みは守って報告する。
+
+    **git には聞いていない。** 手で直したことは中身に出ているので、それが
+    コミット済みでも未コミットでも、置き場が `.gitignore` されていても同じに
+    守られる（→ :func:`arp4.parse._state`）。
+    """
     paths, root = 通し
-    from arp4 import parse
 
     target = (paths.round("2026-08-02").parsed
               / "資料/運用設計.xlsx/運用方針.md")
     write(target, target.read_text(encoding="utf-8").replace("13 か月", "18 か月"))
-    monkeypatch.setattr(parse, "_edited", lambda path, dirty: True)
 
     資料 = str(sources_dir(paths))
     assert cli.main(["parse", "--root", root, "--round", "2026-08-02", 資料]) == 0

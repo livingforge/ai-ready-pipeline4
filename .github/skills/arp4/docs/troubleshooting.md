@@ -8,6 +8,7 @@
 | 系 | 意味 | 正本 |
 | --- | --- | --- |
 | `P0xx` | パース（読めない形式・壊れたファイル） | [parse.md](parse.md) |
+| `S0xx` | パース結果の切れ目の疑い（すべて warn） | スキル arp4-repair |
 | `G0xx` | 整理結果と凍結ゲート | [organize.md](organize.md)（書き方）／[freeze.md](freeze.md)（ゲート） |
 | `B0xx` | 機械構築（マージ・関係・台帳） | [build.md](build.md) |
 | `E0xx` / `W0xx` | 正本データの不備 / 警告 | [build.md](build.md) |

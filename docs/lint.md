@@ -377,6 +377,7 @@ extensible な enum は、資料の語をそのまま採れるようにするた
 | `B0xx` | 構築 | `build` |
 | `C0xx` | 適合（conformance） | `conform` |
 | `P0xx` | 資料を読めたか（**取り込みの側**） | `parse` |
+| `S0xx` | パース結果の切れ目の疑い（すべて warn） | `suspect` |
 | **`P1xx`** | **組み上がった設計書** | **`check`** |
 | **`W043` `W046` `P111`** | **書かれたものが出ているか**（下記） | **`check` / `publish`** |
 

@@ -363,10 +363,13 @@ def render(result: Result, root: Path | None = None) -> list[str]:
     return lines
 
 
-def _heading(anchor: mdio.Anchor) -> str:
+def heading_of(anchor: mdio.Anchor) -> str:
     """塊の 1 行目（:func:`arp4.mdio.read` が見出しを本文の頭に置く）。"""
     head = anchor.body.splitlines()
     return head[0] if head else (anchor.at or "（空）")
+
+
+_heading = heading_of
 
 
 def _first(anchors: list[mdio.Anchor]) -> str:
@@ -435,11 +438,35 @@ class Hit:
     lines: list[str]
     #: 当たった行の総数。**畳んだぶんは数で言う。**
     total: int
+    #: 当たった行が表の中にあるとき、その表の 1 行目。**当たりがどの列の値か**を
+    #: 読み手が数え直さずに済むためにある（見出し行そのものが当たれば空）。
+    header: str = ""
+    #: ``lines`` と並ぶ位置（表なら ``3 行目``、表でなければ空）。
+    where: list[str] = field(default_factory=list)
+    #: この塊を出典にしているもの（整理結果の concept・正本のレコード）。
+    #: ``--used`` を渡したときだけ埋まる。
+    uses: list[str] = field(default_factory=list)
+    #: あいまい検索（``--fuzzy``）での近さ。0 がそのまま当たったもの。
+    distance: int = 0
+    #: 見出し行の位置（``2 行目`` / ``4〜5 行目``）。表題行が先にある表で
+    #: 「1 行目」と言うと、``source`` に書く番号と食い違う。
+    header_where: str = ""
+    #: 表の列名。見出しの段を ``/`` で重ねる（``機密区分/区分``）。
+    columns: list[str] = field(default_factory=list)
+    #: ``lines`` と並ぶ、当たった字（原文のまま）。``--fuzzy`` / ``--loose`` で
+    #: 探した語と当たった字が違うとき、**資料の語を写し間違えない**ためにある。
+    matched: list[list[str]] = field(default_factory=list)
+    #: ``lines`` と並ぶ、当たった升（列名, 値）。表の外なら空。
+    cells: list[list[tuple[str, str]]] = field(default_factory=list)
+    #: 升の値そのものに当たった行の数（定義らしい当たり。``--sort cell`` の鍵）。
+    exact: int = 0
+    #: ``chunk``（塊の本文）か ``name``（写しの名前）。
+    kind: str = "chunk"
 
 
 def search(paths: Paths, pattern: str, round_name: str = "",
            regex: bool = False, ignore_case: bool = False,
-           per_hit: int = 3) -> list[Hit]:
+           per_hit: int = 3, **options: Any) -> list[Hit]:
     """束を横断して探す。**当たりはアンカーに帰属させて返す。**
 
     素の ``grep`` との違いはそこ 1 点である ―― ファイルと行番号で返されると、
@@ -451,26 +478,15 @@ def search(paths: Paths, pattern: str, round_name: str = "",
     **既定は部分一致**にしてある ―― 資料の語は ``（第3.2版）`` のように正規表現の
     記号を普通に含んでいて、そこを既定で解釈すると**探した人の意図しない当たり方**
     をする。正規表現が要るなら ``regex`` で明示する。
-    """
-    flags = re.IGNORECASE if ignore_case else 0
-    try:
-        found = re.compile(pattern if regex else re.escape(pattern), flags)
-    except re.error as exc:
-        raise ValueError(f"正規表現として読めません: {pattern}（{exc}）") from exc
 
-    hits: list[Hit] = []
-    for round_, file in corpus(paths, round_name):
-        document = mdio.read(_parsed(round_, file))
-        for anchor in document.anchors:
-            lines = [line.strip() for line in anchor.body.splitlines()
-                     if found.search(line)]
-            if not lines:
-                continue
-            hits.append(Hit(
-                reference=Reference(file=file, anchor=anchor.id, round=round_.name),
-                heading=_heading(anchor),
-                lines=lines[:per_hit], total=len(lines)))
-    return hits
+    探し方そのもの（走査か索引か・列やセルで見るか）は :mod:`arp4.lookup` に
+    ある。``options`` は :class:`arp4.lookup.Matcher` へそのまま渡す
+    （``loose`` / ``cell`` / ``column``）。
+    """
+    from arp4 import lookup                     # 循環（lookup → show）を避ける
+
+    matcher = lookup.Matcher([pattern], regex=regex, ignore_case=ignore_case, **options)
+    return lookup.run(paths, matcher, round_name, per_hit).hits
 
 
 # ── 逆向き ―― この塊は何になったか ──────────────────────────────
@@ -504,13 +520,28 @@ def used_by(spec: Spec, reference: Reference) -> list[Use]:
         if not any(r.file == reference.file and r.anchor == reference.anchor
                    for r in _sources(record)):
             continue
-        ends = (f"{record.get('from')} → {record.get('to')}"
-                if record.get("from") else "")
-        found.append(Use(id=str(record.get("id") or ""),
-                         display=_display(spec, record),
-                         type=str(record.get("type") or ""),
-                         name=str(record.get("name") or ""), ends=ends))
+        found.append(_use(spec, record))
     return found
+
+
+def _use(spec: Spec, record: dict[str, Any]) -> Use:
+    ends = (f"{record.get('from')} → {record.get('to')}"
+            if record.get("from") else "")
+    return Use(id=str(record.get("id") or ""), display=_display(spec, record),
+               type=str(record.get("type") or ""),
+               name=str(record.get("name") or ""), ends=ends)
+
+
+def use_label(spec: Spec, record: dict[str, Any]) -> str:
+    """正本のレコード 1 件を、一覧に並べる 1 語に（:func:`render_uses` と同じ形）。"""
+    use = _use(spec, record)
+    label = " ".join(x for x in (use.display, use.type, use.name, use.ends) if x)
+    return f"{label}  （{use.id}）" if label else use.id
+
+
+def sources_of(record: dict[str, Any]) -> list[Reference]:
+    """レコードの出典全件（束を横断する側 :mod:`arp4.lookup` が使う）。"""
+    return _sources(record)
 
 
 def render_listing(spec: Spec, listing: Listing) -> list[str]:

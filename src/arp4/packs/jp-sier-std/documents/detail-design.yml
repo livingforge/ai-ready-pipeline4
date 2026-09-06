@@ -130,5 +130,9 @@ sections:
   - heading: メソッドが出すメッセージ
     kind: relation
     relation: raises
+    #
+    # **`condition`（いつ出すか）を出す。** 定義は基本設計書にあり、出す条件は
+    # 出す側との組にしか無い ―― 同じ `E-0007` を 3 つのメソッドが別々の理由で
+    # 出す。無いあいだ、送出の位置は本文からしか読めなかった。
     labels: { "from.name": 出すメソッド, "to.name": メッセージ名 }
-    columns: ["from.name", "to.message_id", "to.name", description]
+    columns: ["from.name", "to.message_id", "to.name", condition, description]

@@ -102,6 +102,9 @@ grep -rho "concept: c-[a-z]*-[^. ,}]*" .arp/rounds/<ラウンド>/organized/ | s
 ```
 
 接頭辞の一覧が出るので、同じ資材で 2 系統以上に分かれていたら規約に合わせて改名する。
+**同じものが別の名前で 2 つ立っていないか**は接頭辞では見えないので、語で引く ――
+`arp4 grep <語> --in organized` はレコードの `name` / `statement` / `attrs` と
+`_concepts.yml` の `aliases` まで見るので、別名で書かれた同じものにも届く。
 **凍結前の改名はただの置換である。**凍結後に直すのは 2 アイテムの統合になり、台帳と正本の
 両方に手が要る。
 
@@ -204,7 +207,8 @@ done < /tmp/rels.txt
 ### 手順は 1 つ（順序を守らないと同じ争点の課題が二重に立つ）
 
 1. **既存の課題を先に探す。**課題管理表・議事録から起こした課題（`open-issue`）に同じ争点が
-   あることが多い。`_concepts.yml` と `organized/` を concept 名で検索する
+   あることが多い。`arp4 grep <争点の語> --in organized` で `_concepts.yml` と `organized/` を
+   引く（concept 名だけでなく `statement` と `aliases` も見る）
 2. あれば新しく起票しない。その課題のレコードの `refs` に `disputes` を張り足す
 3. 無ければ `_concepts.yml` の `contradictions` に書き、`positions` に両論を**両方**書く。
    **`disputes` は書かない。**`build` が張る

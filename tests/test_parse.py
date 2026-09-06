@@ -77,6 +77,153 @@ def test_横結合は広げない(project: Paths, round_: Round) -> None:
     assert table.rows[0][1] == ""
 
 
+def _graph_paper(path: Path, width: int, columns: int = 5, rows: int = 7,
+                 lead: list[str] | None = None) -> Path:
+    """**方眼紙の表。** 論理列 1 本を ``width`` 列ぶん結合して作る。
+
+    日本の設計書でいちばん多い書き方である ―― 列を細く割っておき、欄の広さは
+    結合で決める。値は結合の左上にしか入らないので、**画面で隣り合っている
+    列どうしが、セルの番地では ``width`` 列ぶん離れる。**
+    """
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "方眼紙"
+    top = 1
+    for line in lead or []:                          # 表の上に置いた説明文
+        sheet.cell(row=top, column=1, value=line)
+        top += 1
+    for index in range(columns):
+        left = 1 + index * width
+        sheet.cell(row=top, column=left, value=f"列{index + 1}")
+        for offset in range(1, rows + 1):
+            sheet.cell(row=top + offset, column=left, value="value")
+        if width > 1:
+            for row in range(top, top + rows + 1):
+                sheet.merge_cells(start_row=row, start_column=left,
+                                  end_row=row, end_column=left + width - 1)
+    book.save(path)
+    return path
+
+
+def test_方眼紙の横結合で表が列ごとに砕けない(project: Paths, round_: Round) -> None:
+    """**資料に隙間は無い。機械が自分で作っていた。**
+
+    値は結合の左上にしか無いので、隣の列までの距離が結合の幅そのものになる ――
+    幅 3 で :data:`arp4.parse._GAP` を超え、**5 列の表が列 1 本ずつに砕けて**
+    いた。砕けた破片は幅 1 なので :data:`arp4.parse._MIN_TABLE` にも届かず、
+    表ではなく番地付きの箇条書きで出る。しかも幅 1 は「すかすか」にも
+    「大きい」にも当たらないので、**申告が 1 つも出ない**（黙って 5 つに散る）。
+    """
+    for width in (1, 2, 3, 4, 12):
+        path = _graph_paper(sources_dir(project) / f"w{width}.xlsx", width)
+        doc = _parse(round_, path, sources_dir(project))[0]
+
+        tables = [c for c in doc.chunks if c.rows]
+        assert len(tables) == 1, f"結合幅 {width} で塊が {len(tables)} 個に割れた"
+        assert tables[0].rows[0] == [
+            "列1", *[""] * (width - 1), "列2", *[""] * (width - 1),
+            "列3", *[""] * (width - 1), "列4", *[""] * (width - 1), "列5"]
+        assert [row[0] for row in tables[0].rows[1:]] == ["value"] * 7
+
+
+def test_横結合が広くても表をやめない(project: Paths, round_: Round) -> None:
+    """**結合の中は、工程表の空白とは違う。**
+
+    値の数だけで密度を見ていたころ、方眼紙の表は**結合が広いほどすかすかに
+    見え**、幅 9 を超えると表をやめて箇条書きに落ちていた ―― 箇条書きにすると
+    行と列の対応が消えるので、**表であるほど失うものが大きい**。
+    """
+    path = _graph_paper(sources_dir(project) / "wide.xlsx", 12)
+    doc = _parse(round_, path, sources_dir(project))[0]
+
+    table = [c for c in doc.chunks if c.rows][0]
+    assert table.at == "A1:AW8"                      # 5 列 × 幅 12 − 余り
+    assert not doc.notes                             # すかすかではない
+    assert not [c for c in doc.chunks if c.cells]    # 箇条書きに落ちていない
+
+
+def test_表の上の説明文も同じ塊に入る(project: Paths, round_: Round) -> None:
+    """表題と副題を頭に置いた方眼紙の表（実物でいちばん多い形）。"""
+    path = _graph_paper(sources_dir(project) / "lead.xlsx", 3,
+                        lead=["ここに表の説明文", "サブ説明文"])
+    doc = _parse(round_, path, sources_dir(project))[0]
+
+    table = [c for c in doc.chunks if c.rows][0]
+    assert table.at == "A1:M10"
+    assert table.rows[0][0] == "ここに表の説明文"
+    assert table.rows[2] == ["列1", "", "", "列2", "", "", "列3", "", "",
+                             "列4", "", "", "列5"]
+
+
+def test_覆っているだけの升は番地も枠の外も持たない(project: Paths, round_: Round) -> None:
+    """**値の無い升に番地を振れば、資料に無い欄を作ることになる。**
+
+    枠も最後の値までで止める（行の側の ``A2:A1048576`` と同じ）―― 右端の欄が
+    何列ぶん結合されていようと、そこから先は空白の列でしかない。
+    """
+    path = _graph_paper(sources_dir(project) / "addr.xlsx", 3, columns=2, rows=1)
+    doc = _parse(round_, path, sources_dir(project))[0]
+
+    table = [c for c in doc.chunks if c.rows][0]
+    assert table.at == "A1:D2"                       # 右端の結合ぶんは広げない
+    assert table.rows == [["列1", "", "", "列2"], ["value", "", "", "value"]]
+
+
+def test_覆っているだけの升に番地は振らない() -> None:
+    """塊には混ざるが、番地付きの箇条書きには出てこない。"""
+    cells = {(1, 1): "列1", (1, 4): "列2"}
+    covered = {(1, 2), (1, 3)}                       # A1:C1 の結合が覆う升
+
+    region = parse._regions(cells, covered)
+    assert len(region) == 1                          # 幅 3 の隙間でも割れない
+
+    frame = parse._frame(cells, region[0])
+    assert frame.at == "A1:D1"
+    assert frame.addresses == [("A1", "列1"), ("D1", "列2")]
+    assert frame.filled == 4                         # すかすかの判定はこちら
+
+
+def test_用紙いっぱいの結合は升として数えない(project: Paths, round_: Round) -> None:
+    """**帯や枠は升ではない。**
+
+    表紙の題字を用紙いっぱいに結合したもの、表の背景に敷いた 1 枚の箱がそれで、
+    覆っているところを埋まっていると数えると**シート 1 枚がまるごと 1 つの塊**
+    になる ―― 値 1 個の枠から数万升の格子が生える。
+    """
+    path = sources_dir(project) / "band.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "帯"
+    sheet["A1"] = "全体を囲む枠"
+    sheet.merge_cells(start_row=1, start_column=1, end_row=20, end_column=20)
+    for offset, column in enumerate(range(22, 27)):  # 枠の右に置いた別の表
+        sheet.cell(row=1, column=column, value=f"列{offset + 1}")
+        for row in range(2, 16):
+            sheet.cell(row=row, column=column, value="value")
+    book.save(path)
+
+    doc = _parse(round_, path, sources_dir(project))[0]
+    assert [(c.anchor, c.at) for c in doc.chunks] == [
+        ("s1-x1", "A1:A15"), ("s1-t1", "V1:Z15")]
+
+
+def test_行を丸ごと選んだ結合でも枠は広がらない(project: Paths, round_: Round) -> None:
+    """**表の外に列は無い。** 縦の暴走（``A2:A1048576``）と同じ止め方である。"""
+    path = sources_dir(project) / "row.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "暴走"
+    sheet["A1"] = "表題"
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=16384)
+    sheet["A2"], sheet["B2"] = "論理名", "物理名"
+    sheet["A3"], sheet["B3"] = "受注番号", "ORDER_NO"
+    book.save(path)
+
+    doc = _parse(round_, path, sources_dir(project))[0]
+    table = [c for c in doc.chunks if c.rows][0]
+    assert table.at == "A1:B3"
+
+
 def test_非表示シートは読まない(project: Paths, round_: Round) -> None:
     path = sources_dir(project) / "a.xlsx"
     book = Workbook()
@@ -360,14 +507,15 @@ def test_権限で開けない資料を壊れていることにしない(
     assert "資料そのものは壊れていません" in said[0].message
 
 
-def test_gitに聞くのは1度きり(project: Paths, round_: Round,
-                              monkeypatch: pytest.MonkeyPatch) -> None:
+def test_番人は外部プロセスを起こさない(project: Paths, round_: Round,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
     """**性能の問題が網羅性の問題になる。**
 
-    1 ファイルにつき `git status` を 1 回起動していた。1 件 23ms はどうという
-    ことのない数だが、**シート 1 枚がファイル 1 本**なので 30 冊 201 シートの
-    再実行では 201 プロセス ―― 実測 5.0 秒で、パース本体（1.3 秒）より長い。
-    ここが遅くなると「遅いから通さない」が始まって資料が落ちる。
+    上書きの番人は長いあいだ git に聞いていた。1 ファイルにつき `git status` を
+    1 回起動していたころは、30 冊 201 シートの再実行で 201 プロセス ―― 実測
+    5.0 秒で、パース本体（1.3 秒）より長い。まとめて 1 回に直したあと、いまは
+    **中身で決める**ので外部プロセスそのものが要らない。ここが遅くなると
+    「遅いから通さない」が始まって資料が落ちる。
     """
     book = sources_dir(project) / "a.xlsx"
     workbook = Workbook()
@@ -377,16 +525,18 @@ def test_gitに聞くのは1度きり(project: Paths, round_: Round,
     workbook.save(book)
 
     # **効くのは再実行のときである**（1 度目は書き出し先がまだ無い）。
-    parse.write(parse.plan(round_, [book], sources_dir(project))[0])
-
-    calls = []
-    original = parse.subprocess.run
-    monkeypatch.setattr(parse.subprocess, "run",
-                        lambda *a, **k: (calls.append(a), original(*a, **k))[1])
     targets, _ = parse.plan(round_, [book], sources_dir(project))
+    written, _ = parse.write(targets)
+    parse.record(round_, targets, written)
 
-    assert len(targets) == 12 and all(t.exists for t in targets)
-    assert len(calls) <= 2                       # toplevel と status で 2 回まで
+    def 起こさない(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"番人が外部プロセスを起こした: {args}")
+
+    monkeypatch.setattr(subprocess, "run", 起こさない)
+    again, _ = parse.plan(round_, [book], sources_dir(project))
+
+    assert len(again) == 12 and all(t.exists for t in again)
+    assert not any(t.needs_confirm for t in again)
 
 
 def test_zipの外を指す関係でもディスクを読まない() -> None:
@@ -404,81 +554,134 @@ def test_zipの外を指す関係でもディスクを読まない() -> None:
         == "xl/drawings/d1.xml"
 
 
-def test_gitが使えないときは編集ありに倒す(tmp_path: Path) -> None:
-    """**分からないまま黙って上書きするより、確認が 1 回多いほうがましである。**
+def _撮る(project: Paths, round_: Round, source: Path) -> list[parse.Target]:
+    """1 度撮って、書いた版まで残す（実際の `arp4 parse` と同じ順序）。"""
+    targets, _ = parse.plan(round_, [source], sources_dir(project))
+    written, _ = parse.write(targets)
+    parse.record(round_, targets, written)
+    return targets
 
-    `None` は「git が使えない」で、**空集合とは意味が違う**（空集合は
-    「聞けたが 1 件も編集されていない」）。
+
+def test_機械が書いたものは黙って上書きしてよい(project: Paths, round_: Round
+                                                ) -> None:
+    """**全部を同じ重さで聞くと、確認そのものが読み飛ばされる。**
+
+    git に聞いていたころは、**parse が書いた直後のパース結果が「変更あり」**に
+    見えた（コミットしていないので当然である）―― 資料を 1 冊足して撮り直すたびに
+    「編集済みのため上書きしませんでした」の山が出ていた。**arp4 自身が書いた
+    ものを、arp4 が編集済みと名乗っていた。**
     """
-    outside = tmp_path / "リポジトリの外"
-    outside.mkdir()
-    assert parse._edited(outside / "x.md", None) is True
-    assert parse._edited(outside / "x.md", set()) is False
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+    _撮る(project, round_, source)
+
+    again, findings = parse.plan(round_, [source], sources_dir(project))
+
+    assert again[0].exists and not again[0].needs_confirm
+    assert not [f for f in findings if f.code == "P022"]
 
 
-def test_編集済みは確認が要る(project: Paths, round_: Round,
-                             monkeypatch: pytest.MonkeyPatch) -> None:
-    """**未編集のものは黙って上書きしてよい。** 全部聞くと確認が読み飛ばされる。"""
+def test_コミット済みの編集でも守る(project: Paths, round_: Round) -> None:
+    """**git が答えるのは「直近のコミットとの差」であって、編集の有無ではない。**
+
+    手で直してコミットしたパース結果は `git status` に出ない ―― 番人が置いて
+    あるのに、いちばん普通の使い方（直した・コミットした・資料を 1 冊足して
+    撮り直した）で**確認なしに機械の出力へ戻っていた**。いま見るのは中身である。
+    """
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+    targets = _撮る(project, round_, source)
+    出力 = targets[0].path
+    write(出力, 出力.read_text(encoding="utf-8") + "\n> 人が足した注記。\n")
+
+    again, findings = parse.plan(round_, [source], sources_dir(project))
+
+    assert again[0].needs_confirm                    # 守る
+    assert not again[0].unverified                   # 断定できる（記録がある）
+    assert not [f for f in findings if f.code == "P022"]
+
+
+def test_改行がCRLFでも編集済みにしない(project: Paths, round_: Round) -> None:
+    """**改行だけで全ファイルが「編集済み」に化けると、番人が読み飛ばされる。**
+
+    arp4 は LF で書くが、`core.autocrlf` の効いた Windows で clone し直すと
+    手元は CRLF になる。
+    """
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+    targets = _撮る(project, round_, source)
+    出力 = targets[0].path
+    出力.write_bytes(出力.read_text(encoding="utf-8").replace("\n", "\r\n")
+                     .encode("utf-8"))
+
+    again, _ = parse.plan(round_, [source], sources_dir(project))
+
+    assert not again[0].needs_confirm
+
+
+def test_記録の無いラウンドで中身が違えば守る(project: Paths, round_: Round
+                                              ) -> None:
+    """**古い arp4 で撮ったラウンドでも、手で直したものは消さない。**
+
+    書いた版の記録が無いときは「編集済み」と断定できない（arp4 自身の出力が
+    変わっただけのことがある）ので、守ったうえで `P022` で理由を言う。
+    """
     source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
     targets, _ = parse.plan(round_, [source], sources_dir(project))
-    parse.write(targets)
+    parse.write(targets)                             # 記録は残さない（古いラウンド）
+    出力 = targets[0].path
+    write(出力, 出力.read_text(encoding="utf-8") + "\n> 人が足した注記。\n")
 
-    monkeypatch.setattr(parse, "_edited", lambda path, dirty: False)
-    again, _ = parse.plan(round_, [source], sources_dir(project))
-    assert again[0].exists and not again[0].needs_confirm
+    again, findings = parse.plan(round_, [source], sources_dir(project))
 
-    monkeypatch.setattr(parse, "_edited", lambda path, dirty: True)
-    edited, _ = parse.plan(round_, [source], sources_dir(project))
-    assert edited[0].needs_confirm
+    assert again[0].needs_confirm and again[0].unverified
+    said = [f for f in findings if f.code == "P022"]
+    assert said and "守りました" in said[0].message
+    assert "--yes" in (said[0].hint or "")           # 次の一手まで言う
 
 
-def test_無視された置き場では番人を安全側に倒す(project: Paths, round_: Round,
-                                                monkeypatch: pytest.MonkeyPatch
-                                                ) -> None:
-    """**「見えていない」と「編集されていない」は別である。**
+def test_記録が無くても機械の出力そのものなら黙って上書きする(
+        project: Paths, round_: Round) -> None:
+    """**確かめられたものまで「確かめられない」と言わない。**
 
-    ``git status`` は無視対象を 1 行も出さないので、返るのは空集合 ―― これを
-    「聞けたが 1 件も編集されていない」と読むと、``.arp/`` を丸ごと無視して
-    いるプロジェクトで**手で直したパース結果が確認なしで消える**。
-    「git が使えない」は最初から安全側に倒してあったのに、**「見えていない」
-    だけが倒れていなかった。**
+    記録が無くても、手元の中身がいま出した機械の出力と 1 バイトも違わなければ
+    編集は無い ―― ここで守ると、古いラウンドが `P022` で埋まって読めなくなる。
     """
     source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
     parse.write(parse.plan(round_, [source], sources_dir(project))[0])
 
-    monkeypatch.setattr(parse, "ignored", lambda root: True)
+    again, findings = parse.plan(round_, [source], sources_dir(project))
+
+    assert not any(t.needs_confirm for t in again)
+    assert not [f for f in findings if f.code == "P022"]
+
+
+def test_初回のparseでは番人が黙る(project: Paths, round_: Round) -> None:
+    """上書きする相手がいないので、確かめることが無い。"""
+    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
+
     targets, findings = parse.plan(round_, [source], sources_dir(project))
 
-    assert all(t.needs_confirm and t.unverified for t in targets)
-    said = [f for f in findings if f.code == "P021"]
-    assert said and ".gitignore" in said[0].message      # 理由まで言う
-    assert ".arp/out/" in (said[0].hint or "")           # 次の一手まで言う
+    assert not any(t.exists or t.needs_confirm or t.unverified for t in targets)
+    assert not [f for f in findings if f.code == "P022"]
 
 
-def test_初回のparseでは番人の不在を言わない(project: Paths, round_: Round,
-                                             monkeypatch: pytest.MonkeyPatch
-                                             ) -> None:
-    """上書きする相手がいないので、見えていてもいなくても結果が同じである。"""
+def test_守ったパース結果の版は記録が上書きしない(project: Paths, round_: Round
+                                                  ) -> None:
+    """**守った編集が、いちばん黙って腐る形にならないように。**
+
+    上書きを見送ったパース結果の版を「いま書いた版」で更新すると、ディスクの上には
+    手で直したものが残っているのに記録だけが機械の出力になり、**次の実行で未編集に
+    見える** ―― 守ったつもりの編集が、1 回遅れて消える。
+    """
     source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
-    monkeypatch.setattr(parse, "ignored", lambda root: True)
+    targets = _撮る(project, round_, source)
+    出力 = targets[0].path
+    write(出力, 出力.read_text(encoding="utf-8") + "\n> 人が足した注記。\n")
 
-    _, findings = parse.plan(round_, [source], sources_dir(project))
+    again, _ = parse.plan(round_, [source], sources_dir(project))
+    parse.record(round_, again, [])                  # 1 本も書けなかった（＝守った）
 
-    assert not [f for f in findings if f.code == "P021"]
-
-
-def test_確かめられないのを編集済みと言い換えない(project: Paths, round_: Round,
-                                                 monkeypatch: pytest.MonkeyPatch
-                                                 ) -> None:
-    """申告の文句が違う ―― **確かめていないことを確かめた顔で言わない。**"""
-    source = _book(sources_dir(project) / "a.xlsx", [["論理名", "物理名"], ["x", "Y"]])
-    parse.write(parse.plan(round_, [source], sources_dir(project))[0])
-
-    monkeypatch.setattr(parse, "_dirty_paths",
-                        lambda root: ({source.resolve()}, ""))
-    targets, _ = parse.plan(round_, [source], sources_dir(project))
-
-    assert not any(t.unverified for t in targets)   # 聞けている（守るのは編集済みだけ）
+    三度目, _ = parse.plan(round_, [source], sources_dir(project))
+    assert 三度目[0].needs_confirm                   # まだ守られている
+    assert "人が足した注記" in 出力.read_text(encoding="utf-8")
 
 
 def test_コードはASTで骨格だけ取る(project: Paths, round_: Round) -> None:

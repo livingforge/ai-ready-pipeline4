@@ -8,6 +8,7 @@
     arp4 lint <パス>…    整理結果を 1 ファイル単位で検査する（freeze の部分集合）
     arp4 parse <パス>…   ① 既存資産 → パース結果（.arp/rounds/<ラウンド>/parsed/）
     arp4 render <パス>…  機械が読めなかった範囲を絵にする（図形のシート）
+    arp4 suspect         パース結果の切れ目の疑いを出す（1 つの表が割れていないか）
     arp4 declare <型>…   同じ構成のシートを一括で対象外宣言する（表紙・改訂履歴）
     arp4 draft           コードのパース結果 → 整理結果の骨格（②の機械分。文章は TODO で空く）
     arp4 freeze          ② 凍結ゲート（未整理 0 / 語彙外 0 / concept 実在 / 関係の組み合わせ）
@@ -33,6 +34,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -47,12 +49,16 @@ from arp4 import audience as audience_module
 from arp4 import auto as auto_module
 from arp4 import decisions as decisions_module
 from arp4 import derived as derived_module
+from arp4 import design as design_module
+from arp4 import emit as emit_module
 from arp4 import digest as digest_module
 from arp4 import draft as draft_module
 from arp4 import fix as fix_module
 from arp4 import freeze as freeze_module
 from arp4 import gate as gate_module
+from arp4 import lookup as lookup_module
 from arp4 import mdio
+from arp4 import yamlio
 from arp4 import metamodel as mm
 from arp4 import organized as organized_module
 from arp4 import pack as pack_module
@@ -65,7 +71,9 @@ from arp4 import sequence as sequence_module
 from arp4 import shape as shape_module
 from arp4 import show as show_module
 from arp4 import spec as spec_module
+from arp4 import suspect as suspect_module
 from arp4 import trace as trace_module
+from arp4 import verify as verify_module
 from arp4.finding import Finding, counts, order
 from arp4.paths import Round
 from arp4.validate import validate
@@ -306,7 +314,7 @@ def _parse(args: argparse.Namespace) -> int:
         # **黙って飛ばさない。** 守ったことは必ず見えるようにする。文句は
         # 2 通りある ―― 「編集済みを守った」と「編集の有無が分からないので
         # 守った」は別のことで、後者を前者の顔で言うと**確かめていないことが
-        # 確かめた顔で出る**（`P021` と同じ線引き）。
+        # 確かめた顔で出る**（`P022` と同じ線引き）。
         why = ("編集の有無を確かめられないため"
                if all(t.unverified for t in skipped) else "編集済みのため")
         print(f"\n{why}上書きしませんでした: {len(skipped)} ファイル")
@@ -1000,6 +1008,118 @@ def _freeze_blocked(args: argparse.Namespace, shown: list[Finding],
             "外してください）")
 
 
+def _design(args: argparse.Namespace) -> int:
+    """正本からプログラム設計の骨格を機械生成する（``draft`` の鏡像）。
+
+    **意味の判断はしない** ―― 出典のパスの転記・シグネチャの割り・CRUD の
+    開きだけで、``statement`` は ``<TODO 出典 …>`` のまま空ける。決めなかった
+    ことは件数ではなく**次にどこへ行くか**で申告する（実装規約は資料である、等）。
+    """
+    spec, findings = _load(args)
+    paths = spec.paths
+    round_ = _round(paths, args.round)
+    if round_ is None or not round_.organized.is_dir():
+        print("ラウンドがありません（arp4 parse → 整理 を先に）", file=sys.stderr)
+        return 1
+    if round_.is_frozen():
+        print(f"ラウンド {round_.name} は凍結済みです（整理結果は編集しません）",
+              file=sys.stderr)
+        return 1
+    known, concept_findings = concepts_module.load(paths)
+    for finding in order(findings + concept_findings):
+        print(finding.render())
+
+    result = design_module.plan(spec, round_, known)
+    print(f"ラウンド {round_.name} ― 生成 {len(result.designed)} ファイル / "
+          f"レコード {sum(d.records for d in result.designed)} 件")
+    if result.skipped:
+        # **書いたものは上書きしない。** 文章を埋めたあとの再実行で潰さないため。
+        print(f"  生成物が既にあるため飛ばした {len(result.skipped)} ファイル"
+              f"（作り直すなら該当の organized/{design_module.DIR}/ を消してから）")
+    for designed in result.designed[:20]:
+        print(f"  {designed.file}: レコード {designed.records} / "
+              f"文章化スロット {designed.todo}")
+    if len(result.designed) > 20:
+        print(f"  …ほか {len(result.designed) - 20} ファイル")
+
+    # **決めなかったことは、決めたことと同じ場所で言う。** 別の帳面に書くと
+    # 読まれない ―― 空の生成物と「作らないと決めた」は端末では同じ顔をする。
+    for note in result.notes:
+        print(f"  [決めていない] {note}")
+
+    if args.dry_run:
+        print()
+        print(f"--dry-run のため書き込みませんでした"
+              f"（文章化スロット {result.todo} 件）")
+        return 0
+    if not result.designed:
+        print()
+        print("起こすものはありません")
+        return 0
+    written = design_module.write(round_, result)
+    print()
+    print(f"{len(written)} ファイルを "
+          f"{round_.organized / design_module.DIR} へ書きました")
+    print(f"  機械が下した判断 {len(result.decisions)} 件 → "
+          f"{decisions_module.path_of(round_).relative_to(paths.root)}")
+    if result.todo:
+        print()
+        print(f"文章化スロット {result.todo} 件（これが整理層の作業キュー）")
+        print("  <TODO 出典 …> を、出典のシグネチャを読んで埋める")
+    print("次にやること: 文章化 → arp4 lint → arp4 freeze → arp4 build")
+    return 0
+
+
+def _emit(args: argparse.Namespace) -> int:
+    """正本から**決まっているものだけ**をコードにする（``publish`` の隣）。
+
+    出力は再生成物である ―― 直接編集しない。**本体は書かない**（手続きの中身は
+    疑似コードにしかない）。決まっていないところは印を付けて数える。
+    """
+    spec, findings = _load(args)
+    paths = spec.paths
+    chain, chain_findings = pack_module.resolve_chain(
+        spec.metamodel.extends or "jp-sier-std")
+    for finding in order(findings + chain_findings):
+        print(finding.render())
+
+    profiles = pack_module.languages(chain)
+    if not profiles:
+        print("言語プロファイルがありません（パックの languages/）",
+              file=sys.stderr)
+        return 1
+    result = emit_module.plan(spec, profiles)
+    out = Path(args.out) if args.out else paths.emit
+
+    for kind, label in (("ddl", "DDL"), ("module", "骨格"),
+                        ("code", "コード定義"), ("message", "メッセージ")):
+        found = result.of_kind(kind)
+        if found:
+            print(f"{label} {len(found)} ファイル")
+            for emitted in found[:10]:
+                print(f"  {emitted.relative}")
+            if len(found) > 10:
+                print(f"  …ほか {len(found) - 10} ファイル")
+
+    # **決まっていないことは、決まったことと同じ場所で言う**（design と同じ）。
+    for note in result.notes:
+        print(f"  [決まっていない] {note}")
+
+    if not result.emitted:
+        print("出せるものはありません（正本にプログラム設計の欄がありません）")
+        return 0
+    if args.dry_run:
+        print()
+        print("--dry-run のため書き込みませんでした")
+        return 0
+    written = emit_module.write(out, result)
+    print()
+    print(f"{len(written)} ファイルを {out} へ書きました")
+    print("  生成物です ―― 直接編集せず、正本を直して出し直してください")
+    print("次にやること: 本体を書く（疑似コードは doc コメントに出ています）")
+    return 0
+
+
 def _freeze(args: argparse.Namespace) -> int:
     spec, findings = _load(args)
     paths = spec.paths
@@ -1226,6 +1346,58 @@ def _check(args: argparse.Namespace) -> int:
     print(f"アイテム {len(spec.items)} 件 / 関係 {len(spec.relations)} 件")
     return _report(findings, args.strict, args=args, command="check",
                    paths=spec.paths, metrics=metrics)
+
+
+#: 書き出しの安全側の指摘（`verify` は書かないので当たらない）。
+_WRITE_GUARD = frozenset({"P021", "P022"})
+
+
+def _verify(args: argparse.Namespace) -> int:
+    """実装を読み直して正本と突き合わせる（閉ループ）。
+
+    **読み方は `parse` そのもの**である ―― 別の読み手を置くと、`draft` が
+    起こしたものと `verify` が見るものがずれる。パース結果は書かない
+    （突き合わせに要るのは塊であって、ラウンドの記録ではない）。
+    """
+    spec, findings = _load(args)
+    paths = spec.paths
+    sources = [Path(p).resolve() for p in args.source]
+    missing = [p for p in sources if not p.exists()]
+    if missing:
+        for path in missing:
+            print(f"ありません: {path}", file=sys.stderr)
+        return 1
+
+    round_ = paths.latest_round() or paths.round("r001")
+    base = Path(os.path.commonpath([str(p) for p in sources]))         if len(sources) > 1 else (sources[0] if sources[0].is_dir()
+                                  else sources[0].parent)
+    targets, parse_findings = parse_module.plan(round_, sources, base,
+                                                use_ocr=False)
+    docs = [t.doc for t in targets
+            if t.doc.source.endswith(tuple(design_module.LANGUAGES))]
+    report = verify_module.verify(spec, docs)
+    # **上書きの番人はここでは鳴らさない。** `verify` はパース結果を書かないので、
+    # 「手で直したものとして守りました」は何も守っていない ―― 読みの指摘
+    # （読めない形式・除外の打ち間違い）は残す。
+    findings = (findings + [f for f in parse_findings
+                            if f.code not in _WRITE_GUARD] + report.findings)
+
+    metrics = {"modules": report.modules, "methods": report.methods,
+               "unspecified": report.unspecified, "outside": report.outside}
+    if _machine(args, "verify", findings, metrics):
+        return _exit_code(findings, args.strict)
+
+    print(f"読み直した実装 {len(docs)} ファイル ― "
+          f"突き合わせ モジュール {report.modules} / メソッド {report.methods}")
+    if report.unspecified:
+        # **比べていないことを「一致した」と出さない。**
+        print(f"  正本がまだ決めていないので比べなかったもの "
+              f"{report.unspecified} 件（呼ぶ名前・引数）")
+    if report.outside:
+        print(f"  渡した範囲の外にあるモジュール {report.outside} 件"
+              "（欠落ではありません）")
+    return _report(findings, args.strict, args=args, command="verify",
+                   paths=paths, metrics=metrics)
 
 
 def _number(args: argparse.Namespace) -> int:
@@ -1683,17 +1855,69 @@ def _grep(args: argparse.Namespace) -> int:
     """
     paths = paths_module.resolve(args.root)
     pattern = " ".join(args.pattern)
+    # 既定は語を空白ごと 1 つの語として探す（``受注 番号`` は資料にそう書いてある
+    # ことがある）。``--all-of`` / ``--same-row`` のときだけ 1 語ずつに割り、
+    # 同じ塊（同じ行）に全部あることを求める。
+    terms = list(args.pattern) if (args.all_of or args.same_row) else [pattern]
+    aliases: list[list[str]] = []
+    if args.aliases:
+        # 別名は整理結果の側にある。**どう広げたかを先に言う** ―― 黙って広げると、
+        # 当たった語がどこから来たか読み手に分からない。
+        try:
+            aliases = lookup_module.aliases_of(paths, terms, loose=args.loose,
+                                               round_name=args.round or "")
+        except yamlio.YamlError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        for term, forms in zip(terms, aliases):
+            print(f"別名を展開: {term} → {'・'.join(forms)}" if forms
+                  else f"別名はありません: {term}（_concepts.yml と正本の台帳に無い）",
+                  file=sys.stderr)
     try:
-        hits = show_module.search(paths, pattern, args.round,
-                                  regex=args.regex, ignore_case=args.ignore_case)
+        matcher = lookup_module.Matcher(
+            terms, regex=args.regex, ignore_case=args.ignore_case, loose=args.loose,
+            cell=args.cell, column=args.column or "", fuzzy=args.fuzzy,
+            same_row=args.same_row, aliases=aliases)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    if args.diff:
+        return _grep_diff(paths, matcher, args, pattern, terms)
+
+    found_organized = 0
+    if args.where in ("organized", "all"):
+        found_organized = _grep_organized(paths, matcher, args)
+        if args.where == "organized":
+            return 0 if found_organized else 1
+        print()
+
+    outcome = lookup_module.run(
+        paths, matcher, args.round, mode="scan" if args.no_index else "auto",
+        reindex=args.reindex, only=args.path or "", progress=_index_progress,
+        sort=args.sort)
+    if outcome.refreshed is not None and outcome.refreshed.changed:
+        # 索引を触ったときは言う ―― 黙っていると、初回の数十秒が「遅い検索」に見える。
+        done = outcome.refreshed
+        print(f"索引を写しに合わせました（追加 {done.added} / 更新 {done.updated} / "
+              f"削除 {done.removed} 本、{done.seconds:.1f} 秒）", file=sys.stderr)
+
+    hits = outcome.hits
+    if args.used or args.unorganized:
+        uses = lookup_module.Uses(paths, _spec_or_none(args))
+        for hit in hits:
+            hit.uses = uses.of(hit.reference)
+        if args.unorganized:
+            hits = [h for h in hits if not h.uses]
+
     if not hits:
-        print(f"{pattern} は束のどの塊にもありません"
-              f"（写し {len(show_module.corpus(paths, args.round))} 本を見ました）")
-        return 1
+        what = "未整理の塊" if args.unorganized else "束のどの塊"
+        if args.column:
+            # 列で見たときの 0 件は「その列を持つ表が無い」と「あるが升に無い」の
+            # どちらもある。列名を言い添えないと、読み手は列名を疑って打ち直す。
+            what = f"列 {args.column} の升"
+        print(f"{pattern} は{what}にもありません（写し {outcome.files} 本を見ました）")
+        return 1 if not found_organized else 0
 
     if args.files:
         # **写しの単位で知りたいことがある**（どの資料を開くか決めるとき）。
@@ -1701,20 +1925,132 @@ def _grep(args: argparse.Namespace) -> int:
             print(f"{count:>4} 件  {file}")
         return 0
 
+    if args.json:
+        for hit in hits:
+            print(lookup_module.to_json(hit))
+        return 0
+
     shown = hits if args.all else hits[:_HITS]
     for hit in shown:
-        print(f"{hit.reference}  {hit.heading}")
-        for line in hit.lines:
-            print(f"  {line}")
-        if hit.total > len(hit.lines):
-            print(f"  ―― ほか {hit.total - len(hit.lines)} 行")
+        tail = _uses_tail(hit.uses) if (args.used or args.unorganized) else ""
+        _print_hit(hit, "", tail, terms)
 
     total = sum(h.total for h in hits)
     print()
     print(f"塊 {len(hits)} 件 / 行 {total} 件"
           + (f"（{len(shown)} 件まで表示。全部出すには --all）"
-             if len(shown) < len(hits) else ""))
+             if len(shown) < len(hits) else "")
+          + (f"　索引: {outcome.mode}" if outcome.mode == "index" else ""))
     return 0
+
+
+def _print_hit(hit: Any, prefix: str, tail: str, terms: list[str]) -> None:
+    """当たり 1 件を出す。1 行目は ``source`` にそのまま貼れる形である。"""
+    # あいまい検索では**どれだけ違うか**を先に言う ―― 1 字違いの当たりを
+    # そのまま当たったものと同じ顔で出すと、読み手は資料の語を写し間違える。
+    near = f"  （{hit.distance} 字違い）" if hit.distance else ""
+    print(f"{prefix}{hit.reference}  {hit.heading}{near}{tail}")
+    if hit.kind == "name":
+        return                                    # 名前は 1 行目に出ている
+    pad = " " * len(prefix)
+    if hit.header:
+        # 見出しの位置は表の中の番号で言う。表題行が先にある表で「1 行目」と
+        # 言うと、データ行の番号（表の頭から数える）と食い違う。
+        print(f"{pad}  見出し（{hit.header_where}）: {hit.header}")
+    # 探した語と当たった字が違うとき（--fuzzy / --loose / --regex / --aliases）は
+    # 当たった字を原文で言う ―― 長い行のどこが当たったかを読み手に探させない。
+    matched = [m.strip() for ms in hit.matched for m in ms if m.strip() not in terms]
+    if matched:
+        print(f"{pad}  当たり: {'・'.join(dict.fromkeys(matched))}")
+    for where, line in zip(hit.where, hit.lines):
+        print(f"{pad}  {where + ': ' if where else ''}{line}")
+    if hit.total > len(hit.lines):
+        print(f"{pad}  ―― ほか {hit.total - len(hit.lines)} 行")
+
+
+def _grep_diff(paths: paths_module.Paths, matcher: Any, args: argparse.Namespace,
+               pattern: str, terms: list[str]) -> int:
+    """``--diff <古> <新>`` ―― 撮り直した写しの範囲で、当たりの増減を出す。"""
+    old, new = args.diff
+    try:
+        result = lookup_module.diff(
+            paths, matcher, old, new, mode="scan" if args.no_index else "auto",
+            only=args.path or "")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        for hit in result.added:
+            print(lookup_module.to_json(hit, "+"))
+        for hit in result.removed:
+            print(lookup_module.to_json(hit, "-"))
+        for was, now in result.changed:
+            print(lookup_module.to_json(was, "~old"))
+            print(lookup_module.to_json(now, "~new"))
+        return 0
+    print(f"{pattern} の当たりの差 {old} → {new}"
+          f"（{new} で撮り直した写し {result.files} 本の範囲）")
+    for hit in result.added:
+        _print_hit(hit, "+ ", "", terms)
+    for hit in result.removed:
+        _print_hit(hit, "- ", "", terms)
+    for was, now in result.changed:
+        print(f"~ {now.reference}  {now.heading}（行が変わった）")
+        for label, hit in ((old, was), (new, now)):
+            for where, line in zip(hit.where, hit.lines):
+                print(f"    {label} {where + ': ' if where else ''}{line}")
+    print()
+    print(f"増えた {len(result.added)} / 消えた {len(result.removed)} / "
+          f"変わった {len(result.changed)} / 変わらず {result.same}")
+    if not result.files:
+        print(f"{new} には撮り直した写しがありません")
+        return 1
+    return 0
+
+
+#: ``--used`` の行末に並べる件数。残りは数で言う（出典セルの ``ほか N 件`` と同じ）。
+_USES_SHOWN = 2
+
+
+def _uses_tail(uses: list[str]) -> str:
+    if not uses:
+        return "  → （未整理）"
+    rest = len(uses) - _USES_SHOWN
+    return ("  → " + "・".join(uses[:_USES_SHOWN])
+            + (f" ほか {rest} 件" if rest > 0 else ""))
+
+
+def _index_progress(done: int, total: int) -> None:
+    print(f"  索引を作っています… {done}/{total} 本", file=sys.stderr)
+
+
+#: 整理結果の当たりで見せる欄の長さ。``statement`` は 1 文が長い。
+_FIELD_WIDTH = 100
+
+
+def _grep_organized(paths: paths_module.Paths, matcher: Any,
+                    args: argparse.Namespace) -> int:
+    """整理結果の側を探す（``--in organized``）。**同じ語が既に何になっているか。**"""
+    found = lookup_module.in_organized(paths, matcher, args.round)
+    if not found:
+        print(f"{' '.join(args.pattern)} は整理結果のどのレコードにもありません")
+        return 0
+    if args.json:
+        for hit in found:
+            print(json.dumps({
+                "where": hit.where, "concept": hit.concept, "type": hit.type,
+                "name": hit.name, "fields": dict(hit.fields)}, ensure_ascii=False))
+        return len(found)
+    print(f"整理結果の当たり {len(found)} 件")
+    for hit in found:
+        label = "  ".join(x for x in (hit.concept, hit.type, hit.name) if x)
+        print(f"{hit.where}  {label}")
+        for name, value in hit.fields:
+            text = " ".join(value.split())
+            if len(text) > _FIELD_WIDTH:
+                text = text[:_FIELD_WIDTH] + "…"
+            print(f"    {name}: {text}")
+    return len(found)
 
 
 def _by_file(hits: list) -> list[tuple[str, int]]:
@@ -1727,6 +2063,43 @@ def _by_file(hits: list) -> list[tuple[str, int]]:
     return sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
+def _suspect(args: argparse.Namespace) -> int:
+    """パース結果の**切れ目の疑い**を出す。**直すのはエージェントである。**
+
+    塊の区切りは提示上の都合なので、間違えても値は落ちない ―― それを理由に
+    長いあいだ**割ったことだけを黙って**いた。読むのが人ではなく整理層である
+    以上、黙って 3 つに割れた表は 3 つの表として読まれる。
+
+    ここは ``error`` を出さない。1 つの表か 2 つの表かは**資料を開かないと
+    決まらない**ので、機械が「誤り」と名乗れば、その名乗りのほうが嘘になる。
+    疑いが残っているあいだは ``exit 3``（あなたの手番）で終わる ―― ``auto`` と
+    同じ番号なのは、**同じ意味**だからである。
+    """
+    paths = paths_module.resolve(args.root)
+    round_ = _round(paths, args.round)
+    if round_ is None or not round_.parsed.is_dir():
+        print("ラウンドがありません（arp4 parse を先に実行してください）",
+              file=sys.stderr)
+        return 1
+
+    findings, files, chunks = suspect_module.look(round_, args.path or "")
+    for finding in order(findings):
+        print(finding.render())
+
+    # **見た数を必ず出す。** `--path` で絞り間違えると 0 本になるが、そのとき
+    # 「疑いはありません」だけを出すと、**見ていないことが見たことになる。**
+    print(f"\nラウンド {round_.name} ― 写し {files} 本 / 塊 {chunks} 件 "
+          f"／ 疑い {len(findings)} 件")
+    if not files:
+        print("見たパース結果がありません（--path の絞り込みを確かめてください）")
+        return 1
+    if not findings:
+        print("切れ目の疑いはありません")
+        return 0
+    print("次にやること: 疑いの塊を原本と突き合わせて直す → スキル arp4-repair")
+    return 3
+
+
 def _index(args: argparse.Namespace) -> int:
     """束が持っている塊を全部並べる ―― **索引そのもの**。
 
@@ -1736,6 +2109,16 @@ def _index(args: argparse.Namespace) -> int:
     どちらが本当かを読み手が決められなくなる（→ :func:`arp4.show.catalogue`）。
     """
     paths = paths_module.resolve(args.root)
+    if args.cache:
+        # **索引は保存物ではなく写しである。** 引く前に毎回突き合わせるので、
+        # ここでやるのは「初回の数十秒を今のうちに済ませる」ことだけである。
+        refreshed, (files, chunks) = lookup_module.build(
+            paths, reindex=args.reindex, progress=_index_progress)
+        print(f"索引: 写し {files} 本 / 塊 {chunks} 件"
+              f"（追加 {refreshed.added} / 更新 {refreshed.updated} / "
+              f"削除 {refreshed.removed} 本、{refreshed.seconds:.1f} 秒）"
+              f"  {lookup_module.cache_path(paths).relative_to(paths.root).as_posix()}")
+        return 0
     if args.round and not paths.round(args.round).exists():
         # **間違いの在り処を取り違えない。** ラウンド名の打ち間違いを
         # 「パース結果がありません」と言うと、読み手は parse をやり直す。
@@ -2119,6 +2502,12 @@ def main(argv: list[str] | None = None) -> int:
     draft.add_argument("--dry-run", action="store_true",
                        help="書き込まずに件数だけ出す")
 
+    design = add("design", "正本からプログラム設計の骨格を機械生成する",
+                 _design, strict=False)
+    design.add_argument("--round", metavar="<名前>", help="対象のラウンド（既定: 最新）")
+    design.add_argument("--dry-run", action="store_true",
+                        help="書き込まずに件数だけ出す")
+
     freeze = add("freeze", "整理結果を凍結する（②）", _freeze, strict=False,
                  machine=True)
     freeze.add_argument("--round", metavar="<名前>", help="対象のラウンド（既定: 最新）")
@@ -2131,6 +2520,13 @@ def main(argv: list[str] | None = None) -> int:
                              "この path のぶんと隠したぶんを分けて集計します。"
                              "どのファイルにも当たらなければ exit 2）")
 
+    emit = add("emit", "正本から決まっているものだけをコードにする", _emit,
+               strict=False)
+    emit.add_argument("--out", metavar="<パス>",
+                      help="出力先（既定: .arp/emit/）")
+    emit.add_argument("--dry-run", action="store_true",
+                      help="書き込まずに件数だけ出す")
+
     build = add("build", "整理結果を正本へ（③）", _build, strict=False)
     build.add_argument("--round", metavar="<名前>", help="対象のラウンド（既定: 最新）")
     build.add_argument("--dry-run", action="store_true", help="書き込まずに案だけ出す")
@@ -2141,6 +2537,11 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--show-known", action="store_true",
                        help=f"known_gaps で承知済みの欠落（{digest_module.KNOWN}）"
                             "も 1 件ずつ出す（既定は件数だけ）")
+
+    verify = add("verify", "実装を読み直して正本と突き合わせる", _verify,
+                 machine=True, digest=True)
+    verify.add_argument("source", nargs="+",
+                        help="実装のパス（必須。emit の出力でも手で書いたものでもよい）")
 
     number = add("number", "表示 ID を採番する", _number, strict=False)
     number.add_argument("--dry-run", action="store_true", help="書き込まずに案だけ出す")
@@ -2217,14 +2618,72 @@ def main(argv: list[str] | None = None) -> int:
     grep.add_argument("--regex", action="store_true", help="正規表現として読む")
     grep.add_argument("--ignore-case", "-i", action="store_true",
                       help="英数の大小を区別しない")
+    grep.add_argument("--loose", action="store_true",
+                      help="全角半角・大小・空白の揺れを畳んで探す"
+                           "（ＯＲＤＥＲ と ORDER、受注 番号 と 受注番号 を同じに見る）")
+    grep.add_argument("--all-of", action="store_true",
+                      help="語を空白で割り、同じ塊に全部ある塊だけを出す"
+                           "（論理名と物理名が別の列に割れている表を探すとき）")
+    grep.add_argument("--same-row", action="store_true",
+                      help="語を空白で割り、同じ行（表なら同じ行の升）に全部ある行だけを"
+                           "出す（一覧 × 明細の突合。--all-of は塊、こちらは行）")
+    grep.add_argument("--aliases", action="store_true",
+                      help="整理結果の _concepts.yml と正本の台帳にある別名"
+                           "（label / aliases）でも探す（資料ごとに表記が違う同じものを"
+                           "一度に拾う）")
+    grep.add_argument("--sort", choices=("path", "cell"), default="path",
+                      help="並び。path（既定）は写しの並び、cell は升そのものに当たった"
+                           "塊（定義らしい当たり）を先に")
+    grep.add_argument("--diff", nargs=2, metavar=("<古いラウンド>", "<新しいラウンド>"),
+                      help="2 つのラウンドで探し、新しいラウンドで撮り直した写しの範囲で"
+                           "当たりの増減を出す")
+    grep.add_argument("--fuzzy", nargs="?", const=1, default=0, type=int,
+                      metavar="<字数>",
+                      help="1 字（数を渡せばその字数）までの置換・欠落・混入を許して"
+                           "探す（OCR の読み違え・手打ちの揺れ）。近い順に並ぶ。"
+                           "--regex とは併用できない")
+    grep.add_argument("--column", metavar="<列名>",
+                      help="表のその列の升だけを見る（見出し行の字で指す）")
+    grep.add_argument("--cell", action="store_true",
+                      help="表の升の値と完全一致で見る（部分一致にしない）")
+    grep.add_argument("--path", metavar="<部分パス>",
+                      help="写しの相対パスにこの語を含むものだけを見る")
+    grep.add_argument("--in", dest="where", choices=("parsed", "organized", "all"),
+                      default="parsed",
+                      help="探す先。parsed（既定）は写し、organized は整理結果"
+                           "（同じ語が既にどの concept になっているか）、all は両方")
+    grep.add_argument("--used", action="store_true",
+                      help="当たった塊ごとに、それを出典にしている整理結果・正本を添える")
+    grep.add_argument("--unorganized", action="store_true",
+                      help="まだ何の出典にもなっていない塊の当たりだけを出す")
     grep.add_argument("--files", action="store_true",
                       help="当たった写しと件数だけを出す（多い順）")
     grep.add_argument("--all", action="store_true",
                       help="当たった塊を全部出す（既定は 40 件で切る）")
+    grep.add_argument("--json", action="store_true",
+                      help="1 件 1 行の JSON で出す（数える・突き合わせる側のため）")
+    grep.add_argument("--no-index", action="store_true",
+                      help="索引を使わず写しを読んで探す（索引があっても）")
+    grep.add_argument("--reindex", action="store_true",
+                      help="索引を捨てて作り直してから探す")
 
     index = add("index", "パース結果の索引（塊の一覧）を出す", _index, strict=False)
     index.add_argument("--round", metavar="<名前>",
                        help="そのラウンドだけを並べる")
+    index.add_argument("--cache", action="store_true",
+                       help="一覧の代わりに、grep が引く索引を写しに追いつかせる"
+                            "（大きな束で最初の grep を待たせないため）")
+    index.add_argument("--reindex", action="store_true",
+                       help="--cache と一緒に。索引を捨てて作り直す")
+
+    suspect = add("suspect", "パース結果の切れ目の疑いを出す", _suspect,
+                  strict=False)
+    suspect.add_argument("--round", metavar="<名前>",
+                         help="そのラウンドだけを見る（既定: いちばん新しいもの）")
+    suspect.add_argument("--path", metavar="<部分パス>",
+                         help="パース結果の相対パスにこの語を含むものだけを見る"
+                              "（分担しているとき。**判定は絞れるが件数も絞れる**"
+                              "ので、見た本数が一緒に出る）")
 
     args = parser.parse_args(argv)
     try:

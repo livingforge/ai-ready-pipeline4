@@ -48,6 +48,37 @@ attribute_rules:
   # メッセージは「利用者が次に何をすればよいか」まで書く。
   - { type: message, attribute: action, level: warn, when_status: [approved] }
 
+  # ── プログラム設計 ────────────────────────────────────────────
+  # **揺れを止める強制は、`required` ではなくここで掛ける。** メタモデルで
+  # 必須にすると整理層が推測で埋めるのは 3.2.0 / 3.4.0 / 3.5.0 / 3.8.0 で 4 度
+  # 確かめてある ―― 「資料が言っているところまで」書いた draft は通し、
+  # **実装に渡す（approved）ときだけ**欠けを error にする。
+  #
+  # **既存の案件には 1 件も鳴らない。** 新しい 4 種別はレコードが 0 件なら
+  # ルールも当たらず、`module` の 1 本は「実装言語を宣言したモジュール」に
+  # だけ掛かる（`{not: [~]}` は「値が入っていること」）。設計書だけを作る
+  # 案件は、この段の語彙に 1 行も書かないという形で降りられる。
+  - { type: implementation-standard, attribute: rule, level: error,
+      when_status: [approved], where: { standard_kind: { not: [型写像] } } }
+  # **型写像は散文ではなく欄で書く。** 散文だと `arp4 emit` が読めず、案件が
+  # 決めた綴りが生成に効かない ―― 承認された写像が空欄なのは、決めていないのと
+  # 同じである。
+  - { type: implementation-standard, attribute: logical_type, level: error,
+      when_status: [approved], where: { standard_kind: 型写像 } }
+  - { type: implementation-standard, attribute: physical_type, level: error,
+      when_status: [approved], where: { standard_kind: 型写像 } }
+  # 引数名が無ければ、生成のたびに違う名前が付く ―― 呼ぶ側と噛み合わない。
+  - { type: parameter, attribute: param_name, level: error,
+      when_status: [approved] }
+  - { type: query, attribute: operation, level: error, when_status: [approved] }
+  # 口は「メソッド + 経路」で決まる。片方が空なら、どこにも生えない。
+  - { type: endpoint, attribute: path,        level: error, when_status: [approved] }
+  - { type: endpoint, attribute: http_method, level: error, when_status: [approved] }
+  # **実装言語を宣言したなら、出す先も決まっていること。** 決まっていないと、
+  # 同じ正本から出したコードが毎回違う場所に落ちる。
+  - { type: module, attribute: source_path, level: error, when_status: [approved],
+      where: { language: { not: [~] } } }
+
 # トレースの欠落を、様式標準の判断で warn から error に上げる。
 # メタモデルの warn_if_no_upstream は warn 固定であり、
 # 「承認までに必ず埋める」かどうかは様式の判断だから。
@@ -63,6 +94,10 @@ trace_rules:
   - { type: requirement, relation: verifies, direction: to, level: warn,
       when_status: [approved], where: { kind: [機能, 非機能] } }
   # 承認済みの課題に決定が無い＝未決着のまま締めようとしている。
+  # 型の指し先が無い引数は `impl_type` を書いているはずだが、**そちらは
+  # 言語ごとに揺れる** ―― 正本の語彙で指せるものは指しておく。warn なのは
+  # `Path` / `list[str]` のように相手が正本に無い型が普通にあるためである。
+  - { type: parameter, relation: typed-as, level: warn, when_status: [approved] }
   - { type: open-issue, relation: resolves, direction: to, level: warn,
       when_status: [approved] }
 

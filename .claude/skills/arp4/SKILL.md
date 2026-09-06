@@ -20,11 +20,12 @@ license: MIT
     ▼
 .arp/rounds/r001/organized/  ── arp4 freeze ──→ 凍結
     │  arp4 build             機械：マージ・採番・整合性（意味を判断しない）
+    │  arp4 design            機械：正本 → プログラム設計の骨格（要るときだけ・文章は TODO）
     ▼
 .arp/spec/  concepts.yml + items/ + relations/（＋ derived/ ＝ AI の解釈層）
     │  arp4 check → arp4 publish
     ▼
-.arp/out/<工程>/   設計書 12 種 ＋ 決定記録 ＋ 点検の 2 枚（--audience stakeholder で 6 種）
+.arp/out/<工程>/   設計書 13 種 ＋ 決定記録 ＋ 点検の 2 枚（--audience stakeholder で 6 種）
 ```
 
 **各ページは必要になったときに読む。先に全部読み込まない。**
@@ -86,18 +87,22 @@ arp4 init --root "$R"                        # ← 全コマンドに付ける
 | `arp4 freeze --dry-run` | 残作業の一覧 → [docs/freeze.md](docs/freeze.md) |
 | `arp4 freeze` | ② 凍結 |
 | `arp4 build` | ③ 整理結果 → 正本 → [docs/build.md](docs/build.md) |
+| `arp4 design` | 正本 → プログラム設計の骨格（引数・問い合わせ・実装の座標）。**`draft` の鏡像**で、文章は TODO で空く。決めなかったことは端末が言う |
 | `arp4 number` | 表示 ID を採番する（`check` の前に回す） |
 | `arp4 check --strict` | 機械検証（`--summary` → `--code W043` で段階的に開く） |
 | （手で書く）`spec/derived/` | ★ AI の解釈層。PM・顧客向けはここからしか出ない → [docs/derived.md](docs/derived.md) |
 | `arp4 publish` | ⑥ 設計書を生成 → [docs/publish.md](docs/publish.md) |
+| `arp4 emit` | 正本 → コード（DDL・骨格・コード定義・メッセージ）。**本体は書かない**（疑似コードが doc コメントに出る）。決まっていない型は印つきで数える |
+| `arp4 verify <パス>…` | 実装 → 正本の突き合わせ。引数の食い違いは **error**、未実装・設計外は warn。**比べていないものは件数で言う** |
 | `arp4 show <出典>` | 設計書の出典からパース結果の塊を開く → [docs/publish.md](docs/publish.md) |
-| `arp4 grep <語>` | パース結果を横断して探す（当たりは塊で返る） → [docs/parse.md](docs/parse.md) |
-| `arp4 index` | パース結果の索引（塊の一覧） → [docs/parse.md](docs/parse.md) |
+| `arp4 grep <語>` | パース結果を横断して探す（当たりは塊で返る。VS Code の検索・素の grep の代わりに使う）。`--column` / `--loose` / `--same-row` / `--aliases` / `--used` / `--in organized` / `--diff` → [docs/parse.md](docs/parse.md) |
+| `arp4 index` | パース結果の索引（塊の一覧）。`--cache` で大きな束の検索索引を先に作る → [docs/parse.md](docs/parse.md) |
+| `arp4 suspect` | パース結果の切れ目の疑い（1 つの表が割れていないか）。直すのは[スキル arp4-repair](../arp4-repair/SKILL.md) |
 | `arp4 lock` / `conform` | 標準パック準拠（CI 用） |
 
 **検査系（`lint` / `check` / `conform`）の終了コードは 3 値である。**error = 1 /
 warn のみ（`--strict`）= 2 / clean = 0。そのほかは 2 値（0 = 成功）で意味が違う。
-`auto` だけ exit 3（あなたの手番）を持つ。
+`auto` と `suspect` が exit 3（あなたの手番）を持つ。
 
 ## 通しの手順
 
@@ -127,6 +132,8 @@ arp4 freeze --root "$R" --dry-run           #   残作業の一覧
 arp4 freeze --root "$R" --dry-run           #   ★ 書いたあとにもう一度（読めるかの確認）
 arp4 freeze --root "$R"                     # ② 凍結
 arp4 build  --root "$R"                     # ③ 正本へ
+arp4 design --root "$R"                     #   プログラム設計の骨格（要るときだけ）
+#   ★ 引数・問い合わせの <TODO 出典 …> を埋める → freeze → build をもう一周
 arp4 number --root "$R"                     #   採番（check より先）
 arp4 check  --root "$R" --strict
 arp4 check  --root "$R" --code W043 --code W047 --code W046   # ★ 空で出た列（種別.属性で出る）

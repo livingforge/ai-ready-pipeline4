@@ -13,7 +13,16 @@
 
 **横は簡単には切らない。** 縦に切っても表は続きとして読めるが、横に切ると 1 行が
 2 枚に分かれて対応が取れなくなる。だから横は「縮小しても読めない」ほど広いときだけ
-切る（:data:`WIDE_PX`）。
+切る（:data:`WIDE_PX`）。**右のはみ出し逃げ（:data:`MARGIN_PX`）はこの予算に
+数えない** ―― 数えると逃げの都合で 1 行が 2 枚に分かれ、しかも右端には値も図形も
+無い短冊が 1 枚できる（実測 ―― `ER図` の `CG:CI` は 3 列のうち 2 列が重なり）。
+
+**割る数だけ決めて、厚みは分け合う。** 予算まで詰めて余りを次へ送ると、上限
+1400 px に対して **1380 px と 200 px** のように割れる。薄いほうは中身が「境界を
+跨いだ図形の下端」しか写らない帯になり、長辺を :data:`TARGET_PX` へ揃えるところで
+**その帯だけが引き伸ばされて極端に細長い絵になる**（実測 ―― `3.業務フロー` で
+1552x200 の区画が出た）。同じ 2 枚なら 770 px ずつのほうが、どちらも読める
+（:func:`_even_tail`）。
 
 **切り口は結合セルを避ける。** 日本の設計書は結合セルで見出しを作るので、そこを
 跨いで切ると見出しだけが前のタイルに残る。境界が結合を割るときは結合の手前まで
@@ -76,6 +85,10 @@ WIDE_PX = 2200
 
 #: 重ねて撮る行数・列数。境界で切れた行を拾い直すための保険。
 OVERLAP = 2
+
+#: 端数として認める最後の 1 枚の薄さ（予算に対する比）。ここを下回ったら手前の
+#: 1 枚と分け合う ―― **薄い 1 枚は「細長い絵」になり、縮めると字が消える。**
+TAIL_RATIO = 0.25
 
 #: 書き出す PNG の長辺（px）。受け取り側がここまで縮めるので、それ以上は**送る量が
 #: 増えるだけで情報は増えない**。
@@ -212,12 +225,19 @@ def plan_worksheet(worksheet: Any, extent: tuple[int, int] = (0, 0), *,
         return []
 
     row_px = [_row_px(worksheet, r) for r in range(1, last_row + 1)]
-    col_px = _col_px(worksheet, last_col + _margin_cols(worksheet, last_col))
+    margin = _margin_cols(worksheet, last_col)
+    col_px = _col_px(worksheet, last_col + margin)
     keep = _keep(worksheet, boxes)
 
     row_spans = _split(row_px, max_px, overlap, keep[0])
     # **横は最後の手段。** 1 行が 2 枚に分かれると対応が取れなくなる。
-    col_spans = _split(col_px, wide_px, overlap, keep[1])
+    # **逃げ列は予算に数えない。** 数えると合計が :data:`WIDE_PX` を越えた拍子に
+    # 横へ割れ、右端に**逃げ列だけの短冊**が 1 枚できる（実測 ―― `ER図` の
+    # `CG:CI` は 3 列のうち 2 列が重なりで、値も図形も 1 つも無い）。逃げは
+    # 「はみ出した文字を撮り逃さない」ためのもので、撮る対象ではない。
+    col_spans = _split(col_px[:last_col], wide_px, overlap, keep[1])
+    # いちばん右の 1 枚に付ける ―― はみ出しは右へしか伸びない。
+    col_spans[-1] = (col_spans[-1][0], col_spans[-1][1] + margin)
 
     return [Tile(rows=rows, cols=cols,
                  width_px=round(sum(col_px[cols[0] - 1:cols[1]])),
@@ -275,6 +295,9 @@ def _split(sizes: Sequence[float], budget: float, overlap: int,
     ``keep`` は割ってはいけない区間（結合セル）。境界がそこへ落ちたら**手前へ戻す**
     ―― 先へ送ると 1 枚が予算を超え、超えたぶんだけ字が潰れる。戻せない
     （その結合が予算より長い）ときは諦めて切る。**進まないより切れたほうがよい。**
+
+    詰め終えたら最後の 1 枚だけ見直す（:func:`_even_tail`）。予算いっぱいまで
+    詰める切り方は、余りをそのまま 1 枚にするからである。
     """
     total = len(sizes)
     if total == 0:
@@ -294,7 +317,50 @@ def _split(sizes: Sequence[float], budget: float, overlap: int,
         if end >= total:
             break
         start = max(end - overlap, start + 1)       # **必ず前へ進む**
-    return spans
+    return _even_tail(spans, sizes, budget, overlap, blocks, offset)
+
+
+def _even_tail(spans: list[tuple[int, int]], sizes: Sequence[float],
+               budget: float, overlap: int, blocks: Sequence[tuple[int, int]],
+               offset: int) -> list[tuple[int, int]]:
+    """最後の 1 枚が薄すぎるなら、**枚数を変えずに**手前の 1 枚と分け合う。
+
+    :func:`_split` は予算まで詰めて余りを次へ送るので、合計が予算の 1 倍と少し
+    のとき **1380 px と 200 px** のように割れる。薄いほうは中身が「境界を跨いだ
+    図形の下端」しか写らない細長い帯になり、:func:`_rasterize` が長辺を
+    :data:`TARGET_PX` へ揃えるところで**その帯だけが引き伸ばされる**
+    ―― 実測（`3.業務フロー`）で 1552x200 の区画が出た。同じ 2 枚なら
+    770 px ずつのほうが、どちらも読める。
+
+    薄さは 2 通りに見る。予算に対する比（:data:`TAIL_RATIO`）と、**手前の 1 枚に
+    無い行（列）の数**である。後者が重ね幅以下なら、その 1 枚は撮っても
+    ほとんどが重複で、新しく見えるものが無い（実測 ―― `ER図` の右端は 3 列中
+    2 列が重なりだった）。
+
+    分け直して**どちらかが予算を超えるなら元のまま返す** ―― 細長いのは読みにくい
+    だけだが、予算超えは全体が縮んで字が潰れる。
+    """
+    if len(spans) < 2:
+        return spans
+    (previous_first, previous_last), (_, last) = spans[-2], spans[-1]
+    lo, hi = previous_first - offset, last - offset  # 0 始まり・両端含む
+    tail = sum(sizes[spans[-1][0] - offset:last - offset + 1])
+    fresh = last - previous_last                     # 手前の 1 枚に無い数
+    if tail >= budget * TAIL_RATIO and fresh > overlap:
+        return spans
+
+    half = sum(sizes[lo:hi + 1]) / 2
+    used = 0.0
+    end = lo                                         # end は「次の開始」
+    while end < hi and (end == lo or used + sizes[end] <= half):
+        used += sizes[end]
+        end += 1
+    end = _snap(end, lo, blocks, offset)
+    start = max(end - overlap, lo + 1)
+    if used > budget or sum(sizes[start:hi + 1]) > budget:
+        return spans                                 # 元のほうがまし
+    return spans[:-2] + [(lo + offset, end + offset - 1),
+                         (start + offset, hi + offset)]
 
 
 def _snap(end: int, start: int, blocks: Sequence[tuple[int, int]],

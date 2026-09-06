@@ -253,3 +253,159 @@ def test_処理フローは業務フローと別の種別に置く(model: mm.Met
     assert model.relation_types["has-flow-step"]["from"] == ["business-flow"]
     assert model.relation_types["leads-to"]["from"] == ["flow-step"]
     assert "process-step" not in model.relation_types["leads-to"]["to"]
+
+
+# ── プログラム設計（3.17.0）──────────────────────────────────────
+#: 揺れを止めるために足した種別（fact 種別 → アイテム種別）。
+_PROGRAM = {
+    "実装規約": "implementation-standard",
+    "引数": "parameter",
+    "問い合わせ": "query",
+    "エンドポイント": "endpoint",
+}
+
+
+def test_プログラム設計の語彙は整理層から書ける(model: mm.Metamodel) -> None:
+    """**入口の無い種別は永久に 0 件で通る**（`decision` / `test-run` と同じ形）。
+
+    この段は「資料から起こす」段ではなく「決める」段だが、それでも写像は要る
+    ―― 資料がコードのラウンドでは引数も問い合わせも全部書いてあり、そこを
+    塞ぐと**実装が先にある案件**（`examples/kotonoha`）が何も書けなくなる。
+    """
+    for fact_type, item_type in _PROGRAM.items():
+        mapped = model.for_fact(fact_type)
+        assert mapped is not None, fact_type
+        assert mapped[0] == item_type
+        assert model.layer_of(item_type) == "プログラム設計"
+
+
+def test_プログラム設計は詳細設計とテストの間に置く(model: mm.Metamodel) -> None:
+    """**工程の並びは publish の章立てと「持ち主」の判定に効く。**
+
+    同じアイテムが 2 冊に出るとき、表示 ID を持つのは**工程が先の設計書**である
+    （`publish._owner`）―― プログラム設計をテストより後ろに置くと、実装の座標を
+    テスト仕様書が先に名乗る。
+    """
+    layers = list(model.layers)
+    assert layers.index("詳細設計") < layers.index("プログラム設計")
+    assert layers.index("プログラム設計") < layers.index("テスト")
+
+
+def test_呼び出しの境界が語彙で決まる(model: mm.Metamodel) -> None:
+    """**ここが空白だと、生成のたびに違うコードが出る。**
+
+    詳細設計の語彙が持っていたのは `signature` / `returns` / `raises` の
+    3 つの文字列だけで、`signature` は「資料にそう書いてあった」ものである
+    ―― 資料が Excel の詳細設計書なら 1 件も入らない。呼ぶ名前・引数・引数の型・
+    戻り値の型が語彙にあって初めて、隣のモジュールと噛み合う。
+    """
+    assert "method_name" in model.item_types["method"]["attributes"]
+    assert "source_path" in model.item_types["module"]["attributes"]
+
+    # 並びが仕様である（呼び出しの順）。
+    assert model.relation_types["has-parameter"]["ordered"] is True
+    assert model.relation_types["has-parameter"]["to"] == ["parameter"]
+
+    # **型は正本の語彙で指す** ―― 実装型を文字列で書くと 4 言語ぶん揺れる。
+    for relation in ("typed-as", "returns-type"):
+        assert model.relation_types[relation]["to"] == [
+            "data-item", "entity", "code-master"]
+    assert model.relation_types["typed-as"]["from"] == ["parameter"]
+    assert model.relation_types["returns-type"]["from"] == ["method"]
+
+    # いつ出すかは出す側との組にしか無い（同じ `E-0007` を 3 つが別の理由で出す）。
+    assert "condition" in model.relation_types["raises"]["attributes"]
+
+
+def test_実装言語はモジュールごとに持つ(model: mm.Metamodel) -> None:
+    """**1 案件が単一言語である保証はどこにも無い。**
+
+    対象は C / Java / JS・TS / Python で、画面が TypeScript・バッチが Java と
+    いう構成は普通にある ―― 実装規約を 1 件に縛ると、どちらかの規約が正本から
+    消える。規約の側は**言語が空欄なら全言語に効く**（例外の方針やログの粒度は
+    案件で 1 つに決まるので、共通の 1 条を 4 回書かせない）。
+    """
+    language = model.item_types["module"]["attributes"]["language"]
+    assert set(language["values"]) == {"C", "Java", "JavaScript",
+                                       "TypeScript", "Python"}
+    assert language.get("required") is not True
+
+    standard = model.item_types["implementation-standard"]["attributes"]
+    assert standard["language"].get("required") is not True
+    assert standard["standard_kind"]["kind"] == "enum"
+
+
+def test_論理は疑似コードで止める(model: mm.Metamodel) -> None:
+    """**1 文 = 1 レコードにすると、正本が YAML で書いたソースコードになる。**
+
+    揺れは消えるが、設計書として読めるものが出せなくなる（この束の存在理由が
+    消える）。境界を固めれば揺れはメソッドの内側に閉じるので、論理はここで止める
+    ―― 反復と例外処理に関係を足さないのも同じ理由で、**疑似コードと関係の
+    2 か所に同じ枝を書くと必ず片方が古くなる。** 分岐だけは `proceeds-to` が
+    既に持っているので、そちらは関係が正である。
+    """
+    assert "pseudo" in model.item_types["process-step"]["attributes"]
+    assert "repeats" not in model.relation_types
+    assert "handles-error" not in model.relation_types
+    assert "condition" in model.relation_types["proceeds-to"]["attributes"]
+
+
+def test_プログラム設計の欄はapprovedでだけ必須になる(
+        model: mm.Metamodel, documents: dict[str, Any]) -> None:
+    """**必須にすると整理層が推測で埋める**（3.2.0 / 3.4.0 / 3.5.0 / 3.8.0）。
+
+    「資料が言っているところまで」書いた draft は通し、実装に渡す approved の
+    ときだけ欠けを error にする ―― **既存の案件には 1 件も鳴らない。** 新しい
+    4 種別はレコードが 0 件ならルールが当たらず、`module` の 1 本は実装言語を
+    宣言したものにだけ掛かる。
+    """
+    common = set(mm.load_pack("jp-sier-std").get("common_attributes") or {})
+    for name in _PROGRAM.values():
+        for key, attribute in model.item_types[name]["attributes"].items():
+            if key in common:            # name / statement は全種別で必須である
+                continue
+            assert attribute.get("required") is not True, f"{name}.{key}"
+
+    chain, _ = pack.resolve_chain("jp-sier-std")
+    rules = pack.rules(chain).get("attribute_rules") or []
+    program = {(r.get("type"), r.get("attribute")): r for r in rules}
+
+    for key in (("implementation-standard", "rule"), ("parameter", "param_name"),
+                ("query", "operation"), ("endpoint", "path"),
+                ("endpoint", "http_method"), ("module", "source_path")):
+        assert program[key]["when_status"] == ["approved"], key
+        assert program[key]["level"] == "error", key
+
+    # 実装言語を宣言したモジュールにだけ掛ける（`{not: [~]}` = 値が入っている）。
+    assert program[("module", "source_path")]["where"] == {
+        "language": {"not": [None]}}
+
+
+def test_プログラム設計書は必須文書にしない(documents: dict[str, Any]) -> None:
+    """**設計書だけを作る案件は、この段に 1 行も書かないという形で降りられる。**
+
+    空で出ることが「この工程の語彙が正本に無い」の申告になる（計画書と同じ
+    判断 ―― 決定 55）。落ちた冊子は誰にも見えないが、空の冊子は自分で言う。
+    """
+    chain, _ = pack.resolve_chain("jp-sier-std")
+    required = pack.rules(chain).get("require_documents") or []
+
+    assert "program-design" in documents
+    assert "program-design" not in required
+    assert documents["program-design"]["phase"] == "プログラム設計"
+
+
+def test_詳細設計書の欄をプログラム設計書へ写さない(
+        documents: dict[str, Any]) -> None:
+    """**同じ表が 2 つの工程で別々に承認されると、工程を単位にした意味が消える**
+    （`P106` ―― 詳細設計書がメッセージの定義について書いている規律と同じ）。
+
+    ここが出すのは実装の座標と契約だけで、仕様・クラス名・パッケージ・
+    シグネチャは詳細設計書の側にある。
+    """
+    module = _section(documents["program-design"], "モジュールの実装")
+    assert module["columns"] == ["module_id", "name", "language", "source_path"]
+
+    method = _section(documents["program-design"], "メソッドの契約")
+    for 写さない in ("signature", "returns", "raises", "statement", "description"):
+        assert 写さない not in method["columns"]

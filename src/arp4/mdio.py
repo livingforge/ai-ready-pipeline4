@@ -223,7 +223,17 @@ def _safe_comment(text: str) -> str:
 # ── 読み戻し ────────────────────────────────────────────────────
 def read(path: Path) -> ParsedFile:
     """アンカー単位で読み戻す。**見出しや表の体裁が変わっていても動く。**"""
-    text = path.read_text(encoding="utf-8")
+    return read_text(path.read_text(encoding="utf-8"), path)
+
+
+def read_text(text: str, path: Path) -> ParsedFile:
+    """既に読んである文字列から読み戻す。
+
+    :func:`read` と分けてあるのは、束を横断して探す側（:mod:`arp4.lookup`）が
+    **ファイル全体を先に篩にかけてから**塊に割るためである ―― 当たらない写しを
+    塊に割る仕事は、写しが数万本になると探す時間のほとんどを占める。読み戻しの
+    規則はここ 1 か所で、篩の側に写しの読み方を持たせない。
+    """
     lines = text.splitlines()
 
     title = ""
@@ -299,6 +309,16 @@ def rows(anchor: Anchor) -> list[list[str]]:
             continue
         out.append(_cells(line))
     return out
+
+
+def cells(line: str) -> list[str]:
+    """表の 1 行をセルへ割る（探す側が列を見るための口 → :mod:`arp4.lookup`）。"""
+    return _cells(line)
+
+
+def separator(line: str) -> bool:
+    """GFM の区切り行（``|---|---|``）か。**資料には無い行**である。"""
+    return _SEPARATOR.fullmatch(line) is not None
 
 
 def _cells(line: str) -> list[str]:

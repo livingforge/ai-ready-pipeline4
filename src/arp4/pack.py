@@ -50,6 +50,10 @@ class Pack:
         return self.dir / str(self.meta.get("documents") or "documents")
 
     @property
+    def languages_dir(self) -> Path:
+        return self.dir / str(self.meta.get("languages") or "languages")
+
+    @property
     def conformance_path(self) -> Path | None:
         relative = self.meta.get("conformance")
         if not relative:
@@ -108,6 +112,23 @@ def documents(chain: list[Pack]) -> list[dict[str, Any]]:
             name = str(definition.get("name") or path.stem)
             merged[name] = {**definition, "name": name}
     return [merged[name] for name in sorted(merged)]
+
+
+def languages(chain: list[Pack]) -> dict[str, dict[str, Any]]:
+    """チェーン全体の言語プロファイル。**同名は派生側が勝つ。**
+
+    プロファイルが持つのは**型の対応表と綴りの literal だけ**である ―― どこに
+    何を並べるか（クラスの形・メソッドの並べ方）は :mod:`arp4.emit` が持つ。
+    分けてあるのは持ち主が違うからで、**型の対応はパックが決める**
+    （`data_type` の値そのものがパックの語彙である ―― 数値 / 文字列 / 日付 …）。
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for pack in chain:
+        for path in yamlio.scan(pack.languages_dir):
+            profile = yamlio.load(path) or {}
+            name = str(profile.get("language") or path.stem)
+            merged[name] = {**profile, "language": name}
+    return merged
 
 
 def rules(chain: list[Pack]) -> dict[str, Any]:

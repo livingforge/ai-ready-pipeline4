@@ -28,7 +28,23 @@ version: 3
 # **`out/<番号>_<工程>/` の番号は 1 つずつ繰り下がる**（`1_要件定義` →
 # `2_要件定義`）。publish._phase_dir が layers の添字で決めているためで、
 # 既存の生成物への外部リンクは張り直しが要る。
-layers: [企画, 要件定義, 基本設計, 詳細設計, テスト, 管理]
+# **`プログラム設計` を詳細設計とテストの間に置いた。** 詳細設計書は人が読む
+# 設計の完成物で、そこへ引数の実名・SQL・URL・疑似コードを混ぜると読めなくなる
+# ―― `detail-design.yml` が「定義は基本設計書にある。ここは参照だけ」と何度も
+# 書いているのと同じ規律である。工程を分ければ章立ても承認単位も分かれる。
+#
+# **この段は「資料から起こす」段ではない。** 引数の型・問い合わせ・エンドポイントが
+# 日本の詳細設計書に書かれていることはまず無い ―― ここは**決める**段であり、
+# 供給元は資料ではなく上流の正本と実装規約である。だから属性は 1 つも
+# `required` にしていない（3.2.0 / 3.4.0 / 3.5.0 / 3.8.0 と同じ判断。必須に
+# すると整理層が推測で埋める）。**揺れを止める強制は `conformance` の
+# `attribute_rules` が `approved` で掛ける** ―― 「書けるところまで書いた
+# draft」と「実装に渡せる approved」を段で分けるのが、この段の設計である。
+#
+# **`out/<番号>_<工程>/` の番号は テスト・管理 が 1 つ繰り下がる**
+# （`5_テスト` → `6_テスト`）。3.11.0 で企画を先頭に足したときと同じで、
+# 既存の生成物への外部リンクは張り直しが要る。
+layers: [企画, 要件定義, 基本設計, 詳細設計, プログラム設計, テスト, 管理]
 
 # --- 全アイテム共通の属性 ---------------------------------------------------
 # 個別種別で再宣言すれば厳格化のみ可（緩和は M1xx / conform が拒否）。
@@ -224,6 +240,52 @@ labels:
   crud: CRUD
   permission: 権限
   linked: 対応する設計要素
+
+  # --- プログラム設計 -------------------------------------------------------
+  standard_id: 規約ID
+  # **`kind`（種別）と別の見出しにする。** 実装規約は種別ごとの一覧に並ばず、
+  # 規約の一覧の中で「これは命名の話か例外の話か」を言う列である。
+  standard_kind: 規約区分
+  logical_type: 論理型
+  # **`impl_type`（実装型）と別の見出しにする。** あちらは引数 1 本の型で、
+  # こちらは**その言語で論理型をどう綴るか**の対応そのものである。
+  physical_type: 型の綴り
+  default_type: 桁が無いときの綴り
+  rule: 規約
+  example: 適用例
+  language: 実装言語
+  source_path: ファイルパス
+  method_name: メソッド名
+  visibility: 公開範囲
+  # `precondition`（前提条件）はテストケースと同じ見出しでよい ―― 同じ表に
+  # 並ぶことは無く、意味も同じ（呼ぶ前に成り立っていること）。
+  postcondition: 事後条件
+  param_name: 引数名
+  # **`data_type`（データ型）と別の見出しにする。** あちらは論理型（数値・文字列）
+  # で、こちらは実装言語の型（`BigDecimal` / `Optional<str>`）である ―― 引数の表には
+  # `typed-as` で指した論理型の列と並んで出るので、同じ見出しにすると読めない。
+  impl_type: 実装型
+  optional: 省略可
+  nullable: 空値許容
+  pseudo: 疑似コード
+  query_id: 問い合わせID
+  operation: 操作
+  sql: SQL
+  select_columns: 取得列
+  order_by: 並び順
+  # **`quantity`（数量）でも `volume`（想定件数）でもない。** 取得の上限そのもの
+  # （`LIMIT 200`）で、規模の見積とは別の話である。
+  row_limit: 件数上限
+  lock: ロック
+  endpoint_id: API-ID
+  http_method: HTTPメソッド
+  path: パス
+  media_type: メディア型
+  status_codes: 応答コード
+  auth: 認可
+  injection: 注入方法
+  field_name: フィールド名
+  part: 部位
 
 # --- from/to をまとめる別名 -------------------------------------------------
 # 種別名は英字・グループ名は日本語なので衝突しない（衝突したら M002）。
@@ -941,6 +1003,28 @@ item_types:
       # 規約を述べている定数は従来どおり 制約・前提 に起こしてよい ―― ここは
       # 「モジュールが何を公開しているか」の転記である。
       constants:  { kind: string }
+      # **ここから下がプログラム設計の欄である**（`layer` は 詳細設計 のまま）。
+      # 種別を分けなかったのは、モジュールは詳細設計と実装で**同じ 1 つのもの**
+      # だからで、分けると `calls` / `accesses` / `has-method` を張り直すことに
+      # なる（1 概念 1 レコード）。設計書の側では章を分ける（→ program-design.yml）。
+      #
+      # **生成先のパス。決まっていないと、同じ正本から出したコードが毎回違う
+      # 場所に落ちる** ―― 揺れのうち、いちばん安く止まるのがこれである。
+      #
+      # **一意にしない。** 1 ファイルに複数のモジュールが載るのは異常ではなく
+      # 普通である ―― Python の 1 ファイルに 3 クラス、Java の入れ子の型、
+      # C の 1 翻訳単位。実測（`arp4 design` の通し）で `order.py` の
+      # ファイルとクラスが同じパスを名乗り、`E012`（一意違反）で `build` の
+      # あとの検証が止まった。**同一性は `module_id` が持つ**（`method.signature`
+      # から `unique` を外した 3.5.0 と同じ判断）。
+      source_path: { kind: string }
+      # **モジュールごとに持つ**（プロジェクトに 1 つではない）。実測の対象は
+      # C / Java / JS・TS / Python で、1 案件が単一言語である保証はどこにも無い
+      # ―― 画面が TypeScript、バッチが Java という構成で `implementation-standard`
+      # を 1 件に縛ると、どちらかの規約が正本から消える。
+      language:    { kind: enum,
+                     values: [C, Java, JavaScript, TypeScript, Python],
+                     extensible: true }
 
   method:
     label: メソッド
@@ -967,6 +1051,24 @@ item_types:
       # 「注釈」欄に出ているのに写す先が無く、statement へ逃がされていた（r001）。
       # column を宣言してあるので、欄が埋まっているのに落とすと G018 が言う。
       decorators: { kind: string, column: 注釈 }
+      # **`name` は日本語の見出し、`signature` は資料の写しで、実名がどこにも
+      # 確定していなかった。** 資料がコードのラウンドでは `signature` に実名が
+      # 入るが、それは「そう書いてあった」からで、資料が Excel の詳細設計書なら
+      # 1 件も入らない ―― 生成の側から見ると、呼ぶ名前が決まっていない。
+      # pattern は 4 言語の共通部分（`$` は JS の識別子に使える）。
+      method_name:   { kind: string, pattern: "^[A-Za-z_][A-Za-z0-9_$]*$" }
+      # 値は現場の設計書がそのまま使う語なので英語のまま（`tier` と同じ判断）。
+      # `package` は Java / Python の既定可視性で、C の `static`（翻訳単位内）も
+      # ここへ寄せる ―― 言語ごとに値を割ると、同じ列が言語の数だけ増える。
+      visibility:    { kind: enum,
+                       values: [public, protected, private, package],
+                       extensible: true }
+      # **契約は疑似コードでは書けない。** 呼ぶ側が守るもの（前提）と、呼ばれた
+      # 側が保証するもの（事後）は、手続きの中に混ぜると検証の対象でなくなる
+      # ―― テストケースの `precondition` / `expected` と同じ対で、あちらは
+      # 1 回の実行、こちらは呼び出し全部に効く。見出しも `precondition` と揃える。
+      precondition:  { kind: string }
+      postcondition: { kind: string }
 
   batch-step:
     label: バッチステップ
@@ -1004,8 +1106,166 @@ item_types:
       # 呼出」と書かれている）。flow-step.step_kind と値を揃えてあるが、
       # 他モジュール呼出 はオンラインの処理フローにしか出ない。
       step_kind: { kind: enum,
-                   values: [処理, 判定, 開始, 終了, 他モジュール呼出],
+                   values: [処理, 判定, 開始, 終了, 他モジュール呼出,
+                            反復, 例外処理, 代入, 戻り],
                    extensible: true }
+      # **論理はここで止める ―― 形式アクション言語にはしない。** 1 文 = 1 レコード
+      # まで割れば揺れは消えるが、正本が YAML で書いたソースコードになり、
+      # 設計書として読めるものが出せなくなる（この束の存在理由が消える）。
+      # 代わりに、**呼び出しの境界（引数・戻り値・問い合わせ・エンドポイント・
+      # 例外）を全部固めたうえで、残りを疑似コードで書く** ―― そうすると揺れは
+      # メソッドの内側に閉じ、隣のモジュールへ伝播しない。
+      #
+      # **反復と例外処理に関係を足さなかった**のはこのためである。`repeats` /
+      # `handles-error` を張ると、同じ枝が疑似コードと関係の 2 か所に書かれる
+      # ―― 二重掲載は必ず片方が古くなる（`detail-design.yml` の「定義は基本設計書に
+      # あり、写すと二重掲載になる」と同じ）。**分岐だけは `proceeds-to` が既に
+      # 持っている**ので、そちらは関係が正である。
+      pseudo: { kind: string }
+
+  # ============ プログラム設計 ==============================================
+  # **この段が受けるのは「決めたこと」であって「資料が言っていること」ではない。**
+  # 引数の実名・問い合わせ・エンドポイント・疑似コードが日本の詳細設計書に
+  # 書かれていることはまず無く、供給元は上流の正本と実装規約である
+  # （→ layers のコメント）。写像（fact_types）は用意する ―― 資料がコードの
+  # ラウンドでは全部書いてあるし、**入口の無い種別は永遠に 0 件で通る**
+  # （`test_標準パックの全種別が整理結果から書ける`）。
+  #
+  # **1 つも `required` にしていない。** 必須にすると整理層が推測で埋めるのは
+  # 3.2.0 / 3.4.0 / 3.5.0 / 3.8.0 で 4 度確かめてある。実装に渡せる状態かどうかは
+  # `conformance` の `attribute_rules` が `approved` のときだけ error で言う。
+  implementation-standard:
+    label: 実装規約
+    fact_types: [実装規約]
+    layer: プログラム設計
+    id_prefix: ims
+    sequence: { attribute: standard_id, format: "IMP-{:02d}" }
+    attributes:
+      standard_id: { kind: string, unique: true }
+      # **規約 1 条 = 1 レコード**（1 概念 1 レコード）。1 件に 命名・配置・例外・
+      # ログ・トランザクションの欄を並べると、1 行が 10 列の長文になって表として
+      # 読めない ―― 同じ判断を `code-master` / `code-value` でしている。
+      standard_kind: { kind: enum,
+                       values: [環境, 配置, 命名, 型写像, 例外, ログ,
+                                トランザクション, 空値, 依存, 整形],
+                       extensible: true }
+      # **空欄は「全言語に効く」である。** 4 言語を対象にすると規約の大半は
+      # 言語ごとに別物になるが（型写像・命名・配置）、例外の方針やログの粒度は
+      # 案件で 1 つに決まる ―― 言語を必須にすると、共通の 1 条を 4 回書くことになる。
+      # **`module.language` より 1 つ多い**（`SQL`）。モジュールが SQL で書かれる
+      # ことは無いが、**DDL の型の綴りは案件が決める**もので、規約としては同じ
+      # 形をしている ―― 同じ名前の属性でも持ち主が違うので、値も揃えない。
+      language: { kind: enum,
+                  values: [C, Java, JavaScript, TypeScript, Python, SQL],
+                  extensible: true }
+      # 規約の本文。**そのまま従える形で書く**（「適切に命名する」は規約ではない）。
+      rule:    { kind: string }
+      # **適用例を別の欄にする。** 規約が効いているかは例で確かめるしかなく、
+      # 本文へ混ぜると「規約」と「その例」が同じ升で読み分けられない
+      # ―― `command.command_line`（そのまま端末に写せる形）と同じ扱いである。
+      example: { kind: string }
+      # --- 型写像だけが使う 3 欄（`standard_kind: 型写像`）-------------------
+      # **`rule` の散文では機械が読めない。** 「数値は BigDecimal を使うこと」と
+      # 書いてあっても `arp4 emit` はそれを型に落とせず、同梱の表（パックの
+      # `languages/*.yml`）を使うしかない ―― **案件が決めた綴りが生成に効かない。**
+      #
+      # **写像 1 行 = 1 レコード**である（規約 1 条 = 1 レコードと同じ）。
+      # 1 件に 8 つの型を並べると、`batch.trigger` と同じ「複数列を 1 文字列」に
+      # なって、型ごとの並べ替えも突合もできない。
+      #
+      # `整数` は **`data_type: 数値` で小数が無いもの**である ―― `NUMERIC(3,0)`
+      # と書くと現場の DDL（`INTEGER`）と綴りが揃わないので、生成の側が分けて
+      # 引く。語彙としては `data-item.data_type` の値に 1 つ足した形になる。
+      logical_type:  { kind: enum,
+                       values: [文字列, 数値, 整数, 日付, 日時, 真偽,
+                                バイナリ, 操作],
+                       extensible: true }
+      # 綴りそのもの。`{length}` / `{decimals}` は桁と小数で置き換わる
+      # （`VARCHAR({length})` / `NUMERIC({length},{decimals})`）。
+      physical_type: { kind: string }
+      # **桁が資料に無いときの綴りは別の欄である。** `VARCHAR({length})` から
+      # 括弧を落として `VARCHAR` にする規則で済む型もあるが、SQL の `整数` は
+      # `NUMERIC({length})` → `INTEGER` で**綴りそのものが変わる** ―― 1 欄に
+      # 畳むと、桁の無い列だけが現場と違う型で出る。
+      default_type:  { kind: string }
+
+  parameter:
+    label: 引数
+    fact_types: [引数]
+    layer: プログラム設計
+    id_prefix: prm
+    warn_if_unreferenced: true          # どのメソッドにも属さない引数 = 孤児
+    attributes:
+      # 4 言語の共通部分。`$` は JS の識別子に使える。
+      param_name: { kind: string, pattern: "^[A-Za-z_][A-Za-z0-9_$]*$" }
+      # **型は 2 通りで指す。** 業務のデータなら `typed-as` で正本の語彙
+      # （データ項目・エンティティ・コード定義）を指す ―― そうすると型は
+      # 言語に依らず、実装型は実装規約の型写像が決める。**正本に無い型**
+      # （`Path` / `list[str]` / フレームワークの型）だけをここへ書く。
+      # 両方空の引数は、型が決まっていないということである。
+      impl_type:  { kind: string }
+      optional:   { kind: bool }
+      nullable:   { kind: bool }
+      default_value: { kind: string }
+      # **C の出力引数（ポインタ）に要る。** `displays.io` と値を揃えてあるが、
+      # あちらは画面の項目で、こちらは呼び出しの向きである。
+      direction:  { kind: enum, values: [入力, 出力, 入出力], extensible: true }
+
+  query:
+    label: 問い合わせ
+    fact_types: [問い合わせ]
+    layer: プログラム設計
+    id_prefix: qry
+    warn_if_unreferenced: true          # 誰も使わない問い合わせ = 死んだ定義
+    sequence: { attribute: query_id, format: "QRY-{:03d}" }
+    # **`accesses`（CRUD）とは粒度が違う。** あちらは「モジュールがこの表を
+    # 触る」で、CRUD 図がそこに乗っている ―― 触ることが分かっても、どの列を
+    # どの条件で引くかは決まらない。実測の 4 言語すべてで、ここが空白なら
+    # 生成のたびに違う問い合わせが出る。**`accesses` は残す**（消すと CRUD 図が
+    # 消える）。この種別はその実装側の詳細である。
+    attributes:
+      query_id:  { kind: string, unique: true }
+      operation: { kind: enum,
+                   values: [SELECT, INSERT, UPDATE, DELETE, UPSERT],
+                   extensible: true }
+      # **本文をそのまま置ける。** 書けるなら、これがいちばん揺れない
+      # （`command.command_line` と同じ ―― そのまま写せる形が仕様である）。
+      # 書けないとき（方言が決まっていない・ORM で書く）のために、条件・並び・
+      # 上限を欄で持つ。**両方書いてよい** ―― 条件欄は本文の日本語の読みになる。
+      sql:       { kind: string }
+      select_columns: { kind: string }   # 取得列（順序を含む。`index.columns` と同じ扱い）
+      condition: { kind: string }        # 絞り込み（WHERE の意味）
+      order_by:  { kind: string }
+      row_limit: { kind: string }        # `int` にしない（`1 件` / `画面の頁数` と書かれる）
+      # **排他の指定は生成では復元できない。** 楽観・悲観のどちらで作るかは
+      # 設計の判断で、書いていなければ実装ごとに割れる。
+      lock:      { kind: enum, values: [なし, 共有, 排他], extensible: true }
+
+  endpoint:
+    label: エンドポイント
+    fact_types: [エンドポイント]
+    layer: プログラム設計
+    id_prefix: epd
+    warn_if_no_upstream: handles        # 処理するメソッドの無い API = 実装が無い
+    sequence: { attribute: endpoint_id, format: "API-{:03d}" }
+    # **`screen.route` では足りない。** あれは画面 1 枚の遷移上の識別子で、
+    # 1 画面が叩く API は普通 3 本も 4 本もある ―― JS / TS を対象に入れた時点で、
+    # 画面側と実装側が同じものを見る必要がある（`serves` がその線である）。
+    # `external-interface` とも別で、あちらは相手システムとの取り決め
+    # （方式・電文・契機）、こちらは**自分が公開する 1 本の口**である。
+    attributes:
+      endpoint_id: { kind: string, unique: true }
+      http_method: { kind: enum, values: [GET, POST, PUT, PATCH, DELETE],
+                     extensible: true }
+      # 経路は物理名と同じ扱いで一意（`/orders/{id}` が 2 本あってはならない）。
+      # **ただし同じ経路にメソッド違いが並ぶ**ので、一意なのは経路単体ではなく
+      # 「メソッド + 経路」である ―― 語彙で縛れないので、`path` に
+      # `POST /orders` の形で書く案は採らない（並べ替えも突合もできなくなる）。
+      # 一意は付けず、重複は様式の表で読み手が見る。
+      path:        { kind: string }
+      media_type:  { kind: string }      # application/json 等
+      status_codes: { kind: string }     # 200 / 400 / 404 とその意味
+      auth:        { kind: string }      # 必要な権限（`operates.permission` の実装側）
 
   # ============ テスト ======================================================
   test-case:
@@ -1582,6 +1842,11 @@ relation_types:
     label: メッセージを出す
     from: [処理単位, business-rule, method]
     to:   [message]
+    # **いつ出すかが書かれていないと、生成のたびに違う場所で送出される。**
+    # 定義（重要度・表示文）は `message` が持ち、出す条件は出す側との組にしか
+    # 無い ―― 同じ `E-0007` を 3 つのメソッドが別々の理由で出す。
+    attributes:
+      condition: { kind: string }
 
   operates:
     label: 利用する
@@ -1760,3 +2025,95 @@ relation_types:
     from: [decision]
     to:   [requirement, business-rule, constraint, 処理単位, module, business-goal,
            データ要素, actor, project-overview, cost-item]
+
+  # ── プログラム設計 ────────────────────────────────────────────
+  # **境界を固める関係である。** 揺れは 3 つに割れる ―― 規約（言語・配置・命名）・
+  # 境界（型・引数・問い合わせ・エンドポイント）・論理（メソッドの中身）。規約は
+  # `implementation-standard` が 1 度で、境界はここが、論理は `process-step.pseudo`
+  # が受ける。**境界さえ一意なら、論理の揺れはメソッドの内側に閉じて隣へ伝播しない。**
+  has-parameter:
+    label: 引数を持つ
+    from: [method]
+    to:   [parameter]
+    ordered: true                       # 並びが仕様である（呼び出しの順）
+
+  typed-as:
+    label: 型は
+    # **型を正本の語彙で指す。** 実装型を文字列で書くと 4 言語ぶん揺れるが、
+    # 「この引数は 受注番号（データ項目）である」なら言語に依らない ――
+    # 実装型は `implementation-standard` の型写像（`standard_kind: 型写像`）が
+    # 決める。正本に無い型だけが `parameter.impl_type` へ落ちる。
+    from: [parameter]
+    to:   [data-item, entity, code-master]
+    cardinality: { from: "0..1" }       # 1 つの引数の型は 1 つ
+
+  returns-type:
+    label: 戻り値の型は
+    # **`typed-as` と分けてある。** 1 本にまとめると引数と戻り値が同じ表に並び、
+    # `from` の列だけで読み分けることになる（関係の章は `where` を適用しない
+    # ―― `has-step` と `has-process-step` を分けたのと同じ理由）。
+    from: [method]
+    to:   [data-item, entity, code-master]
+    cardinality: { from: "0..1" }
+
+  depends-on:
+    label: 依存する
+    # **`calls`（呼ぶ）とは別である。** 呼ぶことと持つことは違う ―― DI で受け取る
+    # 相手はコンストラクタに現れ、呼ばないメソッドがあっても依存は消えない。
+    # `calls` で兼ねると、生成の側は「何を注入するか」を呼び出しから逆算する
+    # ことになり、そこで揺れる。
+    from: [module]
+    to:   [module]
+    attributes:
+      injection:  { kind: enum,
+                    values: [コンストラクタ, セッター, フィールド, インポート],
+                    extensible: true }
+      field_name: { kind: string }      # 受け取る側の名前（そのまま写せる形）
+
+  uses-query:
+    label: 問い合わせを使う
+    from: [method, batch-step, process-step]
+    to:   [query]
+
+  queries:
+    label: 問い合わせの対象
+    # **`accesses` と二重に見えるが、粒度が違う**（→ `query` のコメント）。
+    # ここが無いと、問い合わせが正本のどの表を触るかを本文からしか辿れず、
+    # テーブルを直したときに影響する問い合わせを引けない。
+    from: [query]
+    to:   [entity]
+    cardinality: { from: "1..*" }       # 対象の無い問い合わせは error
+
+  exposes:
+    label: 公開する
+    from: [module]
+    to:   [endpoint]
+    ordered: true
+
+  handles:
+    label: 処理する
+    from: [endpoint]
+    to:   [method]
+    cardinality: { from: "1" }          # 入口 1 本に処理は 1 つ
+
+  carries:
+    label: 電文の項目
+    # 画面項目定義書の `displays`、電文の `interfaces` と同じ形 ―― **1 行 = 関係
+    # 1 本**で、その口でしか通じない名前と要否を関係側に持つ。同じデータ項目が
+    # 要求では必須、応答では省略という形で普通に出る。
+    from: [endpoint]
+    to:   [data-item]
+    ordered: true
+    attributes:
+      part:          { kind: enum, values: [要求, 応答], extensible: true }
+      physical_name: { kind: string }   # JSON のキー名・クエリ名
+      required_flag: { kind: enum, values: [必須, 任意] }
+      note:          { kind: string }
+
+  serves:
+    label: 呼び出す
+    # **画面と API を結ぶ線。** `screen.route` は画面 1 枚の識別子でしかなく、
+    # 1 画面が叩く口は複数ある ―― JS / TS を対象に入れた時点で、画面側の生成が
+    # この線を要る。`transitions`（画面 → 画面）とは別で、あちらは遷移である。
+    from: [screen, report, batch, external-interface, command]
+    to:   [endpoint]

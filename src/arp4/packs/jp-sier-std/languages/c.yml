@@ -1,0 +1,20 @@
+# C の型の対応（骨格生成の既定）。
+#
+# **ここは「機械の表」である**（→ sql.yml の頭のコメント）。選んだのは arp4 な
+# ので、生成物の頭に「どの表を使ったか」を必ず書く。案件で変えたいときは
+# 消費側のパックで同名のファイルを置き直す。
+#
+# **持つのは型の対応と綴りだけ**である ―― どこに何を並べるか（クラスの形・
+# メソッドの並べ方）は emit.py が持つ。
+language: C
+extension: .c
+comment: "//"
+types:
+  文字列:      { form: "const char *" }
+  数値:       { form: "double" }
+  整数:       { form: "long" }
+  日付:       { form: "time_t" }
+  日時:       { form: "time_t" }
+  真偽:       { form: "bool" }
+  バイナリ:     { form: "unsigned char *" }
+  操作:       { form: "void" }
