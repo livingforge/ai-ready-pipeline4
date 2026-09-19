@@ -1,4 +1,7 @@
-"""置き場 ―― **arp4 が作るものは、1 つ残らず ``.arp/`` の中に。**
+"""置き場。文書正本モードは ``.arp/config.yml`` で知識の配置先を指定する。
+
+文書正本モードでは原本・本文は ``knowledge/documents/``、仕様は
+``knowledge/spec/`` に置く。以下は設定のない旧仕様整理モードの説明である。
 
 ::
 
@@ -256,6 +259,14 @@ class Paths:
 
     @property
     def spec(self) -> Path:
+        if (self.arp / "config.yml").exists():
+            from .documents.contracts import read, under
+            config = read(self.arp / "config.yml", "project-config")
+            destination = under(self.root.resolve(), config["spec"]["directory"])
+            knowledge = under(self.root.resolve(), config["documents"]["directory"])
+            if destination != knowledge / "spec":
+                raise ValueError("spec directory must be <documents.directory>/spec")
+            return destination
         return self.arp / "spec"
 
     @property

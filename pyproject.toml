@@ -19,6 +19,8 @@ dependencies = [
     "PyYAML>=6.0",
     "pypdfium2>=4.30",
     "Pillow>=10.0",
+    "jsonschema>=4.18",
+    "markdown-it-py>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -39,13 +41,15 @@ render = [
     "pywin32>=306",
 ]
 
-# テストだけで使う。**設計書の Markdown を人が見るのと同じ規則で読み戻す**ため
-# のもので、arp4 の実行時には要らない（生成側は文字列を組み立てるだけ）。
-# 自前で書かないのは、逃がし漏れを見つける相手が自前の実装だと、**同じ思い込みを
-# 2 度書くだけ**で何も検査できないからである。
-check = [
-    "markdown-it-py>=3.0",
+# 行・図形・数式の書き戻し。Excel本体が参照更新と保存を行う。
+writeback = [
+    "openpyxl>=3.1",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
+
+# 旧導入コマンド .[parse,check] との互換性を保つ。
+# markdown-it-py は文書正本の形式検証にも使うため、本体依存へ移した。
+check = []
 
 [project.scripts]
 arp4 = "arp4.cli:main"

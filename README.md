@@ -3,6 +3,31 @@
 > この文書は**利用者向け**です。エージェントへの手順書は `surface/` にあり、
 > `build/build.py` が `.claude` / `.github` へ展開します。
 
+## 既存開発環境へ組み込む：文書正本モード
+
+`arp4 documents` は、Office原本をGitで保持し、機械抽出JSONをAgentが成形したMarkdownを
+人・Agentが直接編集する正本として管理します。形式検証、出典、成形履歴、レビュー、更新候補、
+Excelのセル・数式・行追加削除・図形・画像への書き戻しに対応します。
+構造変更にはWindows + Microsoft Excelと追加依存 `writeback` を使います。
+本体は依存パッケージとして導入し、利用先の
+`src/`・`tests/`・`pyproject.toml` へARPのファイルを展開しません。
+
+```shell
+arp4 documents init --root <project>
+arp4 documents import docs/基本設計.xlsx --id order-design --root <project>
+```
+
+取り込みは候補とAgent向け成形手順を作ります。Agentによる成形後に検証・記録・採用を行います。
+導入、全コマンド、文書形式、検索、Excel対応範囲は [文書正本の管理](docs/documents.md) を参照してください。
+
+## 既存の仕様整理モード（互換）
+
+以下は従来の仕様データを正本とするモードです。文書正本モードと併用する場合は、
+`documents prepare-spec` から入力し、`knowledge/spec/` を文書正本から整理した仕様データとして扱います。
+文書原本は `knowledge/documents/<文書ID>/original/`、配置設定は `.arp/config.yml` です。
+旧構成は `arp4 documents upgrade-layout --root <project>` で移行できます。
+以下の `.arp/spec/` 表記は、配置設定のない従来のプロジェクトに適用されます。
+
 いま手元にある資産 ―― Excel・Word・PowerPoint・PDF・CSV の設計書、ソースコード、DDL、
 Markdown の設計メモ ―― を起点にして、**仕様をリレーショナルな正本データ**にします。
 設計書は、そのデータから生成します。

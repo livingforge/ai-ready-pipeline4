@@ -3,6 +3,7 @@
 ::
 
     arp4 init            置き場の骨組みを作る
+    arp4 documents       文書正本・機械抽出JSON・成形履歴・Excel書き戻し
     arp4 model           使ってよい語彙（種別・関係）を出す ―― **整理層が最初に読む**
     arp4 schema          書いてよい形（整理結果の契約）を出す
     arp4 lint <パス>…    整理結果を 1 ファイル単位で検査する（freeze の部分集合）
@@ -23,7 +24,8 @@
 **整理はコマンドではない。** ``parsed/`` を読んで ``organized/`` を書くのは
 エージェントの仕事である。
 
-**arp4 が作るものは全部 ``.arp/`` の中に入る。** 配布先の直下には何も置かない
+**従来モードの作業データは ``.arp/`` の中に入る。** ``documents`` モードは設定した
+専用領域（既定 ``knowledge/``）に編集可能な文書正本を置く。既存アプリの構成は変更しない。
 （``rounds/`` も ``sources/`` も一般名詞で、相手の持ち物と衝突する）。
 
 ``--root`` を省くと **cwd から上方探索**するので、``.arp/`` の奥にいても動く。
@@ -2376,6 +2378,8 @@ def main(argv: list[str] | None = None) -> int:
     _resilient_output()
     parser = argparse.ArgumentParser(prog="arp4", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    from arp4.documents.cli import register as register_documents
+    register_documents(sub)
 
     def add(name: str, help_text: str, handler, strict: bool = True,
             machine: bool = False, digest: bool = False):
