@@ -15,8 +15,12 @@ ARP本体はPythonパッケージとしてインストールします。利用�
 python C:/arp4-publish/.arp/bootstrap/install.py --root C:/my-project
 ```
 
-この配布物は作成時のPythonマイナーバージョン・OS・CPU向けです。対応環境はmanifest.jsonに記録します。
-導入はオフラインで行い、`.arp/runtime/` の専用環境と文書管理を初期化します。
+オフライン配布物の対応環境はmanifest.jsonに記録します。別OS・Pythonでは
+`python .arp/bootstrap/install.py --root . --mode online` を実行するか、対象環境のCI配布物を使用します。
+オンライン導入はPython 3.11以上で環境に合う依存wheelを取得し、選択結果を
+`.arp/installations/<環境>/<hash>.lock` に保存します。`--lock` で同じ環境の依存を再現でき、
+`--index-url` で社内ミラーを指定できます。オフラインからオンラインへは自動切り替えしません。
+いずれも `.arp/runtime/` の専用環境と文書管理を初期化します。
 テンプレートには `.arp/bootstrap/` をそのまま組み込めます。
 
 開発中の本体を利用する例（Windows）:
