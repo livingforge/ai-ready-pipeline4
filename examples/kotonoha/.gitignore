@@ -1,3 +1,0 @@
-# 生成物（build.py で再生成できる）
-__pycache__/
-.pytest_cache/
