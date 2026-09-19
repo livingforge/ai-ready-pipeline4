@@ -2,7 +2,7 @@
 
 `arp4 documents` は、既存開発環境へ組み込むための文書管理コマンドです。
 Office原本 → 機械抽出JSON → Agentによる成形 → 編集可能なMarkdown正本 → Excel書き戻しを扱います。
-対応表の版は `2`（旧版 `1` も読み込み可能）、本文・抽出の版は `1` です。
+対応表の版は `2`、本文・抽出の版は `1` です。
 CLIから `arp4 documents schema <種類>` でJSON Schemaを取得できます。
 
 ## 導入と配置
@@ -27,7 +27,7 @@ python C:/arp4-publish/.arp/bootstrap/install.py --root C:/my-project
 
 ```powershell
 python -m venv C:/my-project/.arp/runtime
-C:/my-project/.arp/runtime/Scripts/python.exe -m pip install "C:/arp4[parse]"
+C:/my-project/.arp/runtime/Scripts/python.exe -m pip install "C:/arp4"
 C:/my-project/.arp/runtime/Scripts/arp4.exe documents init --root C:/my-project
 ```
 
@@ -50,13 +50,11 @@ project/
       assets/                  本文に必要な画像
       formation.json           成形時の実行記録への対応
       review.json              レビューした内容のハッシュ
-    spec/                      文書から整理した仕様データ。Git管理
   .arp/
     config.yml                 文書・仕様データの配置設定
     documents.code-workspace   既存設定を上書きしないVSCode設定
     evidence/                  Git管理。原本・抽出・成形の根拠
     proposals/                 Git管理。未採用候補・置換前の正本
-    rounds/                    既存仕様パイプラインの処理記録
     cache/                     Git対象外。再生成可能なキャッシュ
     out/                       Git対象外。Excelなどの出力
     runtime/                   Git対象外。任意の専用実行環境
@@ -72,40 +70,15 @@ project/
 このモードでは `knowledge/documents/*/content/` が開発で参照する文書の正本です。
 原本と内容が異なることは正常です。`original/` は再取り込みする原本の置き場で、受領時点の版は
 `.arp/evidence/sources/` に固定して保持します。
-`knowledge/spec/` はこの文書から整理した仕様データとして扱い、食い違いは文書の正本を基準にレビューします。
-既存の `parse → freeze → build → publish` モードのコマンドと保存形式は互換性のため維持しています。
-配置設定のない旧プロジェクトのみ `.arp/spec/` を使います。文書正本モードでは共通のパス解決を通して
-同じコマンドが `knowledge/spec/` を読み書きします。
-
 配置設定 `.arp/config.yml` の例:
 
 ```yaml
 schema_version: '1'
 documents:
   directory: knowledge
-spec:
-  directory: knowledge/spec
 ```
 
-`--directory` を変えた場合、仕様データもその下の `spec/` へ配置します。
-モデル名やプロンプトは成形記録、公開設定など従来の個別機能の設定は既存ファイルで管理します。
-
-### 旧構成からの移行
-
-```shell
-arp4 documents upgrade-layout --root <project>
-```
-
-旧 `.arp/documents.yml` を `.arp/config.yml` へ移行し、旧設定は
-`.arp/layout-legacy-documents.yml` に保存します。`.arp/spec/` は内容を変更せず
-`knowledge/spec/` へ移します。両方に仕様データが存在する場合は上書きせず停止します。
-原本を集約した新しい文書候補に現在の本文・対応表・画像を引き継ぎ、候補名を
-`.arp/layout-migration.json` に記録します。再実行時は記録済みの同じ移行を繰り返しません。
-移行候補の確認・成形記録・採用が必要です。旧正本・候補・抽出・レビュー記録は書き換えません。
-旧原本が取り込み時から変更されている場合は、先に変更内容を照合してください。
-
-文書の採用は `adopt`、直接編集後のレビューは `review` です。これらは操作した人・Agentの申告を
-内容ハッシュへ結びつけます。署名や認証の代わりではありません。基準ブランチへの採用権限はPRで管理します。
+モデル名やプロンプトは成形記録に保存します。
 
 ## 取り込み・LLM成形・採用
 
@@ -119,7 +92,10 @@ arp4 documents import docs/基本設計.xlsx --id order-design --root <project>
 渡すと停止するため、更新は `original/` 内で行ってください。文書IDはファイル名を変更しても維持します。
 原本のバイト列を固定して保存し、機械抽出JSON、画像、
 未採用候補、候補と同名の `.prompt.md` を作成します。採用済み正本は変更しません。
-Excel・Word・PowerPoint・PDF・CSVなど、既存パーサーの対応形式を利用できます。
+対応拡張子は `.xlsx` / `.xlsm`、`.docx` / `.docm`、`.pptx` / `.pptm`、`.pdf`、
+`.csv` / `.tsv`、`.md` / `.txt`、`.py`、`.java`、`.sql` / `.ddl` です。
+旧Office形式（`.xls` / `.doc` / `.ppt`）は対象外です。
+ソースコードの取り込みは宣言などの抽出であり、プログラムの実行や業務仕様の自動確定は行いません。
 環境依存のOCRはこの取り込みでは無効にし、未読取の申告を残します。
 
 **LLMを呼び出すのは作業中のAgentです。** 候補の `.prompt.md` と `knowledge/AGENTS.md` に従い、
@@ -136,6 +112,8 @@ arp4 documents adopt <候補名> --reviewer <担当> --root <project>
 `record` は入力の抽出ハッシュ、実際の成形出力、モデル、担当、プロンプト原文・ハッシュを保存します。
 使用モデルが不明なら `unknown`、人だけで成形した場合は `human` とします。
 記録後に候補を編集した場合は、再度recordが必要です。LLM出力の再現性を前提にせず、出力そのものを保存します。
+`record --prompt` の相対パスはコマンドの実行ディレクトリ基準です。
+`--root` と実行ディレクトリが異なる場合は、プロンプトの絶対パスを指定してください。
 
 ## Markdownの契約
 
@@ -180,7 +158,7 @@ JSON Schemaだけでは節、表、参照、出典の整合性は検証できま
 `mappings.yml` の例:
 
 ```yaml
-schema_version: "1"
+schema_version: "2"
 entries:
   - page: order-fields
     block: order-fields
@@ -201,6 +179,7 @@ entries:
       sheet: 項目定義
       cell: D8
 omissions: []
+operations: []
 ```
 
 これは抜粋です。実際には全ての節・型付き項目への対応が必要です。出典のpage/blockは
@@ -226,28 +205,22 @@ CIで `--require-reviewed` を指定すると、本文・対応表・画像な�
 
 VSCodeでは `.arp/documents.code-workspace` を開きます。タスク `ARP: validate on save` を起動すると、
 保存後に再検証してProblemsへ表示します。終了はタスク停止またはCtrl+Cです。
-ワークスペースには機械抽出・候補・旧ラウンド・生成物の検索除外を用意しています。
+生成されるタスクの実行コマンドは `arp4` です。専用環境の実行ファイルがPATH上にない場合は、
+ワークスペースのタスクの `command` を `.arp/runtime/Scripts/arp4.exe` の絶対パス
+（Linux/macOSは `.arp/runtime/bin/arp4`）へ変更してください。
+ワークスペースには機械抽出・候補・原本・生成物・runtime・cacheの検索除外を用意しています。
 文書だけを検索するときは、検索のfiles to includeへ `knowledge/documents/*/content/**/*.md` を指定します。
 Agentの別の検索手段にも同じ範囲を渡してください。
 
-## 再取り込み・移行・仕様パイプラインとの連携
+## 再取り込み
 
 原本更新後に同じ文書IDでimportすると新しい候補を作ります。基準版、現在の正本、候補の差分はdiffで確認できます。
+`diff` が表示する内容差分はMarkdownファイルだけです。`mappings.yml`・画像などの差分は
+Gitなどで別途確認してください。正本の競合検出はこれらの変更も対象にします。
 前回の成形結果は `formation.json` が参照する `evidence/formed/<content-hash>/` にあります。
 取り込み後に現在の正本が編集されていた場合、adoptは停止します。再取り込みして現在の正本と統合してください。
 行の追加・並べ替えがある場合、セル番地だけで項目の同一性を決めず、ID・出典・targetをレビューします。
 自動的な意味のマージは行いません。
-
-```shell
-arp4 documents migrate .arp/rounds/r001/parsed --source docs/基本設計.xlsx --id order-design --root <project>
-arp4 documents prepare-spec order-design --root <project>
-```
-
-migrateは旧Markdownのsourceコメントで原本に対応するファイルを選び、編集済み内容を候補へ保存します。
-旧内容はまずコードフェンス内に保持し、Agentが新規約へ成形します。旧ファイルは変更しません。
-古い編集の内容を機械抽出した事実として扱いません。画像などは原本から改めて抽出したものと照合してください。
-prepare-specは正本の形式・レビューを検証してから既存パイプラインの新規ラウンドを作ります。
-そこから整理・freeze・build・publishを利用できます。ラウンドには入力正本のハッシュを残します。
 
 ## Excel書き戻し
 
@@ -256,14 +229,18 @@ arp4 documents export order-design --root <project>
 arp4 documents export order-design --out .arp/out/基本設計-revised.xlsx --root <project>
 ```
 
-引数なしのexportは計画だけをJSONで表示します。pendingがある場合は未反映を報告し、終了コード1です。
-`--out` は未反映がなく、現在の正本がレビュー済みで、原本の版が一致している場合だけ出力します。
+`--out` を付けないexportは計画だけをJSONで表示します。
+計画表示にも、現在の正本がレビュー済みで、原本の版が一致していることが必要です。
+pendingがある場合は未反映を報告し、終了コード1です。
+`--out` はこれらの条件に加えて未反映がない場合だけ出力します。
 原本や既存成果物は上書きしません。出力は `.arp/out/` 内の新規ファイルに限定します。
 
 対応範囲:
 
 - `.xlsx` / `.xlsm` の既存セルの文字列・数値・真偽値・空欄への更新。
 - 既存セルの型を維持。結合セルは左上セルだけを更新。
+- 通常のセル更新先は抽出JSONに含まれる既存セルです。未使用の空セルへの新規書き込みは対象外です。
+  行挿入で追加したセルには、後述の `insertion` を使って値を指定できます。
 - 通常のセル値更新はXML方式で、変更不要なZIPエントリーの内容をそのまま保持。
 - 行の挿入・削除、数式の設定・変更・クリア、図形の追加・削除・編集、画像の追加・置換、接続線の追加に対応。
   これらはWindows + Microsoft Excelを使うExcel方式で処理し、保存後に再オープンして照合。
@@ -280,7 +257,7 @@ Excelアプリケーションでの表示・全機能の動作までをこの照
 ### 行・数式・図形の書き戻し
 
 ```shell
-python -m pip install "ai-ready-pipeline4[parse,writeback]"
+python -m pip install "ai-ready-pipeline4[writeback]"
 arp4 documents drawings order-design --root <project>
 arp4 documents export order-design --engine auto --out .arp/out/updated.xlsx --root <project>
 ```
@@ -291,7 +268,7 @@ Excel方式は別プロセスの非表示Excelを起動し、マクロ・イベ�
 120秒のタイムアウトを設け、異常時は自分が起動したExcelだけを終了します。
 無効な数式などがある場合は新しい成果物を採用せず、元ファイルを変更しません。
 
-既存の対応表を拡張する場合、`schema_version: "2"` と `operations: []` を設定します。
+対応表は `schema_version: "2"` と `operations: []` を必須とします。
 本文・対応表の変更でレビュー状態は無効になるため、check → reviewを実行してください。
 
 行操作は **原本の行番号** で指定します。複数操作はシートごとに下の行から実行され、重複する範囲は拒否されます。
@@ -376,7 +353,7 @@ Excel APIの契約は [Formula2](https://learn.microsoft.com/en-us/office/vba/ex
 ## テスト
 
 `python -m pytest tests/test_documents.py -q` で、Office実例の取り込み、形式違反、根拠改変、
-直接編集のレビュー無効化、再取り込みの競合、旧形式移行、Excelの値・数式・書式と変更対象外パートの保持を検証します。
+直接編集のレビュー無効化、再取り込みの競合、Excelの値・数式・書式と変更対象外パートの保持を検証します。
 
 `tests/test_document_operations.py` は構造変更の検証を追加しています。Windows + Excel環境で
 `ARP_TEST_EXCEL=1` を設定すると、実Excelで行の移動・数式・名前定義・テーブル・図形・画像・接続線の保存と再読込まで確認します。

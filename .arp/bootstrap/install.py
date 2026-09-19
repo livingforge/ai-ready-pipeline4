@@ -72,10 +72,8 @@ def install(bundle: Path, root: Path, *, mode: str = "offline", index_url: str |
     for target in (arp, runtime, arp / "installations", root / "knowledge"):
         if target.is_symlink() or not target.resolve().is_relative_to(root):
             raise ValueError(f"installation path must stay inside project: {target}")
-    if (arp / "documents.yml").exists() and not (arp / "config.yml").exists():
-        raise ValueError("legacy document layout: migrate with documents upgrade-layout first")
     if not (arp / "config.yml").exists() and (root / "knowledge").exists() and any((root / "knowledge").iterdir()):
-        raise ValueError("knowledge/ is not empty; initialize/migrate ARP explicitly first")
+        raise ValueError("knowledge/ is not empty; initialize ARP explicitly first")
     marker = runtime / ".arp-runtime.json"
     if runtime.exists() and any(runtime.iterdir()) and not marker.exists():
         raise ValueError("existing .arp/runtime is not owned by this installer")
@@ -103,7 +101,7 @@ def install(bundle: Path, root: Path, *, mode: str = "offline", index_url: str |
             if lock:
                 download += ["--find-links", str(bundle / "wheels"), "--require-hashes", "-r", str(lock)]
             else:
-                download += [f"{application[0]}[parse,writeback]"]
+                download += [f"{application[0]}[writeback]"]
             subprocess.run(download, check=True, env=env)
             # A supplied lock cannot substitute another version/build of ARP.
             if not (wheels / application[0].name).is_file() or (wheels / application[0].name).read_bytes() != application[0].read_bytes():

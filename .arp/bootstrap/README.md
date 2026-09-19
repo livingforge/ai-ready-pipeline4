@@ -31,4 +31,5 @@ CI成功の環境別配布物はリポジトリのActions成果物から取得�
 
 実行例: `.arp/runtime/Scripts/python.exe -m arp4 documents --help`
 Linux/macOSでは `.arp/runtime/bin/python` を使用します。
-文書管理の仕様は [documents.md](documents.md) を参照してください。
+文書管理は [documents.md](documents.md)、仕様整理・設計書生成は [specifications.md](specifications.md) を参照してください。
+確認済みの範囲と未検証項目は [verification.md](verification.md) に記録しています。
