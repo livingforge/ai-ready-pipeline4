@@ -6,7 +6,7 @@ fn binary() -> Command {
 }
 
 #[test]
-fn installs_embedded_skills_without_python_or_path() {
+fn installs_embedded_skills_with_empty_path() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("日本語 project");
     fs::create_dir(&root).unwrap();
@@ -160,7 +160,7 @@ fn active_lock_prevents_another_installation() {
 }
 
 #[test]
-fn doctor_and_schemas_work_without_python() {
+fn doctor_and_schemas_work_with_empty_path() {
     let result = binary()
         .env("PATH", "")
         .args(["doctor", "--format", "json"])

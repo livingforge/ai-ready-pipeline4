@@ -17,7 +17,7 @@ fn strict_values_reject_duplicates_nonfinite_nonstring_keys_and_anchors() {
     }
 }
 #[test]
-fn python_canonical_number_and_unicode_encoding() {
+fn canonical_number_and_unicode_encoding() {
     let value = json!({"日本語":[1e-7,1e16,1.0,-0.0,true,null],"a":{}});
     assert_eq!(
         String::from_utf8(encoded(&value)).unwrap(),

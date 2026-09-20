@@ -31,7 +31,7 @@ pub fn kind(value: &Value) -> &'static str {
     }
 }
 
-// Match Python contracts.encoded, including exponent signs and float representation.
+// Canonical JSON encoding preserves exponent signs and float representation for stable hashes.
 pub fn encoded(value: &Value) -> Vec<u8> {
     fn render(v: &Value, depth: usize) -> String {
         let indent = "  ".repeat(depth + 1);

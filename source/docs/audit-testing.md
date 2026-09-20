@@ -32,7 +32,7 @@ cargo build --release --locked --target x86_64-pc-windows-msvc
 | tests/dataset/ | 文書の検体定義。現在の cargo test では実行しない |
 | examples/ | 文書・別アプリ・生成コードの見本。現在の Rust テストの合格範囲には含めない |
 
-Rust と PowerShell の上記テストはコード内の合成データを使います。examples/ の資料の来歴・配布可否は、各 README と生成コードを確認し、機密情報や第三者の権利がないことをリリース担当者が確認してください。ソースのライセンスは source/LICENSE、依存クレートの表示は配布ルートの licenses/ と THIRD-PARTY-NOTICES.md を参照してください。
+Rust と PowerShell の上記テストはコード内の合成データを使います。examples/ の資料の来歴・配布可否は、各 README と資料・サンプルコードを確認し、機密情報や第三者の権利がないことをリリース担当者が確認してください。ソースのライセンスは source/LICENSE、依存クレートの表示は配布ルートの licenses/ と THIRD-PARTY-NOTICES.md を参照してください。
 
 ## オフライン再ビルド用の追加 ZIP
 

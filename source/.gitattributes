@@ -16,8 +16,5 @@
 *.docm  binary
 *.png   binary
 
-# 見本は生成器が書いたバイト列と**1 バイトも違わない**ことを
-# `tests/test_example.py` が見ている ―― CSV は本物のテキストだが、改行を
-# 変換されると checkout しただけで検査が落ちる（しかも引用符の中の改行は
-# 検体の主張そのものなので、変換されては困る）。
+# CSV の引用符内の改行を含め、見本のバイト列を checkout 時に保持する。
 examples/from-documents/資料/** -text

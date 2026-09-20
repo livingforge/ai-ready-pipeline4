@@ -13,7 +13,6 @@
     "limitations":  [
                         "Excel scalar cells only; structural/formula writeback, OCR, non-cell extraction, other formats, edit-plan and spec are not implemented. Empty-Windows acceptance remains unverified."
                     ],
-    "python_required_for_implemented_commands":  false,
     "release_ready":  false,
     "version":  "4.0.0-alpha.3"
 }

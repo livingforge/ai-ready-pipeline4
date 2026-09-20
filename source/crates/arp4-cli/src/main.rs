@@ -129,7 +129,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?)
             } else {
                 println!(
-                    "ARP {} Rust\nAvailable: skills install; documents init/import/check/status/record/diff/adopt/review/export/schema.\nExcel: .xlsx/.xlsm scalar cells via XML; Python is not required.\nNot implemented: structural/formula writeback, OCR, non-cell extraction, other document formats, spec, edit-plan.\nEmpty-Windows and Excel COM acceptance remain unverified; not release-ready.",
+                    "ARP {} Rust\nAvailable: skills install; documents init/import/check/status/record/diff/adopt/review/export/schema.\nExcel: .xlsx/.xlsm scalar cells via XML.\nNot implemented: structural/formula writeback, OCR, non-cell extraction, other document formats, spec, edit-plan.\nEmpty-Windows and Excel COM acceptance remain unverified; not release-ready.",
                     env!("CARGO_PKG_VERSION")
                 );
             }

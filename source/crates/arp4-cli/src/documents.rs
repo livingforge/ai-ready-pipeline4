@@ -823,7 +823,7 @@ impl Store {
         let metadata = under(&self.arp.join("documents"), relative)?;
         ensure!(
             !dest.exists() || self.management(&dest)? == metadata,
-            "legacy layout requires Python migration"
+            "unsupported document layout; import the source into a new project"
         );
         self.snapshot(&proposal, "authorities", &result.fingerprint)?;
         let stage = tempfile::tempdir_in(&self.arp)?;

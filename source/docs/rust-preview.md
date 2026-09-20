@@ -1,14 +1,14 @@
 # ARP Rust試験版
 
 このZIPはWindows x64向けのRust試験版（4.0.0-alpha.3）です。正式リリースではありません。
-Pythonなしで、スキル導入・Excel取り込み・YAML編集・差分・成形記録・採用・レビュー・通常セルの書き戻しを実行できます。
+スキル導入・Excel取り込み・YAML編集・差分・成形記録・採用・レビュー・通常セルの書き戻しを実行できます。
 今回の配布先は `C:/arp4-publish` です。GitHubへの公開は行いません。
 
 ## ZIPからの実行
 
 配布物には `source/` と `audit/` を含めます。ソース・テスト・テストデータの確認、ハッシュ検証、オフライン再ビルド用の追加資材については、配布物の `audit/TESTING.md`（ソースでは [監査手順](audit-testing.md)）を参照してください。
 
-Windows x64で展開したフォルダーから実行します。本体にスキルとスキーマを埋め込み、これらの操作にはPythonもRustも不要です。
+Windows x64で展開したフォルダーから実行します。本体にスキルとスキーマを埋め込み、追加のランタイムや開発ツールの導入は不要です。
 
 ```powershell
 .\arp4.exe doctor
@@ -65,14 +65,14 @@ importの相対パスはプロジェクト基準、prompt・outの相対パス�
 
 - 対応する取り込みは `.xlsx` / `.xlsm` のセル値・数式原文・結合範囲です。図形・画像・コメント・印刷情報・OCRは未抽出で、候補と抽出JSONのR001に記録します。原本の外観も確認してください。
 - 書き戻しは既存の通常セルの値のみです。行・図形・画像・数式の変更、Excel COMエンジンは未対応で、指定時は拒否します。マクロ部品は保持対象ですが、マクロ実行の検証はしていません。
-- 見出し推定・空行ごとの表分割はまだ移植していません。元の行・列を保つ表を生成します。数式原文は別の表に保持します。
+- 見出し推定・空行ごとの表分割は未対応です。元の行・列を保つ表を生成します。数式原文は別の表に保持します。
 - `resume`、`edit-base/plan/apply`、`spec`、Word/PDF等、文書内のローカルリンクを持つ本文の検証は未対応です。
-- 保存するスキーマ・出典・成形とレビューのハッシュはPython版の形式を使います。対象範囲の相互読込を試験しましたが、全既存文書への対応を保証するものではありません。
+- 保存形式は `contracts/document-schemas.json`、出典・成形とレビューのハッシュは正規化した JSON を基準にします。
 - diffは本文・対応表・除外理由・原本情報・画像ハッシュを比較します。画像の見た目は比較しません。
-  `--format json` の `comparisons[].changes` はRust版の出力形式で、Python版の表示JSONと同一ではありません。`--format markdown --out <新規パス>` で保存できます。
+  `--format json` の `comparisons[].changes` に変更内容を出力します。`--format markdown --out <新規パス>` で保存できます。
 
 スキルは `.claude/skills/` または `.github/skills/` へ導入し、
-`.arp/installed-skills.json` に旧Pythonインストーラーと同じ形式のハッシュを保存します。
+`.arp/installed-skills.json` に導入したファイルのハッシュを保存します。
 利用者が編集したファイルがある場合は、全スキルの更新前に停止します。CRLFとLFの差だけなら編集とみなしません。
 同時に複数のRustスキル導入処理を実行できないようロックします。強制終了後にロックが残った場合は、
 他の導入処理がないこととファイルの状態を確認してから `.arp/rust-skills-install.lock` を取り除きます。
@@ -98,12 +98,12 @@ cargo run --locked --example sync_skills -- --check
 ./build/deploy_rust.ps1 -Zip target/preview-distribution/arp4-v4.0.0-alpha.3-windows-x64-preview.zip -Destination C:/arp4-publish
 ```
 
-Python 版の実装と比較試験は削除しました。`contracts/document-schemas.json` と `contracts/excel-number-formats.json` を契約の正本として保守します。旧実装との比較結果は Git 履歴と verification.md に残しています。スキルは `surface/` からRustのビルド時に組み立てます。
+`contracts/document-schemas.json` と `contracts/excel-number-formats.json` を契約の正本として保守します。スキルは `surface/` からRustのビルド時に組み立てます。
 
 ZIPの作成先に同名ファイルがある場合は上書きせず失敗します。別の `-OutputDirectory` を指定してください。
 試験用ZIPには依存のライセンス表示・ライセンス本文を同梱し、SHA-256を隣接ファイルに出力します。
 スモーク試験はZIPを一時フォルダーへ展開し、PATHを空にして実行・更新拒否を検証します。
-この試験はPython未導入のOS、ネットワーク遮断、Agent上での選択、Excel実機の受入試験を代替しません。
+この試験は開発ツール未導入のOS、ネットワーク遮断、Agent上での選択、Excel実機の受入試験を代替しません。
 deployは展開先の既存ファイルとの衝突を事前検査し、異なる内容を上書きせず停止します。
 既存の `.git/` は保持し、Gitのコミット・push・Releases公開は実行しません。
 展開内容のハッシュは `.arp/rust-distribution.json` に記録します。

@@ -65,7 +65,7 @@
 
       def register(self, order: "Order") -> str:
           """受注を登録する。"""
-          from arp4.order.在庫 import 引当            # 重いので使うときだけ読む
+          from order.在庫 import 引当            # 重いので使うときだけ読む
 
           raise DuplicateOrder
 

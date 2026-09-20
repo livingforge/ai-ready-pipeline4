@@ -13,7 +13,6 @@ pub fn capabilities() -> serde_json::Value {
         "version": env!("CARGO_PKG_VERSION"),
         "implementation": "rust",
         "release_ready": false,
-        "python_required_for_implemented_commands": false,
         "capabilities": {
             "skills_install": true,
             "documents_schema": true,

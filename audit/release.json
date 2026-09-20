@@ -2,23 +2,13 @@
     "schema_version":  1,
     "version":  "4.0.0-alpha.3",
     "source":  {
-                   "commit":  "b5968d5cda06dfd4d5a71c80fec971aad11e4240",
-                   "dirty":  true,
+                   "commit":  "1e5c7568857432e2c31888aa67b2b82e562c7ff0",
+                   "dirty":  false,
                    "changes":  [
-                                   " M .github/workflows/rust-preview.yml",
-                                   " M README.md",
-                                   " M build/package_rust.ps1",
-                                   " M docs/rust-preview.md",
-                                   " M docs/rust-release-plan.md",
-                                   "?? build/audit_source.ps1",
-                                   "?? build/package_offline.ps1",
-                                   "?? build/test_audit.ps1",
-                                   "?? build/test_offline.ps1",
-                                   "?? build/verify_audit.ps1",
-                                   "?? docs/audit-testing.md"
+
                                ]
                },
-    "built_at_utc":  "2026-09-20T05:47:43.8649221Z",
+    "built_at_utc":  "2026-09-20T06:07:25.5740390Z",
     "target":  "x86_64-pc-windows-msvc",
     "cargo":  "cargo 1.98.1 (797e8a9bc 2026-08-05)",
     "rustc":  [
@@ -33,7 +23,7 @@
     "build_command":  "cargo build --release --locked --target x86_64-pc-windows-msvc",
     "rustflags":  null,
     "cargo_encoded_rustflags":  null,
-    "binary_sha256":  "29d3beb8c5527241cf7512f4c42c731190ae4cb146382862df1387e3758910ae",
+    "binary_sha256":  "c413774cbde5843e02bd5c54ddbfd55a41662aad4d1dd5f5bbcc4db02d28b2a5",
     "verification":  {
                          "reproducible_binary":  "not verified",
                          "network_isolation":  "not tested",

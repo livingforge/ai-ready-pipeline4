@@ -1,6 +1,6 @@
 # ARP4
 
-Rust 製の Excel 文書管理 CLI です。Windows x64 用 ZIP を展開し、Python なしでスキル導入、Excel 取り込み、YAML 編集、差分確認、レビュー、既存セルへの書き戻しを行えます。
+Rust 製の Excel 文書管理 CLI です。Windows x64 用 ZIP を展開し、スキル導入、Excel 取り込み、YAML 編集、差分確認、レビュー、既存セルへの書き戻しを行えます。
 
 現在は 4.0.0-alpha.3 の試験版です。利用者は作成済みの `arp4.exe` を使います。開発時のみ Rust と MSVC Build Tools が必要です。
 
@@ -15,8 +15,6 @@ Rust 製の Excel 文書管理 CLI です。Windows x64 用 ZIP を展開し、P
 プロジェクトのフォルダーを先に作成してください。詳しい手順と制限は [利用・開発ガイド](docs/rust-preview.md)、検証結果は [verification](docs/verification.md) を参照してください。
 
 取り込みは `.xlsx` / `.xlsm` のセル値・数式原文・結合範囲、書き戻しは既存の通常セル値が対象です。図形・OCR・構造変更・他形式・仕様書生成は未対応です。
-
-Python 版の本体・ビルド・専用テストは削除しました。旧実装は Git 履歴に残っています。`examples/` の別アプリのコードや資料生成用 Python はサンプル資産であり、ARP の利用・ビルド・検証には不要です。
 
 ```powershell
 cargo fmt --all -- --check
