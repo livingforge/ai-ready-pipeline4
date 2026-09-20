@@ -1,0 +1,162 @@
+# 架空の受注システム。手作業で整理した仕様の見本。
+title: 受注管理システム
+items:
+  - id: REQ-ORDER
+    kind: requirement
+    title: 受注の登録
+    statement: 担当者が受注を登録し、採番された受注番号で参照できる。
+    details:
+      category: functional
+      acceptance: 登録応答の受注番号で保存済み受注を参照できる。
+  - id: FN-ORDER
+    kind: function
+    title: 受注登録機能
+    statement: 入力を検証し、受注を保存して受注番号を返す。
+    details:
+      inputs: [顧客番号, 受注明細]
+      outputs: [受注番号]
+      rules: [顧客番号は必須, 明細を1件以上指定する]
+  - id: CMP-API
+    kind: component
+    title: 受注APIサービス
+    statement: HTTP APIで受注登録機能を提供する。
+    details:
+      technology: Python / PostgreSQL
+      responsibilities: [入力検証, トランザクション管理]
+      interfaces: [POST /orders]
+  - id: TABLE-ORDER
+    kind: entity
+    title: 受注テーブル
+    statement: 受注を受注番号で識別する。
+    details: {physical_name: orders}
+  - id: FIELD-ORDER-ID
+    kind: field
+    title: 受注番号
+    statement: システムで採番する受注の識別子。
+    details: {physical_name: order_id, data_type: bigint, nullable: false, primary_key: true}
+  - id: SCREEN-ORDER
+    kind: screen
+    title: 受注登録画面
+    statement: 担当者が登録内容を確認して送信する。
+    details:
+      route: /orders/new
+      fields: [顧客番号, 受注明細]
+      actions: [入力検証, 登録, キャンセル]
+  - id: API-ORDER
+    kind: interface
+    title: 受注登録API
+    statement: 受注を登録し、作成したリソースの番号を返す。
+    details:
+      method: POST
+      path: /orders
+      request: customer_idと1件以上のlinesを持つJSON
+      response: HTTP 201とorder_idを持つJSON
+      errors: [必須項目不足はHTTP 400, 権限不足はHTTP 403]
+  - id: PROCESS-ORDER
+    kind: process
+    title: 受注登録処理
+    statement: 検証と永続化を順序づけ、保存失敗時は取り消す。
+    details:
+      steps: [入力を検証する, トランザクションを開始する, 受注を保存する, コミットして受注番号を返す]
+  - id: PROGRAM-ORDER
+    kind: program
+    title: 受注登録サービス
+    statement: 入力検証と受注リポジトリの呼び出しを担当する。
+    details:
+      module: orders.service.create_order
+      language: Python
+      inputs: [customer_id, lines]
+      outputs: [order_id]
+      steps: [顧客番号と明細を検証する, repository.insertを呼び出す, 保存した受注番号を返す]
+      errors: [入力違反はValidationError, 保存失敗時はロールバックして例外を呼び出し元へ返す]
+  - id: TEST-PLAN
+    kind: test_plan
+    title: 受注API結合テスト計画
+    statement: APIからデータベースまでの登録経路を検証する。
+    details:
+      level: 結合テスト
+      scope: [正常登録, 入力不備, 権限不足, 保存失敗]
+      environment: 分離したテスト用PostgreSQLとAPIサービス
+      entry_criteria: APIとリポジトリの単体テストが成功している。
+      exit_criteria: 対象ケースがすべて成功し、重大な未解決不具合がない。
+  - id: TEST-ORDER
+    kind: test
+    title: 正常な受注の登録
+    statement: API経由で受注が保存されることを確認する。
+    details:
+      preconditions: [有効な顧客と担当者アカウントが存在する]
+      steps: [顧客番号と明細をPOST /ordersへ送信する, 応答のorder_idで保存内容を照合する]
+      expected: HTTP 201が返り、指定した内容の受注が1件保存される。
+  - id: RESULT-ORDER
+    kind: test_result
+    title: 正常登録テストの実施状況
+    statement: この架空システムのテストは実施していない。
+    details:
+      outcome: not_run
+      actual: 未実施
+      executed_at: 未実施
+      executor: 未割当
+      evidence: 実行証跡なし。成功を示すものではない。
+  - id: MIGRATION-ORDER
+    kind: migration
+    title: 既存受注の移行
+    statement: 移行対象CSVと登録結果を件数・番号で照合する。
+    details:
+      source: 承認済み受注CSV
+      destination: orders
+      mapping: [受注番号をorder_idへ対応づける]
+      validation: 総件数と受注番号の集合が一致する。
+      rollback: 移行開始前のバックアップを復元する。
+  - id: DEPLOY-ORDER
+    kind: deployment
+    title: APIリリース手順
+    statement: 検証した版を本番へ配置し、疎通確認後に利用を開始する。
+    details:
+      environment: 本番API環境
+      steps: [直前の版とDBバックアップを保存する, 承認した版を配置する, 疎通テストを行う]
+      verification: ヘルスチェックと受注参照APIが成功する。
+      rollback: アプリケーションを直前の版へ戻し、必要時はDBを復元する。
+  - id: OPS-ORDER
+    kind: operation
+    title: 登録失敗の監視と復旧
+    statement: 登録失敗の急増を検知して担当者へ通知する。
+    details:
+      trigger: 登録APIの5xx率が5分間5%を超える。
+      steps: [アラートを確認する, APIログとDB接続状態を調べる, 原因に応じて復旧する]
+      monitoring: APIの応答コードとDB接続失敗数を収集する。
+      recovery: 直前のリリースを確認し、必要時は切り戻す。
+  - id: SEC-ORDER
+    kind: security
+    title: 受注登録の認可
+    statement: 担当者権限を持つ利用者だけが受注を登録できる。
+    details:
+      asset: 受注データ
+      threat: 権限のない利用者による不正な登録
+      control: APIで認証と担当者ロールを確認する。
+      verification: 権限のないアカウントからの登録がHTTP 403になる。
+  - id: PLAN-ORDER
+    kind: project_task
+    title: 受注登録機能の実装と検証
+    statement: 設計レビュー後に実装し、結合テストで確認する。
+    details:
+      owner: 受注開発チーム
+      deliverables: [プログラム, テスト仕様書, 実行証跡]
+      schedule: 設計承認後の第1イテレーション
+      completion_criteria: レビューと対象テストが完了している。
+  - id: DECISION-TRANSACTION
+    kind: decision
+    title: 受注保存のトランザクション境界
+    statement: 受注と明細の保存を1トランザクションで行う。
+    details:
+      alternatives: [受注と明細を別々にコミットする]
+      consequence: 一部だけが保存された受注を作らない。
+relations:
+  - {from: FN-ORDER, to: REQ-ORDER, kind: satisfies}
+  - {from: TABLE-ORDER, to: FIELD-ORDER-ID, kind: contains}
+  - {from: FN-ORDER, to: TABLE-ORDER, kind: uses}
+  - {from: SCREEN-ORDER, to: API-ORDER, kind: uses}
+  - {from: PROGRAM-ORDER, to: FN-ORDER, kind: implements}
+  - {from: PROGRAM-ORDER, to: PROCESS-ORDER, kind: implements}
+  - {from: TEST-ORDER, to: REQ-ORDER, kind: verifies}
+  - {from: TEST-ORDER, to: PROGRAM-ORDER, kind: verifies}
+  - {from: RESULT-ORDER, to: TEST-ORDER, kind: result_of}

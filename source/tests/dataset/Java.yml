@@ -1,0 +1,101 @@
+# Java ―― **宣言と注釈だけを取る。構文解析まで踏み込まない。**
+#
+# `jp-sier-std` という名前のパックが、日本の受託開発でいちばん多い資産を
+# 読めなかった。`examples/sales-corpus` は Java を 114 本生成しておきながら
+# 「arp4 は Java を読まない」と自認していた。
+#
+# ただし**全文を読みにいってはいけない** ―― 世代ごとの文法・生成コード・
+# ロンボクに付き合う作業が永久に続く（決定 1 が捨てた側である）。読むのは
+# `{` の対応だけで取れるところ、つまり宣言の頭と注釈に限る。
+
+置き場: 受領/受注システム/src/main/java/jp/co/example/order/OrderEntity.java
+なぜ: |
+  **Java の現場では、種別を決める手がかりが本体ではなく注釈に載っている。**
+  `@Entity` はエンティティ、`@Column` はデータ項目、`@RestController` は外部
+  インターフェース ―― 本体と混ぜて 1 つの文字列で出すと、整理層が正規表現を
+  書くことになる。注釈は別の列にする。
+
+  **`@interface` は注釈ではなく注釈型の宣言である。** 注釈と一緒に落とすと、
+  自前で宣言した注釈が型として 1 つも出ない ―― Spring を持ち込めない現場
+  （外部依存を持てない配布物）では、注釈を自前で宣言するのは普通である。
+
+  **javadoc は宣言の欄に入れない。** 意図の層は出さないと決めてあり（決定 2）、
+  原本がテキストなので整理層が直接読める。入れると 1 行が数百字になる。
+本文: |
+  package jp.co.example.order;
+
+  import java.time.LocalDate;
+  import jp.co.example.framework.Entity;
+
+  /**
+   * 受注ヘッダ。
+   *
+   * 関連する業務ルール: 受注番号は採番テーブルから取る
+   */
+  @Entity
+  @Table(name = "T_ORDER")
+  public class OrderEntity {
+
+      @Id
+      @Column(name = "ORDER_NO", length = 10, nullable = false)
+      private String orderNo;
+
+      @Column(name = "ORDER_DATE")
+      private LocalDate orderDate;
+
+      /** 受注番号を返す。 */
+      public String getOrderNo() {
+          return orderNo;
+      }
+  }
+
+---
+
+置き場: 受領/受注システム/src/main/java/jp/co/example/order/OrderService.java
+なぜ: |
+  **`{` を数えるだけだと、メソッドの中の文がメンバに見える。**
+  `int matched = 0;` がフィールドとして、`for (...)` がメソッドとして出ていた
+  ―― 深さでは決まらないので、波括弧 1 つずつに**それが型の本体かどうか**を
+  覚えさせ、型の本体だけを通ってきた宣言をメンバとする。
+
+  **文字列とコメントの中の `}` で型がずれる。** `"}"` という文字列も
+  `// }` というコメントも実物には普通にあり、1 つ混ざると**そこから先の型が
+  全部ずれる**（読み落としではなく作り替えなので、申告のしようがない）。
+
+  **入れ子の型のメンバは落とさない。** 内部クラスに定義を追い出す書き方は
+  10 年ものの資産でごく普通である。
+本文: |
+  package jp.co.example.order;
+
+  import jp.co.example.framework.Service;
+
+  @Service
+  public class OrderService {
+
+      private final OrderRepository repository;
+
+      /** 受注を登録する。 */
+      @Transactional
+      public String register(Order order, String staffCd) {
+          int matched = 0;                 // ← フィールドではない
+          String brace = "}";              // ← ここで型がずれていた
+          // 閉じ括弧 } のコメント
+          for (OrderLine line : order.getLines()) {
+              if (line.getQty() <= 0) {
+                  throw new BusinessException("E1011");
+              }
+              matched++;
+          }
+          return repository.save(order, brace, matched);
+      }
+
+      /** 明細の上限。詳細設計は 20 行だが実装は 30 行（食い違い）。 */
+      public static class Limit {
+
+          public static final int MAX_LINES = 30;
+
+          public int max() {
+              return MAX_LINES;
+          }
+      }
+  }

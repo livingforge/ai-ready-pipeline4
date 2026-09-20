@@ -1,0 +1,23 @@
+# 配る見本（`examples/*/資料/`）は**バイト列そのものに意味がある。**
+#
+# git は既定で「中身を見て」テキストか binary かを決める ―― 先頭に NUL バイトが
+# あれば binary である。zip（`.xlsx` `.pptx` `.docx`）は当たるが、**PDF はほとんど
+# ASCII なのでテキストと判定される** ―― Windows で clone すると LF が CRLF に
+# 変換され、`xref` のオフセットが全部ずれて**開けない PDF になる**
+# （実測 4,336 → 4,487 バイト。増えたぶんが変換された改行の数である）。
+#
+# 判定に頼らず書く。**中身によって結果が変わるものを暗黙にしない。**
+*.pdf   binary
+*.xlsx  binary
+*.xlsm  binary
+*.pptx  binary
+*.pptm  binary
+*.docx  binary
+*.docm  binary
+*.png   binary
+
+# 見本は生成器が書いたバイト列と**1 バイトも違わない**ことを
+# `tests/test_example.py` が見ている ―― CSV は本物のテキストだが、改行を
+# 変換されると checkout しただけで検査が落ちる（しかも引用符の中の改行は
+# 検体の主張そのものなので、変換されては困る）。
+examples/from-documents/資料/** -text

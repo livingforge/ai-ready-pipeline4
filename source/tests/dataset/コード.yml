@@ -1,0 +1,175 @@
+# ソースコード ―― **骨格は AST で取る。曖昧でないものに LLM を使わない。**
+#
+# Excel は「セルの面」を紙の見た目へ寄せ直す必要があるが、コードは構文木に
+# 書いてあるものを転記するだけである。ここに集めてあるのは、**転記のつもりで
+# 落としていたもの** ―― 書いてある数と違うものを書くと、読み落としと違って
+# 申告のしようがない。
+
+置き場: 受領/受注システム/src/order/検索条件.py
+なぜ: |
+  **キーワード専用引数はまるごと消えていた。** `ast.arguments` は引数を 4 つの
+  入れ物に分けて持つ（位置専用・普通・可変長・キーワード専用）のに、`args` しか
+  読んでいなかった ―― `*` より後ろの引数が 1 つも出ない。
+
+  読み落としなら申告できるが、これは**書いてある数と違うものを書いている**。
+  詳細設計書に `plan_worksheet(worksheet, extent)` と出ていたものの実物は
+  `(worksheet, extent=(0, 0), *, boxes=(), max_px=MAX_PX, ...)` で、**その表を
+  見て書いた呼び出しは通らない。** 資料が間違っているのではなく、
+  **機械が資料を作り替えている**ので、突き合わせようがない。
+
+  既定値も出す ―― 「省略できるか」は呼ぶ側がまず知りたいことで、AST に書いて
+  ある（当てにいく必要が 1 つも無い）。
+本文: |
+  """受注の検索条件。"""
+
+
+  class SearchCriteria:
+      """検索条件 ―― 画面とバッチの両方から呼ばれる。"""
+
+      def build(self, keyword, /, limit: int = 50, *columns: str,
+                order: str = "受注日", descending: bool = False,
+                **options: object) -> "Query":
+          """条件を組み立てる（並び順の既定は受注日の昇順）。"""
+          raise ValueError
+
+      @staticmethod
+      def parse_period(text: str) -> tuple[str, str]:
+          """`2026-04〜2026-09` を開始と終了に割る。"""
+          raise ValueError
+
+---
+
+置き場: 受領/受注システム/src/order/受注登録.py
+なぜ: |
+  **`import` を 1 行も出していなかった。** 呼出関係（`calls`）は整理層が原本を
+  読んで手で起こすしかなく、30 本なら通っても **114 本・200 本の規模では
+  先に破綻する** ―― そして `import` は構文木からゼロ曖昧に取れる。
+  「構文木から取れるものに LLM を使っても精度は上がらず、コストと見落としだけが
+  増える」と決めた当のものである（決定 2）。
+
+  **関数の中の取り込みも拾う。** 重い依存を遅らせる書き方（`render` を使うときだけ
+  読む）は普通にあり、そこにしか出てこない依存は**設計書からまるごと消える。**
+
+  どれが自分たちのモジュールかは決めない ―― `from . import` の点の数も書いて
+  あるとおりに出し、**どこを指すかを解くのは置き場を知っている側の仕事**である。
+本文: |
+  """受注の登録。"""
+  import csv
+  from decimal import Decimal
+  from . import 採番
+  from ..common.log import 監査ログ
+
+
+  class OrderRegister:
+      """受注登録 ―― 与信と在庫引当をまとめて行う。"""
+
+      def register(self, order: "Order") -> str:
+          """受注を登録する。"""
+          from arp4.order.在庫 import 引当            # 重いので使うときだけ読む
+
+          raise DuplicateOrder
+
+---
+
+置き場: 受領/受注システム/tests/test_受注サービス.py
+なぜ: |
+  **テストは 1 本も設計書に出ていなかった。** `.py` は読めていたので骨格は
+  取れるのだが、テストファイルも「モジュール」として詳細設計書へ流れるだけで、
+  **テスト仕様書は空のまま**だった ―― 実際には 317 件あるのに、
+  トレーサビリティは「要件 44 件すべてテスト漏れ」と出す。**事実に反する表**を
+  出すほうが、空の表より悪い。
+
+  集める規則は pytest のものをそのまま写す（`test_*.py` / `*_test.py` の中の
+  `test` で始まる関数）。**規約であって解釈が要らない** ―― 呼ぶ側が名前で
+  決めているものを、こちらだけ疑う理由が無い。
+
+  **fixture と補助関数はテストと混ぜない。** 混ぜると整理層がテストケースを
+  数えられず、「何件あるか」が言えなくなる。どの要件を検証しているか（`verifies`）
+  を決めるのは整理層の仕事なので、機械はそこまで。
+本文: |
+  """受注サービスのテスト。"""
+  import pytest
+
+  from order.受注サービス import OrderService
+
+
+  @pytest.fixture
+  def service() -> OrderService:
+      """テスト対象。"""
+      return OrderService()
+
+
+  def _注文(no: str = "ORD-000001") -> dict:
+      """組み立ての補助（テストではない）。"""
+      return {"no": no}
+
+
+  def test_受注番号は採番テーブルから取る(service) -> None:
+      """採番の単位は年度。"""
+      assert service.register(_注文())
+
+
+  def test_与信NGは差戻しになる(service) -> None:
+      """差戻しは例外ではなく戻り値で返す。"""
+      assert not service.register(_注文("ORD-000002"))
+
+
+  class TestCancel:
+      """取消のテスト。"""
+
+      def test_出荷済みは取り消せない(self, service) -> None:
+          """出荷済みは AlreadyShipped。"""
+          with pytest.raises(Exception):
+              service.cancel("ORD-000001", "誤登録")
+
+---
+
+置き場: 受領/受注システム/src/order/受注ヘッダ.py
+なぜ: |
+  **デコレータを 1 つも出していなかった。** `@dataclass` が付いているかどうかは、
+  そのクラスが値の入れ物なのか処理を持つ層なのかを分ける ―― 詳細設計書の `tier`
+  （Common / Repository / Service / Validator）を決める最大の手がかりである。
+  出していなかったあいだ、**57 モジュールの層分けを整理層が全部推測で付けていた。**
+
+  **クラス直下の属性も出していなかった。** `@dataclass` だと分かっても、それが
+  **何を持つ入れ物なのか**はどこにも書いていない ―― Java の
+  `private String orderNo` にあたるものが Python 側だけ落ちていた形である。
+  データ項目を起こす根拠がここにしか無い。
+
+  `@property` は**呼び出しではなく値に見える**メンバかどうかを変えるので、
+  同じく落とせない。どちらも AST に書いてあり、当てにいく作業が 1 つも無い。
+
+  種類（クラス / フィールド / メソッド）は**構文木の位置だけ**で決める。
+  `@property` を「プロパティ」と呼び替えるのは解釈なので、注釈は注釈のまま出す。
+本文: |
+  """受注ヘッダの値と、その組み立て。"""
+  from dataclasses import dataclass, field
+
+
+  @dataclass(frozen=True)
+  class OrderHeader:
+      """受注ヘッダ ―― 値の入れ物であって処理は持たない。"""
+
+      order_no: str
+      customer_cd: str
+      order_date: str = "2026-04-01"
+      lines: list[str] = field(default_factory=list)
+
+      MAX_LINES = 20
+
+      @property
+      def line_count(self) -> int:
+          """明細数（呼び出しではなく値に見える）。"""
+          return len(self.lines)
+
+      @staticmethod
+      def parse(text: str) -> "OrderHeader":
+          """1 行の文字列から組み立てる。"""
+          raise ValueError
+
+
+  class OrderHeaderValidator(BaseValidator):
+      """受注ヘッダの検査 ―― こちらは処理の層である。"""
+
+      def validate(self, header: OrderHeader) -> None:
+          raise BusinessException

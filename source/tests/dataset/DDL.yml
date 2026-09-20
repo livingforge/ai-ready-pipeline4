@@ -1,0 +1,61 @@
+# DDL ―― **テーブル定義書は現場の 1 冊でいちばん先に要求される。**
+#
+# 語彙（`entity` / `data-item` / `index`）も様式（テーブル定義書・CRUD図）も
+# 揃っていて、**中身だけが空**だった。DDL は AST と同じで曖昧でないので、
+# 当てにいくところが 1 つも無い ―― 読んでいなかっただけである。
+#
+# 方言は無数にあるので、読むのは `CREATE TABLE` と `CREATE INDEX` と
+# `COMMENT ON` だけにする。**全部を読もうとすると当てにいく作業が永久に続く**
+# （決定 1 が捨てた側である）。読まなかった文は数えて名指しする。
+
+置き場: 受領/受注システム/db/受注管理.sql
+なぜ: |
+  **素朴に `;` で切ると表が割れる。** この検体には `;` が 3 か所、切ってはいけない
+  ところに入っている ―― 行コメントの中、ブロックコメントの中、そして
+  `COMMENT ON` の文字列リテラルの中である。どれも実物の DDL では普通の書き方で、
+  割れると**1 つのテーブルが 2 つになって出る**（読み落としではなく作り替え）。
+
+  **型は書いてあるものをそのまま出す。** `NUMBER(11, 2)` を「数値」へ寄せるのは
+  メタモデルの enum に当てはめる作業で、それは意味の判断である ―― 方言ごとの型
+  （`NUMBER` / `NUMERIC` / `DECIMAL`）が同じものかは、資料と実装を見た人にしか
+  決められない。桁と小数を分けるのも同じ理由で整理層に渡す。
+
+  **表に掛かる制約は列とは別のアンカーにする。** 主キーと外部キーはテーブル間の
+  関係の根拠になるので、列 1 本の話と混ぜると「どの事実を出典にしたいか」が
+  選べなくなる。
+
+  **列の論理名は `COMMENT ON` にしか無いことがある。** Oracle/PG の現場では、
+  日本語の項目名をコメントだけで持つ運用が普通にある ―― ここを読まないと
+  テーブル定義書の「論理名」列が丸ごと空になる。
+
+  **読まなかった文を黙って落とさない。** ビューとストアドの中に仕様が入って
+  いることがあり、黙ると「資料に無い」と「機械が読めていない」が混ざる。
+本文: |
+  -- 受注管理 DDL（Oracle）。区切りはここ; ではない
+  /* 改訂 1.4 ―― 与信区分を追加した; 旧版との差分は別紙 */
+
+  CREATE TABLE T_ORDER (
+    ORDER_NO    CHAR(10)      NOT NULL,
+    CUST_CD     CHAR(8)       NOT NULL,
+    ORDER_DATE  DATE          DEFAULT SYSDATE NOT NULL,
+    CREDIT_KBN  CHAR(1)       DEFAULT '0',
+    MEMO        VARCHAR2(200),
+    TOTAL       NUMBER(11, 2) DEFAULT 0 NOT NULL,
+    CONSTRAINT PK_T_ORDER PRIMARY KEY (ORDER_NO),
+    CONSTRAINT FK_T_ORDER_CUST FOREIGN KEY (CUST_CD)
+      REFERENCES M_CUSTOMER (CUST_CD)
+  ) TABLESPACE TS_ORDER;
+
+  CREATE TABLE IF NOT EXISTS "M_CUSTOMER" (
+    CUST_CD   CHAR(8) NOT NULL PRIMARY KEY,
+    CUST_NAME VARCHAR2(60)
+  );
+
+  CREATE UNIQUE INDEX IX_T_ORDER_01 ON T_ORDER (CUST_CD, ORDER_DATE);
+  CREATE INDEX IX_T_ORDER_02 ON T_ORDER (ORDER_DATE);
+
+  COMMENT ON TABLE T_ORDER IS '受注ヘッダ';
+  COMMENT ON COLUMN T_ORDER.ORDER_NO IS '受注番号; 採番のみ、手入力は不可';
+  COMMENT ON COLUMN T_ORDER.CREDIT_KBN IS '与信区分';
+
+  CREATE OR REPLACE VIEW V_ORDER AS SELECT * FROM T_ORDER;

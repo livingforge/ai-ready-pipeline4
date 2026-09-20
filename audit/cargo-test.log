@@ -1,0 +1,56 @@
+﻿   Compiling arp4-cli v4.0.0-alpha.3 (C:\arp4\target\package-stage\e80945697ae245f3a1a2dc1ebebf2491\distribution\source\crates\arp4-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.01s
+     Running unittests src\lib.rs (C:\arp4\target\package-stage\d047298dd2754216b012d05d45ef2616\distribution\source\target\debug\deps\arp4_cli-48ca145341a8dcad.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (C:\arp4\target\package-stage\d047298dd2754216b012d05d45ef2616\distribution\source\target\debug\deps\arp4-7cfca10c99c3af86.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\contracts.rs (C:\arp4\target\package-stage\d047298dd2754216b012d05d45ef2616\distribution\source\target\debug\deps\contracts-6d81e668ae7aa825.exe)
+
+running 3 tests
+test python_canonical_number_and_unicode_encoding ... ok
+test strict_values_reject_duplicates_nonfinite_nonstring_keys_and_anchors ... ok
+test portable_sheet_names_and_excel_bounds ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\excel.rs (C:\arp4\target\package-stage\d047298dd2754216b012d05d45ef2616\distribution\source\target\debug\deps\excel-0ce5d1af93e53978.exe)
+
+running 3 tests
+test invalid_writeback_fails_before_creating_output ... ok
+test external_relationships_and_signed_writeback_are_rejected ... ok
+test scalar_writeback_preserves_parts_and_invalidates_formula_cache ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests\installation.rs (C:\arp4\target\package-stage\d047298dd2754216b012d05d45ef2616\distribution\source\target\debug\deps\installation-d0f09259ad5926a4.exe)
+
+running 12 tests
+test none_does_not_create_files ... ok
+test invalid_paths_and_duplicate_assets_are_rejected ... ok
+test active_lock_prevents_another_installation ... ok
+test unowned_files_and_invalid_ownership_are_preserved ... ok
+test owned_old_version_updates_and_crlf_is_not_a_local_edit ... ok
+test marker_write_failure_rolls_back_changed_skills ... ok
+test a_late_conflict_prevents_all_updates ... ok
+test selection_and_repeat_install_preserve_other_agent ... ok
+test doctor_and_schemas_work_without_python ... ok
+test unsupported_commands_and_unknown_schemas_fail ... ok
+test directory_junction_cannot_redirect_installation ... ok
+test installs_embedded_skills_without_python_or_path ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+   Doc-tests arp4_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

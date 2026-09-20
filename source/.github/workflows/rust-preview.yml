@@ -1,0 +1,33 @@
+name: Rust preview
+on:
+  workflow_dispatch:
+  push:
+    paths: ['crates/**', 'contracts/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'surface/**', 'third-party/**', 'build/**', 'docs/**', 'tests/**', 'examples/**', 'README.md', 'LICENSE', '.github/workflows/rust-preview.yml']
+  pull_request:
+    paths: ['crates/**', 'contracts/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'surface/**', 'third-party/**', 'build/**', 'docs/**', 'tests/**', 'examples/**', 'README.md', 'LICENSE', '.github/workflows/rust-preview.yml']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo run --locked --example sync_skills -- --check
+      - run: ./build/package_rust.ps1
+      - name: Check packaged executable
+        shell: pwsh
+        run: |
+          $zips = @(Get-ChildItem target/preview-distribution/*.zip)
+          if ($zips.Count -ne 1) { throw 'Expected one preview ZIP' }
+          ./build/smoke_rust.ps1 -Zip $zips[0].FullName
+          ./build/test_deployment.ps1 -Zip $zips[0].FullName
+          ./build/test_audit.ps1 -Zip $zips[0].FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arp4-windows-x64-rust-preview
+          path: target/preview-distribution/*
+          if-no-files-found: error

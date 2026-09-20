@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/arp4-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "4.0.0-alpha.3"
+edition = "2024"
+license = "MIT"
+rust-version = "1.98"
+
+[profile.release]
+lto = "thin"
+strip = true

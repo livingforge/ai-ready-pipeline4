@@ -1,0 +1,22 @@
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# サンプル生成用・旧開発環境は追跡しない。
+.venv/
+
+# 検体を実ファイルにした置き場（Excel で開いて確かめるため）。
+# 過去に生成したバイナリ検体は追跡しない。
+/test_data/
+
+# ローカルの生成物・過去の作業コピー。
+/out/
+/old/
+
+# `.arp/` 全体は無視しない。抽出証跡・入力固定版・レビューを正本と一緒に管理する。
+# 生成物（`.arp/out/`）は利用先の `.arp/.gitignore` が無視する。
+
+/work/
+
+# Rust build outputs; Cargo.lock is tracked for reproducible application builds.
+/target/

@@ -1,0 +1,14 @@
+version: 1
+skills:
+  - name: arp4-setup
+  - name: arp4
+platforms:
+  claude:
+    root: .claude
+    skill_file: SKILL.md
+  github:
+    root: .github
+    skill_file: SKILL.md
+runtime:
+  package: arp4-cli
+  command: arp4
