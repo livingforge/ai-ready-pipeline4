@@ -1,9 +1,9 @@
 {
     "schema_version":  "1",
-    "zip_sha256":  "dcc9bb673f88f868d45bb68b4dcb0f67e7d6a7f430ea680ff708c2c2838d4e0c",
+    "zip_sha256":  "7de5ad73d3d1f8c9c1cc55b5e94fa93bfdfd3dcce2d8528e078eccc736b42b0a",
     "files":  {
-                  "arp4.exe":  "e6a7f046933b9729d1350d1fa522434ecfa0091242762d37463bbfb3ff15719b",
-                  "capabilities.json":  "07b79b1550f36d3969db1f6c6e74a22d7f51247c34af99407e2631fd19cc3e37",
+                  "arp4.exe":  "6185625b80561f9bb06f5bcef2aa257c98037a9ee6a189977e96f090c33ca9dc",
+                  "capabilities.json":  "9255743700032096bb709e606df6009ff5188c6cfd23f2a56e1dafddad8fba4c",
                   "LICENSE":  "88b4de4a68ebd64b1a082d82c02545cd9d0268d7e8394a5833cfd20663c45c01",
                   "licenses/ahash-0.8.12/LICENSE-APACHE":  "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
                   "licenses/ahash-0.8.12/LICENSE-MIT":  "0444c6991eead6822f7b9102e654448d51624431119546492e8b231db42c48bb",
@@ -220,7 +220,7 @@
                   "licenses/zlib-rs-0.6.8/LICENSE":  "e72111c52b7d96ebe25348dee19f0744f444d3c95ae6b1ecb6ccaecc5bce05ba",
                   "licenses/zmij-1.0.23/LICENSE-MIT":  "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
                   "licenses/zopfli-0.8.3/COPYING":  "018b1cb87efdf7a04c2fcc13d57ed63f62149113fb207b27ea13430d64f13513",
-                  "README.md":  "35c20f5151b2bbff4635eccef3f503534dab166ce3b78760052ba76cdf91990b",
+                  "README.md":  "67d6ff8d2b67660fca23d05f6adfaae40248dc84fa10c13f197a6009cbac8fd7",
                   "THIRD-PARTY-NOTICES.md":  "f3ebdb0791709dad7dfc35fa853a4e843d7ba6eb755777df863afcb0135acf9d"
               }
 }

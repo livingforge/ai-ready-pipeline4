@@ -1,6 +1,6 @@
 # ARP Rust試験版
 
-このZIPはWindows x64向けのRust試験版（4.0.0-alpha.2）です。正式リリースではありません。
+このZIPはWindows x64向けのRust試験版（4.0.0-alpha.3）です。正式リリースではありません。
 Pythonなしで、スキル導入・Excel取り込み・YAML編集・差分・成形記録・採用・レビュー・通常セルの書き戻しを実行できます。
 今回の配布先は `C:/arp4-publish` です。GitHubへの公開は行いません。
 
@@ -16,7 +16,7 @@ Windows x64で展開したフォルダーから実行します。本体にスキ
 ```
 
 プロジェクトのフォルダーは先に作成してください。`--agent` は `all`（既定）、`claude`、`github`、`none` を選べます。
-`none` は何も書き込みません。導入するスキルにはRust版とPython版の手順を併記し、`doctor` の結果で使い分けます。
+`none` は何も書き込みません。導入するスキルは Rust 版専用です。
 
 ## Excelの取り込みから書き戻し
 
@@ -70,11 +70,11 @@ importの相対パスはプロジェクト基準、prompt・outの相対パス�
   `--format json` の `comparisons[].changes` はRust版の出力形式で、Python版の表示JSONと同一ではありません。`--format markdown --out <新規パス>` で保存できます。
 
 スキルは `.claude/skills/` または `.github/skills/` へ導入し、
-`.arp/installed-skills.json` に現行Pythonインストーラーと同じ形式のハッシュを保存します。
+`.arp/installed-skills.json` に旧Pythonインストーラーと同じ形式のハッシュを保存します。
 利用者が編集したファイルがある場合は、全スキルの更新前に停止します。CRLFとLFの差だけなら編集とみなしません。
 同時に複数のRustスキル導入処理を実行できないようロックします。強制終了後にロックが残った場合は、
 他の導入処理がないこととファイルの状態を確認してから `.arp/rust-skills-install.lock` を取り除きます。
-Pythonインストーラーとの同時実行や、更新中の外部編集は避けてください。
+更新中の外部編集は避けてください。
 通常の書き込み失敗では変更済みファイルを復元しますが、電源断に対する複数ファイルの一括更新は保証しません。
 文書の更新処理には `.arp/rust-documents.lock` を使います。同様に、残留ロックは処理が停止済みか確認して扱ってください。
 
@@ -90,23 +90,18 @@ WindowsではMSVCのビルドツールが必要です。利用者向けの実行
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-python build/rust_contracts.py --check
-python build/check_rust_compat.py --binary target/debug/arp4.exe
-$env:ARP_RUST_BIN = (Resolve-Path target/debug/arp4.exe).Path
-python -m pytest tests/test_rust_documents.py -q
+cargo run --locked --example sync_skills -- --check
 ./build/package_rust.ps1
-./build/smoke_rust.ps1 -Zip target/preview-distribution/arp4-v4.0.0-alpha.2-windows-x64-preview.zip
-./build/deploy_rust.ps1 -Zip target/preview-distribution/arp4-v4.0.0-alpha.2-windows-x64-preview.zip -Destination C:/arp4-publish
+./build/smoke_rust.ps1 -Zip target/preview-distribution/arp4-v4.0.0-alpha.3-windows-x64-preview.zip
+./build/deploy_rust.ps1 -Zip target/preview-distribution/arp4-v4.0.0-alpha.3-windows-x64-preview.zip -Destination C:/arp4-publish
 ```
 
-Pythonを使う比較試験は開発時のみ必要です。`contracts/document-schemas.json` は現行Python版から生成した互換性の基準で、
-変更時には `python build/rust_contracts.py` を実行し、差分をレビューします。
-スキルは `surface/` からRustのビルド時に組み立てます。
+Python 版の実装と比較試験は削除しました。`contracts/document-schemas.json` と `contracts/excel-number-formats.json` を契約の正本として保守します。旧実装との比較結果は Git 履歴と verification.md に残しています。スキルは `surface/` からRustのビルド時に組み立てます。
 
 ZIPの作成先に同名ファイルがある場合は上書きせず失敗します。別の `-OutputDirectory` を指定してください。
 試験用ZIPには依存のライセンス表示・ライセンス本文を同梱し、SHA-256を隣接ファイルに出力します。
 スモーク試験はZIPを一時フォルダーへ展開し、PATHを空にして実行・更新拒否を検証します。
 この試験はPython未導入のOS、ネットワーク遮断、Agent上での選択、Excel実機の受入試験を代替しません。
 deployは展開先の既存ファイルとの衝突を事前検査し、異なる内容を上書きせず停止します。
-既存の `.git/` とPython配布用 `.arp/bootstrap/` は保持し、Gitのコミット・push・Releases公開は実行しません。
+既存の `.git/` は保持し、Gitのコミット・push・Releases公開は実行しません。
 展開内容のハッシュは `.arp/rust-distribution.json` に記録します。
