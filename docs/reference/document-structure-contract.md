@@ -27,7 +27,7 @@
 | <code>/properties/review/oneOf/1/properties/status</code> | <code>{"enum":["accepted","rejected"]}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":1}</code> |
 | <code>/properties/source</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
-| <code>/properties/source/properties/path</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/properties/source/properties/path</code> | <code>{"$ref":"#/$defs/source_path"}</code> |
 | <code>/properties/source/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/properties/visuals</code> | <code>{"type":"array"}</code> |
 | <code>/properties/visuals/items</code> | <code>{"$ref":"#/$defs/visual"}</code> |
@@ -62,7 +62,7 @@
 | <code>/$defs/correction_journal/properties/review/oneOf/1/properties/reason</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/review/oneOf/1/properties/status</code> | <code>{"enum":["accepted","rejected"]}</code> |
 | <code>/$defs/correction_journal/properties/schema_version</code> | <code>{"const":1}</code> |
-| <code>/$defs/correction_journal/properties/source_path</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/source_path</code> | <code>{"$ref":"#/$defs/source_path"}</code> |
 | <code>/$defs/correction_journal/properties/source_sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/visuals</code> | <code>{"type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items</code> | <code>{"additionalProperties":false,"required":["visual","sources"],"type":"object"}</code> |
@@ -79,7 +79,7 @@
 | <code>/$defs/element/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/element/properties/kind</code> | <code>{"enum":["text","table"]}</code> |
 | <code>/$defs/element/properties/reading</code> | <code>{"$ref":"#/$defs/reading"}</code> |
-| <code>/$defs/element/properties/sheet</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/element/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/element/allOf/0</code> | <code>{"if":{"required":["descriptions"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
 | <code>/$defs/graph</code> | <code>{"additionalProperties":false,"description":"Reviewed interpretation within one visual. Node IDs are local. Sources reference that visual's extraction sources or evidence regions; labels are interpretations, not exact quotations. Vision requires image evidence on the visual.","required":["nodes","edges","reading"],"type":"object"}</code> |
 | <code>/$defs/graph/properties/edges</code> | <code>{"type":"array","uniqueItems":true}</code> |
@@ -111,8 +111,10 @@
 | <code>/$defs/region/properties/image</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/region/properties/image_sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/region/properties/range</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/region/properties/sheet</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/region/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/region/properties/source_sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/sheet_name</code> | <code>{"description":"Worksheet name exactly as stored in the workbook, including leading or trailing spaces.","minLength":1,"type":"string"}</code> |
+| <code>/$defs/source_path</code> | <code>{"description":"Repository-relative original document path exactly as stored, including leading spaces in path segments.","minLength":1,"type":"string"}</code> |
 | <code>/$defs/text</code> | <code>{"minLength":1,"pattern":"^\\S(?:[\\s\\S]*\\S)?$","type":"string"}</code> |
 | <code>/$defs/visual</code> | <code>{"additionalProperties":false,"required":["id","kind","sources","state","description","actor","evidence"],"type":"object"}</code> |
 | <code>/$defs/visual/properties/actor</code> | <code>{"type":"string"}</code> |
@@ -131,7 +133,7 @@
 | <code>/$defs/visual/properties/ocr/properties/text</code> | <code>{"description":"Adopted OCR output, including an empty result. May be replaced after user-requested LLM image inspection.","type":"string"}</code> |
 | <code>/$defs/visual/properties/ocr/allOf/0</code> | <code>{"if":{"properties":{"status":{"const":"available"}}},"then":{"properties":{"reason":{"$ref":"#/$defs/text"}}}}</code> |
 | <code>/$defs/visual/properties/ocr/allOf/1</code> | <code>{"if":{"properties":{"status":{"const":"unavailable"}}},"then":{"properties":{"reason":{"$ref":"#/$defs/text"},"text":{"const":""}}}}</code> |
-| <code>/$defs/visual/properties/sheet</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/visual/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/visual/properties/sources</code> | <code>{"minItems":1,"type":"array","uniqueItems":true}</code> |
 | <code>/$defs/visual/properties/sources/items</code> | <code>{"pattern":"^/(sheets/[0-9]+/drawings&#124;assets)/[0-9]+$","type":"string"}</code> |
 | <code>/$defs/visual/properties/state</code> | <code>{"enum":["not_examined","read","unreadable"]}</code> |

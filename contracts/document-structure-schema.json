@@ -5,7 +5,7 @@
   "properties": {
     "schema_version": {"const": 1},
     "document": {"$ref": "#/$defs/text"},
-    "source": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}}},
+    "source": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"$ref": "#/$defs/source_path"}, "sha256": {"$ref": "#/$defs/hash"}}},
     "extraction_hash": {"$ref": "#/$defs/hash"},
     "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}},
     "elements": {"type": "array", "items": {"$ref": "#/$defs/element"}},
@@ -26,7 +26,7 @@
       "required": ["id", "kind", "sources", "state", "description", "actor", "evidence"],
       "properties": {
         "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["image", "diagram"]},
-        "sheet": {"$ref": "#/$defs/text"},
+        "sheet": {"$ref": "#/$defs/sheet_name"},
         "sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^/(sheets/[0-9]+/drawings|assets)/[0-9]+$"}},
         "state": {"enum": ["not_examined", "read", "unreadable"]},
         "description": {"type": "string"}, "actor": {"type": "string"},
@@ -60,6 +60,8 @@
       ]
     },
     "text": {"type": "string", "minLength": 1, "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+    "sheet_name": {"type": "string", "minLength": 1, "description": "Worksheet name exactly as stored in the workbook, including leading or trailing spaces."},
+    "source_path": {"type": "string", "minLength": 1, "description": "Repository-relative original document path exactly as stored, including leading spaces in path segments."},
     "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
     "reading": {
@@ -89,7 +91,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["id", "sheet", "range", "image", "image_sha256", "source_sha256", "bbox"],
       "properties": {
-        "id": {"$ref": "#/$defs/text"}, "sheet": {"$ref": "#/$defs/text"}, "range": {"$ref": "#/$defs/text"},
+        "id": {"$ref": "#/$defs/text"}, "sheet": {"$ref": "#/$defs/sheet_name"}, "range": {"$ref": "#/$defs/text"},
         "image": {"$ref": "#/$defs/text"}, "image_sha256": {"$ref": "#/$defs/hash"}, "source_sha256": {"$ref": "#/$defs/hash"},
         "bbox": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}
       }
@@ -98,7 +100,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["id", "kind", "sheet", "cells", "evidence", "reading"],
       "properties": {
-        "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["text", "table"]}, "sheet": {"$ref": "#/$defs/text"},
+        "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["text", "table"]}, "sheet": {"$ref": "#/$defs/sheet_name"},
         "cells": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cell"}},
         "descriptions": {"$ref": "#/$defs/ids", "description": "Ordered references from a table to separate text elements on the same sheet. Cells remain owned by exactly one element; a description may explain several tables."},
         "evidence": {"$ref": "#/$defs/ids"},
@@ -112,7 +114,7 @@
       "properties": {
         "schema_version": {"const": 1},
         "document": {"$ref": "#/$defs/text"},
-        "source_path": {"$ref": "#/$defs/text"},
+        "source_path": {"$ref": "#/$defs/source_path"},
         "source_sha256": {"$ref": "#/$defs/hash"},
         "baseline_extraction_hash": {"$ref": "#/$defs/hash"},
         "element_order": {"$ref": "#/$defs/ids"},
