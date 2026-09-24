@@ -1,0 +1,36 @@
+{
+  "usage": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "reported_cost_usd": {"type": ["number", "null"], "minimum": 0},
+      "usage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input_tokens": {"$ref": "#/$defs/count"},
+          "output_tokens": {"$ref": "#/$defs/count"},
+          "cached_input_tokens": {"$ref": "#/$defs/count"},
+          "reasoning_tokens": {"$ref": "#/$defs/count"}
+        }
+      }
+    },
+    "$defs": {"count": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}}
+  },
+  "concerns": {
+    "type": "array",
+    "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "reasons"],
+      "oneOf": [{"required": ["finding"]}, {"required": ["diagnostic"]}],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "status": {"enum": ["open", "needs_decision", "improvement"]},
+        "reasons": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "finding": {"type": "object", "description": "Previously validated review_finding from specification-schema.json."},
+        "diagnostic": {"type": "object", "description": "Original workflow diagnostic with its affected item/document scope."}
+      }
+    }
+  }
+}

@@ -158,6 +158,9 @@ pub fn validate(name: &str, value: &Value) -> Result<()> {
     if let Err(error) = validator.validate(value) {
         bail!("{name}: {error}")
     };
+    if name == "mappings" {
+        crate::document_structure::validate_corrections(&value["interpretation"])?;
+    }
     Ok(())
 }
 pub fn read(path: &Path, schema: Option<&str>) -> Result<Value> {

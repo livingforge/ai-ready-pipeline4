@@ -865,6 +865,10 @@
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","document_id","source","parser","pages","sheets","findings","assets"],"type":"object"}</code> |
 | <code>/properties/assets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/assets/items</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr</code> | <code>{"additionalProperties":false,"required":["status","text","reason"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/assets/items/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/document_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
@@ -958,7 +962,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/image</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/0</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1</code> | <code>{"additionalProperties":false,"required":["part","asset","sha256"],"type":"object"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/asset</code> | <code>{"pattern":"^[a-f0-9]{64}\\.[A-Za-z0-9]+$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/asset</code> | <code>{"pattern":"^image-[0-9]{3,}\\.[A-Za-z0-9]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/part</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/kind</code> | <code>{"enum":["shape","picture","connector","group","graphic"]}</code> |
@@ -1006,7 +1010,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","entries","omissions","operations"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","entries","omissions","operations","interpretation"],"type":"object"}</code> |
 | <code>/properties/entries</code> | <code>{"type":"array"}</code> |
 | <code>/properties/entries/items</code> | <code>{"additionalProperties":false,"required":["page","block","field","origins","reason","writeback","target"],"type":"object"}</code> |
 | <code>/properties/entries/items/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
@@ -1037,6 +1041,7 @@
 | <code>/properties/entries/items/properties/target/anyOf/2/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/entries/items/properties/target/anyOf/3</code> | <code>{"type":"null"}</code> |
 | <code>/properties/entries/items/properties/writeback</code> | <code>{"enum":["cell","formula","operation","excluded","pending"]}</code> |
+| <code>/properties/interpretation</code> | <code>{"description":"Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management.","type":"object"}</code> |
 | <code>/properties/omissions</code> | <code>{"type":"array"}</code> |
 | <code>/properties/omissions/items</code> | <code>{"additionalProperties":false,"required":["origin","target","reason"],"type":"object"}</code> |
 | <code>/properties/omissions/items/properties/origin</code> | <code>{}</code> |

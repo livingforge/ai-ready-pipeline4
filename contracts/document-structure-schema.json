@@ -106,6 +106,43 @@
       },
       "allOf": [{"if": {"required": ["descriptions"]}, "then": {"properties": {"kind": {"const": "table"}}}}]
     },
+    "correction_journal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "document", "source_path", "source_sha256", "baseline_extraction_hash", "elements", "element_order", "visuals", "regions", "review"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document": {"$ref": "#/$defs/text"},
+        "source_path": {"$ref": "#/$defs/text"},
+        "source_sha256": {"$ref": "#/$defs/hash"},
+        "baseline_extraction_hash": {"$ref": "#/$defs/hash"},
+        "element_order": {"$ref": "#/$defs/ids"},
+        "review": {"oneOf": [
+          {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "pending"}}},
+          {"type": "object", "additionalProperties": false, "required": ["status", "content_hash", "actor", "reason"], "properties": {"status": {"enum": ["accepted", "rejected"]}, "content_hash": {"$ref": "#/$defs/hash"}, "actor": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}}}
+        ]},
+        "elements": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+          "required": ["element", "sources"], "properties": {
+            "element": {"$ref": "#/$defs/element"},
+            "sources": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false,
+              "required": ["address", "sha256"], "properties": {
+                "address": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}
+              }}
+            }
+          }
+        }},
+        "visuals": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+          "required": ["visual", "sources"], "properties": {
+            "visual": {"$ref": "#/$defs/visual"},
+            "sources": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false,
+              "required": ["pointer", "sha256"], "properties": {
+                "pointer": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}
+              }}
+            }
+          }
+        }},
+        "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}}
+      }
+    },
     "cell": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "address", "role", "headers", "text_state"],

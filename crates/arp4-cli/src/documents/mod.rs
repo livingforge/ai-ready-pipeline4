@@ -31,6 +31,8 @@ pub struct Inspection {
     pub meta: Value,
     pub extraction: Value,
     pub mappings: Value,
+    pub interpretation: Option<Value>,
+    pub interpretation_report: Option<Value>,
     pub values: BTreeMap<(String, String, String), Value>,
     pub fingerprint: String,
     pub reviewed: bool,
@@ -45,6 +47,49 @@ fn nonempty(value: &str) -> Result<()> {
 }
 
 impl Store {
+    /// The interpretation is a view of extraction plus corrections in mappings.yml.
+    pub fn structure(&self, id: &str) -> Result<Value> {
+        self.inspect(&self.document(id)?, false)?
+            .interpretation
+            .context("document has no structure interpretation")
+    }
+
+    pub fn save_structure(&self, id: &str, structure: &Value) -> Result<Value> {
+        let dir = self.document(id)?;
+        let inspected = self.inspect(&dir, false)?;
+        ensure!(
+            inspected.source_current,
+            "source changed; re-import before saving structure"
+        );
+        ensure!(
+            inspected.interpretation.is_some(),
+            "document has no structure interpretation"
+        );
+        let journal = crate::document_structure::record_corrections(
+            &self.root,
+            &inspected.extraction,
+            structure,
+        )?;
+        let (reconstructed, report) = crate::document_structure::replay_corrections(
+            &self.root,
+            &journal,
+            &inspected.extraction,
+        )?;
+        ensure!(
+            reconstructed == *structure,
+            "structure cannot be reproduced from corrections"
+        );
+        let path = dir.join("mappings.yml");
+        let mut mappings = read(&path, Some("mappings"))?;
+        mappings["interpretation"] = journal;
+        ensure!(
+            self.fingerprint(&dir)?.as_deref() == Some(&inspected.fingerprint),
+            "document changed while saving structure"
+        );
+        write(&path, &mappings)?;
+        Ok(report)
+    }
+
     pub fn init(root: &Path, sources: &str) -> Result<Self> {
         let root = crate::project::init(root, sources)?;
         Self::open(&root)

@@ -1,8 +1,12 @@
 # 原本を変更しない Office・PDF の構造解釈
 
-`spec structure` の整理YAMLは、原本セルに対する読み取り結果です。`text` を `table` に変えたり、表を分割・統合して見出し対応を修正しても、Excelのセル値・書式・結合・配置は変更しません。`documents export/apply` は整理YAMLを読みません。
+構造の正規データは文書モデルの `mappings.yml` にある修正記録です。`documents structure-read` が出す整理YAMLは編集用の派生ビューで、`documents structure-save` が機械推定との差分を文書モデルへ保存します。`text` を `table` に変えたり、表を分割・統合して見出し対応を修正しても、Excelのセル値・書式・結合・配置は変更しません。`documents export/apply` は構造の修正記録を原本への書き戻しに使いません。
 
-原本編集用の `.arp/documents/<ID>/content/*.yml` とは別に、例えば `interpretations/<ID>.yml` に保存してGitで管理します。文書管理ディレクトリの中に追加すると、未管理ファイルとしてdocumentsの検証に拒否されます。
+編集用ビューは、例えば `interpretations/<ID>.yml` に置きます。文書管理ディレクトリの中に置くと未管理ファイルとして拒否されます。Gitで管理する正規データは `.arp/documents/<ID>/mappings.yml` であり、ビューを編集した後は必ず `documents structure-save` を実行します。
+
+`.arp/work/structure/<ID>.yml` を入力に指定した場合は、`documents structure-save` の保存成功後にその作業ファイルを自動削除します。保存に失敗した場合と、それ以外の場所にある入力ファイルは削除しません。取込候補の採用だけでは作業ファイルは削除されません。
+
+この形式では `mappings.yml` の `interpretation` が必須です。以前の文書モデルは原本から新しい文書プロジェクトへ取り込み直し、必要な整理を `documents structure-save` で登録してください。
 
 ## 必須となる資料
 
@@ -18,7 +22,7 @@ Word・PPTX・PDFのsheet/cellsは既存パーサーの論理的な文字列コ�
 
 Excelの画像と図表候補はinitで `visuals` に未確認状態で作成されます。sourcesは抽出JSONのオブジェクトを指し、省略・差替えは拒否します。画像はOCR結果を採用した時点でstateをread、actorを採用者、descriptionを実施内容に更新できます。空の結果なら「OCR実行済み・認識文字なし」と記録し、画像を見ずにロゴと断定しません。図表は読み取った内容と図形同士の関係を記録します。未実施のnot_examinedや読取不能のunreadableは、実行済みOCRの空の結果とは区別します。LLMによる画像参照は完了条件ではありません。
 
-画像のocrは、OCRを実行して結果を得た場合にstatusをavailableとし、textに実施結果（空文字も可）、reasonに使用手段と実施内容を記録します。OCRを利用できない場合はunavailableとし、textを空、reasonに理由を記録します。OCR実行済みで文字が得られなかった場合をunavailableや未実施にしません。ARPはOCRエンジンを自動実行しません。
+Excelの埋込み画像は取込時にWindows OCRを自動実行し、抽出JSONのassetsに結果を記録します。structure initはこの結果をvisualsのocrへ引き継ぎます。OCRで結果を得た場合はstatusをavailableとし、textに実施結果（空文字も可）、reasonに使用手段と実施内容を記録します。OCRを利用できない、または画像を処理できない場合はunavailableとし、textを空、reasonに理由を記録します。OCR実行済みで文字が得られなかった場合をunavailableや未実施にしません。Windows以外では自動OCRは利用できません。
 
 ユーザーから画像確認・補正の指示がなければ、空の結果を含めてOCR結果をそのまま採用します。空の結果にはロゴ等も含まれるため、これだけを理由に追加のLLM解析を始めたり、承認を止めたりしません。LLM解析はコストがかかるため任意です。
 
@@ -30,7 +34,7 @@ OCR結果とLLM補正結果は構造解釈の参考情報であり、原本か�
 
 まず `spec structure read` の `drawings` を読みます。図形の文字・形状・位置・明示された接続先を簡潔に返し、空の任意項目は省きます。位置はセル座標と必要なEMUオフセットで示し、グループ内の変換は保持します。接続先IDだけで意味上の指揮命令・処理順序までは断定しません。詳細な原本情報は抽出JSONに保持し、整理YAMLへ転記する必要はありません。
 
-埋め込み画像はimportで保存されたファイルをそのまま使用します。readは抽出JSONと同じディレクトリの `assets/` にあるファイルのハッシュを検証し、絶対パスを返します。`image_paths` の `source` とパスを対応させ、画像閲覧機能で開きます。visualのevidenceには、そのvisualのsourcesにある画像の参照を指定できます。撮影し直したり、画像のためだけにregionを作ったりする必要はありません。抽出JSONを移動する場合はassetsも一緒に保持します。形式によって画像閲覧機能が対応しない場合は、表示できる形式へ変換したPNGをregionに登録します。
+埋め込み画像はimportで保存されたファイルをそのまま使用します。ファイル名は文書内の初出順に `image-001.png` のように付け、同じ内容の画像は共有します。SHA-256は抽出JSONに検証用として保持します。readは抽出JSONと同じディレクトリの `assets/` にあるファイルのハッシュを検証し、絶対パスを返します。`drawings` の `image_id` を `image_paths` の `id` と対応させ、`path` を画像閲覧機能で開きます。`image_paths` はハッシュを表示せず、配置ごとの `source`・シート・位置を返します。同じ画像を複数箇所に配置した場合、IDとパスは共通で、sourceは配置ごとに異なります。登録済み領域の画像IDは `region-<領域ID>` です。画像IDはこの文書の読取結果内の識別子で、再取り込みをまたぐ識別や根拠の参照には使いません。visualのevidenceには、そのvisualのsourcesにある画像のsource参照を指定します。撮影し直したり、画像のためだけにregionを作ったりする必要はありません。抽出JSONを移動する場合はassetsも一緒に保持します。形式によって画像閲覧機能が対応しない場合は、表示できる形式へ変換したPNGをregionに登録します。
 
 図形の組合せや画像内の関係を整理できる場合は、visualに任意の `graph` を追加します。nodesは対象、edgesはfromからtoへの名前付きの関係です。ノード・関係のsourcesは、そのvisualの原本参照またはevidenceを指します。図形から読み取った関係と画像から解釈した関係はreadingに根拠を記録します。visionは実際の画像閲覧とvisualのevidenceを必要とします。OCRの文字列だけから線の接続や階層を推測しません。関係の循環や自己参照は図の内容として許し、存在しないノードや別visualの出典参照は拒否します。
 
@@ -52,7 +56,7 @@ graph:
 ## 整理と画像確認
 
 ```powershell
-arp4 spec structure --root C:/project init --extraction C:/project/.arp/documents/order/extraction.json --out C:/project/interpretations/order.yml
+arp4 documents structure-read order --root C:/project --out C:/project/interpretations/order.yml
 arp4 spec structure --root C:/project check --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml
 ```
 
@@ -72,7 +76,7 @@ arp4 spec structure --root C:/project render --extraction C:/project/.arp/docume
 
 対象シートは指定したelementまたはvisualのsheetから決まります。`--range` を省略すると、elementはシートのUsedRange、visualは参照図形のセルアンカーを囲む範囲を使います。oneCellAnchor・absoluteAnchorなどセル範囲を確定できないvisualではrangeを明示します。回転・はみ出しや周囲の説明がある場合も、必要な範囲を明示して確認します。画像を自動縮小して読めなくすることはせず、8192px/辺または3200万画素の上限を超える範囲は拒否します。その場合はセル範囲を分割し、異なるidとimageで取得します。非表示シートは表示状態を変更せず拒否します。UsedRangeの外の図形や画像まで必要なら、それを含むセル範囲を明示してください。これは範囲の描画であり、埋め込み画像ファイルを個別に抽出する機能ではありません。
 
-応答の `image_path` をAgentの画像閲覧機能で開きます。`rendering` にExcelのバージョン、実際のセル範囲、画像サイズを返します。描画・登録しただけではvision読取やレビュー完了にはならず、既存レビューはpendingになります。対話型Agentは必要な範囲のrender→画像確認→整理YAML修正→check/review→captureを実施できます。
+応答の `image_path` をAgentの画像閲覧機能で開きます。`rendering` にExcelのバージョン、実際のセル範囲、画像サイズを返します。描画・登録しただけではvision読取やレビュー完了にはならず、既存レビューはpendingになります。対話型Agentは必要な範囲のrender→画像確認→整理YAML修正→check/review→structure-save→documents review→captureを実施できます。
 
 ExcelのCopyPictureを使うため、**実行時にWindowsのクリップボードが画像に置き換わります**。ARP同士の描画はセッション内で排他します。既存のユーザーのExcelプロセスは使わず、専用プロセスを作成します。VBAとイベント、外部リンク更新、自動計算を抑制し、Excel 4.0マクロシートや外部データ接続を持つブックは拒否します。標準タイムアウトは120秒で、COM呼び出しが停止した場合も、隔離済みExcelをヘルパーとともに終了します。無人サービス環境でのOffice動作や、保護・パスワード付きブックは保証しません。
 
@@ -102,11 +106,17 @@ reviewは実際に確認した人・Agentが実施記録を保存する操作で
 ## 意味抽出への接続
 
 ```powershell
-arp4 spec capture --root C:/project --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml --out C:/project/.arp/cache/order-input.json
+arp4 documents structure-save order --root C:/project --input C:/project/interpretations/order.yml
+arp4 documents review order --root C:/project --reviewer reviewer
+arp4 spec capture --root C:/project --extraction C:/project/.arp/documents/order/extraction.json --document order --out C:/project/.arp/cache/order-input.json
 ```
 
-現在の原本・抽出結果・画像のハッシュと、acceptedレビューを検証します。原文の文字列・出典ID・セル位置を変更せず、整理結果を入力に保存し、抽出・独立レビューpacketの `sources.tables[].structure` にシートごとに渡します。整理結果は一文書につき一つ指定します。構造変更でもpacketが変わるため、workflowへ新しいinputをupdateすると再抽出・再レビュー対象になります。構造の承認と、要件・仕様の意味レビューは別です。
+現在の原本・抽出結果・画像のハッシュと、文書モデル内のacceptedレビューを検証します。原文の文字列・出典ID・セル位置を変更せず、派生した整理結果を入力に保存し、抽出・独立レビューpacketの `sources.tables[].structure` にシートごとに渡します。構造変更でもpacketが変わるため、workflowへ新しいinputをupdateすると再抽出・再レビュー対象になります。構造の承認と、要件・仕様の意味レビューは別です。
 
-整理を変更しても、すでに保存したinputや進行中workflowは自動更新されません。再captureし、既存のworkflow update手順で渡します。原本そのものが変わった場合は再importし、整理結果を新しい原本と照合してレビューし直します。ハッシュだけを新しい値に書き換えて古い判断を承認済みにしません。
+整理を変更しても、すでに保存したinputや進行中workflowは自動更新されません。再captureし、既存のworkflow update手順で渡します。原本そのものが変わった場合は再importし、旧・新の抽出結果を照合してからレビューし直します。ハッシュだけを新しい値に書き換えて古い判断を承認済みにしません。
+
+原本を変更する前に `documents structure-save` で修正を文書モデルへ保存します。記録には機械推定と異なる要素・図形だけを含め、参照する原本セル・図形オブジェクトのハッシュを付けます。画像領域の登録とレビューも記録します。現行の原本が必要なので、原本変更後に旧版の修正記録を新たに作ることはできません。
+
+同じ文書ID・原本パスで再importすると、修正記録を候補へ引き継ぎ、新版の抽出結果へ自動で再適用します。`documents status` の `structure_conflicts` を確認し、採用後に `documents structure-read` で新版のビューを取り出します。セル位置が維持された修正要素は表・本文のまとまりを引き継ぎ、内容が変わったセルは `text_state: not_examined` に戻します。セルが削除・移動された要素や旧版の画像領域に依存する要素は新版の機械推定に戻します。図形・画像は参照先の抽出オブジェクトが一致し、旧版の画像領域に依存しない場合だけ引き継ぎます。原本ハッシュが同じなら画像領域とレビューを保持できます。原本が変わった場合のレビューはpendingです。競合箇所を確認・修正し、review、structure-save、documents review、再captureを行います。
 
 契約の全フィールドは[生成リファレンス](../reference/document-structure-contract.md)、コマンド引数は[CLIリファレンス](../reference/commands.md)を参照してください。図・画像の自動要素分解、Word/PDF/PPTXの物理的な領域モデル、画像だけの文字からの出典生成は引き続き設計対象です。

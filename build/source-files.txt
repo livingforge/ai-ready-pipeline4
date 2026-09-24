@@ -10,7 +10,9 @@ contracts/agent-reference-schema.json
 contracts/document-schemas.json
 contracts/document-structure-schema.json
 contracts/excel-number-formats.json
+contracts/structure-policy.json
 contracts/specification-schema.json
+contracts/workflow-reports.json
 crates/arp4-cli/Cargo.toml
 crates/arp4-cli/build.rs
 crates/arp4-cli/src/agent_format.rs
@@ -19,6 +21,12 @@ crates/arp4-cli/src/cli.rs
 crates/arp4-cli/src/data.rs
 crates/arp4-cli/src/document_source.rs
 crates/arp4-cli/src/document_structure.rs
+crates/arp4-cli/src/document_structure/context.rs
+crates/arp4-cli/src/document_structure/corrections.rs
+crates/arp4-cli/src/document_structure/inference.rs
+crates/arp4-cli/src/document_structure/policy.rs
+crates/arp4-cli/src/document_structure/rebase.rs
+crates/arp4-cli/src/document_structure/relations.rs
 crates/arp4-cli/src/documents/adoption.rs
 crates/arp4-cli/src/documents/diff.rs
 crates/arp4-cli/src/documents/export.rs
@@ -34,11 +42,14 @@ crates/arp4-cli/src/excel/operations.rs
 crates/arp4-cli/src/excel/package.rs
 crates/arp4-cli/src/excel/render.ps1
 crates/arp4-cli/src/excel/render.rs
+crates/arp4-cli/src/excel/visuals.rs
 crates/arp4-cli/src/excel/worksheet.rs
 crates/arp4-cli/src/excel/writeback.rs
 crates/arp4-cli/src/lib.rs
 crates/arp4-cli/src/main.rs
 crates/arp4-cli/src/native_text.rs
+crates/arp4-cli/src/ocr.ps1
+crates/arp4-cli/src/ocr.rs
 crates/arp4-cli/src/project.rs
 crates/arp4-cli/src/registry/mod.rs
 crates/arp4-cli/src/registry/mutation.rs
@@ -63,6 +74,7 @@ crates/arp4-cli/src/specifications/mod.rs
 crates/arp4-cli/src/specifications/render.rs
 crates/arp4-cli/src/specifications/validation.rs
 crates/arp4-cli/src/workflow/artifacts.rs
+crates/arp4-cli/src/workflow/confirmation.rs
 crates/arp4-cli/src/workflow/command.rs
 crates/arp4-cli/src/workflow/draft.rs
 crates/arp4-cli/src/workflow/extraction.rs

@@ -336,14 +336,39 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
         }
         SpecCommand::Capture {
             extraction,
-            structure,
+            document,
             root,
             out,
         } => {
             let mut input = spec::capture(&extraction)?;
-            if !structure.is_empty() {
-                let root = dunce::canonicalize(root.context("--root required with --structure")?)?;
-                arp4_cli::document_structure::apply(&root, &structure, &extraction, &mut input)?;
+            if !document.is_empty() {
+                let root = dunce::canonicalize(root.context("--root required with --document")?)?;
+                let store = arp4_cli::documents::Store::open(&root)?;
+                let mut seen = std::collections::BTreeSet::new();
+                for id in document {
+                    ensure!(seen.insert(id.clone()), "duplicate structure document");
+                    let inspected = store.inspect(&store.document(&id)?, true)?;
+                    let structure = inspected
+                        .interpretation
+                        .context("document has no structure interpretation")?;
+                    let mut matching = Vec::new();
+                    for path in &extraction {
+                        let value = read(path, Some("extraction"))?;
+                        if value["document_id"] == id {
+                            matching.push(value);
+                        }
+                    }
+                    ensure!(
+                        matching.len() == 1 && matching[0] == inspected.extraction,
+                        "capture extraction differs from reviewed document"
+                    );
+                    arp4_cli::document_structure::attach(
+                        &root,
+                        &inspected.extraction,
+                        &structure,
+                        &mut input,
+                    )?;
+                }
             }
             spec::validate_structure_requirements(&input)?;
             let bytes = encoded(&serde_json::to_value(&input)?);

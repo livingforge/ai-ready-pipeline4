@@ -21,6 +21,9 @@ impl Store {
                 && meta["document_id"] == extraction["document_id"],
             "document/extraction mismatch"
         );
+        let original = under(&self.root, string(&meta["source"]["path"])?)?;
+        let source_current =
+            original.is_file() && hash(&fs::read(&original)?) == meta["source"]["sha256"];
         let content_pages = self
             .logical(dir)?
             .into_iter()
@@ -30,6 +33,35 @@ impl Store {
             .map(|(_, path)| read(&path, Some("content")))
             .collect::<Result<Vec<_>>>()?;
         let mut mappings = read(&metadata.join("mappings.yml"), Some("mappings"))?;
+        let journal = &mappings["interpretation"];
+        crate::document_structure::validate_corrections(journal)?;
+        ensure!(
+            journal["document"] == meta["document_id"]
+                && journal["source_path"] == meta["source"]["path"],
+            "document interpretation belongs to another source"
+        );
+        let extension = Path::new(string(&meta["source"]["path"])?)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let structure_format =
+            ["xlsx", "xlsm", "docx", "pptx", "pdf"].contains(&extension.as_str());
+        let (interpretation, interpretation_report) = if source_current && structure_format {
+            let (structure, report) =
+                crate::document_structure::replay_corrections(&self.root, journal, &extraction)?;
+            (Some(structure), Some(report))
+        } else if structure_format {
+            (None, None)
+        } else {
+            ensure!(
+                journal["elements"].as_array().is_some_and(Vec::is_empty)
+                    && journal["visuals"].as_array().is_some_and(Vec::is_empty)
+                    && journal["regions"].as_array().is_some_and(Vec::is_empty),
+                "text document cannot contain structure corrections"
+            );
+            (None, None)
+        };
         let native_text = extraction["parser"]
             .as_str()
             .is_some_and(|p| p.contains(";native-text/"));
@@ -88,13 +120,12 @@ impl Store {
             !require_reviewed || reviewed,
             "content changed or not reviewed; run documents review"
         );
-        let original = under(&self.root, string(&meta["source"]["path"])?)?;
-        let source_current =
-            original.is_file() && hash(&fs::read(original)?) == meta["source"]["sha256"];
         Ok(Inspection {
             meta,
             extraction,
             mappings,
+            interpretation,
+            interpretation_report,
             values,
             fingerprint: fp,
             reviewed,
@@ -327,7 +358,10 @@ impl Store {
                 };
                 Ok(
                     json!({"document_id":r.meta["document_id"],"directory":dir,"reviewed":r.reviewed,
-                    "source_current":r.source_current,"content":r.fingerprint,"pending":pending,"state":state,"blockers":blockers}),
+                    "source_current":r.source_current,"content":r.fingerprint,"pending":pending,
+                    "structure_ready":r.interpretation_report.as_ref().is_some_and(|report| report["ready"] == true),
+                    "structure_conflicts":r.interpretation_report.as_ref().map(|report| report["conflicts"].as_array().map(Vec::len).unwrap_or(0)),
+                    "state":state,"blockers":blockers}),
                 )
             })();
             let mut row = match inspected {

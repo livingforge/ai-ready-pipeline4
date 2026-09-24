@@ -273,6 +273,26 @@ impl Workbook {
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             sheets.push(json!({"name":name,"part":part,"state":state,"merges":merges,"cells":cells,"drawings":drawings,"tables":tables}));
         }
+        // Name unique images in first-use order across the workbook. Hashes remain
+        // integrity metadata rather than names that readers must copy.
+        let mut image_names = BTreeMap::new();
+        for sheet in &mut sheets {
+            for drawing in sheet["drawings"].as_array_mut().unwrap() {
+                if let Some(sha) = drawing["image"]["sha256"].as_str() {
+                    let next = image_names.len() + 1;
+                    let extension = Path::new(drawing["image"]["part"].as_str().unwrap())
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()))
+                        .unwrap_or("bin");
+                    let name = image_names
+                        .entry(sha.to_owned())
+                        .or_insert_with(|| format!("image-{next:03}.{extension}"))
+                        .clone();
+                    drawing["image"]["asset"] = json!(name);
+                }
+            }
+        }
         Ok(Self { raw, parts, sheets })
     }
 }

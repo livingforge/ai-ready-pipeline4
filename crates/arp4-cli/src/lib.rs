@@ -7,6 +7,7 @@ pub mod document_structure;
 pub mod documents;
 pub mod excel;
 pub mod native_text;
+pub mod ocr;
 pub mod project;
 pub mod registry;
 pub mod semantic;
@@ -40,6 +41,7 @@ pub fn capabilities() -> serde_json::Value {
             "document_structure_visual_graphs": true,
             "document_structure_table_descriptions": true,
             "document_structure_imported_image_paths": true,
+            "document_structure_corrections_in_document": true,
             "document_structure_writeback": false,
             "excel_screenshot_rendering": true,
             "excel_screenshot_engine": "excel-com (Windows with desktop Microsoft Excel)",
@@ -82,8 +84,9 @@ pub fn capabilities() -> serde_json::Value {
             "document_output": "same format as source (Office/PDF only; native text uses direct editing and re-import)",
             "text_run_writeback": true,
             "noncell_extraction": true,
-            "ocr": false
+            "ocr": true,
+            "ocr_engine": "Windows.Media.Ocr (imported Excel images on Windows)"
         },
-        "limitations": ["Excel supports scalar/structural writeback and PNG insertion. DOCX/PPTX support existing XML text runs; PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Existing Excel drawing anchors and same-sheet A1 references shift with structural edits; Excel performs recalculation. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."]
+        "limitations": ["Excel supports scalar/structural writeback and PNG insertion. Windows OCR runs automatically on imported Excel image assets; unsupported images retain an unavailable reason. DOCX/PPTX support existing XML text runs; PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR for DOCX/PPTX/PDF images, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Existing Excel drawing anchors and same-sheet A1 references shift with structural edits; Excel performs recalculation. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."]
     })
 }

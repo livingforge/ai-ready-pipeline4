@@ -27,6 +27,7 @@
     "document_output": "same format as source (Office/PDF only; native text uses direct editing and re-import)",
     "document_structure": true,
     "document_structure_compact_drawings": true,
+    "document_structure_corrections_in_document": true,
     "document_structure_external_ocr_records": true,
     "document_structure_formats": [
       "xlsx",
@@ -71,7 +72,8 @@
     ],
     "native_text_writeback": false,
     "noncell_extraction": true,
-    "ocr": false,
+    "ocr": true,
+    "ocr_engine": "Windows.Media.Ocr (imported Excel images on Windows)",
     "pdf_import": true,
     "pdf_writeback": true,
     "pptx_import": true,
@@ -100,7 +102,7 @@
   },
   "implementation": "rust",
   "limitations": [
-    "Excel supports scalar/structural writeback and PNG insertion. DOCX/PPTX support existing XML text runs; PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Existing Excel drawing anchors and same-sheet A1 references shift with structural edits; Excel performs recalculation. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
+    "Excel supports scalar/structural writeback and PNG insertion. Windows OCR runs automatically on imported Excel image assets; unsupported images retain an unavailable reason. DOCX/PPTX support existing XML text runs; PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR for DOCX/PPTX/PDF images, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Existing Excel drawing anchors and same-sheet A1 references shift with structural edits; Excel performs recalculation. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
   ],
   "release_ready": false,
   "version": "1.0.0-alpha.1"

@@ -104,9 +104,9 @@ pub(crate) enum SpecCommand {
     Capture {
         #[arg(long, required = true, num_args = 1..)]
         extraction: Vec<PathBuf>,
-        /// Reviewed interpretation YAMLs; original quotations remain unchanged.
+        /// Reviewed documents whose canonical structure corrections should be captured.
         #[arg(long, num_args = 1.., requires = "root")]
-        structure: Vec<PathBuf>,
+        document: Vec<String>,
         #[arg(long)]
         root: Option<PathBuf>,
         #[arg(long)]
@@ -298,6 +298,18 @@ pub(crate) enum DocumentCommand {
         /// ASCII ID: letters, digits, underscore or hyphen; start with a letter/digit.
         #[arg(long)]
         id: String,
+    },
+    /// Write a derived structure view from the document's canonical corrections.
+    StructureRead {
+        document: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Save structure corrections; remove a managed work/structure view on success.
+    StructureSave {
+        document: String,
+        #[arg(long)]
+        input: PathBuf,
     },
     Record {
         proposal: String,

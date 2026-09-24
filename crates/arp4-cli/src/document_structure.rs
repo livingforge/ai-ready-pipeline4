@@ -9,8 +9,10 @@ use std::{
     path::{Path, PathBuf},
 };
 mod context;
+mod corrections;
 mod inference;
 mod policy;
+mod rebase;
 mod relations;
 pub use policy::{policy as requirement_policy, requirements};
 
@@ -19,6 +21,26 @@ pub fn schema() -> Value {
         "../../../contracts/document-structure-schema.json"
     ))
     .unwrap()
+}
+
+pub fn empty_corrections(extraction: &Value) -> Value {
+    corrections::empty(extraction)
+}
+
+pub fn validate_corrections(value: &Value) -> Result<()> {
+    corrections::validate_journal(value)
+}
+
+pub fn replay_corrections(
+    root: &Path,
+    journal: &Value,
+    extraction: &Value,
+) -> Result<(Value, Value)> {
+    rebase::rebase(root, journal, extraction)
+}
+
+pub fn record_corrections(root: &Path, extraction: &Value, structure: &Value) -> Result<Value> {
+    corrections::record(root, extraction, structure)
 }
 
 #[derive(Clone, ValueEnum)]
@@ -577,16 +599,32 @@ pub fn apply(
             }
         }
         let ext = found.context("structure document missing from capture")?;
-        let report = validate(root, &ext, &value)?;
-        ensure!(
-            report["ready"] == true,
-            "structure requires current accepted review and complete reading"
-        );
-        input
-            .revisions
-            .insert(document.into(), hash(&encoded(&json!([ext, value]))));
-        input.structures.insert(document.into(), value);
+        attach(root, &ext, &value, input)?;
     }
+    Ok(())
+}
+
+pub fn attach(
+    root: &Path,
+    extraction: &Value,
+    structure: &Value,
+    input: &mut crate::specifications::Input,
+) -> Result<()> {
+    let document = string(&structure["document"])?;
+    ensure!(
+        extraction["document_id"] == document,
+        "structure document missing from capture"
+    );
+    let report = validate(root, extraction, structure)?;
+    ensure!(
+        report["ready"] == true,
+        "structure requires current accepted review and complete reading"
+    );
+    input.revisions.insert(
+        document.into(),
+        hash(&encoded(&json!([extraction, structure]))),
+    );
+    input.structures.insert(document.into(), structure.clone());
     Ok(())
 }
 

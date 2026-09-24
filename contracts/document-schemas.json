@@ -4745,6 +4745,16 @@
         "items": {
           "additionalProperties": false,
           "properties": {
+            "ocr": {
+              "additionalProperties": false,
+              "properties": {
+                "status": {"enum": ["available", "unavailable"]},
+                "text": {"type": "string"},
+                "reason": {"type": "string", "minLength": 1}
+              },
+              "required": ["status", "text", "reason"],
+              "type": "object"
+            },
             "path": {
               "minLength": 1,
               "type": "string"
@@ -5379,7 +5389,7 @@
                           },
                           "asset": {
                             "type": "string",
-                            "pattern": "^[a-f0-9]{64}\\.[A-Za-z0-9]+$"
+                            "pattern": "^image-[0-9]{3,}\\.[A-Za-z0-9]+$"
                           },
                           "sha256": {
                             "type": "string",
@@ -5512,6 +5522,10 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
     "properties": {
+      "interpretation": {
+        "type": "object",
+        "description": "Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management."
+      },
       "entries": {
         "items": {
           "additionalProperties": false,
@@ -7168,7 +7182,8 @@
       "schema_version",
       "entries",
       "omissions",
-      "operations"
+      "operations",
+      "interpretation"
     ],
     "type": "object"
   },

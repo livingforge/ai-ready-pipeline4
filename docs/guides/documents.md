@@ -29,7 +29,7 @@
   通常応答は `items` に変更内容を出力します。`--out <新規パス>` で全差分JSON、`--format markdown --out <新規パス>` で全差分Markdownを保存できます。標準出力は保存先を示すJSONです。
 
 
-Excelの表を原本の表示と結び付け、書き戻しから独立して整理する手順は[原本を変更しない整理](document-structure.md)を参照してください。WindowsとデスクトップExcelがあれば指定範囲をPNGに描画でき、領域・版の対応と多段見出し・読取レビュー状態を保持できます。図の要素分解と他形式の領域モデルは[文書表現案](../design/visual-document-model.md)の未実装部分です。
+Excelの表を原本の表示と結び付け、書き戻しから独立して整理する手順は[原本を変更しない整理](document-structure.md)を参照してください。修正記録は文書モデルの `mappings.yml` に保存し、`documents structure-read/save` で整理ビューを編集します。WindowsとデスクトップExcelがあれば指定範囲をPNGに描画でき、領域・版の対応と多段見出し・読取レビュー状態を保持できます。図の要素分解と他形式の領域モデルは[文書表現案](../design/visual-document-model.md)の未実装部分です。
 
 ## テキスト・Markdown・CSV・TSV原本
 

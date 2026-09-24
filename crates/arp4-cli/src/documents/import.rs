@@ -67,11 +67,23 @@ impl Store {
         }
         let asset_info: Vec<_> = assets
             .iter()
-            .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes)}))
+            .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=false",env!("CARGO_PKG_VERSION"),book.parser()),"pages":[],"sheets":book.sheets(),"findings":[{"level":"warning","code":"R001","message":note}],"assets":asset_info});
+        let extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"pages":[],"sheets":book.sheets(),"findings":[{"level":"warning","code":"R001","message":note}],"assets":asset_info});
         validate("extraction", &extraction)?;
         let extraction_hash = hash(&encoded(&extraction));
+        let interpretation = if current.join("mappings.yml").exists() {
+            let previous = read(&current.join("mappings.yml"), Some("mappings"))?;
+            let journal = previous["interpretation"].clone();
+            crate::document_structure::validate_corrections(&journal)?;
+            if journal["document"] == id && journal["source_path"] == source_path {
+                journal
+            } else {
+                crate::document_structure::empty_corrections(&extraction)
+            }
+        } else {
+            crate::document_structure::empty_corrections(&extraction)
+        };
         let proposal_id = format!("{id}-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
         let parent = under(&self.arp, &format!("changes/{id}"))?;
         fs::create_dir_all(&parent)?;
@@ -136,7 +148,7 @@ impl Store {
         }
         write(
             &stage.path().join("mappings.yml"),
-            &json!({"schema_version":"1","entries":entries,"tables":tables,"omissions":[],"operations":[]}),
+            &json!({"schema_version":"1","entries":entries,"tables":tables,"omissions":[],"operations":[],"interpretation":interpretation}),
         )?;
         ensure!(
             fs::read(&source)? == book.raw(),

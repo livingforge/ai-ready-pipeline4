@@ -1522,11 +1522,11 @@ Options:
       --full
           Return all details (not supported by spec workflow; use read pagination there)
 
+      --document <DOCUMENT>...
+          Reviewed documents whose canonical structure corrections should be captured
+
       --limit <LIMIT>
           Maximum items per page (default: 20)
-
-      --structure <STRUCTURE>...
-          Reviewed interpretation YAMLs; original quotations remain unchanged
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
@@ -1707,15 +1707,17 @@ Commands:
   schema
   init
   import
+  structure-read  Write a derived structure view from the document's canonical corrections
+  structure-save  Save structure corrections; remove a managed work/structure view on success
   record
   adopt
   review
   diff
-  apply   Apply reviewed edits to the original and re-extract for verification
+  apply           Apply reviewed edits to the original and re-extract for verification
   export
   check
   status
-  help    Print this message or the help of the given subcommand(s)
+  help            Print this message or the help of the given subcommand(s)
 
 Options:
       --full
@@ -1812,6 +1814,74 @@ Options:
 
       --id <ID>
           ASCII ID: letters, digits, underscore or hyphen; start with a letter/digit
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents structure-read`
+
+```text
+Write a derived structure view from the document's canonical corrections
+
+Usage: arp4 documents structure-read [OPTIONS] --out <OUT> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --out <OUT>
+
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents structure-save`
+
+```text
+Save structure corrections; remove a managed work/structure view on success
+
+Usage: arp4 documents structure-save [OPTIONS] --input <INPUT> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --input <INPUT>
+
 
       --root <ROOT>
 

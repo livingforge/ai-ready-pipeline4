@@ -126,6 +126,7 @@ fn run(cli: Cli) -> Result<bool> {
                     | DocumentCommand::Review { .. }
                     | DocumentCommand::Export { out: Some(_), .. }
                     | DocumentCommand::Apply { .. }
+                    | DocumentCommand::StructureSave { .. }
             );
             let _lock = if mutate {
                 let path = under(&root, ".arp/rust-documents.lock")?;
@@ -167,6 +168,23 @@ fn run(cli: Cli) -> Result<bool> {
                     result["proposal"] = relative(&root, &result["proposal"])?;
                     result["state"] = json!("needs_record");
                     result
+                }
+                DocumentCommand::StructureRead { document, out } => {
+                    ensure!(!out.exists(), "structure output already exists");
+                    let structure = store.structure(&document)?;
+                    arp4_cli::data::write(&out, &structure)?;
+                    json!({"state":"saved","structure":out,"document_id":document})
+                }
+                DocumentCommand::StructureSave { document, input } => {
+                    let structure = read(&input, None)?;
+                    let report = store.save_structure(&document, &structure)?;
+                    let managed = under(&root, &format!(".arp/work/structure/{document}.yml"))?;
+                    if managed.is_file()
+                        && dunce::canonicalize(&input)? == dunce::canonicalize(&managed)?
+                    {
+                        fs::remove_file(&managed)?;
+                    }
+                    json!({"state":"saved","document_id":document,"interpretation":report})
                 }
                 DocumentCommand::Record {
                     proposal,
