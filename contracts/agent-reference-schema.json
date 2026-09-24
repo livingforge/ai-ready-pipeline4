@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Transport references consist of a run UUID encoded in base 36 and a monotonic sequence number. The persisted table maps each reference to a full SHA-256 digest; entries are never reassigned or removed during a run.",
+  "type": "object",
+  "propertyNames": {"$ref": "#/$defs/reference"},
+  "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+  "$defs": {
+    "reference": {"type": "string", "pattern": "^r[0-9a-z]{25}\\.[1-9][0-9]*$"},
+    "namespace": {"type": "string", "pattern": "^[0-9a-z]{25}$"}
+  }
+}

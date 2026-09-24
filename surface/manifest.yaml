@@ -1,0 +1,23 @@
+version: 1
+skills:
+  - name: arp4-setup
+  - name: arp4
+agents:
+  - name: arp4-worker
+  - name: arp4-reviewer
+platforms:
+  claude:
+    root: .claude
+    skill_file: SKILL.md
+    agent_file: "{name}.md"
+  github:
+    root: .github
+    skill_file: SKILL.md
+    agent_file: "{name}.agent.md"
+  codex:
+    root: .codex
+    skill_root: .agents/skills
+    agent_file: "{name}.toml"
+runtime:
+  package: arp4-cli
+  command: arp4

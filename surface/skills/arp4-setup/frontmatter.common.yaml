@@ -1,0 +1,2 @@
+name: arp4-setup
+description: ARPをWindows／Linuxでソースから導入・更新し、スキルとカスタムAgentの配置、文書プロジェクトの初期化を行う。利用環境のセットアップ向けで、ARP本体のコード開発は対象外。

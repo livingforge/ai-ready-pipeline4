@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "input_hash", "items", "exclusions", "audits", "decisions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "exclusions": {"type": "array", "items": {"$ref": "#/$defs/exclusion"}},
+    "audits": {"type": "array", "items": {"$ref": "#/$defs/audit"}},
+    "decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
+    "review": {"$ref":"#/$defs/review_record"}
+  },
+  "$defs": {
+    "review_finding": {"type": "object", "additionalProperties": false, "required": ["message", "items", "action"], "properties": {"message": {"$ref": "#/$defs/text"}, "items": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "action": {"enum": ["field_repair", "scoped_restructure", "manual_triage", "original_inspection", "validator_support", "review", "improvement"]}}},
+    "review_reply": {"type": "object", "additionalProperties": false, "required": ["packet", "document", "audits", "findings"], "properties": {"packet": {"type": "string"}, "document": {"type": ["string", "null"]}, "sheet": {"type": ["string", "null"]}, "scope": {"type": ["object", "null"], "additionalProperties": false, "required": ["sources", "context"], "properties": {"sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}, "context": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}}, "audits": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["sources", "rationale"], "properties": {"sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}, "rationale": {"$ref": "#/$defs/text"}}}}, "findings": {"type": "array", "items": {"$ref": "#/$defs/review_finding"}}}},
+
+    "review_plan": {"type": "object", "additionalProperties": false, "required": ["omitted_sources"], "properties": {"omitted_sources": {"type": "object", "propertyNames": {"pattern": "^[a-f0-9]{64}$"}, "additionalProperties": {"$ref": "#/$defs/text"}}}},
+    "review_record": {"type": "object", "additionalProperties": false, "required": ["content_hash", "plan", "global", "findings", "replies"], "properties": {"content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "plan": {"$ref": "#/$defs/review_plan"}, "global": {"type": "boolean"}, "findings": {"type": "array", "items": {"$ref": "#/$defs/review_finding"}}, "replies": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["reviewer", "reply"], "properties": {"reviewer": {"$ref": "#/$defs/text"}, "reply": {"$ref": "#/$defs/review_reply"}}}}}},
+    "table_category": {"enum": ["observation", "estimate", "reference"]},
+    "condition": {
+      "oneOf": [
+        {"type":"object","additionalProperties":false,"required":["basis","text","evidence","operator","reason"],"properties":{"basis":{"const":"composed"},"text":{"$ref":"#/$defs/text"},"evidence":{"type":"array","minItems":2,"uniqueItems":true,"items":{"$ref":"#/$defs/span"}},"operator":{"enum":["all","any"]},"reason":{"$ref":"#/$defs/text"}}},
+        {"type":"object","additionalProperties":false,"required":["basis","text","evidence"],"properties":{"basis":{"const":"stated"},"text":{"$ref":"#/$defs/text"},"evidence":{"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/span"}}}},
+        {"type":"object","additionalProperties":false,"required":["basis"],"properties":{"basis":{"const":"unspecified"}}},
+        {"type":"object","additionalProperties":false,"required":["basis","text","reason"],"properties":{"basis":{"const":"assumed"},"text":{"$ref":"#/$defs/text"},"reason":{"$ref":"#/$defs/text"}}}
+      ]
+    },
+    "value": {
+      "oneOf": [
+        {"type":"object","additionalProperties":false,"required":["kind","amount","unit","comparison","interpretation"],"properties":{"kind":{"const":"quantity"},"amount":{"type":"number"},"unit":{"$ref":"#/$defs/text"},"interpretation":{"oneOf":[{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"canonical"}}},{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"opaque_unit"}}},{"type":"object","additionalProperties":false,"required":["kind","rule"],"properties":{"kind":{"const":"reviewed_lexical"},"rule":{"enum":["once","quarterly"]}}}]},"comparison":{"enum":["eq","lt","lte","gt","gte","approx"]},"basis":{"$ref":"#/$defs/span"},"unit_basis":{"$ref":"#/$defs/span"},"semantics_basis":{"$ref":"#/$defs/span"},"semantics":{"enum":["scalar","mean","period"]}}},
+        {"type":"object","additionalProperties":false,"required":["kind","basis"],"properties":{"kind":{"const":"quantity_expression"},"basis":{"$ref":"#/$defs/span"}}},
+        {"type":"object","additionalProperties":false,"required":["kind","text"],"properties":{"kind":{"const":"text"},"text":{"$ref":"#/$defs/text"}}},
+        {"type":"object","additionalProperties":false,"required":["kind","title","description","cells","notes"],"properties":{"kind":{"const":"table"},"title":{"type":"array","minItems":0,"uniqueItems":true,"items":{"$ref":"#/$defs/span"}},"description":{"type":"array","minItems":0,"uniqueItems":true,"items":{"$ref":"#/$defs/span"}},"cells":{"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/span"}},"notes":{"type":"array","minItems":0,"uniqueItems":true,"items":{"$ref":"#/$defs/span"}}}}
+      ]
+    },
+    "text": {"type": "string", "minLength": 1, "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+    "span": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "start", "end", "quote"],
+      "properties": {
+        "source": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "start": {"type": "integer", "minimum": 0}, "end": {"type": "integer", "minimum": 1},
+        "quote": {"type": "string", "minLength": 1}
+      }
+    },
+    "item": {
+      "type": "object", "additionalProperties": false,
+      "if": {"properties": {"value": {"properties": {"kind": {"const": "table"}}, "required": ["kind"]}}, "required": ["value"]},
+      "then": {"properties": {"kind": {"$ref": "#/$defs/table_category"}}},
+      "required": ["id", "kind", "subject", "property", "condition", "value", "statement", "requirements", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "section": {"enum":["screen","api","data","process","nonfunctional","other"]}, "name": {"$ref": "#/$defs/text"}, "kind": {"enum": ["requirement", "specification", "observation", "estimate", "reference"]},
+        "subject": {"$ref": "#/$defs/text"}, "property": {"$ref": "#/$defs/text"},
+        "condition": {"$ref": "#/$defs/condition"}, "value": {"$ref": "#/$defs/value"},
+        "statement": {"$ref": "#/$defs/text"}, "verification": {"$ref": "#/$defs/text"},
+        "requirements": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+        "evidence": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/span"}}
+      }
+    },
+    "exclusion": {
+      "type": "object", "additionalProperties": false, "required": ["evidence", "reason"],
+      "properties": {"evidence": {"$ref": "#/$defs/span"}, "reason": {"$ref": "#/$defs/text"}}
+    },
+    "audit": {
+      "type": "object", "additionalProperties": false, "required": ["source", "reviewer", "rationale"],
+      "properties": {
+        "source": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "reviewer": {"$ref": "#/$defs/text"}, "rationale": {"$ref": "#/$defs/text"}
+      }
+    },
+    "decision": {
+      "type": "object", "additionalProperties": false, "required": ["candidates", "selected", "reviewer", "rationale"],
+      "properties": {
+        "candidates": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+        "selected": {"$ref": "#/$defs/text"}, "reviewer": {"$ref": "#/$defs/text"}, "rationale": {"$ref": "#/$defs/text"}
+      }
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "document", "source", "extraction_hash", "regions", "elements", "visuals", "review"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "document": {"$ref": "#/$defs/text"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}}},
+    "extraction_hash": {"$ref": "#/$defs/hash"},
+    "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}},
+    "elements": {"type": "array", "items": {"$ref": "#/$defs/element"}},
+    "visuals": {"type": "array", "items": {"$ref": "#/$defs/visual"}},
+    "review": {"oneOf": [
+      {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "pending"}}},
+      {"type": "object", "additionalProperties": false, "required": ["status", "content_hash", "actor", "reason"], "properties": {"status": {"enum": ["accepted", "rejected"]}, "content_hash": {"$ref": "#/$defs/hash"}, "actor": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}}}
+    ]}
+  },
+  "$defs": {
+    "capture_structure_requirements": {
+      "description": "Required Input.structure_requirements field. Exactly one entry per captured document; an empty list means structure is optional. Nonempty entries require a current accepted structure snapshot.",
+      "type": "object",
+      "additionalProperties": {"type": "array", "uniqueItems": true, "items": {"enum": ["office_document", "table", "image", "diagram"]}}
+    },
+    "visual": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "sources", "state", "description", "actor", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["image", "diagram"]},
+        "sheet": {"$ref": "#/$defs/text"},
+        "sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^/(sheets/[0-9]+/drawings|assets)/[0-9]+$"}},
+        "state": {"enum": ["not_examined", "read", "unreadable"]},
+        "description": {"type": "string"}, "actor": {"type": "string"},
+        "evidence": {"$ref": "#/$defs/ids", "description": "Image region IDs or this visual's source pointers to extracted images. Direct assets can be inspected without rendering a sheet."},
+        "graph": {"$ref": "#/$defs/graph"},
+        "ocr": {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "text", "reason"],
+          "properties": {
+            "status": {"enum": ["not_examined", "available", "unavailable"]},
+            "text": {"type": "string", "description": "Adopted OCR output, including an empty result. May be replaced after user-requested LLM image inspection."}, "reason": {"type": "string"},
+            "llm_correction": {
+              "type": "object", "additionalProperties": false,
+              "required": ["actor", "user_instruction"],
+              "properties": {
+                "actor": {"$ref": "#/$defs/text"},
+                "user_instruction": {"$ref": "#/$defs/text"},
+                "model": {"$ref": "#/$defs/text"}
+              }
+            }
+          },
+          "allOf": [
+            {"if": {"properties": {"status": {"const": "available"}}}, "then": {"properties": {"reason": {"$ref": "#/$defs/text"}}}},
+            {"if": {"properties": {"status": {"const": "unavailable"}}}, "then": {"properties": {"text": {"const": ""}, "reason": {"$ref": "#/$defs/text"}}}}
+          ]
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "image"}}}, "then": {"required": ["ocr"]}},
+        {"if": {"required": ["ocr"], "properties": {"ocr": {"required": ["llm_correction"]}}}, "then": {"properties": {"evidence": {"minItems": 1}}}}
+      ]
+    },
+    "text": {"type": "string", "minLength": 1, "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "reading": {
+      "type": "object", "additionalProperties": false, "required": ["method", "actor", "reason"],
+      "properties": {
+        "method": {"enum": ["parser", "vision", "human"]}, "actor": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}
+      }
+    },
+    "graph": {
+      "description": "Reviewed interpretation within one visual. Node IDs are local. Sources reference that visual's extraction sources or evidence regions; labels are interpretations, not exact quotations. Vision requires image evidence on the visual.",
+      "type": "object", "additionalProperties": false, "required": ["nodes", "edges", "reading"],
+      "properties": {
+        "nodes": {"type": "array", "minItems": 1, "items": {
+          "type": "object", "additionalProperties": false, "required": ["id", "label", "sources"],
+          "properties": {"id": {"$ref": "#/$defs/text"}, "label": {"$ref": "#/$defs/text"}, "sources": {"$ref": "#/$defs/graph_sources"}}
+        }},
+        "edges": {"type": "array", "uniqueItems": true, "items": {
+          "type": "object", "additionalProperties": false, "required": ["from", "to", "label", "sources"],
+          "properties": {"from": {"$ref": "#/$defs/text"}, "to": {"$ref": "#/$defs/text"}, "label": {"$ref": "#/$defs/text"}, "sources": {"$ref": "#/$defs/graph_sources"}}
+        }},
+        "reading": {"$ref": "#/$defs/reading"}
+      }
+    },
+    "graph_sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "region": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "sheet", "range", "image", "image_sha256", "source_sha256", "bbox"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "sheet": {"$ref": "#/$defs/text"}, "range": {"$ref": "#/$defs/text"},
+        "image": {"$ref": "#/$defs/text"}, "image_sha256": {"$ref": "#/$defs/hash"}, "source_sha256": {"$ref": "#/$defs/hash"},
+        "bbox": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}
+      }
+    },
+    "element": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "sheet", "cells", "evidence", "reading"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["text", "table"]}, "sheet": {"$ref": "#/$defs/text"},
+        "cells": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cell"}},
+        "descriptions": {"$ref": "#/$defs/ids", "description": "Ordered references from a table to separate text elements on the same sheet. Cells remain owned by exactly one element; a description may explain several tables."},
+        "evidence": {"$ref": "#/$defs/ids"},
+        "reading": {"$ref": "#/$defs/reading"}
+      },
+      "allOf": [{"if": {"required": ["descriptions"]}, "then": {"properties": {"kind": {"const": "table"}}}}]
+    },
+    "cell": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "address", "role", "headers", "text_state"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "address": {"$ref": "#/$defs/text"},
+        "role": {"enum": ["unassigned", "text", "data", "row_header", "column_header", "note"]},
+        "headers": {"$ref": "#/$defs/ids"},
+        "text_state": {"enum": ["read", "empty", "unreadable", "not_examined"]}
+      }
+    }
+  }
+}

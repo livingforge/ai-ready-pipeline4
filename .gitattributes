@@ -1,2 +1,0 @@
-# Preserve distribution bytes so audit hashes survive Git checkout.
-* -text

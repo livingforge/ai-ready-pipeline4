@@ -1,2 +1,0 @@
-name: arp4
-description: ARP の Rust CLI で Excel セルを取り込み、YAML の成形・差分確認・レビュー・既存セルへの書き戻しを行う。
