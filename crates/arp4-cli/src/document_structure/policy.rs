@@ -44,7 +44,7 @@ pub fn requirements(extraction: &Value) -> Result<Vec<String>> {
 /// Three or more shapes on a sheet are diagram candidates. Their actual relationship
 /// must be checked by the reader; disconnected DrawingML does not prove independence.
 pub fn visuals(extraction: &Value) -> Result<Vec<Value>> {
-    if !["xlsx", "xlsm"].contains(&extension(extraction).as_str()) {
+    if !crate::document_source::is_excel(&extension(extraction)) {
         return Ok(vec![]);
     }
     let minimum = policy()["diagram_min_shapes"].as_u64().unwrap() as usize;

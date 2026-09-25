@@ -106,10 +106,14 @@ pub(super) fn read(
                 ("shape", "geometry"),
                 ("group", "group"),
                 ("alt", "description"),
+                ("macro", "macro"),
             ] {
                 if drawing[input].as_str().is_some_and(|s| !s.is_empty()) {
                     compact[output] = drawing[input].clone();
                 }
+            }
+            if drawing["control"].is_object() {
+                compact["control"] = drawing["control"].clone();
             }
             let position = position(drawing);
             if !position.as_object().unwrap().is_empty() {

@@ -5184,6 +5184,41 @@
                 ]
               }
             },
+            "comments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "pattern": "^[A-Z]+[1-9][0-9]*$"
+                  },
+                  "kind": {
+                    "enum": [
+                      "note",
+                      "thread",
+                      "reply"
+                    ]
+                  },
+                  "author": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "address",
+                  "kind",
+                  "author",
+                  "text"
+                ]
+              }
+            },
             "drawings": {
               "type": "array",
               "items": {
@@ -5409,6 +5444,45 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "macro": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "control": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "type": "string"
+                          },
+                          "linked_cell": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "list_range": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "linked_cell",
+                          "list_range"
+                        ]
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -5424,7 +5498,9 @@
                   "geometry",
                   "connections",
                   "image",
-                  "linked_image"
+                  "linked_image",
+                  "macro",
+                  "control"
                 ]
               }
             }

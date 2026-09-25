@@ -7,10 +7,32 @@ pub(super) struct RowOutput {
 }
 
 impl RowOutput {
-    pub(super) fn append_cell(&mut self, cell: &str, column: u32) {
-        let close = self.raw.rfind("</").expect("row has a closing tag");
-        self.raw.insert_str(close, cell);
+    /// Inserts a cell before the first cell of a later column; Excel requires
+    /// cells in column order.
+    pub(super) fn insert_cell(&mut self, cell: &str, column: u32) -> Result<()> {
+        static CELL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r#"<(?:[A-Za-z_][\w.-]*:)?c\s[^>]*?\br\s*=\s*["']([A-Z]+)[0-9]+["']"#)
+                .unwrap()
+        });
+        let mut position = self.raw.rfind("</").context("row has no closing tag")?;
+        for captures in CELL.captures_iter(&self.raw) {
+            if column_number(&captures[1])? > column {
+                position = captures.get(0).unwrap().start();
+                break;
+            }
+        }
+        self.raw.insert_str(position, cell);
         self.cells.insert(column);
+        Ok(())
+    }
+
+    /// The namespace prefix used by this row's elements (e.g. `x:`).
+    pub(super) fn prefix(&self) -> &str {
+        let tag = self.raw[1..]
+            .split([' ', '\t', '\r', '\n', '/', '>'])
+            .next()
+            .unwrap_or("row");
+        tag.strip_suffix("row").unwrap_or("")
     }
 }
 
@@ -89,60 +111,13 @@ pub(super) fn render_new_cell(
     Ok(format!("{opening}{}</{tag}>", scalar_body(prefix, value)?))
 }
 
-pub(super) fn rewrite_formula(
-    formula: &str,
-    current_sheet: &str,
-    operations: &[StructuralOperation],
-) -> Result<String> {
-    let re = regex::Regex::new(
-        r#"(?:(?P<sheet>'[^']+'|[A-Za-z_][A-Za-z0-9_. ]*)!)?(?P<abs_col>\$?)(?P<col>[A-Z]{1,3})(?P<abs_row>\$?)(?P<row>[1-9][0-9]*)"#,
-    )?;
-    let mut error = None;
-    let output = re
-        .replace_all(formula, |captures: &regex::Captures<'_>| {
-            let sheet = captures.name("sheet").map(|value| {
-                let value = value.as_str();
-                if value.starts_with('\'') && value.ends_with("!") {
-                    value[1..value.len() - 2].replace("''", "'")
-                } else {
-                    value.trim_end_matches('!').to_owned()
-                }
-            });
-            let sheet = sheet.as_deref().unwrap_or(current_sheet);
-            let address = format!("{}{}", &captures["col"], &captures["row"]);
-            let mapped = match map_coordinate(sheet, &address, operations) {
-                Ok(Some(value)) => value,
-                Ok(None) => return "#REF!".to_owned(),
-                Err(e) => {
-                    error = Some(e);
-                    return captures.get(0).unwrap().as_str().to_owned();
-                }
-            };
-            let (column, row) = coordinate(&mapped).unwrap();
-            let column = column_name(column).unwrap();
-            format!(
-                "{}{}{}{}{}",
-                captures.name("sheet").map_or("", |value| value.as_str()),
-                &captures["abs_col"],
-                column,
-                &captures["abs_row"],
-                row
-            )
-        })
-        .into_owned();
-    if let Some(error) = error {
-        return Err(error);
-    }
-    Ok(output)
-}
-
 pub(super) struct RowTransform<'a, 'b> {
     pub(super) original: &'a str,
     pub(super) original_row: u32,
     pub(super) final_row: u32,
     pub(super) sheet: &'a str,
     pub(super) operations: &'b [StructuralOperation],
-    pub(super) all_operations: &'b [StructuralOperation],
+    pub(super) moves: &'b Moves<'b>,
     pub(super) changes: &'b BTreeMap<(u32, u32), Value>,
     pub(super) recalc: bool,
 }
@@ -201,7 +176,28 @@ pub(super) fn transform_row(
                 {
                     edits.push((
                         text_node.range().start - row_start..text_node.range().end - row_start,
-                        rewrite_formula(text, context.sheet, context.all_operations)?,
+                        xml_attr(&context.moves.rewrite(text, Some(context.sheet))?),
+                    ));
+                }
+                if let Some(formula) = child(cell, "f")
+                    && formula.attribute("t") == Some("array")
+                    && let Some(reference) = formula.attribute("ref")
+                {
+                    let area = Area::parse(reference)?;
+                    let own = sheet_operations(context.sheet, context.moves.operations);
+                    let mapped = map_area(area, &own)?
+                        .filter(|mapped| same_size(area, *mapped))
+                        .with_context(|| {
+                            format!(
+                                "row/column changes cannot cut through array formula {}!{reference}; change it in Excel",
+                                context.sheet
+                            )
+                        })?;
+                    let (opening, _) = xml_opening(&context.original[formula.range()])?;
+                    edits.push((
+                        formula.range().start - row_start
+                            ..formula.range().start - row_start + opening.len(),
+                        replace_xml_attribute(opening, "ref", &mapped.render()?)?,
                     ));
                 }
             }
@@ -258,65 +254,549 @@ pub(super) fn new_row(template: Option<&str>, number: u32) -> RowOutput {
     }
 }
 
-pub(super) fn rewrite_range_ref(
-    reference: &str,
-    sheet: &str,
-    operations: &[StructuralOperation],
-) -> Result<Option<String>> {
-    let mut parts = reference.split(':');
-    let first = parts.next().context("empty Excel range")?;
-    let second = parts.next().unwrap_or(first);
-    ensure!(parts.next().is_none(), "invalid Excel range");
-    let Some(first) = map_coordinate(sheet, first, operations)? else {
-        return Ok(None);
-    };
-    let Some(second) = map_coordinate(sheet, second, operations)? else {
-        return Ok(None);
-    };
-    Ok(Some(if first == second {
-        first
-    } else {
-        format!("{first}:{second}")
-    }))
+/// Whether a mapped area only moved, keeping its height and width.
+pub(super) fn same_size(before: Area, after: Area) -> bool {
+    let length = |span: Option<(u32, u32)>| span.map(|(a, b)| b - a);
+    length(before.columns) == length(after.columns) && length(before.rows) == length(after.rows)
 }
 
-pub(super) fn rewrite_sheet_ranges(
+pub(super) fn element_tag(opening: &str) -> Result<&str> {
+    opening[1..]
+        .split([' ', '\t', '\r', '\n', '/', '>'])
+        .next()
+        .context("invalid XML element")
+}
+
+/// Expands shared formulas into per-cell formulas where row/column operations
+/// would change them. Excel derives each member from the master cell, which is
+/// no longer valid once cells between them move. On edited sheets every group
+/// is expanded because the cells themselves move.
+pub(super) fn unshare_formulas(
     original: &str,
     sheet: &str,
-    operations: &[StructuralOperation],
-) -> Result<String> {
+    moves: &Moves<'_>,
+    edited: bool,
+) -> Result<Option<String>> {
     let doc = xml(original.as_bytes())?;
+    let mut masters = BTreeMap::new();
+    let mut groups: BTreeMap<&str, Vec<(Node<'_, '_>, u32, u32)>> = BTreeMap::new();
+    for cell in doc.descendants().filter(|n| n.has_tag_name((NS, "c"))) {
+        let Some(formula) = child(cell, "f") else {
+            continue;
+        };
+        if formula.attribute("t") != Some("shared") {
+            continue;
+        }
+        let group = formula
+            .attribute("si")
+            .context("shared formula without si")?;
+        let (column, row) = coordinate(cell.attribute("r").context("missing cell address")?)?;
+        if formula.attribute("ref").is_some()
+            && let Some(text) = formula.text()
+        {
+            masters.insert(group, (column, row, text));
+        }
+        groups
+            .entry(group)
+            .or_default()
+            .push((formula, column, row));
+    }
     let mut edits = vec![];
-    for node in doc
-        .descendants()
-        .filter(|node| node.has_tag_name((NS, "mergeCell")) || node.has_tag_name((NS, "dimension")))
-    {
-        let Some(reference) = node.attribute("ref") else {
+    for (group, members) in &groups {
+        let Some((master_column, master_row, text)) = masters.get(group) else {
             continue;
         };
-        let opening_end = original[node.range()]
-            .find('>')
-            .context("invalid range element")?;
-        let opening = &original[node.range().start..node.range().start + opening_end + 1];
-        let Some(reference) = rewrite_range_ref(reference, sheet, operations)? else {
-            if node.has_tag_name((NS, "mergeCell")) {
-                edits.push((node.range(), String::new()));
+        let texts = members
+            .iter()
+            .map(|(_, column, row)| {
+                shift_relative(
+                    text,
+                    i64::from(*row) - i64::from(*master_row),
+                    i64::from(*column) - i64::from(*master_column),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut changes = edited;
+        for text in &texts {
+            changes = changes || moves.rewrite(text, Some(sheet))? != *text;
+        }
+        if !changes {
+            continue;
+        }
+        for ((formula, _, _), text) in members.iter().zip(texts) {
+            let (opening, _) = xml_opening(&original[formula.range()])?;
+            let tag = element_tag(opening)?;
+            let mut opening = opening.to_owned();
+            for attribute in ["t", "ref", "si"] {
+                opening = remove_xml_attribute(&opening, attribute)?;
             }
-            continue;
-        };
-        let replacement = replace_xml_attribute(opening, "ref", &reference)?;
-        edits.push((
-            node.range().start..node.range().start + opening_end + 1,
-            replacement,
-        ));
+            let opening = opening
+                .trim_end_matches('>')
+                .trim_end_matches('/')
+                .trim_end();
+            edits.push((
+                formula.range(),
+                format!("{opening}>{}</{tag}>", xml_attr(&text)),
+            ));
+        }
+    }
+    if edits.is_empty() {
+        return Ok(None);
     }
     edits.sort_by_key(|(range, _)| range.start);
+    let mut result = original.to_owned();
+    for (range, replacement) in edits.into_iter().rev() {
+        result.replace_range(range, &replacement);
+    }
+    Ok(Some(result))
+}
+
+/// The sqref a conditional-format or validation formula is relative to.
+fn rule_sqref(node: Node<'_, '_>) -> Option<String> {
+    let owner = node.ancestors().find(|n| {
+        matches!(n.tag_name().namespace(), Some(NS) | Some(X14))
+            && matches!(
+                n.tag_name().name(),
+                "conditionalFormatting" | "dataValidation"
+            )
+    })?;
+    owner.attribute("sqref").map(str::to_owned).or_else(|| {
+        owner
+            .children()
+            .find(|n| n.has_tag_name((XM, "sqref")))
+            .and_then(|n| n.text())
+            .map(str::to_owned)
+    })
+}
+
+/// Offset from the old top-left cell of `sqref` to the old cell that becomes
+/// the new top-left. Rule formulas are written relative to that cell, so they
+/// are re-expressed from it before references move.
+fn anchor_shift(sqref: &str, operations: &[&StructuralOperation]) -> Result<(i64, i64)> {
+    let areas = sqref
+        .split_whitespace()
+        .map(Area::parse)
+        .collect::<Result<Vec<_>>>()?;
+    let Some(first) = areas.first() else {
+        return Ok((0, 0));
+    };
+    let survivor = |span: Option<(u32, u32)>, row: bool| -> Result<Option<u32>> {
+        let Some((start, end)) = span else {
+            return Ok(Some(1));
+        };
+        for index in start..=end {
+            if map_span(index, index, operations, row)?.is_some() {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    };
+    for area in &areas {
+        if let (Some(row), Some(column)) =
+            (survivor(area.rows, true)?, survivor(area.columns, false)?)
+        {
+            return Ok((
+                i64::from(row) - i64::from(first.first_row()),
+                i64::from(column) - i64::from(first.first_column()),
+            ));
+        }
+    }
+    Ok((0, 0))
+}
+
+pub(super) fn opening_range(original: &str, node: Node<'_, '_>) -> Result<std::ops::Range<usize>> {
+    let end = original[node.range()]
+        .find('>')
+        .context("invalid XML element")?;
+    Ok(node.range().start..node.range().start + end + 1)
+}
+
+/// Attribute changes collected per element, so that several attributes of
+/// one opening tag can change together.
+#[derive(Default)]
+pub(super) struct AttributeEdits(BTreeMap<usize, (std::ops::Range<usize>, String)>);
+
+impl AttributeEdits {
+    pub(super) fn set(
+        &mut self,
+        original: &str,
+        node: Node<'_, '_>,
+        name: &str,
+        value: &str,
+    ) -> Result<()> {
+        let range = opening_range(original, node)?;
+        let (_, opening) = self
+            .0
+            .entry(range.start)
+            .or_insert_with(|| (range.clone(), original[range].to_owned()));
+        *opening = replace_xml_attribute(opening, name, &xml_attr(value))?;
+        Ok(())
+    }
+
+    pub(super) fn into_edits(self) -> impl Iterator<Item = (std::ops::Range<usize>, String)> {
+        self.0.into_values()
+    }
+}
+
+/// Applies non-overlapping edits after dropping those inside removed ranges.
+pub(super) fn apply_edits(
+    original: &str,
+    mut edits: Vec<(std::ops::Range<usize>, String)>,
+    mut removals: Vec<std::ops::Range<usize>>,
+) -> Result<String> {
+    removals.sort_by_key(|range| (range.start, std::cmp::Reverse(range.end)));
+    removals.dedup_by(|inner, outer| outer.start <= inner.start && inner.end <= outer.end);
+    edits.retain(|(range, _)| {
+        !removals
+            .iter()
+            .any(|removed| removed.start <= range.start && range.end <= removed.end)
+    });
+    edits.extend(removals.into_iter().map(|range| (range, String::new())));
+    edits.sort_by_key(|(range, _)| range.start);
     for pair in edits.windows(2) {
-        ensure!(pair[0].0.end <= pair[1].0.start, "overlapping range edits");
+        ensure!(
+            pair[0].0.end <= pair[1].0.start,
+            "overlapping reference edits"
+        );
     }
     let mut result = original.to_owned();
     for (range, replacement) in edits.into_iter().rev() {
         result.replace_range(range, &replacement);
     }
     Ok(result)
+}
+
+/// Containers that become invalid when their last item is removed, with the
+/// number of ancestor levels removed along with them.
+const CONTAINERS: [(&str, &str, usize); 10] = [
+    (NS, "mergeCells", 0),
+    (NS, "dataValidations", 0),
+    (NS, "hyperlinks", 0),
+    (NS, "cols", 0),
+    (NS, "protectedRanges", 0),
+    (NS, "ignoredErrors", 0),
+    (X14, "conditionalFormattings", 0),
+    (X14, "dataValidations", 0),
+    (X14, "sparklines", 1),
+    (X14, "sparklineGroups", 0),
+];
+
+/// Removes emptied containers (then emptied extensions) and refreshes counts.
+fn tidy_containers(mut text: String) -> Result<String> {
+    loop {
+        let doc = xml(text.as_bytes())?;
+        let empty = doc.descendants().find_map(|node| {
+            if node.children().any(|c| c.is_element()) {
+                return None;
+            }
+            if let Some((_, _, level)) = CONTAINERS
+                .iter()
+                .find(|(ns, name, _)| node.has_tag_name((*ns, *name)))
+            {
+                return node.ancestors().nth(*level).map(|n| n.range());
+            }
+            (node.has_tag_name((NS, "ext")) || node.has_tag_name((NS, "extLst")))
+                .then(|| node.range())
+        });
+        let Some(range) = empty else {
+            break;
+        };
+        text.replace_range(range, "");
+    }
+    let doc = xml(text.as_bytes())?;
+    let mut attributes = AttributeEdits::default();
+    for node in doc.descendants().filter(|node| {
+        node.attribute("count").is_some()
+            && (node.has_tag_name((NS, "mergeCells"))
+                || node.has_tag_name((NS, "dataValidations"))
+                || node.has_tag_name((X14, "dataValidations")))
+    }) {
+        let count = node.children().filter(Node::is_element).count().to_string();
+        if node.attribute("count") != Some(count.as_str()) {
+            attributes.set(&text, node, "count", &count)?;
+        }
+    }
+    apply_edits(&text, attributes.into_edits().collect(), vec![])
+}
+
+/// Rewrites references held outside cell values. Every sheet updates formulas
+/// that point at edited sheets (cell formulas only when `cells_transformed` is
+/// false, because row transformation already rewrote them); edited sheets also
+/// move their own ranges: merges, conditional formats, validations, hyperlink
+/// cells, filters, sorting, protected ranges, column widths and extension ranges.
+pub(super) fn rewrite_sheet_references(
+    original: &str,
+    sheet: &str,
+    moves: &Moves<'_>,
+    cells_transformed: bool,
+) -> Result<String> {
+    let own = sheet_operations(sheet, moves.operations);
+    let edited = !own.is_empty();
+    let columns_changed = own.iter().any(|o| !o.row_operation());
+    let doc = xml(original.as_bytes())?;
+    let mut removals = vec![];
+    let mut edits = vec![];
+    let mut attributes = AttributeEdits::default();
+    let rewrite_text = |node: Node<'_, '_>, shift: (i64, i64), edits: &mut Vec<_>| -> Result<()> {
+        let (Some(text), Some(text_node)) = (node.text(), node.children().find(Node::is_text))
+        else {
+            return Ok(());
+        };
+        let shifted = if shift == (0, 0) {
+            text.to_owned()
+        } else {
+            shift_relative(text, shift.0, shift.1)?
+        };
+        let rewritten = moves.rewrite(&shifted, Some(sheet))?;
+        if rewritten != text {
+            edits.push((text_node.range(), xml_attr(&rewritten)));
+        }
+        Ok(())
+    };
+    let rule_shift = |node: Node<'_, '_>| -> Result<(i64, i64)> {
+        match rule_sqref(node) {
+            Some(sqref) if edited => anchor_shift(&sqref, &own),
+            _ => Ok((0, 0)),
+        }
+    };
+    for node in doc.descendants().filter(Node::is_element) {
+        let name = node.tag_name().name();
+        match (node.tag_name().namespace(), name) {
+            (Some(NS), "f") if !cells_transformed => rewrite_text(node, (0, 0), &mut edits)?,
+            (Some(NS), "formula" | "formula1" | "formula2") | (Some(XM), "f") => {
+                rewrite_text(node, rule_shift(node)?, &mut edits)?
+            }
+            (Some(XM), "sqref") if edited => {
+                let text = node.text().unwrap_or("");
+                let formatting = node.parent_element().is_some_and(|owner| {
+                    matches!(
+                        owner.tag_name().name(),
+                        "conditionalFormatting" | "dataValidation"
+                    )
+                });
+                match map_sqref(text, &own, formatting)? {
+                    Some(mapped) if mapped != text => {
+                        let text_node =
+                            node.children().find(Node::is_text).context("empty sqref")?;
+                        edits.push((text_node.range(), mapped));
+                    }
+                    Some(_) => {}
+                    None => removals.push(
+                        node.parent_element()
+                            .context("sqref without owner")?
+                            .range(),
+                    ),
+                }
+            }
+            (Some(NS), _) => {
+                // Hyperlink `location` targets stay as written; Excel does not
+                // update them when rows or columns move.
+                if !edited {
+                    continue;
+                }
+                if matches!(
+                    name,
+                    "mergeCell"
+                        | "dimension"
+                        | "hyperlink"
+                        | "autoFilter"
+                        | "sortState"
+                        | "sortCondition"
+                ) && let Some(reference) = node.attribute("ref")
+                {
+                    let area = Area::parse(reference)?;
+                    match map_area(area, &own)? {
+                        Some(mapped)
+                            if name == "mergeCell"
+                                && mapped.columns.is_some_and(|(a, b)| a == b)
+                                && mapped.rows.is_some_and(|(a, b)| a == b) =>
+                        {
+                            removals.push(node.range())
+                        }
+                        Some(mapped) if mapped != area => {
+                            attributes.set(original, node, "ref", &mapped.render()?)?
+                        }
+                        Some(_) => {}
+                        None if name == "dimension" => {
+                            attributes.set(original, node, "ref", "A1")?
+                        }
+                        None => removals.push(node.range()),
+                    }
+                }
+                if matches!(
+                    name,
+                    "conditionalFormatting" | "dataValidation" | "protectedRange" | "ignoredError"
+                ) && let Some(sqref) = node.attribute("sqref")
+                {
+                    let formatting = matches!(name, "conditionalFormatting" | "dataValidation");
+                    match map_sqref(sqref, &own, formatting)? {
+                        Some(mapped) if mapped != sqref => {
+                            attributes.set(original, node, "sqref", &mapped)?
+                        }
+                        Some(_) => {}
+                        None => removals.push(node.range()),
+                    }
+                }
+                if name == "col" {
+                    let min: u32 = node.attribute("min").context("col without min")?.parse()?;
+                    let max: u32 = node.attribute("max").context("col without max")?.parse()?;
+                    match map_format_span(min, max, &own, false)? {
+                        Some((a, b)) if (a, b) != (min, max) => {
+                            attributes.set(original, node, "min", &a.to_string())?;
+                            attributes.set(original, node, "max", &b.to_string())?;
+                        }
+                        Some(_) => {}
+                        None => removals.push(node.range()),
+                    }
+                }
+                if name == "filterColumn" && columns_changed {
+                    filter_column_edit(original, node, &own, &mut removals, &mut attributes)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    edits.extend(attributes.into_edits());
+    let result = if edits.is_empty() && removals.is_empty() {
+        original.to_owned()
+    } else {
+        tidy_containers(apply_edits(original, edits, removals)?)?
+    };
+    inherit_sparklines(result, &own)
+}
+
+/// The pre-operation position of a final position, or `None` when it was
+/// inserted.
+fn original_position(
+    mut position: u32,
+    operations: &[&StructuralOperation],
+    row: bool,
+) -> Option<u32> {
+    for operation in operations.iter().rev().filter(|o| o.row_operation() == row) {
+        let end = operation.at + operation.count;
+        if operation.insertion() {
+            if (operation.at..end).contains(&position) {
+                return None;
+            }
+            if position >= end {
+                position -= operation.count;
+            }
+        } else if position >= operation.at {
+            position += operation.count;
+        }
+    }
+    Some(position)
+}
+
+/// For an inserted position, the final position it takes its formatting from:
+/// Excel formats inserted rows like the row above and inserted columns like
+/// the column to the left.
+fn inherited_from(position: u32, operations: &[&StructuralOperation], row: bool) -> Option<u32> {
+    if original_position(position, operations, row).is_some() {
+        return None;
+    }
+    (1..position)
+        .rev()
+        .find(|candidate| original_position(*candidate, operations, row).is_some())
+}
+
+/// Adds sparklines to rows/columns inserted after a sparkline cell, copying
+/// it with its data range moved like a copied formula, as Excel does.
+fn inherit_sparklines(text: String, operations: &[&StructuralOperation]) -> Result<String> {
+    if !operations.iter().any(|o| o.insertion()) {
+        return Ok(text);
+    }
+    let doc = xml(text.as_bytes())?;
+    let mut edits = vec![];
+    for sparkline in doc
+        .descendants()
+        .filter(|n| n.has_tag_name((X14, "sparkline")))
+    {
+        let (Some(formula), Some(location)) = (
+            child_ns(sparkline, XM, "f"),
+            child_ns(sparkline, XM, "sqref"),
+        ) else {
+            continue;
+        };
+        let (Some(source), Some(cell)) = (formula.text(), location.text()) else {
+            continue;
+        };
+        let Ok((column, row)) = coordinate(cell.trim()) else {
+            continue;
+        };
+        let (Some(source_text), Some(location_text)) = (
+            formula.children().find(Node::is_text),
+            location.children().find(Node::is_text),
+        ) else {
+            continue;
+        };
+        let start = sparkline.range().start;
+        let raw = &text[sparkline.range()];
+        let mut added = String::new();
+        for (is_row, origin) in [(true, row), (false, column)] {
+            let mut position = origin + 1;
+            while inherited_from(position, operations, is_row) == Some(origin) {
+                let delta = i64::from(position - origin);
+                let (new_source, new_cell) = if is_row {
+                    (
+                        shift_relative(source, delta, 0)?,
+                        format!("{}{position}", column_name(column)?),
+                    )
+                } else {
+                    (
+                        shift_relative(source, 0, delta)?,
+                        format!("{}{row}", column_name(position)?),
+                    )
+                };
+                let local = |range: std::ops::Range<usize>| range.start - start..range.end - start;
+                added.push_str(&apply_edits(
+                    raw,
+                    vec![
+                        (local(source_text.range()), xml_attr(&new_source)),
+                        (local(location_text.range()), new_cell),
+                    ],
+                    vec![],
+                )?);
+                position += 1;
+            }
+        }
+        if !added.is_empty() {
+            let end = sparkline.range().end;
+            edits.push((end..end, added));
+        }
+    }
+    apply_edits(&text, edits, vec![])
+}
+
+/// Re-bases an autoFilter column after column operations. `colId` counts from
+/// the filter's first column, which may itself move.
+pub(super) fn filter_column_edit(
+    original: &str,
+    node: Node<'_, '_>,
+    operations: &[&StructuralOperation],
+    removals: &mut Vec<std::ops::Range<usize>>,
+    attributes: &mut AttributeEdits,
+) -> Result<()> {
+    let filter = node
+        .parent_element()
+        .context("filterColumn without autoFilter")?;
+    let area = Area::parse(filter.attribute("ref").context("autoFilter without ref")?)?;
+    let Some(mapped) = map_area(area, operations)? else {
+        return Ok(());
+    };
+    let id: u32 = node
+        .attribute("colId")
+        .context("filterColumn without colId")?
+        .parse()?;
+    let column = area.first_column() + id;
+    match map_span(column, column, operations, false)? {
+        None => removals.push(node.range()),
+        Some((new_column, _)) => {
+            let new_id = new_column - mapped.first_column();
+            if new_id != id {
+                attributes.set(original, node, "colId", &new_id.to_string())?;
+            }
+        }
+    }
+    Ok(())
 }

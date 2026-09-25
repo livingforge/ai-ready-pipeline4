@@ -18,23 +18,11 @@ pub fn render(
         (1..=600).contains(&timeout),
         "render timeout must be 1..600 seconds"
     );
-    let original = fs::read(source)?;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&original))?;
-    // These can execute or refresh on open independently of VBA event suppression.
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index)?;
-        let name = entry.name().to_ascii_lowercase();
-        ensure!(
-            !name.starts_with("xl/macrosheets/") && name != "xl/connections.xml",
-            "rendering workbooks with Excel 4.0 macros or data connections is unsupported"
-        );
-    }
+    let original = validate_source(source)?;
     let stage = tempfile::tempdir()?;
     let request_path = stage.path().join("request.json");
     let result_path = stage.path().join("result.json");
     let output = stage.path().join("render.png");
-    let script = stage.path().join("render.ps1");
-    fs::write(&script, include_bytes!("render.ps1"))?;
     fs::write(
         &request_path,
         encoded(
@@ -42,19 +30,26 @@ pub fn render(
         ),
     )?;
     let log = stage.path().join("stderr.txt");
-    let mut command = std::process::Command::new("powershell.exe");
+    let current = std::env::current_exe()?;
+    let executable = if current.parent().and_then(|path| path.file_name()) == Some("deps".as_ref())
+    {
+        current
+            .parent()
+            .context("renderer executable directory")?
+            .parent()
+            .context("renderer build directory")?
+            .join("arp4.exe")
+    } else {
+        current
+    };
+    ensure!(
+        executable.is_file(),
+        "Rust Excel renderer executable was not found: {}",
+        executable.display()
+    );
+    let mut command = std::process::Command::new(&executable);
     command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-STA",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&script)
-        .arg("-Request")
+        .arg("--internal-excel-render")
         .arg(&request_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -66,7 +61,7 @@ pub fn render(
     }
     let mut child = command
         .spawn()
-        .context("cannot start Windows PowerShell Excel renderer")?;
+        .context("cannot start Rust Excel renderer")?;
     let started = std::time::Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -106,4 +101,19 @@ pub fn render(
         "render dimensions mismatch"
     );
     Ok((bytes, result))
+}
+
+pub(super) fn validate_source(source: &Path) -> Result<Vec<u8>> {
+    let original = fs::read(source)?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&original))?;
+    // These can execute or refresh on open independently of VBA event suppression.
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        let name = entry.name().to_ascii_lowercase();
+        ensure!(
+            !name.starts_with("xl/macrosheets/") && name != "xl/connections.xml",
+            "rendering workbooks with Excel 4.0 macros or data connections is unsupported"
+        );
+    }
+    Ok(original)
 }

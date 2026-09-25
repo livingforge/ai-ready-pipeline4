@@ -11,11 +11,19 @@ mod visuals;
 mod worksheet;
 use worksheet::*;
 mod package;
+mod references;
+use references::*;
+mod relocation;
 pub(crate) use package::write_archive;
 use package::*;
+use relocation::*;
 mod render;
+#[cfg(windows)]
+mod render_native;
 mod writeback;
 pub use render::render;
+#[cfg(windows)]
+pub use render_native::worker as render_worker;
 
 use crate::data::*;
 use anyhow::{Context, Result, bail, ensure};
@@ -31,14 +39,20 @@ use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const MS_REL: &str = "http://schemas.microsoft.com/office/2006/relationships";
 const PKG_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const XDR: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
 const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const MARKUP_COMPATIBILITY: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+const X14: &str = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
+const XM: &str = "http://schemas.microsoft.com/office/excel/2006/main";
 const CONTENT_TYPES: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
 pub struct Workbook {
     pub raw: Vec<u8>,
     pub parts: BTreeMap<String, Vec<u8>>,
     pub sheets: Vec<Value>,
+    /// Chart, dialog and macro sheets listed in the workbook but not extracted.
+    pub skipped_sheets: Vec<Value>,
 }
 fn xml(bytes: &[u8]) -> Result<Document<'_>> {
     Ok(Document::parse(std::str::from_utf8(bytes)?)?)
@@ -49,9 +63,13 @@ fn child<'a, 'b>(node: Node<'a, 'b>, name: &str) -> Option<Node<'a, 'b>> {
 fn child_ns<'a, 'b>(node: Node<'a, 'b>, namespace: &str, name: &str) -> Option<Node<'a, 'b>> {
     node.children().find(|n| n.has_tag_name((namespace, name)))
 }
+/// Cell text from its `t` runs. Phonetic guides (`rPh`, furigana Excel keeps
+/// from Japanese IME input) are readings, not part of the displayed value.
 fn texts(node: Node<'_, '_>) -> String {
     node.descendants()
-        .filter(|n| n.has_tag_name((NS, "t")))
+        .filter(|n| {
+            n.has_tag_name((NS, "t")) && !n.ancestors().any(|a| a.has_tag_name((NS, "rPh")))
+        })
         .filter_map(|n| n.text())
         .collect()
 }

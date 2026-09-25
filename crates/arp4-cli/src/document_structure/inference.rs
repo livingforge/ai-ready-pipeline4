@@ -77,7 +77,7 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                     .collect();
                 ensure!(
                     indices.iter().all(|i| assigned.insert(*i)),
-                    "overlapping Excel table definitions"
+                    "overlapping table definitions"
                 );
                 if !indices.is_empty() {
                     groups.push((
@@ -283,7 +283,7 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                     "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
             }).collect();
             output.push(json!({"id":format!("sheet-{}-table-{}",sheet_index+1,output.len()+1),"kind":"table","sheet":sheet["name"],"evidence":[],
-                "reading":{"method":"parser","actor":"arp4","reason":format!("{}; range {}{}:{}{}. Header links are layout hypotheses requiring review.",if explicit.is_some() {"Explicit Excel table boundary"} else {"Adjacent merged-cell regions with repeated row fields; bold headers and aligned row labels"},column_name(left)?,top,column_name(right)?,bottom)},
+                "reading":{"method":"parser","actor":"arp4","reason":format!("{}; range {}{}:{}{}. Header links are layout hypotheses requiring review.",if explicit.is_some() {"Explicit table boundary from the source"} else {"Adjacent merged-cell regions with repeated row fields; bold headers and aligned row labels"},column_name(left)?,top,column_name(right)?,bottom)},
                 "cells":interpreted}));
         }
         if !leftovers.is_empty() {

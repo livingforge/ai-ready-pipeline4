@@ -100,6 +100,21 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
             }
             // Drawing text is native source text, not OCR and not a writable cell.
             // Its JSON pointer retains the object identity without inventing a cell address.
+            // Notes and comments are native source text anchored to a cell but
+            // not the cell's value; their pointer keeps them apart from it.
+            for (ci, comment) in sheet["comments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                walk(
+                    &comment["text"],
+                    format!("/sheets/{si}/comments/{ci}/text"),
+                    document,
+                    &mut input.sources,
+                );
+            }
             if let Some(drawings) = sheet["drawings"].as_array() {
                 for (di, drawing) in drawings.iter().enumerate() {
                     for key in ["text", "description"] {

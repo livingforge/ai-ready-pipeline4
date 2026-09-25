@@ -180,6 +180,17 @@ pub(crate) fn write_archive(
     destination: &Path,
     patched: &BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
+    write_archive_without(raw, destination, patched, &BTreeSet::new())
+}
+
+/// Writes the package with `patched` parts replaced or added and `removed`
+/// parts left out; all other entries are copied unchanged.
+pub(super) fn write_archive_without(
+    raw: &[u8],
+    destination: &Path,
+    patched: &BTreeMap<String, Vec<u8>>,
+    removed: &BTreeSet<String>,
+) -> Result<()> {
     let mut source = ZipArchive::new(Cursor::new(raw))?;
     let file = fs::OpenOptions::new()
         .write(true)
@@ -191,6 +202,9 @@ pub(crate) fn write_archive(
     for i in 0..source.len() {
         let entry = source.by_index(i)?;
         copied.insert(entry.name().to_owned());
+        if removed.contains(entry.name()) {
+            continue;
+        }
         if let Some(bytes) = patched.get(entry.name()) {
             let mut options = SimpleFileOptions::default().compression_method(entry.compression());
             if let Some(time) = entry.last_modified() {

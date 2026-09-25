@@ -1,7 +1,10 @@
 //! Lossless DrawingML facts. Coordinates are zero-based cells / EMU, not pixels.
 use super::*;
 
-fn target(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str, kind: &str) -> Result<String> {
+const THREADED: &str = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments";
+
+/// Resolves a relationship of `base` to its (type, part).
+fn related(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str) -> Result<(String, String)> {
     let key = relationships_part(base)?;
     let doc = xml(parts.get(&key).context("missing object relationships")?)?;
     let rel = doc
@@ -12,15 +15,169 @@ fn target(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str, kind: &str) -
         rel.attribute("TargetMode") != Some("External"),
         "external object relationship is unsupported"
     );
-    ensure!(
-        rel.attribute("Type").is_some_and(|v| v.ends_with(kind)),
-        "unexpected object relationship type"
-    );
     let value = rel.attribute("Target").context("missing object target")?;
     ensure!(!value.contains(['\\', ':', '%']), "invalid object target");
     let resolved = relationship_target(base, value)?;
     ensure!(parts.contains_key(&resolved), "missing object part");
-    Ok(resolved)
+    Ok((rel.attribute("Type").unwrap_or("").to_owned(), resolved))
+}
+
+fn target(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str, kind: &str) -> Result<String> {
+    let (relationship, part) = related(parts, base, id)?;
+    ensure!(
+        relationship.ends_with(kind),
+        "unexpected object relationship type"
+    );
+    Ok(part)
+}
+
+/// Controls on a sheet by shape ID, as (settings, assigned macro). Excel keeps
+/// these outside DrawingML: the macro on `controlPr`, and the object type,
+/// linked cell and list range of a form control in its `ctrlProp` part.
+/// ActiveX settings live in binary parts and are not read.
+fn controls(
+    parts: &BTreeMap<String, Vec<u8>>,
+    sheet_part: &str,
+    sheet: Node<'_, '_>,
+) -> Result<BTreeMap<String, (Value, Option<String>)>> {
+    let mut output = BTreeMap::new();
+    for control in sheet
+        .descendants()
+        .filter(|n| n.has_tag_name((NS, "control")))
+    {
+        let Some(shape) = control.attribute("shapeId") else {
+            continue;
+        };
+        let property = child(control, "controlPr");
+        // The mc:Fallback copy repeats the control without its properties.
+        if property.is_none() && output.contains_key(shape) {
+            continue;
+        }
+        let (relationship, part) = related(
+            parts,
+            sheet_part,
+            control
+                .attribute((REL, "id"))
+                .context("missing control relationship")?,
+        )?;
+        let settings = if relationship.ends_with("/ctrlProp") {
+            let doc = xml(&parts[&part])?;
+            let root = doc.root_element();
+            json!({"kind":root.attribute("objectType").unwrap_or(""),
+                "linked_cell":root.attribute("fmlaLink"),"list_range":root.attribute("fmlaRange")})
+        } else {
+            json!({"kind":"ActiveX","linked_cell":null,"list_range":null})
+        };
+        let assigned = property
+            .and_then(|p| p.attribute("macro"))
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned);
+        output.insert(shape.to_owned(), (settings, assigned));
+    }
+    Ok(output)
+}
+
+/// Display names of threaded comment authors by person ID.
+pub(super) fn persons(parts: &BTreeMap<String, Vec<u8>>) -> Result<BTreeMap<String, String>> {
+    let mut output = BTreeMap::new();
+    let Some(rels) = parts.get("xl/_rels/workbook.xml.rels") else {
+        return Ok(output);
+    };
+    let doc = xml(rels)?;
+    for rel in doc.descendants().filter(|n| {
+        n.has_tag_name((PKG_REL, "Relationship"))
+            && n.attribute("Type").is_some_and(|t| t.ends_with("/person"))
+    }) {
+        let part = target(
+            parts,
+            "xl/workbook.xml",
+            rel.attribute("Id").context("missing relationship ID")?,
+            "/person",
+        )?;
+        let people = xml(&parts[&part])?;
+        for person in people
+            .descendants()
+            .filter(|n| n.has_tag_name((THREADED, "person")))
+        {
+            if let (Some(id), Some(name)) =
+                (person.attribute("id"), person.attribute("displayName"))
+            {
+                output.insert(id.to_owned(), name.to_owned());
+            }
+        }
+    }
+    Ok(output)
+}
+
+/// Notes and threaded comments on a sheet. Excel also saves each threaded
+/// comment as a placeholder note for older versions; those notes are left out.
+pub(super) fn extract_comments(
+    parts: &BTreeMap<String, Vec<u8>>,
+    persons: &BTreeMap<String, String>,
+    sheet_part: &str,
+) -> Result<Vec<Value>> {
+    let Some(rels) = parts.get(&relationships_part(sheet_part)?) else {
+        return Ok(vec![]);
+    };
+    let rels = xml(rels)?;
+    let mut notes = vec![];
+    let mut threads = vec![];
+    for rel in rels
+        .descendants()
+        .filter(|n| n.has_tag_name((PKG_REL, "Relationship")))
+    {
+        let kind = rel.attribute("Type").unwrap_or("");
+        let threaded = kind.ends_with("/threadedComment");
+        if kind != format!("{REL}/comments") && !threaded {
+            continue;
+        }
+        let part = target(
+            parts,
+            sheet_part,
+            rel.attribute("Id").context("missing relationship ID")?,
+            if threaded {
+                "/threadedComment"
+            } else {
+                "/comments"
+            },
+        )?;
+        let doc = xml(&parts[&part])?;
+        if threaded {
+            for comment in doc
+                .descendants()
+                .filter(|n| n.has_tag_name((THREADED, "threadedComment")))
+            {
+                threads.push(json!({
+                    "address":comment.attribute("ref").context("missing comment reference")?,
+                    "kind":if comment.attribute("parentId").is_some() {"reply"} else {"thread"},
+                    "author":comment.attribute("personId").and_then(|p| persons.get(p)),
+                    "text":comment.children().find(|n| n.has_tag_name((THREADED, "text"))).and_then(|n| n.text()).unwrap_or("")}));
+            }
+        } else {
+            let authors: Vec<_> = doc
+                .descendants()
+                .filter(|n| n.has_tag_name((NS, "author")))
+                .map(|n| n.text().unwrap_or(""))
+                .collect();
+            for comment in doc
+                .descendants()
+                .filter(|n| n.has_tag_name((NS, "comment")))
+            {
+                notes.push(json!({
+                    "address":comment.attribute("ref").context("missing comment reference")?,
+                    "kind":"note",
+                    "author":comment.attribute("authorId").and_then(|i| i.parse::<usize>().ok()).and_then(|i| authors.get(i)),
+                    "text":child(comment, "text").map(texts).unwrap_or_default()}));
+            }
+        }
+    }
+    let threaded: BTreeSet<_> = threads
+        .iter()
+        .filter_map(|c| c["address"].as_str().map(str::to_owned))
+        .collect();
+    notes.retain(|n| !n["address"].as_str().is_some_and(|a| threaded.contains(a)));
+    notes.extend(threads);
+    Ok(notes)
 }
 
 fn attributes(node: Node<'_, '_>) -> Value {
@@ -50,12 +207,37 @@ fn placement(node: Node<'_, '_>) -> Value {
     result
 }
 
+/// Resolves `mc:AlternateContent` to the anchors of one branch so that the same
+/// object is not extracted twice. Excel wraps form controls this way with the
+/// object in the first `mc:Choice` and an empty or VML `mc:Fallback`.
+fn alternate_content_branch<'a, 'input>(node: Node<'a, 'input>) -> Vec<Node<'a, 'input>> {
+    if !node.has_tag_name((MARKUP_COMPATIBILITY, "AlternateContent")) {
+        return vec![node];
+    }
+    let anchors = |branch: Node<'a, 'input>| -> Vec<Node<'a, 'input>> {
+        branch
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().namespace() == Some(XDR))
+            .collect()
+    };
+    node.children()
+        .filter(|n| n.has_tag_name((MARKUP_COMPATIBILITY, "Choice")))
+        .chain(
+            node.children()
+                .filter(|n| n.has_tag_name((MARKUP_COMPATIBILITY, "Fallback"))),
+        )
+        .map(anchors)
+        .find(|anchors| !anchors.is_empty())
+        .unwrap_or_default()
+}
+
 pub(super) fn extract_visuals(
     parts: &BTreeMap<String, Vec<u8>>,
     sheet_part: &str,
     sheet: Node<'_, '_>,
 ) -> Result<Vec<Value>> {
     let mut objects = vec![];
+    let controls = controls(parts, sheet_part, sheet)?;
     for drawing in sheet.children().filter(|n| n.has_tag_name((NS, "drawing"))) {
         let part = target(
             parts,
@@ -66,7 +248,12 @@ pub(super) fn extract_visuals(
             "/drawing",
         )?;
         let doc = xml(&parts[&part])?;
-        for anchor in doc.root_element().children().filter(Node::is_element) {
+        for anchor in doc
+            .root_element()
+            .children()
+            .filter(Node::is_element)
+            .flat_map(alternate_content_branch)
+        {
             for node in anchor.descendants().filter(|n| {
                 n.tag_name().namespace() == Some(XDR)
                     && matches!(
@@ -152,7 +339,14 @@ pub(super) fn extract_visuals(
                     }
                     linked_image = json!(blip.attribute((REL, "link")));
                 }
+                let control = controls.get(raw_id);
+                let assigned = node
+                    .attribute("macro")
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| control.and_then(|(_, m)| m.clone()));
                 objects.push(json!({"id":format!("{part}#{raw_id}"),"part":part,"kind":kind,
+                    "macro":assigned,"control":control.map(|(settings, _)| settings),
                     "name":property.and_then(|n|n.attribute("name")).unwrap_or(""),"description":property.and_then(|n|n.attribute("descr")).unwrap_or(""),
                     "text":text,"anchor":placement(anchor),"group":group.map(|v|format!("{part}#{v}")),"transform":transform,
                     "geometry":shape.and_then(|n|n.children().find(|n|n.has_tag_name((DRAWING,"prstGeom")))).and_then(|n|n.attribute("prst")),
@@ -220,6 +414,26 @@ mod tests {
         assert_eq!(v[1]["anchor"]["from"]["row"], 3);
         assert_eq!(v[2]["connections"][0]["target"], v[1]["id"]);
         assert_eq!(v[2]["connections"][0]["basis"], "explicit");
+    }
+    #[test]
+    fn alternate_content_uses_one_branch_and_falls_back_when_choice_is_empty() {
+        let shape = |name: &str| {
+            format!(
+                r#"<xdr:absoluteAnchor><xdr:pos x="1" y="2"/><xdr:ext cx="3" cy="4"/><xdr:sp><xdr:nvSpPr><xdr:cNvPr id="1" name="{name}"/></xdr:nvSpPr></xdr:sp></xdr:absoluteAnchor>"#
+            )
+        };
+        let wrapped = |choice: &str, fallback: &str| {
+            parts(&format!(
+                r#"<mc:AlternateContent xmlns:mc="{MARKUP_COMPATIBILITY}"><mc:Choice Requires="a14">{choice}</mc:Choice><mc:Fallback>{fallback}</mc:Fallback></mc:AlternateContent>"#
+            ))
+        };
+        let both = extract(&wrapped(&shape("choice"), &shape("fallback"))).unwrap();
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0]["name"], "choice");
+        assert_eq!(both[0]["anchor"]["kind"], "absoluteAnchor");
+        let fallback = extract(&wrapped("", &shape("fallback"))).unwrap();
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0]["name"], "fallback");
     }
     #[test]
     fn absolute_linked_picture_is_identified_without_loading_external_content() {

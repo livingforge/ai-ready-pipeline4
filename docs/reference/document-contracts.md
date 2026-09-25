@@ -931,8 +931,14 @@
 | <code>/properties/sheets/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}}},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
 | <code>/properties/sheets/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}}},"then":{"properties":{"value":{"type":"null"}}}}</code> |
 | <code>/properties/sheets/items/properties/cells/items/allOf/5</code> | <code>{"else":{"properties":{"cached":{"type":"null"},"formula":{"type":"null"}}},"if":{"properties":{"type":{"const":"formula"}}},"then":{"properties":{"formula":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/comments</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/comments/items</code> | <code>{"additionalProperties":false,"required":["address","kind","author","text"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/author</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/kind</code> | <code>{"enum":["note","thread","reply"]}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","part","kind","name","description","text","anchor","group","transform","geometry","connections","image","linked_image"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","part","kind","name","description","text","anchor","group","transform","geometry","connections","image","linked_image","macro","control"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
@@ -955,6 +961,12 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/end</code> | <code>{"enum":["stCxn","endCxn"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/site</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/target</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/0</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1</code> | <code>{"additionalProperties":false,"required":["kind","linked_cell","list_range"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/kind</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/linked_cell</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/list_range</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/description</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/geometry</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/group</code> | <code>{"type":["string","null"]}</code> |
@@ -967,6 +979,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/kind</code> | <code>{"enum":["shape","picture","connector","group","graphic"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/linked_image</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/macro</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/name</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/part</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/text</code> | <code>{"type":"string"}</code> |

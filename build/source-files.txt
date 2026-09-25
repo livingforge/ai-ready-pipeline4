@@ -20,6 +20,7 @@ crates/arp4-cli/src/agent_format/toon.rs
 crates/arp4-cli/src/cli.rs
 crates/arp4-cli/src/data.rs
 crates/arp4-cli/src/document_source.rs
+crates/arp4-cli/src/document_source/word.rs
 crates/arp4-cli/src/document_structure.rs
 crates/arp4-cli/src/document_structure/context.rs
 crates/arp4-cli/src/document_structure/corrections.rs
@@ -40,15 +41,16 @@ crates/arp4-cli/src/excel/import.rs
 crates/arp4-cli/src/excel/mod.rs
 crates/arp4-cli/src/excel/operations.rs
 crates/arp4-cli/src/excel/package.rs
-crates/arp4-cli/src/excel/render.ps1
+crates/arp4-cli/src/excel/references.rs
+crates/arp4-cli/src/excel/relocation.rs
 crates/arp4-cli/src/excel/render.rs
+crates/arp4-cli/src/excel/render_native.rs
 crates/arp4-cli/src/excel/visuals.rs
 crates/arp4-cli/src/excel/worksheet.rs
 crates/arp4-cli/src/excel/writeback.rs
 crates/arp4-cli/src/lib.rs
 crates/arp4-cli/src/main.rs
 crates/arp4-cli/src/native_text.rs
-crates/arp4-cli/src/ocr.ps1
 crates/arp4-cli/src/ocr.rs
 crates/arp4-cli/src/project.rs
 crates/arp4-cli/src/registry/mod.rs

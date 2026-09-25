@@ -454,6 +454,23 @@ fn emit_status(
 }
 
 fn main() -> std::process::ExitCode {
+    #[cfg(windows)]
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--internal-excel-render")
+    {
+        let outcome = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("Excel render request path missing"))
+            .and_then(|path| arp4_cli::excel::render_worker(std::path::Path::new(&path)));
+        return match outcome {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Excel render failed: {error:#}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {

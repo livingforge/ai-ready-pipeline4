@@ -207,8 +207,8 @@ fn extraction(path: &Path) -> Result<Value> {
         .unwrap_or("")
         .to_ascii_lowercase();
     ensure!(
-        ["xlsx", "xlsm", "docx", "pptx", "pdf"].contains(&extension.as_str()),
-        "document structure requires Excel, DOCX, PPTX or PDF extraction"
+        crate::document_source::structure_formats().contains(&extension.as_str()),
+        "document structure requires Excel, Word, PPTX or PDF extraction"
     );
     context::assets(path, &value)?;
     Ok(value)
@@ -402,7 +402,7 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
             );
             let ext = extraction(&path)?;
             ensure!(
-                ["xlsx", "xlsm"].contains(&policy::extension(&ext).as_str()),
+                crate::document_source::is_excel(&policy::extension(&ext)),
                 "automatic rendering requires Excel; register externally rendered PNGs with structure region"
             );
             let before = read(&structure, None)?;

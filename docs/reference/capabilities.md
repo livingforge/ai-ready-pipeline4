@@ -16,7 +16,12 @@
     "document_input_formats": [
       "xlsx",
       "xlsm",
+      "xltx",
+      "xltm",
       "docx",
+      "docm",
+      "dotx",
+      "dotm",
       "pptx",
       "pdf",
       "txt",
@@ -32,7 +37,12 @@
     "document_structure_formats": [
       "xlsx",
       "xlsm",
+      "xltx",
+      "xltm",
       "docx",
+      "docm",
+      "dotx",
+      "dotm",
       "pptx",
       "pdf"
     ],
@@ -41,12 +51,17 @@
     "document_structure_requirement_policy": {
       "always_required_extensions": [
         "docx",
+        "docm",
+        "dotx",
+        "dotm",
         "pptx",
         "pdf"
       ],
       "conditional_extensions": [
         "xlsx",
-        "xlsm"
+        "xlsm",
+        "xltx",
+        "xltm"
       ],
       "diagram_min_shapes": 3
     },
@@ -102,7 +117,7 @@
   },
   "implementation": "rust",
   "limitations": [
-    "Excel supports scalar/structural writeback and PNG insertion. Windows OCR runs automatically on imported Excel image assets; unsupported images retain an unavailable reason. DOCX/PPTX support existing XML text runs; PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR for DOCX/PPTX/PDF images, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Existing Excel drawing anchors and same-sheet A1 references shift with structural edits; Excel performs recalculation. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
+    "Excel supports scalar/structural writeback and PNG insertion. Windows OCR runs automatically on imported Excel image assets; unsupported images retain an unavailable reason. Word (DOCX/DOCM/DOTX/DOTM) and PPTX support existing XML text runs; Word field results are read-only because Word recalculates them. Encrypted (password, IRM, sensitivity label), binary (.xls/.xlsb/.doc/.ppt) and Strict Open XML files are rejected with resave guidance. Excel chart, dialog and macro sheets are not extracted and are preserved unchanged; row/column edits are rejected for workbooks with a VBA project, macro or dialog sheets, or form controls/comments/embedded objects on the edited sheet, and where Excel itself refuses them (table header/totals rows, cutting through pivot tables or array formulas); PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR for DOCX/PPTX/PDF images, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Structural edits move references like Excel does: formulas on every sheet, defined names, conditional formats, validations, tables, pivot sources, chart series, sparklines, merges, column widths and drawing anchors; Excel performs recalculation. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
   ],
   "release_ready": false,
   "version": "1.0.0-alpha.1"

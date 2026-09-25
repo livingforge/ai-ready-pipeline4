@@ -1,9 +1,87 @@
 use super::*;
 
+/// Sheet types that carry no cell grid for extraction. Their parts are kept
+/// byte-for-byte on writeback because only patched parts are rewritten.
+fn skipped_sheet_kind(relationship_type: &str) -> Option<&'static str> {
+    match relationship_type
+        .strip_prefix(REL)
+        .or_else(|| relationship_type.strip_prefix(MS_REL))?
+    {
+        "/chartsheet" => Some("chartsheet"),
+        "/dialogsheet" => Some("dialogsheet"),
+        "/xlMacrosheet" | "/xlIntlMacrosheet" => Some("macrosheet"),
+        _ => None,
+    }
+}
+
+/// Master cells of shared formulas by group index: (column, row, formula).
+fn shared_formula_masters<'a>(
+    sheet_data: Node<'a, '_>,
+) -> Result<BTreeMap<&'a str, (u32, u32, &'a str)>> {
+    let mut masters = BTreeMap::new();
+    for cell in sheet_data
+        .descendants()
+        .filter(|n| n.has_tag_name((NS, "c")))
+    {
+        let Some(formula) = child(cell, "f") else {
+            continue;
+        };
+        if formula.attribute("t") == Some("shared")
+            && formula.attribute("ref").is_some()
+            && let Some(text) = formula.text()
+        {
+            let (column, row) = coordinate(cell.attribute("r").context("missing cell address")?)?;
+            masters.insert(
+                formula
+                    .attribute("si")
+                    .context("shared formula without si")?,
+                (column, row, text),
+            );
+        }
+    }
+    Ok(masters)
+}
+
+/// The formula a cell shows. Members of a shared formula store only the group
+/// index; Excel derives their formula from the master by moving relative references.
+fn formula_text(
+    formula: Node<'_, '_>,
+    address: &str,
+    masters: &BTreeMap<&str, (u32, u32, &str)>,
+) -> Result<String> {
+    if let Some(text) = formula.text() {
+        return Ok(text.to_owned());
+    }
+    if formula.attribute("t") != Some("shared") {
+        return Ok(String::new());
+    }
+    let group = formula
+        .attribute("si")
+        .context("shared formula without si")?;
+    let (master_column, master_row, text) = masters
+        .get(group)
+        .context("shared formula master missing")?;
+    let (column, row) = coordinate(address)?;
+    references::shift_relative(
+        text,
+        i64::from(row) - i64::from(*master_row),
+        i64::from(column) - i64::from(*master_column),
+    )
+}
+
+/// A worksheet as (name, part, state).
+type Worksheet = (String, String, String);
+
+/// Returns worksheets and the non-worksheet sheets as {name, kind}.
 pub(super) fn sheet_parts(
     parts: &BTreeMap<String, Vec<u8>>,
-) -> Result<Vec<(String, String, String)>> {
+) -> Result<(Vec<Worksheet>, Vec<Value>)> {
     let workbook = xml(parts.get("xl/workbook.xml").context("missing workbook")?)?;
+    ensure!(
+        workbook.root_element().tag_name().namespace()
+            != Some("http://purl.oclc.org/ooxml/spreadsheetml/main"),
+        "Strict Open XML workbooks are not supported; save the file in Excel as 'Excel Workbook (*.xlsx)' and import that copy"
+    );
     ensure!(
         workbook.root_element().has_tag_name((NS, "workbook")),
         "transitional OOXML workbook required"
@@ -20,6 +98,7 @@ pub(super) fn sheet_parts(
         );
     }
     let mut output = vec![];
+    let mut skipped = vec![];
     let mut names = BTreeSet::new();
     let mut targets = BTreeSet::new();
     for s in child(workbook.root_element(), "sheets")
@@ -37,6 +116,21 @@ pub(super) fn sheet_parts(
         ensure!(
             rel.attribute("TargetMode") != Some("External"),
             "external worksheet is unsupported"
+        );
+        let kind = rel
+            .attribute("Type")
+            .context("missing sheet relationship type")?;
+        if let Some(kind) = skipped_sheet_kind(kind) {
+            ensure!(
+                names.insert(name.to_lowercase()),
+                "duplicate worksheet name or part"
+            );
+            skipped.push(json!({"name":name,"kind":kind}));
+            continue;
+        }
+        ensure!(
+            kind == format!("{REL}/worksheet"),
+            "unsupported sheet relationship type: {kind}"
         );
         let target = rel
             .attribute("Target")
@@ -73,7 +167,7 @@ pub(super) fn sheet_parts(
         ));
     }
     ensure!(!output.is_empty(), "workbook has no worksheets");
-    Ok(output)
+    Ok((output, skipped))
 }
 
 impl Workbook {
@@ -81,6 +175,7 @@ impl Workbook {
         Self::from_bytes(fs::read(path)?)
     }
     pub fn from_bytes(raw: Vec<u8>) -> Result<Self> {
+        crate::document_source::ensure_zip_package(&raw)?;
         let mut archive = ZipArchive::new(Cursor::new(&raw))?;
         ensure!(
             archive.len() <= 10000
@@ -189,7 +284,9 @@ impl Workbook {
             }
         }
         let mut sheets = vec![];
-        for (index, (name, part, state)) in sheet_parts(&parts)?.into_iter().enumerate() {
+        let (worksheets, skipped_sheets) = sheet_parts(&parts)?;
+        let persons = visuals::persons(&parts)?;
+        for (index, (name, part, state)) in worksheets.into_iter().enumerate() {
             let doc = xml(&parts[&part])?;
             ensure!(
                 doc.root_element().has_tag_name((NS, "worksheet")),
@@ -198,12 +295,16 @@ impl Workbook {
             let mut cells = vec![];
             let mut addresses = BTreeSet::new();
             if let Some(data) = child(doc.root_element(), "sheetData") {
+                let masters = shared_formula_masters(data)?;
                 for row in data.children().filter(|n| n.has_tag_name((NS, "row"))) {
                     for c in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
                         let address = c.attribute("r").context("missing cell address")?;
                         coordinate(address)?;
                         ensure!(addresses.insert(address), "duplicate Excel cell");
                         let formula = child(c, "f");
+                        let formula_text = formula
+                            .map(|f| formula_text(f, address, &masters))
+                            .transpose()?;
                         let raw_value = child(c, "v").and_then(|n| n.text()).unwrap_or("");
                         let (kind, value) = match c.attribute("t").unwrap_or("n") {
                             "inlineStr" => ("string", json!(texts(c))),
@@ -242,7 +343,7 @@ impl Workbook {
                         let format = styles
                             .get(c.attribute("s").unwrap_or("0").parse::<usize>()?)
                             .context("invalid style index")?;
-                        cells.push(json!({"id":format!("c-{}-{address}",index+1),"address":address,"type":if formula.is_some(){"formula"}else{kind},"value":value,"cached":if formula.is_some(){value.clone()}else{Value::Null},"formula":formula.map(|f|f.text().unwrap_or("")),"number_format":format}));
+                        cells.push(json!({"id":format!("c-{}-{address}",index+1),"address":address,"type":if formula.is_some(){"formula"}else{kind},"value":value,"cached":if formula.is_some(){value.clone()}else{Value::Null},"formula":formula_text,"number_format":format}));
                         cells.last_mut().unwrap()["style"] = appearance
                             .get(c.attribute("s").unwrap_or("0").parse::<usize>()?)
                             .context("invalid appearance index")?
@@ -271,7 +372,8 @@ impl Workbook {
             }
             let drawings = visuals::extract_visuals(&parts, &part, doc.root_element())?;
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
-            sheets.push(json!({"name":name,"part":part,"state":state,"merges":merges,"cells":cells,"drawings":drawings,"tables":tables}));
+            let comments = visuals::extract_comments(&parts, &persons, &part)?;
+            sheets.push(json!({"name":name,"part":part,"state":state,"merges":merges,"cells":cells,"drawings":drawings,"tables":tables,"comments":comments}));
         }
         // Name unique images in first-use order across the workbook. Hashes remain
         // integrity metadata rather than names that readers must copy.
@@ -293,6 +395,11 @@ impl Workbook {
                 }
             }
         }
-        Ok(Self { raw, parts, sheets })
+        Ok(Self {
+            raw,
+            parts,
+            sheets,
+            skipped_sheets,
+        })
     }
 }

@@ -46,7 +46,7 @@ impl Store {
             .unwrap_or("")
             .to_ascii_lowercase();
         let structure_format =
-            ["xlsx", "xlsm", "docx", "pptx", "pdf"].contains(&extension.as_str());
+            crate::document_source::structure_formats().contains(&extension.as_str());
         let (interpretation, interpretation_report) = if source_current && structure_format {
             let (structure, report) =
                 crate::document_structure::replay_corrections(&self.root, journal, &extraction)?;
@@ -65,10 +65,9 @@ impl Store {
         let native_text = extraction["parser"]
             .as_str()
             .is_some_and(|p| p.contains(";native-text/"));
-        let text_format = native_text
-            || extraction["parser"]
-                .as_str()
-                .is_some_and(|p| p.contains(";text-runs/"));
+        let text_format = extraction["parser"]
+            .as_str()
+            .is_some_and(|p| !p.contains(";cells/"));
         ensure!(
             !text_format || array(&mappings["operations"])?.is_empty(),
             "text formats support existing text edits only; structural/image operations are Excel-only"

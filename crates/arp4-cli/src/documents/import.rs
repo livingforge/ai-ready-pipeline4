@@ -28,12 +28,20 @@ impl Store {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
+        if let Some(replacement) = crate::document_source::binary_office_replacement(&ext) {
+            bail!(
+                ".{ext} is a binary Office format; save it in Office as {replacement} and import that copy"
+            );
+        }
+        let formats = crate::document_source::input_formats();
         ensure!(
-            [
-                "xlsx", "xlsm", "docx", "pptx", "pdf", "txt", "md", "csv", "tsv"
-            ]
-            .contains(&ext.as_str()),
-            "import supports .xlsx/.xlsm/.docx/.pptx/.pdf/.txt/.md/.csv/.tsv"
+            formats.contains(&ext.as_str()),
+            "import supports {}",
+            formats
+                .iter()
+                .map(|f| format!(".{f}"))
+                .collect::<Vec<_>>()
+                .join("/")
         );
         let current = self.document(id)?;
         let index = self.index()?;
@@ -69,7 +77,7 @@ impl Store {
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"pages":[],"sheets":book.sheets(),"findings":[{"level":"warning","code":"R001","message":note}],"assets":asset_info});
+        let extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"pages":[],"sheets":book.sheets(),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
         validate("extraction", &extraction)?;
         let extraction_hash = hash(&encoded(&extraction));
         let interpretation = if current.join("mappings.yml").exists() {
@@ -125,7 +133,7 @@ impl Store {
                     entries.push(json!({"page":page,"block":"formulas","field":format!("{f}-formula"),"origins":[],"reason":"数式原文。Rust版では変更不可","target":target,"writeback":"excluded","position":{"row":f,"column":"formula","type":"string"}}));
                 }
             }
-            let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":note}});
+            let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":&note}});
             entries.push(json!({"page":page,"block":"extraction-notes","field":null,"origins":[],"reason":"抽出範囲の申告","target":null,"writeback":"excluded"}));
             for (block, body, cols) in [
                 ("table-1", rows, columns.into_iter().collect::<Vec<_>>()),

@@ -23,6 +23,10 @@ impl Store {
             array(&result.mappings["operations"])?,
             array(&result.extraction["sheets"])?,
         )?;
+        // Report unsupported row/column edits in the plan, before any output is written.
+        if let Source::Excel(workbook) = &book {
+            workbook.ensure_structural_edits_supported(&operations)?;
+        }
         let image_operations = excel::parse_image_operations(
             array(&result.mappings["operations"])?,
             array(&result.extraction["sheets"])?,
