@@ -148,7 +148,9 @@ pub fn parse(text: &str, is_json: bool) -> Result<Value> {
     if is_json {
         Ok(serde_json::from_str::<Strict>(text)?.0)
     } else {
-        let options = serde_saphyr::options! { budget: serde_saphyr::budget! {max_anchors: 0}, alias_limits: serde_saphyr::alias_limits! {max_alias_expansions_per_anchor: 0}, no_schema: true, legacy_octal_numbers: true };
+        // Anchors and aliases are rejected, so parsing stays linear in the input; the
+        // default node, event and scalar caps would only refuse large files ARP wrote itself.
+        let options = serde_saphyr::options! { budget: serde_saphyr::budget! {max_anchors: 0, max_nodes: usize::MAX, max_events: usize::MAX, max_total_scalar_bytes: usize::MAX}, alias_limits: serde_saphyr::alias_limits! {max_alias_expansions_per_anchor: 0}, no_schema: true, legacy_octal_numbers: true };
         Ok(serde_saphyr::from_str_with_options::<Strict>(text, options)?.0)
     }
 }
@@ -369,5 +371,19 @@ mod tests {
             ])
         );
         assert_eq!(grouped_warnings([]), json!([]));
+    }
+
+    #[test]
+    fn yaml_written_by_arp_reads_back_beyond_parser_default_budgets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.yml");
+        let value = json!({"cells":(0..=1_000_000).collect::<Vec<_>>(),"text":"x".repeat(65 * 1024 * 1024)});
+        write(&path, &value).unwrap();
+        assert!(read(&path, None).unwrap() == value);
+    }
+
+    #[test]
+    fn yaml_rejects_anchors_and_aliases() {
+        assert!(parse("a: &x 1\nb: *x\n", false).is_err());
     }
 }

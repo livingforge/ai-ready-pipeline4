@@ -126,7 +126,13 @@ impl Store {
                 let row_id = format!("r{row}");
                 rows[&row_id][column] = c["value"].clone();
                 let target = json!({"sheet":sheet["name"],"cell":address});
-                entries.push(json!({"page":page,"block":"table-1","field":c["id"],"origins":[],"reason":"原本から転記","target":target,"writeback":if book.parser()=="native-text/1"||c["type"]=="formula"||c["type"]=="error"{"excluded"}else{"cell"},"position":{"row":row_id,"column":column,"type":kind(&c["value"])}}));
+                let hidden = excel::hiding_merge(&sheet["merges"], address)?.is_some();
+                let reason = if hidden {
+                    "結合セルの左上以外のため書き戻し対象外"
+                } else {
+                    "原本から転記"
+                };
+                entries.push(json!({"page":page,"block":"table-1","field":c["id"],"origins":[],"reason":reason,"target":target,"writeback":if hidden||book.parser()=="native-text/1"||c["type"]=="formula"||c["type"]=="error"{"excluded"}else{"cell"},"position":{"row":row_id,"column":column,"type":kind(&c["value"])}}));
                 if c["type"] == "formula" {
                     let f = string(&c["id"])?;
                     formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));

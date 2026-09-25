@@ -605,14 +605,12 @@ pub(super) fn rewrite_sheet_references(
                 ) && let Some(reference) = node.attribute("ref")
                 {
                     let area = Area::parse(reference)?;
-                    match map_area(area, &own)? {
-                        Some(mapped)
-                            if name == "mergeCell"
-                                && mapped.columns.is_some_and(|(a, b)| a == b)
-                                && mapped.rows.is_some_and(|(a, b)| a == b) =>
-                        {
-                            removals.push(node.range())
-                        }
+                    let mapped = if name == "mergeCell" {
+                        map_merge(area, &own)?
+                    } else {
+                        map_area(area, &own)?
+                    };
+                    match mapped {
                         Some(mapped) if mapped != area => {
                             attributes.set(original, node, "ref", &mapped.render()?)?
                         }

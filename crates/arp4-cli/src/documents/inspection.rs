@@ -422,6 +422,15 @@ fn validate_coverage(
     let mut covered_cells = BTreeSet::new();
     let mut covered_origins = BTreeSet::new();
     let mut destinations = BTreeSet::new();
+    // Written positions are checked against the merges as they stand after
+    // the operations: an insertion inside a merge grows it over the new cells.
+    let mut merges = BTreeMap::new();
+    for sheet in array(&extraction["sheets"])? {
+        merges.insert(
+            string(&sheet["name"])?.to_owned(),
+            excel::merges_after(sheet, operations)?,
+        );
+    }
     for e in entries {
         let k = key(e)?;
         ensure!(actual.insert(k.clone()), "duplicate mapping");
@@ -450,10 +459,27 @@ fn validate_coverage(
             covered_cells.insert(pair);
         }
         match string(&e["writeback"])? {
-            "excluded" => ensure!(
-                !string(&e["reason"])?.trim().is_empty(),
-                "exclusion requires reason"
-            ),
+            "excluded" => {
+                let reason = string(&e["reason"])?;
+                ensure!(!reason.trim().is_empty(), "exclusion requires reason");
+                // An excluded cell is never written, so an edit would be lost.
+                if let (Some(MappingTarget::Cell { sheet, cell }), Some(value)) =
+                    (&mapped_target, values.get(&k))
+                {
+                    let source = &cells[&(sheet.clone(), cell.clone())];
+                    let original = match source["formula"].as_str() {
+                        Some(formula) if e["position"]["column"] == "formula" => {
+                            json!(format!("={formula}"))
+                        }
+                        _ => source["value"].clone(),
+                    };
+                    ensure!(
+                        *value == original
+                            || (value.is_number() && value.as_f64() == original.as_f64()),
+                        "{sheet}!{cell} is not written back ({reason}), so its value must stay {original}"
+                    );
+                }
+            }
             "pending" => {}
             "cell" => {
                 let value = values.get(&k).context("writeback requires field")?;
@@ -461,10 +487,11 @@ fn validate_coverage(
                     !text_format || value.is_string(),
                     "text replacement must be a string; use an empty string to clear text"
                 );
-                match mapped_target.context("cell writeback requires target")? {
+                let destination = match mapped_target.context("cell writeback requires target")? {
                     MappingTarget::Cell { sheet, cell } => {
-                        let pair = (sheet.clone(), cell.clone());
-                        let source = cells.get(&pair).context("missing target")?;
+                        let source = cells
+                            .get(&(sheet.clone(), cell.clone()))
+                            .context("missing target")?;
                         ensure!(
                             source["type"] != "formula" && source["type"] != "error",
                             "formula/error cell cannot be overwritten"
@@ -475,29 +502,8 @@ fn validate_coverage(
                                 || source["type"] == "null",
                             "Excel target type mismatch"
                         );
-                        if let Some(mapped) = excel::map_coordinate(&sheet, &cell, operations)? {
-                            ensure!(
-                                destinations.insert((sheet.clone(), mapped.clone())),
-                                "duplicate writeback target"
-                            );
-                        }
-                        let (col, row) = excel::coordinate(&cell)?;
-                        for sheet in array(&extraction["sheets"])?
-                            .iter()
-                            .filter(|s| s["name"] == pair.0)
-                        {
-                            for merge in array(&sheet["merges"])? {
-                                let (a, b) =
-                                    string(merge)?.split_once(':').context("invalid merge")?;
-                                let (c1, r1) = excel::coordinate(a)?;
-                                let (c2, r2) = excel::coordinate(b)?;
-                                ensure!(
-                                    !(c1 <= col && col <= c2 && r1 <= row && row <= r2)
-                                        || (col, row) == (c1, r1),
-                                    "merged cell is not top-left"
-                                );
-                            }
-                        }
+                        excel::map_coordinate(&sheet, &cell, operations)?
+                            .map(|mapped| (sheet, mapped))
                     }
                     MappingTarget::InsertionRow {
                         sheet,
@@ -513,10 +519,7 @@ fn validate_coverage(
                             None,
                             operations,
                         )?;
-                        ensure!(
-                            destinations.insert((sheet, mapped)),
-                            "duplicate writeback target"
-                        );
+                        Some((sheet, mapped))
                     }
                     MappingTarget::InsertionColumn {
                         sheet,
@@ -532,11 +535,19 @@ fn validate_coverage(
                             Some(row),
                             operations,
                         )?;
-                        ensure!(
-                            destinations.insert((sheet, mapped)),
-                            "duplicate writeback target"
-                        );
+                        Some((sheet, mapped))
                     }
+                };
+                if let Some((sheet, cell)) = destination {
+                    excel::ensure_not_hidden(
+                        merges.get(&sheet).context("missing Excel target sheet")?,
+                        &sheet,
+                        &cell,
+                    )?;
+                    ensure!(
+                        destinations.insert((sheet, cell)),
+                        "duplicate writeback target"
+                    );
                 }
             }
             "operation" => {

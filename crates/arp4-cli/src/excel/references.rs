@@ -158,6 +158,14 @@ pub(super) fn map_area(area: Area, operations: &[&StructuralOperation]) -> Resul
     map_area_with(area, operations, false)
 }
 
+/// Maps a merged range; `None` when it is deleted or shrinks to one cell,
+/// which Excel no longer keeps as a merge.
+pub(super) fn map_merge(area: Area, operations: &[&StructuralOperation]) -> Result<Option<Area>> {
+    Ok(map_area(area, operations)?.filter(|mapped| {
+        !(mapped.columns.is_some_and(|(a, b)| a == b) && mapped.rows.is_some_and(|(a, b)| a == b))
+    }))
+}
+
 fn map_area_with(
     area: Area,
     operations: &[&StructuralOperation],

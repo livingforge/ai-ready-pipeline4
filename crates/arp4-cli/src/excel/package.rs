@@ -183,6 +183,18 @@ pub(crate) fn write_archive(
     write_archive_without(raw, destination, patched, &BTreeSet::new())
 }
 
+/// Writes the original bytes to a new file, so an unedited export keeps the
+/// source hash.
+pub(crate) fn write_unchanged(raw: &[u8], destination: &Path) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    file.write_all(raw)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 /// Writes the package with `patched` parts replaced or added and `removed`
 /// parts left out; all other entries are copied unchanged.
 pub(super) fn write_archive_without(
@@ -191,6 +203,11 @@ pub(super) fn write_archive_without(
     patched: &BTreeMap<String, Vec<u8>>,
     removed: &BTreeSet<String>,
 ) -> Result<()> {
+    // Rebuilding the archive rewrites ZIP headers (the zip crate adds S_IFREG
+    // to external attributes) even when every part is copied as-is.
+    if patched.is_empty() && removed.is_empty() {
+        return write_unchanged(raw, destination);
+    }
     let mut source = ZipArchive::new(Cursor::new(raw))?;
     let file = fs::OpenOptions::new()
         .write(true)

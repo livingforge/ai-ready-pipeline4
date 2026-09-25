@@ -24,7 +24,7 @@
 - 本文は原本を直接編集し、同じ文書IDで再import→候補のdiff→record→adoptする。contentのYAMLは確認用の派生ビューで、本文変更・構造操作・export/applyは未対応。再取込候補の `documents diff <候補ID>` はsource_impactで位置移動・文脈/順序変更・本文変更候補・追加削除・曖昧な対応を示し、registryがあれば同じ見出し範囲と依存する項目をaffected_entriesに示す。modified_candidate・ambiguousは対応を自動確定しない。根拠と承認は自動移行せず、再取込後はcaptureを更新して必要なレビューを行う。参照資料だけに使う--referenceとは区別する。
 - importのJSONにある `proposal_id` と `proposal` を使い、本文YAMLと対応表を確認して実際の成形を行う。
   Word/PPTX/PDFは置換文字列に改行・タブを含めず、既存runを個別に編集する。
-  型、page_id、既存の行・列、field ID、セル対応を維持する。行・列の追加削除は管理側 `mappings.yml` に `insert_rows` / `delete_rows` / `insert_columns` / `delete_columns` をreason付きで記録する。本文の追加行・列のmappingはCLIが再生成する。
+  型、page_id、既存の行・列、field ID、セル対応を維持する。行・列の追加削除は管理側 `mappings.yml` に `insert_rows` / `delete_rows` / `insert_columns` / `delete_columns` をreason付きで記録する。本文の追加行・列は `<操作ID>-<番号>`（1始まり）のキーで書き、既存の `r<行番号>`・列名に追加分の値を入れない。挿入で広がる結合の左上以外になるセルへの値は拒否されるため、結合の左上に書くか結合の外に挿入する。本文の追加行・列のmappingはCLIが再生成する。
 - `documents check --proposal <候補ID>` と `documents diff <候補ID>` で確認し、
   実際に作業したactor/model/promptを `documents record <候補ID> --model <モデル> --actor <担当> --prompt <ファイル>` で記録する。
   実施していない成形を記録しない。権限のある担当者が `documents adopt <候補ID> --reviewer <担当>` を行う。

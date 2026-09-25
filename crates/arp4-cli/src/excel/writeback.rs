@@ -104,16 +104,7 @@ impl Workbook {
                 change["after"].is_null() || found["type"] == kind(&change["after"]),
                 "Excel target type mismatch"
             );
-            let (col, row) = coordinate(cell)?;
-            for merge in array(&sheet["merges"])? {
-                let (a, b) = string(merge)?.split_once(':').unwrap();
-                let (c1, r1) = coordinate(a)?;
-                let (c2, r2) = coordinate(b)?;
-                ensure!(
-                    !(c1 <= col && col <= c2 && r1 <= row && row <= r2) || (col, row) == (c1, r1),
-                    "merged cell is not top-left"
-                );
-            }
+            ensure_not_hidden(&sheet["merges"], string(&sheet["name"])?, cell)?;
             ensure!(
                 updates
                     .entry(string(&sheet["part"])?.into())
@@ -242,31 +233,7 @@ impl Workbook {
             }
             patched.insert("xl/workbook.xml".into(), result.into_bytes());
         }
-        let mut source = ZipArchive::new(Cursor::new(&self.raw))?;
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(destination)?;
-        let mut output = ZipWriter::new(file);
-        output.set_raw_comment(source.comment().to_vec().into())?;
-        for i in 0..source.len() {
-            let entry = source.by_index(i)?;
-            if let Some(bytes) = patched.get(entry.name()) {
-                let mut options =
-                    SimpleFileOptions::default().compression_method(entry.compression());
-                if let Some(time) = entry.last_modified() {
-                    options = options.last_modified_time(time)
-                }
-                if let Some(mode) = entry.unix_mode() {
-                    options = options.unix_permissions(mode)
-                }
-                output.start_file(entry.name(), options)?;
-                output.write_all(bytes)?;
-            } else {
-                output.raw_copy_file(entry)?;
-            }
-        }
-        output.finish()?.sync_all()?;
+        write_archive(&self.raw, destination, &patched)?;
         let reread = Self::open(destination)?;
         for change in changes {
             let found = reread
@@ -332,16 +299,20 @@ impl Workbook {
                 .any(|n| n.to_lowercase().starts_with("_xmlsignatures/")),
             "signed Excel cannot be modified"
         );
+        let mut merges = BTreeMap::new();
+        for sheet in &self.sheets {
+            merges.insert(string(&sheet["name"])?, merges_after(sheet, &operations)?);
+        }
         let mut change_map: BTreeMap<(String, u32, u32), Value> = BTreeMap::new();
         for change in changes {
             let sheet = string(&change["sheet"])?;
-            let (column, row) = coordinate(string(&change["cell"])?)?;
-            ensure!(
-                self.sheets
-                    .iter()
-                    .any(|candidate| candidate["name"] == sheet),
-                "missing writeback sheet"
-            );
+            let cell = string(&change["cell"])?;
+            let (column, row) = coordinate(cell)?;
+            ensure_not_hidden(
+                merges.get(sheet).context("missing writeback sheet")?,
+                sheet,
+                cell,
+            )?;
             ensure!(
                 change_map
                     .insert((sheet.to_owned(), row, column), change["after"].clone())

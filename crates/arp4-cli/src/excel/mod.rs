@@ -1,4 +1,7 @@
-pub use coordinates::{column_name, column_number, coordinate, map_coordinate, resolve_insertion};
+pub use coordinates::{
+    column_name, column_number, coordinate, ensure_not_hidden, hiding_merge, map_coordinate,
+    merges_after, resolve_insertion,
+};
 mod coordinates;
 use coordinates::*;
 pub use operations::{parse_image_operations, parse_operations};
@@ -14,8 +17,8 @@ mod package;
 mod references;
 use references::*;
 mod relocation;
-pub(crate) use package::write_archive;
 use package::*;
+pub(crate) use package::{write_archive, write_unchanged};
 use relocation::*;
 mod render;
 #[cfg(windows)]

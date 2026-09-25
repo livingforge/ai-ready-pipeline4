@@ -48,7 +48,9 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 `documents export` は本文YAMLの追加・削除を、管理側 `mappings.yml` の `operations` と組み合わせてExcelへ反映できます。対応する操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns` です。各操作には `id`、`sheet`、`reason`、`at`、`count` を指定し、追加時は必要に応じて `style_from` で元の行・列のスタイルを指定します。
 
-本文の `blocks.<block>.rows` に新しい `r<number>` 行、または新しい大文字列の列を追加すると、CLIが対応する挿入操作を探してmapping entryを再生成します。削除時は本文から対象の行・列を削除し、対応するdelete操作を残します。複数の候補操作があり一意に対応できない場合や、操作のない追加・削除は検証で拒否します。
+操作で追加する行・列は、本文の `blocks.<block>.rows` に `<操作ID>-<番号>`（番号は1から `count` まで）のキーで書きます。`id: add` の `insert_rows` で追加した1行目は `add-1: {B: 新項目}`、`insert_columns` で追加した列の値は既存行の `r3: {add-1: 値}` のように書きます。既存の行 `r<number>` と列の英字は原本の位置を指し、操作後も変わらないため、追加した行・列と同じキーにはなりません。CLIはこのキーから挿入操作を特定してmapping entryを再生成します。削除時は本文から対象の行・列を削除し、対応するdelete操作を残します。操作のない追加・削除、原本で値のないセルへの書き込み、操作の範囲外の番号、追加した行と列が交わるセルは検証で拒否します。
+
+結合範囲の内側への挿入は、Excelと同じく結合を広げます。広がった結合の左上以外になるセルはExcelに表示されないため、そこへの書き込みは検証と書き戻しで拒否します。値は結合の左上に書くか、結合の外に行・列を追加してください。
 
 構造変更のexport reportには、反映した `operations`、値の `changes`、削除された原本セルの `deleted_cells` が保存されます。同一シートのA1形式の数式参照は移動し、数式キャッシュは無効化されます。既存のDrawing XMLにある画像・図形のセルアンカーも行・列操作に追従します。
 

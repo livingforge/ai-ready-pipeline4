@@ -81,36 +81,39 @@ pub(super) fn page_sheet(extraction: &Value, page: &str) -> Result<String> {
     )
     .map(str::to_owned)
 }
-pub(super) fn insertion_for(
+/// The insertion a row or column key of new table content names: `<operation
+/// ID>-<n>` is the n-th row or column that operation inserts. Original rows
+/// keep `r<number>` and original columns their letters, so a new position
+/// never takes the key of an original one.
+fn inserted_position(
     operations: &[excel::StructuralOperation],
     sheet: &str,
-    row: Option<u32>,
-    column: Option<u32>,
-) -> Result<Option<(String, u32, bool)>> {
-    let mut matches = vec![];
-    for operation in operations
+    key: &str,
+    row: bool,
+) -> Result<Option<(String, u32)>> {
+    let Some((id, number)) = key.rsplit_once('-') else {
+        return Ok(None);
+    };
+    let Some(operation) = operations
         .iter()
-        .filter(|operation| operation.sheet == sheet)
-    {
-        let (position, row_operation) = if operation.row_operation() {
-            (row, true)
-        } else {
-            (column, false)
-        };
-        if !operation.insertion() {
-            continue;
-        }
-        if let Some(position) = position
-            && (operation.at..operation.at + operation.count).contains(&position)
-        {
-            matches.push((operation.id.clone(), position - operation.at, row_operation));
-        }
-    }
+        .find(|operation| operation.sheet == sheet && operation.id == id)
+    else {
+        return Ok(None);
+    };
+    let Ok(number) = number.parse::<u32>() else {
+        return Ok(None);
+    };
+    let axis = if row { "row" } else { "column" };
     ensure!(
-        matches.len() <= 1,
-        "multiple insertion operations match new table value"
+        operation.insertion() && operation.row_operation() == row,
+        "{axis} {key} names operation {id}, which does not insert {axis}s"
     );
-    Ok(matches.pop())
+    ensure!(
+        (1..=operation.count).contains(&number),
+        "{axis} {key} is outside the {} {axis}(s) operation {id} inserts",
+        operation.count
+    );
+    Ok(Some((id.to_owned(), number - 1)))
 }
 pub(super) fn regenerate_mappings(
     mappings: &Value,
@@ -200,15 +203,33 @@ pub(super) fn regenerate_mappings(
                 value.is_null() || kind(&value) != "object",
                 "new table references require explicit mapping"
             );
-            let row_number = row
-                .strip_prefix('r')
-                .context("new table rows must use r<number> IDs")?
-                .parse::<u32>()?;
-            let column_number = excel::column_number(&column)?;
-            let (insertion, offset, row_operation) =
-                insertion_for(operations, &sheet, Some(row_number), Some(column_number))?.context(
-                    "new table value requires a matching row or column insertion operation",
-                )?;
+            let target = match (
+                inserted_position(operations, &sheet, &row, true)?,
+                inserted_position(operations, &sheet, &column, false)?,
+            ) {
+                (Some((insertion, offset)), None) => {
+                    excel::column_number(&column).with_context(|| {
+                        format!("{row}/{column}: an inserted row takes values in original columns (A, B, ...)")
+                    })?;
+                    json!({"sheet":sheet,"insertion":insertion,"offset":offset,"column":column})
+                }
+                (None, Some((insertion, offset))) => {
+                    let row_number = row
+                        .strip_prefix('r')
+                        .and_then(|number| number.parse::<u32>().ok())
+                        .filter(|number| *number > 0)
+                        .with_context(|| {
+                            format!("{row}/{column}: an inserted column takes values in original rows (r1, r2, ...)")
+                        })?;
+                    json!({"sheet":sheet,"insertion":insertion,"offset":offset,"row":row_number})
+                }
+                (Some(_), Some(_)) => bail!(
+                    "{row}/{column}: a cell in both an inserted row and an inserted column cannot be written"
+                ),
+                (None, None) => bail!(
+                    "{row}/{column} is not a cell of the original: edit only cells that hold a value, and name new rows and columns <operation ID>-<n> after the insert_rows or insert_columns operation that adds them"
+                ),
+            };
             let field_prefix = format!("generated-{row}-{column}");
             let mut field = field_prefix.clone();
             let mut suffix = 2;
@@ -217,11 +238,6 @@ pub(super) fn regenerate_mappings(
                 suffix += 1;
             }
             used_fields.insert(field.clone());
-            let target = if row_operation {
-                json!({"sheet":sheet,"insertion":insertion,"offset":offset,"column":column})
-            } else {
-                json!({"sheet":sheet,"insertion":insertion,"offset":offset,"row":row_number})
-            };
             kept.push(json!({
                 "page":page,
                 "block":block,

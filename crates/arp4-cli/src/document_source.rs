@@ -802,26 +802,34 @@ impl TextSource {
                                 .is_ok_and(|v| v == b"Sig"))),
                     "signed PDF writeback is not supported"
                 );
-                let mut doc = original.clone();
-                for (page, id) in original.get_pages() {
-                    if let Some(changes) = replacements.get(&format!("pdf:{page}")) {
-                        let mut content =
-                            Content::decode(&original.get_page_content_with_limit(id, MAX_PAGE)?)?;
-                        pdf_text(original, id, &mut content, changes)?;
-                        // Always allocate a new stream: an original stream may be shared by pages.
-                        let stream = doc
-                            .add_object(Stream::new(lopdf::Dictionary::new(), content.encode()?));
-                        doc.get_object_mut(id)?
-                            .as_dict_mut()?
-                            .set("Contents", Object::Reference(stream));
+                // Saving through lopdf re-serializes every object even without edits.
+                if replacements.is_empty() {
+                    crate::excel::write_unchanged(&self.raw, output)?;
+                } else {
+                    let mut doc = original.clone();
+                    for (page, id) in original.get_pages() {
+                        if let Some(changes) = replacements.get(&format!("pdf:{page}")) {
+                            let mut content = Content::decode(
+                                &original.get_page_content_with_limit(id, MAX_PAGE)?,
+                            )?;
+                            pdf_text(original, id, &mut content, changes)?;
+                            // Always allocate a new stream: an original stream may be shared by pages.
+                            let stream = doc.add_object(Stream::new(
+                                lopdf::Dictionary::new(),
+                                content.encode()?,
+                            ));
+                            doc.get_object_mut(id)?
+                                .as_dict_mut()?
+                                .set("Contents", Object::Reference(stream));
+                        }
                     }
+                    let mut file = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(output)?;
+                    doc.save_to(&mut file)?;
+                    file.sync_all()?;
                 }
-                let mut file = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(output)?;
-                doc.save_to(&mut file)?;
-                file.sync_all()?;
             }
         }
         Ok(json!({"format":self.format,"text_changes":changes.len(),"layout_review_required":true}))

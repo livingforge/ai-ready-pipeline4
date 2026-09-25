@@ -24,6 +24,42 @@ pub fn coordinate(address: &str) -> Result<(u32, u32)> {
     );
     Ok((column, row))
 }
+/// The merged range that hides `address`: one containing it without it being its
+/// top-left cell. Excel shows only the top-left value, so such cells are never written.
+pub fn hiding_merge<'a>(merges: &'a Value, address: &str) -> Result<Option<&'a str>> {
+    let (col, row) = coordinate(address)?;
+    for merge in array(merges)? {
+        let merge = string(merge)?;
+        let (a, b) = merge.split_once(':').context("invalid merge")?;
+        let (c1, r1) = coordinate(a)?;
+        let (c2, r2) = coordinate(b)?;
+        if (c1..=c2).contains(&col) && (r1..=r2).contains(&row) && (col, row) != (c1, r1) {
+            return Ok(Some(merge));
+        }
+    }
+    Ok(None)
+}
+/// Rejects writing `address` of `sheet` when one of `merges` hides it.
+pub fn ensure_not_hidden(merges: &Value, sheet: &str, address: &str) -> Result<()> {
+    if let Some(merge) = hiding_merge(merges, address)? {
+        bail!(
+            "{sheet}!{address} is hidden by merged range {merge}: Excel shows only the top-left cell of a merge, so write the value there or add the row or column outside the merge"
+        );
+    }
+    Ok(())
+}
+/// The sheet's merged ranges as the written workbook keeps them after
+/// `operations`: an insertion inside a merge grows it, like Excel.
+pub fn merges_after(sheet: &Value, operations: &[StructuralOperation]) -> Result<Value> {
+    let own = sheet_operations(string(&sheet["name"])?, operations);
+    let mut merges = vec![];
+    for merge in array(&sheet["merges"])? {
+        if let Some(mapped) = map_merge(Area::parse(string(merge)?)?, &own)? {
+            merges.push(json!(mapped.render()?));
+        }
+    }
+    Ok(Value::Array(merges))
+}
 pub fn column_number(name: &str) -> Result<u32> {
     coordinate(&format!("{name}1")).map(|(column, _)| column)
 }
@@ -208,6 +244,11 @@ pub fn resolve_insertion(
                     .context("inserted column coordinate overflow")?;
             }
             activated = true;
+            continue;
+        }
+        // `at` already counts the operations listed before it on the same
+        // axis; the other axis is given before any operation.
+        if !activated && candidate.row_operation() == target_row {
             continue;
         }
         if candidate.row_operation() {

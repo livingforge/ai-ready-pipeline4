@@ -33,7 +33,7 @@ arp4 documents diff $candidate.proposal_id --root C:/my-project
 
 `$candidate.proposal` の `content/<シート名>.yml` をAgentまたは人が原本と照合して成形します。
 本文の値は `blocks/table-1/rows/r<行番号>/<列名>` にあり、型・ID・セル対応を保って編集します。
-行・列を追加または削除する場合は、候補の管理側 `mappings.yml` に構造操作を記録します。`insert_rows` / `delete_rows` / `insert_columns` / `delete_columns` の `sheet`、`at`、`count`、`reason` を指定してください。追加した本文の行・列に対応するmapping entryは、CLIが現在の本文と構造操作から再生成します。
+行・列を追加または削除する場合は、候補の管理側 `mappings.yml` に構造操作を記録します。`insert_rows` / `delete_rows` / `insert_columns` / `delete_columns` の `sheet`、`at`、`count`、`reason` を指定してください。追加する行・列は本文に `<操作ID>-<番号>`（例: `add-1`）のキーで書きます。既存の `r<行番号>` と列名は原本の位置を指すため、追加した行・列の値には使いません。追加した本文の行・列に対応するmapping entryは、CLIが現在の本文と構造操作から再生成します。
 機械生成した候補をLLMの成形済みとみなさず、実際に成形した後に作業のモデル・担当・プロンプトを記録してください。
 
 ```powershell
@@ -54,7 +54,7 @@ arp4 documents export design --out C:/my-project/.arp/cache/export/基本設計-
 ```
 
 exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本への反映は `documents apply design --root C:/my-project` を使います。反映後は再抽出された候補を確認し、record・adoptしてください。
-未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・署名付きブック・既存出力の上書きを拒否します。
+未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・書き戻し対象外の値（結合セルの左上以外の値、数式の結果と原文）の編集・署名付きブック・既存出力の上書きを拒否します。
 通常セル更新では元のZIP部品を保持し、数式がある場合はキャッシュを無効化して次回Excel起動時の再計算を指定します。
 Rust自身は数式を計算しません。`=...` で始まる通常セルの文字列は文字列のまま出力します。
 
