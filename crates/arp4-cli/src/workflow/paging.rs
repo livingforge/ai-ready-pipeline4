@@ -202,59 +202,63 @@ fn next_command(
     })
 }
 
-pub(super) fn page(
-    task_ref: &str,
-    data: &Value,
-    sections: &[&str],
-    options: ReadOptions<'_>,
-) -> Result<Value> {
-    let ReadOptions {
-        format,
-        pointer,
-        offset,
-        limit,
-        max_bytes,
-        revision: expected_revision,
-    } = options;
+/// The size-dependent facts of a read, without the fragments themselves: a page
+/// is a window over `sizes`, so a stored layout serves later pages of one read.
+#[derive(Serialize, serde::Deserialize)]
+pub(super) struct View {
+    pub revision: String,
+    pub content_bytes: usize,
+    /// Whether the pointer selects an array, whose items are listed separately.
+    pub array: bool,
+    pub sizes: Vec<usize>,
+}
+
+/// Every fragment of a read in order, as `page` would list them.
+pub(super) struct Layout {
+    pub view: View,
+    pub fragments: Vec<Value>,
+}
+
+pub(super) fn check_options(limit: usize, max_bytes: usize) -> Result<()> {
     ensure!(limit > 0, "positive fragment limit required");
     ensure!(
         (4096..=READ_PAGE_BYTES).contains(&max_bytes),
         "invalid read byte limit"
     );
+    Ok(())
+}
+
+fn check_revision(expected: Option<&str>, revision: &str) -> Result<()> {
+    ensure!(
+        expected.is_none_or(|expected| expected == revision),
+        "read content, format or byte limit changed; restart at offset 0 without --revision"
+    );
+    Ok(())
+}
+
+pub(super) fn layout(data: &Value, sections: &[&str], options: &ReadOptions<'_>) -> Result<Layout> {
+    let &ReadOptions {
+        format,
+        pointer,
+        limit,
+        max_bytes,
+        revision: expected_revision,
+        ..
+    } = options;
+    check_options(limit, max_bytes)?;
     let fragment_bytes = (max_bytes - 2048) / 2;
     let revision = crate::data::hash(&serde_json::to_vec(&json!([
         data, pointer, max_bytes, format
     ]))?);
-    ensure!(
-        expected_revision.is_none_or(|expected| expected == revision),
-        "read content, format or byte limit changed; restart at offset 0 without --revision"
-    );
+    check_revision(expected_revision, &revision)?;
     let value = data
         .pointer(pointer)
         .ok_or_else(|| anyhow::anyhow!("unknown JSON pointer"))?;
-    let mut result = json!({"task_ref":task_ref,"format":format,"pointer":pointer,"entries":[],
-        "page":{"offset":offset,"total":0,"unit":"fragments","next_offset":null,
-        "complete":false,
-        "next_command":next_command(task_ref, pointer, usize::MAX, limit, max_bytes, &revision),
-        "revision":revision,"max_bytes":max_bytes,"content_bytes":format.encode(value)?.len()+1}});
-    // Reserve digits for total/next_offset and the CLI response envelope.
-    let mut bytes = delivery_len(&result, format)? + 96;
-    let mut total = 0;
-    let mut entries = Vec::new();
-    let mut full = false;
+    let mut sizes = Vec::new();
+    let mut fragments = Vec::new();
     let mut emit = |entry: &Fragment<'_>| -> Result<()> {
-        let index = total;
-        total += 1;
-        if index < offset || full {
-            return Ok(());
-        }
-        let size = delivery_len(entry, format)?;
-        if entries.len() >= limit || bytes + size > max_bytes {
-            full = true;
-            return Ok(());
-        }
-        bytes += size;
-        entries.push(serde_json::to_value(entry)?);
+        sizes.push(delivery_len(entry, format)?);
+        fragments.push(serde_json::to_value(entry)?);
         Ok(())
     };
     if pointer.is_empty() {
@@ -280,14 +284,57 @@ pub(super) fn page(
     } else {
         visit(pointer, value, fragment_bytes, format, &mut emit)?;
     }
+    Ok(Layout {
+        view: View {
+            revision,
+            content_bytes: format.encode(value)?.len() + 1,
+            array: value.is_array(),
+            sizes,
+        },
+        fragments,
+    })
+}
+
+/// The page at `options.offset`; `fetch` returns the fragments of a range.
+pub(super) fn select(
+    task_ref: &str,
+    view: &View,
+    fetch: impl FnOnce(std::ops::Range<usize>) -> Result<Vec<Value>>,
+    options: &ReadOptions<'_>,
+) -> Result<Value> {
+    let &ReadOptions {
+        format,
+        pointer,
+        offset,
+        limit,
+        max_bytes,
+        revision: expected_revision,
+    } = options;
+    check_options(limit, max_bytes)?;
+    let revision = view.revision.as_str();
+    check_revision(expected_revision, revision)?;
+    let mut result = json!({"task_ref":task_ref,"format":format,"pointer":pointer,"entries":[],
+        "page":{"offset":offset,"total":0,"unit":"fragments","next_offset":null,
+        "complete":false,
+        "next_command":next_command(task_ref, pointer, usize::MAX, limit, max_bytes, revision),
+        "revision":revision,"max_bytes":max_bytes,"content_bytes":view.content_bytes}});
+    // Reserve digits for total/next_offset and the CLI response envelope.
+    let mut bytes = delivery_len(&result, format)? + 96;
+    let total = view.sizes.len();
     ensure!(offset <= total, "offset exceeds fragment count");
-    let end = offset + entries.len();
+    let mut end = offset;
+    while end < total && end - offset < limit && bytes + view.sizes[end] <= max_bytes {
+        bytes += view.sizes[end];
+        end += 1;
+    }
     ensure!(
         end > offset || offset == total,
         "read page cannot fit a fragment"
     );
+    let mut entries = fetch(offset..end)?;
+    ensure!(entries.len() == end - offset, "read fragments missing");
     if !pointer.is_empty()
-        && !value.is_array()
+        && !view.array
         && total == 1
         && offset == 0
         && entries[0]["pointer"] == pointer
@@ -302,7 +349,7 @@ pub(super) fn page(
     result["page"]["next_offset"] = json!((end < total).then_some(end));
     result["page"]["complete"] = json!(end == total);
     result["page"]["next_command"] = if end < total {
-        next_command(task_ref, pointer, end, limit, max_bytes, &revision)
+        next_command(task_ref, pointer, end, limit, max_bytes, revision)
     } else {
         Value::Null
     };
@@ -318,6 +365,22 @@ pub(super) fn page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page laid out and selected in one step, as a read without a cache.
+    fn page(
+        task_ref: &str,
+        data: &Value,
+        sections: &[&str],
+        options: ReadOptions<'_>,
+    ) -> Result<Value> {
+        let layout = layout(data, sections, &options)?;
+        select(
+            task_ref,
+            &layout.view,
+            |range| Ok(layout.fragments[range].to_vec()),
+            &options,
+        )
+    }
 
     #[test]
     fn toon_pages_preserve_long_text_and_reject_format_changes() {

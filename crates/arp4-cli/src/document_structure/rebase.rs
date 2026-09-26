@@ -37,6 +37,8 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
         "corrections belong to another document or source path"
     );
     let same_source = journal["source_sha256"] == current["source"]["sha256"];
+    // Hashing a large extraction costs as much as inferring its elements: do it once.
+    let extraction_hash = hash(&encoded(current));
     let mut source_cells = BTreeMap::new();
     for sheet in array(&current["sheets"])? {
         let name = string(&sheet["name"])?;
@@ -122,7 +124,8 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
         }
     }
 
-    let mut result = initialize(root, current)?;
+    // Validated once below, after the corrections are applied.
+    let mut result = inferred(current, &extraction_hash)?;
     if same_source {
         result["regions"] = journal["regions"].clone();
     }
@@ -199,7 +202,7 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
     }
     result["visuals"] = json!(visuals);
     result["review"] = json!({"status":"pending"});
-    if same_source && journal["baseline_extraction_hash"] == hash(&encoded(current)) {
+    if same_source && journal["baseline_extraction_hash"] == extraction_hash {
         let order: BTreeMap<String, usize> = array(&journal["element_order"])?
             .iter()
             .enumerate()
@@ -218,7 +221,7 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
             result["review"] = journal["review"].clone();
         }
     }
-    let validation = validate(root, current, &result)?;
+    let validation = validate_hashed(root, current, &extraction_hash, &result)?;
     Ok((
         result,
         json!({"state":if validation["ready"] == true {"reviewed"} else {"needs_review"},

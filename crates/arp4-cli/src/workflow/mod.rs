@@ -22,6 +22,7 @@ mod paging;
 mod patch;
 mod publication;
 mod quality;
+mod read_cache;
 mod restructure;
 mod runner;
 mod store;
@@ -74,6 +75,7 @@ impl Workflow {
     }
     fn save(&mut self) -> Result<()> {
         self.register_transport_refs()?;
+        self.index_reply_modules()?;
         let mut value = serde_json::to_value(&self.state)?;
         self.store.save(&mut value)?;
         self.state.previous = value["previous"].clone();
@@ -154,21 +156,21 @@ impl Workflow {
         self.state.status = WorkflowStatus::AwaitingReplies;
         self.state.blocked = json!([]);
         self.save()?;
-        Ok(self.status())
+        self.status()
     }
     fn block(&mut self, reasons: Value) -> Result<Value> {
         self.state.status = WorkflowStatus::Blocked;
         self.state.blocked = reasons;
         self.save()?;
-        Ok(self.status())
+        self.status()
     }
     fn advance(&mut self) -> Result<Value> {
         if self.state.status == WorkflowStatus::Complete {
             self.export()?;
-            return Ok(self.status());
+            return self.status();
         }
         if self.state.status == WorkflowStatus::NeedsDecision {
-            return Ok(self.status());
+            return self.status();
         }
         let result = match self.advance_inner() {
             Ok(v) => Ok(v),
@@ -181,7 +183,7 @@ impl Workflow {
     }
     fn advance_inner(&mut self) -> Result<Value> {
         if !self.consume()? {
-            return Ok(self.status());
+            return self.status();
         }
         let workspace = tempfile::tempdir()?;
         let root = workspace.path();
@@ -204,7 +206,7 @@ impl Workflow {
             .collect();
         let unresolved = arr(&findings)?.iter().any(|f| f["action"] != "improvement")
             || !open.is_empty()
-            || !self.unresolved().is_empty();
+            || !self.unresolved()?.is_empty();
         if unresolved && stalled && !self.escalated() {
             self.escalate("stalled_diagnostics");
         }

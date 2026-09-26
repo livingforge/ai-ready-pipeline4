@@ -272,13 +272,15 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
             extraction_cache: json!({}),
             transport_refs: BTreeMap::new(),
             transport_namespace: transport::namespace(),
+            transport_scanned: BTreeSet::new(),
+            reply_modules: Default::default(),
             bundle: json!({}),
             exports: json!({}),
             references: json!({}),
             blocked: json!([]),
             deferred: json!([]),
             notices: json!([]),
-            unresolved: json!([]),
+            unresolved: Value::Null,
             quality: Value::Null,
             incremental: Value::Null,
             findings: Value::Null,
@@ -352,19 +354,21 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
         _ => {}
     }
     match command {
-        WorkflowCommand::Status { summary } => Ok(if summary {
-            flow.status_summary()
-        } else {
-            flow.status()
-        }),
-        WorkflowCommand::History => Ok(flow.history()),
+        WorkflowCommand::Status { summary } => {
+            if summary {
+                flow.status_summary()
+            } else {
+                flow.status()
+            }
+        }
+        WorkflowCommand::History => flow.history(),
         WorkflowCommand::RecordUsage {
             task,
             submission,
             usage_file,
         } => {
             flow.record_usage(&task, submission, &read(&usage_file)?)?;
-            Ok(flow.history())
+            flow.history()
         }
         WorkflowCommand::Advance => flow.advance(),
         WorkflowCommand::Next => {
@@ -473,7 +477,7 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
             flow.state.status = WorkflowStatus::AwaitingReplies;
             flow.state.blocked = json!([]);
             flow.save()?;
-            Ok(flow.status())
+            flow.status()
         }
         WorkflowCommand::Recover { task } => {
             flow.recover(&task)?;

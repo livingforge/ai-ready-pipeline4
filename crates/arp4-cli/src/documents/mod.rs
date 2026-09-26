@@ -31,8 +31,6 @@ pub struct Inspection {
     pub meta: Value,
     pub extraction: Value,
     pub mappings: Value,
-    pub interpretation: Option<Value>,
-    pub interpretation_report: Option<Value>,
     pub values: BTreeMap<(String, String, String), Value>,
     pub fingerprint: String,
     pub reviewed: bool,
@@ -49,9 +47,11 @@ fn nonempty(value: &str) -> Result<()> {
 impl Store {
     /// The interpretation is a view of extraction plus corrections in mappings.yml.
     pub fn structure(&self, id: &str) -> Result<Value> {
-        self.inspect(&self.document(id)?, false)?
-            .interpretation
-            .context("document has no structure interpretation")
+        let inspected = self.inspect(&self.document(id)?, false)?;
+        Ok(self
+            .interpretation(&inspected)?
+            .context("document has no structure interpretation")?
+            .0)
     }
 
     pub fn save_structure(&self, id: &str, structure: &Value) -> Result<Value> {
@@ -62,7 +62,7 @@ impl Store {
             "source changed; re-import before saving structure"
         );
         ensure!(
-            inspected.interpretation.is_some(),
+            self.interpretation(&inspected)?.is_some(),
             "document has no structure interpretation"
         );
         let journal = crate::document_structure::record_corrections(
@@ -111,7 +111,20 @@ impl Store {
     }
     pub fn document(&self, id: &str) -> Result<PathBuf> {
         identifier(id)?;
-        under(&self.arp.join("documents"), id)
+        let documents = self.arp.join("documents");
+        // Windows and macOS file names ignore case, so `spec` would open, and adopting
+        // it would replace, the directory of an existing `Spec`.
+        if documents.is_dir() {
+            for entry in fs::read_dir(&documents)? {
+                let name = entry?.file_name();
+                let name = name.to_string_lossy();
+                ensure!(
+                    name == id || !name.eq_ignore_ascii_case(id),
+                    "document ID {id} differs from existing document {name} only in letter case"
+                );
+            }
+        }
+        under(&documents, id)
     }
     pub fn proposal(&self, id: &str) -> Result<PathBuf> {
         identifier(id)?;

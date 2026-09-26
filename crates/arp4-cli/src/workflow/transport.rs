@@ -45,15 +45,18 @@ fn identities(value: &mut Value, visit: &mut impl FnMut(&mut Value) -> Result<()
 impl Workflow {
     pub(super) fn register_transport_refs(&mut self) -> Result<()> {
         let mut digests = BTreeSet::new();
+        let mut scanned = Vec::new();
         for task in &self.state.tasks {
             for digest in [&task.packet, &task.context, &task.scope]
                 .into_iter()
                 .flatten()
+                .filter(|digest| !self.state.transport_scanned.contains(*digest))
             {
                 identities(&mut self.store.json(digest)?, &mut |v| {
                     digests.insert(s(v)?.to_owned());
                     Ok(())
                 })?;
+                scanned.push(digest.clone());
             }
             if let Some(draft) = &task.draft {
                 digests.insert(draft.clone());
@@ -75,6 +78,7 @@ impl Workflow {
             );
             self.state.transport_refs.insert(reference, digest.clone());
         }
+        self.state.transport_scanned.extend(scanned);
         Ok(())
     }
 

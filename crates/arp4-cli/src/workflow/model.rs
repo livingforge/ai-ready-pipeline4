@@ -117,6 +117,13 @@ pub(super) struct WorkflowState {
     pub extraction_cache: Value,
     pub transport_refs: std::collections::BTreeMap<String, String>,
     pub transport_namespace: String,
+    /// Task inputs whose identities are already in `transport_refs`. Artifacts
+    /// never change, so each is read once rather than on every save.
+    pub transport_scanned: std::collections::BTreeSet<String>,
+    /// The `modules` each live reply artifact declares, by digest. Artifacts never
+    /// change, so the vocabulary reads each reply once rather than every reply on
+    /// every submission. Filled on first use; `save` keeps the live replies only.
+    pub reply_modules: std::cell::RefCell<std::collections::BTreeMap<String, Value>>,
     pub blocked: Value,
     pub bundle: Value,
     pub exports: Value,
@@ -200,6 +207,14 @@ impl WorkflowState {
                 "workflow {name} values must be strings"
             );
         }
+        ensure!(
+            state
+                .reply_modules
+                .borrow()
+                .values()
+                .all(|modules| modules.is_object() || modules.is_null()),
+            "workflow reply_modules values must be objects or null"
+        );
         for (name, value) in [
             ("blocked", &state.blocked),
             ("deferred", &state.deferred),
@@ -207,10 +222,17 @@ impl WorkflowState {
         ] {
             ensure!(value.is_array(), "workflow {name} must be an array");
         }
+        ensure!(
+            state.unresolved.is_null() || state.unresolved.is_string(),
+            "workflow unresolved must be an object reference when present"
+        );
+        ensure!(
+            state.quality["diagnostics"].is_null() || state.quality["diagnostics"].is_string(),
+            "workflow quality diagnostics must be an object reference"
+        );
         for (name, value) in [
             ("findings", &state.findings),
             ("review_findings", &state.review_findings),
-            ("unresolved", &state.unresolved),
         ] {
             ensure!(
                 value.is_null() || value.is_array(),
@@ -236,6 +258,6 @@ impl WorkflowState {
 #[cfg(test)]
 impl WorkflowState {
     pub fn test_state() -> Self {
-        serde_json::from_value(serde_json::json!({"version":1,"engine":"arp4-rust","status":"new","tasks":[],"round":0,"max_rounds":8,"review_granularity":"adaptive","extract_max_chars":0,"extract_max_sources":0,"extract_max_bytes":98304,"binary_hash":"test","input":"test","regions":"test","replies":{},"packets":{},"reviews":{},"runs":[],"repair_rounds":{},"modules":{},"submissions":[],"extraction_cache":{},"transport_refs":{},"transport_namespace":"0000000000000000000000000","blocked":[],"bundle":{},"exports":{},"deferred":[],"notices":[],"unresolved":[],"references":{}})).unwrap()
+        serde_json::from_value(serde_json::json!({"version":1,"engine":"arp4-rust","status":"new","tasks":[],"round":0,"max_rounds":8,"review_granularity":"adaptive","extract_max_chars":0,"extract_max_sources":0,"extract_max_bytes":98304,"binary_hash":"test","input":"test","regions":"test","replies":{},"packets":{},"reviews":{},"runs":[],"repair_rounds":{},"modules":{},"submissions":[],"extraction_cache":{},"transport_refs":{},"transport_namespace":"0000000000000000000000000","transport_scanned":[],"reply_modules":{},"blocked":[],"bundle":{},"exports":{},"deferred":[],"notices":[],"references":{}})).unwrap()
     }
 }

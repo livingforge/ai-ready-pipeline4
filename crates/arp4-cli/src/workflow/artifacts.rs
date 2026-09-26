@@ -56,6 +56,11 @@ impl Workflow {
         for digest in [&self.state.input, &self.state.regions] {
             live.insert(digest.clone());
         }
+        for digest in [&self.state.unresolved, &self.state.quality["diagnostics"]] {
+            if let Some(digest) = digest.as_str() {
+                live.insert(digest.to_owned());
+            }
+        }
         for values in [
             &self.state.replies,
             &self.state.exports,
@@ -115,7 +120,7 @@ impl Workflow {
         let report = read(&root.join("design.draft.md.report.json"))?;
         self.state.status = WorkflowStatus::NeedsDecision;
         let open = json!({"reason":self.state.escalation["reason"],"reviewed":reviewed,
-            "concerns":self.concerns(None, report["validation"]["issues"].as_array().map(Vec::as_slice).unwrap_or_default()),
+            "concerns":self.concerns(None, report["validation"]["issues"].as_array().map(Vec::as_slice).unwrap_or_default())?,
             "references":self.reference_paths(),
             "next_action":"Decide each open issue. Correct the extraction with update --reply <corrected-extraction.json> on the same root, or keep the draft. Formal export requires a complete run."});
         let mut drafts = Map::new();
@@ -140,6 +145,6 @@ impl Workflow {
         self.state.blocked = json!([]);
         self.state.tasks.clear();
         self.save()?;
-        Ok(self.status())
+        self.status()
     }
 }

@@ -8,7 +8,11 @@ type Changes = BTreeMap<(String, u32, u32), Value>;
 pub(super) type NewFormulas = BTreeMap<(String, u32, u32), String>;
 
 /// Parts related to `base` by a relationship type ending with `kind`.
-fn related_parts(parts: &BTreeMap<String, Vec<u8>>, base: &str, kind: &str) -> Result<Vec<String>> {
+pub(super) fn related_parts(
+    parts: &BTreeMap<String, Vec<u8>>,
+    base: &str,
+    kind: &str,
+) -> Result<Vec<String>> {
     let rels = relationships_part(base)?;
     let Some(bytes) = parts.get(&rels) else {
         return Ok(vec![]);
@@ -141,6 +145,26 @@ pub(super) fn relocate_tables(
         let sheet_name = string(&sheet["name"])?;
         let own = sheet_operations(sheet_name, moves.operations);
         if own.is_empty() {
+            // The table stays put, but its calculated-column and totals formulas
+            // may point at a sheet whose rows or columns move.
+            for part in related_parts(parts, string(&sheet["part"])?, "/table")? {
+                let original = text_of(&parts[&part])?;
+                let doc = xml(original.as_bytes())?;
+                let mut edits = vec![];
+                for column in doc
+                    .descendants()
+                    .filter(|n| n.has_tag_name((NS, "tableColumn")))
+                {
+                    let (rewritten, _) =
+                        rewrite_table_column(original, column, sheet_name, moves, 0)?;
+                    if rewritten != original[column.range()] {
+                        edits.push((column.range(), rewritten));
+                    }
+                }
+                if !edits.is_empty() {
+                    patched.insert(part, apply_edits(original, edits, vec![])?.into_bytes());
+                }
+            }
             continue;
         }
         for part in related_parts(parts, string(&sheet["part"])?, "/table")? {
@@ -246,6 +270,15 @@ fn relocate_table(
     let mut inner = String::new();
     for column in new_first_column..=new_last_column {
         if let Some(index) = positions.iter().position(|p| *p == Some(column)) {
+            // An existing column's name and totals label live in this part too;
+            // only a new column takes its name from the header written for it.
+            for (rows, row) in [(header_rows, new_first_row), (totals_rows, new_last_row)] {
+                ensure!(
+                    rows == 0 || !changes.contains_key(&(sheet.to_owned(), row, column)),
+                    "{sheet}!{}{row} is a header or totals cell of table {name}; Excel keeps those names in the table definition, so rename columns and totals labels in Excel",
+                    column_name(column)?
+                );
+            }
             let (xml, calculated) =
                 rewrite_table_column(original, old[index], sheet, moves, data_shift)?;
             inner.push_str(&xml);

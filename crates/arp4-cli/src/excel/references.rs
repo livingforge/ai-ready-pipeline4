@@ -5,8 +5,8 @@
 use super::*;
 use std::sync::LazyLock;
 
-const MAX_ROW: u32 = 1_048_576;
-const MAX_COLUMN: u32 = 16_384;
+pub(super) const MAX_ROW: u32 = 1_048_576;
+pub(super) const MAX_COLUMN: u32 = 16_384;
 
 static REFERENCE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(

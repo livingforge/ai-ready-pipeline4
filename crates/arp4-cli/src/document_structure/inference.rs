@@ -269,16 +269,46 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                     "data"
                 }
             };
-            let interpreted:Vec<_>=group.iter().map(|c| {
-                let current_role=role(c);
-                let links:Vec<_>=group.iter().filter(|h| {
-                    if current_role=="text" || h.source["address"]==c.source["address"] {return false;}
-                    match role(h) {
-                        "column_header"=> h.bottom<c.top && h.left<=c.left && h.right>=c.right,
-                        "row_header"=> current_role!="column_header" && h.right<c.left && h.top<=c.top && h.bottom>=c.top,
-                        _=>false
+            // Every cell looks for its headers, so roles are computed once and
+            // only header cells are searched, not the whole table per cell.
+            let roles: Vec<_> = group.iter().map(|c| role(c)).collect();
+            let column_headers: Vec<_> = (0..group.len())
+                .filter(|&i| roles[i] == "column_header")
+                .collect();
+            // In group order, which is by first row, with the furthest last row
+            // reached so far: a cell only scans back over headers that can reach it.
+            let row_headers: Vec<_> = (0..group.len())
+                .filter(|&i| roles[i] == "row_header")
+                .collect();
+            let reach: Vec<_> = row_headers
+                .iter()
+                .scan(0, |reach, &i| {
+                    *reach = group[i].bottom.max(*reach);
+                    Some(*reach)
+                })
+                .collect();
+            let interpreted:Vec<_>=group.iter().enumerate().map(|(index, c)| {
+                let current_role=roles[index];
+                let mut links = vec![];
+                if current_role != "text" {
+                    links.extend(column_headers.iter().copied().filter(|&i| {
+                        let h = group[i];
+                        h.bottom < c.top && h.left <= c.left && h.right >= c.right
+                    }));
+                    if current_role != "column_header" {
+                        let end = row_headers.partition_point(|&i| group[i].top <= c.top);
+                        links.extend(
+                            (0..end)
+                                .rev()
+                                .take_while(|&k| reach[k] >= c.top)
+                                .map(|k| row_headers[k])
+                                .filter(|&i| group[i].right < c.left && group[i].bottom >= c.top),
+                        );
                     }
-                }).map(|h|id_for(h)).collect();
+                    links.retain(|&i| group[i].source["address"] != c.source["address"]);
+                    links.sort_unstable();
+                }
+                let links: Vec<_> = links.into_iter().map(|i| id_for(group[i])).collect();
                 json!({"id":id_for(c),"address":c.source["address"],"role":current_role,"headers":links,
                     "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
             }).collect();
@@ -334,6 +364,42 @@ mod tests {
                 .flat_map(|e| e["cells"].as_array().unwrap())
                 .all(|c| c["role"] != "column_header")
         );
+    }
+    #[test]
+    fn cells_link_column_headers_and_merged_row_headers_in_table_order() {
+        let cells: Vec<_> = [
+            ("A1", "Group"),
+            ("B1", "Item"),
+            ("C1", "Value"),
+            ("A2", "G1"),
+            ("B2", "x"),
+            ("C2", "1"),
+            ("B3", "y"),
+            ("C3", "2"),
+            ("A4", "G2"),
+            ("B4", "z"),
+            ("C4", "3"),
+        ]
+        .into_iter()
+        .map(|(address, value)| cell(address, value))
+        .collect();
+        let extraction = json!({"sheets":[{"name":"S","merges":["A2:A3"],
+            "tables":[{"range":"A1:C4","header_rows":1}],"cells":cells}]});
+        let result = elements(&extraction).unwrap();
+        let headers = |address: &str| {
+            result[0]["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["address"] == address)
+                .unwrap()["headers"]
+                .clone()
+        };
+        assert_eq!(headers("C3"), json!(["s1-C1", "s1-A2"]));
+        assert_eq!(headers("B3"), json!(["s1-B1", "s1-A2"]));
+        assert_eq!(headers("C4"), json!(["s1-C1", "s1-A4"]));
+        assert_eq!(headers("A4"), json!(["s1-A1"]));
+        assert_eq!(headers("B1"), json!([]));
     }
     #[test]
     fn diagonal_tables_stay_separate_and_notes_remain_unassigned() {

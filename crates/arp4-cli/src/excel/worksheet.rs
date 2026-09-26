@@ -14,6 +14,11 @@ impl RowOutput {
             regex::Regex::new(r#"<(?:[A-Za-z_][\w.-]*:)?c\s[^>]*?\br\s*=\s*["']([A-Z]+)[0-9]+["']"#)
                 .unwrap()
         });
+        if self.raw.ends_with("/>") {
+            // Excel writes a formatted row without cells as `<row .../>`.
+            let tag = element_tag(&self.raw)?.to_owned();
+            self.raw = format!("{}></{tag}>", self.raw.trim_end_matches("/>").trim_end());
+        }
         let mut position = self.raw.rfind("</").context("row has no closing tag")?;
         for captures in CELL.captures_iter(&self.raw) {
             if column_number(&captures[1])? > column {
@@ -24,6 +29,16 @@ impl RowOutput {
         self.raw.insert_str(position, cell);
         self.cells.insert(column);
         Ok(())
+    }
+
+    /// The row's own style (`s` with `customFormat`), which Excel applies to
+    /// cells of the row that have no format of their own.
+    pub(super) fn custom_style(&self) -> Option<String> {
+        let (opening, _) = xml_opening(&self.raw).ok()?;
+        let attribute = |name: &str| xml_attribute_value(opening, name).ok().flatten();
+        matches!(attribute("customFormat"), Some("1" | "true"))
+            .then(|| attribute("s").map(str::to_owned))
+            .flatten()
     }
 
     /// The namespace prefix used by this row's elements (e.g. `x:`).
@@ -47,7 +62,7 @@ pub(super) fn scalar_body(prefix: &str, value: &Value) -> Result<String> {
                         .any(|c| c < ' ' && !matches!(c, '\t' | '\n' | '\r')),
                 "unsupported Excel string"
             );
-            let text = text
+            let text = encode_xstring(text)
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;")
@@ -82,33 +97,20 @@ pub(super) fn render_cell(raw: &str, address: &str, value: &Value) -> Result<Str
     Ok(format!("{opening}{}</{tag}>", scalar_body(prefix, value)?))
 }
 
+/// A cell ARP creates, in the sheet's namespace `prefix`, with `style` (`s`).
 pub(super) fn render_new_cell(
     address: &str,
     value: &Value,
-    template: Option<&str>,
+    prefix: &str,
+    style: Option<&str>,
 ) -> Result<String> {
-    let mut opening = if let Some(template) = template {
-        xml_opening(template)?.0.to_owned()
-    } else {
-        "<c>".to_owned()
-    };
-    opening = remove_xml_attribute(&opening, "t")?;
-    opening = opening
-        .trim_end_matches('/')
-        .trim_end_matches('>')
-        .to_owned();
-    if opening.contains(" r=") {
-        opening = replace_xml_attribute(&format!("{opening}>"), "r", address)?;
-        opening = opening.trim_end_matches('>').to_owned();
-    } else {
-        opening.push_str(&format!(" r=\"{address}\""));
-    }
-    let tag = opening[1..]
-        .split([' ', '\t', '\r', '\n', '/', '>'])
-        .next()
-        .context("invalid cell tag")?;
-    let prefix = tag.strip_suffix('c').context("invalid cell tag")?;
-    Ok(format!("{opening}{}</{tag}>", scalar_body(prefix, value)?))
+    let style = style
+        .map(|s| format!(" s=\"{}\"", xml_attr(s)))
+        .unwrap_or_default();
+    Ok(format!(
+        "<{prefix}c r=\"{address}\"{style}{}</{prefix}c>",
+        scalar_body(prefix, value)?
+    ))
 }
 
 pub(super) struct RowTransform<'a, 'b> {
@@ -146,6 +148,12 @@ pub(super) fn transform_row(
             edits.push((local_range, String::new()));
             continue;
         };
+        ensure!(
+            final_column <= MAX_COLUMN,
+            "inserting columns in {} would push column {} past the last column of the sheet (XFD); delete columns at the right first",
+            context.sheet,
+            column_name(column)?
+        );
         let final_address = format!("{}{}", column_name(final_column)?, context.final_row);
         cells.insert(final_column);
         if let Some(value) = context.changes.get(&(context.final_row, final_column)) {
@@ -200,23 +208,56 @@ pub(super) fn transform_row(
                         replace_xml_attribute(opening, "ref", &mapped.render()?)?,
                     ));
                 }
+                // A What-If data table keeps its range and input cells as
+                // attributes of the formula in its top-left cell.
+                if let Some(formula) = child(cell, "f")
+                    && formula.attribute("t") == Some("dataTable")
+                {
+                    let (opening, _) = xml_opening(&context.original[formula.range()])?;
+                    let mut rewritten = opening.to_owned();
+                    if let Some(reference) = formula.attribute("ref") {
+                        let area = Area::parse(reference)?;
+                        let own = sheet_operations(context.sheet, context.moves.operations);
+                        let mapped = map_area(area, &own)?
+                            .filter(|mapped| same_size(area, *mapped))
+                            .with_context(|| {
+                                format!(
+                                    "row/column changes cannot cut through data table {}!{reference}; change it in Excel",
+                                    context.sheet
+                                )
+                            })?;
+                        rewritten = replace_xml_attribute(&rewritten, "ref", &mapped.render()?)?;
+                    }
+                    for input in ["r1", "r2"] {
+                        if let Some(address) = formula.attribute(input) {
+                            let mapped = map_coordinate(
+                                context.sheet,
+                                address,
+                                context.moves.operations,
+                            )?
+                            .with_context(|| {
+                                format!(
+                                    "row/column changes would delete input cell {}!{address} of a data table; change it in Excel",
+                                    context.sheet
+                                )
+                            })?;
+                            rewritten = replace_xml_attribute(&rewritten, input, &mapped)?;
+                        }
+                    }
+                    if rewritten != opening {
+                        edits.push((
+                            formula.range().start - row_start
+                                ..formula.range().start - row_start + opening.len(),
+                            rewritten,
+                        ));
+                    }
+                }
             }
         }
     }
-    edits.sort_by_key(|(range, _)| range.start);
-    for pair in edits.windows(2) {
-        ensure!(
-            pair[0].0.end <= pair[1].0.start,
-            "overlapping worksheet edits"
-        );
-    }
-    let mut result = raw.to_owned();
-    for (range, replacement) in edits.into_iter().rev() {
-        result.replace_range(range, &replacement);
-    }
     Ok(RowOutput {
         number: context.final_row,
-        raw: result,
+        raw: splice(raw, edits, "worksheet")?,
         cells,
     })
 }
@@ -238,11 +279,24 @@ pub(super) fn find_row_raw<'a>(
         .map(|node| &original[node.range()])
 }
 
-pub(super) fn new_row(template: Option<&str>, number: u32) -> RowOutput {
+/// An inserted row, formatted like `template` (the `style_from` row) when given.
+/// It is shown even when the template row is hidden or collapsed, since a new
+/// row that could not be seen would hide the values written to it.
+pub(super) fn new_row(template: Option<&str>, number: u32, prefix: &str) -> RowOutput {
     let opening = template
         .and_then(|raw| xml_opening(raw).ok().map(|(opening, _)| opening))
         .and_then(|opening| replace_xml_attribute(opening, "r", &number.to_string()).ok())
-        .unwrap_or_else(|| format!("<row r=\"{number}\">"));
+        .and_then(|opening| remove_xml_attribute(&opening, "hidden").ok())
+        .and_then(|opening| remove_xml_attribute(&opening, "collapsed").ok())
+        .map(|opening| {
+            // A template row without cells is written `<row .../>`.
+            let open = opening
+                .trim_end_matches('>')
+                .trim_end_matches('/')
+                .trim_end();
+            format!("{open}>")
+        })
+        .unwrap_or_else(|| format!("<{prefix}row r=\"{number}\">"));
     let tag = opening[1..]
         .split([' ', '\t', '\r', '\n', '/', '>'])
         .next()
@@ -343,12 +397,7 @@ pub(super) fn unshare_formulas(
     if edits.is_empty() {
         return Ok(None);
     }
-    edits.sort_by_key(|(range, _)| range.start);
-    let mut result = original.to_owned();
-    for (range, replacement) in edits.into_iter().rev() {
-        result.replace_range(range, &replacement);
-    }
-    Ok(Some(result))
+    splice(original, edits, "shared formula").map(Some)
 }
 
 /// The sqref a conditional-format or validation formula is relative to.
@@ -446,30 +495,24 @@ pub(super) fn apply_edits(
 ) -> Result<String> {
     removals.sort_by_key(|range| (range.start, std::cmp::Reverse(range.end)));
     removals.dedup_by(|inner, outer| outer.start <= inner.start && inner.end <= outer.end);
+    // XML ranges nest or are disjoint, so the removals left are disjoint and
+    // only the last one starting at or before an edit can contain it.
     edits.retain(|(range, _)| {
-        !removals
-            .iter()
-            .any(|removed| removed.start <= range.start && range.end <= removed.end)
+        let before = removals.partition_point(|removed| removed.start <= range.start);
+        !before
+            .checked_sub(1)
+            .is_some_and(|last| range.end <= removals[last].end)
     });
     edits.extend(removals.into_iter().map(|range| (range, String::new())));
-    edits.sort_by_key(|(range, _)| range.start);
-    for pair in edits.windows(2) {
-        ensure!(
-            pair[0].0.end <= pair[1].0.start,
-            "overlapping reference edits"
-        );
-    }
-    let mut result = original.to_owned();
-    for (range, replacement) in edits.into_iter().rev() {
-        result.replace_range(range, &replacement);
-    }
-    Ok(result)
+    splice(original, edits, "reference")
 }
 
 /// Containers that become invalid when their last item is removed, with the
 /// number of ancestor levels removed along with them.
-const CONTAINERS: [(&str, &str, usize); 10] = [
+const CONTAINERS: [(&str, &str, usize); 12] = [
     (NS, "mergeCells", 0),
+    (NS, "rowBreaks", 0),
+    (NS, "colBreaks", 0),
     (NS, "dataValidations", 0),
     (NS, "hyperlinks", 0),
     (NS, "cols", 0),
@@ -509,11 +552,23 @@ fn tidy_containers(mut text: String) -> Result<String> {
         node.attribute("count").is_some()
             && (node.has_tag_name((NS, "mergeCells"))
                 || node.has_tag_name((NS, "dataValidations"))
-                || node.has_tag_name((X14, "dataValidations")))
+                || node.has_tag_name((X14, "dataValidations"))
+                || node.has_tag_name((NS, "rowBreaks"))
+                || node.has_tag_name((NS, "colBreaks")))
     }) {
         let count = node.children().filter(Node::is_element).count().to_string();
         if node.attribute("count") != Some(count.as_str()) {
             attributes.set(&text, node, "count", &count)?;
+        }
+        if let Some(manual) = node.attribute("manualBreakCount") {
+            let breaks = node
+                .children()
+                .filter(|brk| brk.is_element() && brk.attribute("man") == Some("1"))
+                .count()
+                .to_string();
+            if manual != breaks {
+                attributes.set(&text, node, "manualBreakCount", &breaks)?;
+            }
         }
     }
     apply_edits(&text, attributes.into_edits().collect(), vec![])
@@ -638,10 +693,55 @@ pub(super) fn rewrite_sheet_references(
                 if name == "col" {
                     let min: u32 = node.attribute("min").context("col without min")?.parse()?;
                     let max: u32 = node.attribute("max").context("col without max")?.parse()?;
-                    match map_format_span(min, max, &own, false)? {
+                    // A column inserted after a hidden one is shown, as in Excel;
+                    // other widths and formats carry over to it.
+                    let hidden = matches!(node.attribute("hidden"), Some("1" | "true"));
+                    let mapped = if hidden {
+                        map_span(min, max, &own, false)?
+                    } else {
+                        map_format_span(min, max, &own, false)?
+                    };
+                    match mapped {
                         Some((a, b)) if (a, b) != (min, max) => {
                             attributes.set(original, node, "min", &a.to_string())?;
                             attributes.set(original, node, "max", &b.to_string())?;
+                        }
+                        Some(_) => {}
+                        None => removals.push(node.range()),
+                    }
+                }
+                // Color scale, data bar and icon set thresholds may be formulas
+                // such as `$B$1`; plain numbers stay as written.
+                if name == "cfvo"
+                    && let Some(value) = node.attribute("val")
+                    && value.parse::<f64>().is_err()
+                {
+                    let shift = rule_shift(node)?;
+                    let shifted = if shift == (0, 0) {
+                        value.to_owned()
+                    } else {
+                        shift_relative(value, shift.0, shift.1)?
+                    };
+                    let rewritten = moves.rewrite(&shifted, Some(sheet))?;
+                    if rewritten != value {
+                        attributes.set(original, node, "val", &rewritten)?;
+                    }
+                }
+                // A break at `id` ends a page after that row or column, so it
+                // follows the row or column that starts the next page.
+                if name == "brk"
+                    && let Some(axis) = node
+                        .parent_element()
+                        .map(|breaks| breaks.tag_name().name())
+                        .filter(|breaks| matches!(*breaks, "rowBreaks" | "colBreaks"))
+                {
+                    let id: u32 = node
+                        .attribute("id")
+                        .context("page break without id")?
+                        .parse()?;
+                    match map_span(id + 1, id + 1, &own, axis == "rowBreaks")? {
+                        Some((next, _)) if next != id + 1 => {
+                            attributes.set(original, node, "id", &(next - 1).to_string())?
                         }
                         Some(_) => {}
                         None => removals.push(node.range()),
@@ -665,7 +765,7 @@ pub(super) fn rewrite_sheet_references(
 
 /// The pre-operation position of a final position, or `None` when it was
 /// inserted.
-fn original_position(
+pub(super) fn original_position(
     mut position: u32,
     operations: &[&StructuralOperation],
     row: bool,
@@ -689,7 +789,11 @@ fn original_position(
 /// For an inserted position, the final position it takes its formatting from:
 /// Excel formats inserted rows like the row above and inserted columns like
 /// the column to the left.
-fn inherited_from(position: u32, operations: &[&StructuralOperation], row: bool) -> Option<u32> {
+pub(super) fn inherited_from(
+    position: u32,
+    operations: &[&StructuralOperation],
+    row: bool,
+) -> Option<u32> {
     if original_position(position, operations, row).is_some() {
         return None;
     }

@@ -12,7 +12,7 @@ impl Workflow {
             .retain(|_, value| !value.is_null());
         view
     }
-    pub(super) fn status(&self) -> Value {
+    pub(super) fn status(&self) -> Result<Value> {
         let tasks: Vec<_> = self
             .state
             .tasks
@@ -25,9 +25,10 @@ impl Workflow {
         } else {
             json!({"reason":self.state.escalation["reason"]})
         };
+        let quality = self.quality_view()?;
         let mut status = json!({"status":self.state.status,"round":self.state.round,"repair_rounds":self.state.repair_rounds,"max_rounds":self.state.max_rounds,"rounds_remaining":rounds_remaining,"review_granularity":self.state.review_granularity,"tasks":tasks,"blocked":self.state.blocked,
-            "next_actions":self.next_actions(),"quality":self.state.quality,"provenance":self.provenance_summary(),"run_id":self.run_id(),"notices":self.notices(),"exports":self.state.exports,"escalation":escalation,"drafts":self.state.drafts.as_object().map(|d| d.keys().map(|name| format!("{}/draft/{name}", self.working_dir())).collect::<Vec<_>>()),"runs":self.state.runs.len(),
-            "concerns":self.concerns(None, self.state.quality["diagnostics"].as_array().map(Vec::as_slice).unwrap_or_default()),
+            "next_actions":self.next_actions(),"quality":quality,"provenance":self.provenance_summary(),"run_id":self.run_id(),"notices":self.notices(),"exports":self.state.exports,"escalation":escalation,"drafts":self.state.drafts.as_object().map(|d| d.keys().map(|name| format!("{}/draft/{name}", self.working_dir())).collect::<Vec<_>>()),"runs":self.state.runs.len(),
+            "concerns":self.concerns(None, quality["diagnostics"].as_array().map(Vec::as_slice).unwrap_or_default())?,
             "references":{"count":self.state.references.as_object().map_or(0, |r|r.len()),"details_command":"read --task <task_ref> --pointer references"}});
         // Absent means empty here; tasks and next_actions stay visible even when empty.
         status["review_plan"] = json!(self.state.review_plan);
@@ -37,12 +38,12 @@ impl Workflow {
                     || value.as_array().is_some_and(Vec::is_empty)
                     || value.as_object().is_some_and(Map::is_empty))
         });
-        status
+        Ok(status)
     }
     /// Progress and decisions remain visible; detailed diagnostics are read by
     /// the assigned agent, accounting and review configuration only on demand.
-    pub(super) fn status_summary(&self) -> Value {
-        let mut status = self.status();
+    pub(super) fn status_summary(&self) -> Result<Value> {
+        let mut status = self.status()?;
         let fields = status.as_object_mut().unwrap();
         for key in ["quality", "provenance", "review_plan", "references", "runs"] {
             fields.remove(key);
@@ -55,7 +56,7 @@ impl Workflow {
             }
         }
         fields.insert("details_command".into(), json!("status"));
-        status
+        Ok(status)
     }
     /// The run identifier is the working directory name under .arp/work/workflow.
     pub(super) fn run_id(&self) -> String {

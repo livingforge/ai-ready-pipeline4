@@ -1,18 +1,63 @@
 use super::*;
 
+/// The pattern of ` name="value"` (or single-quoted) in an opening tag, with the
+/// value in group 1 or 2. Relocation edits attributes of every moved cell, row,
+/// formula and range, so each name is compiled once.
+pub(super) fn attribute_pattern(name: &str) -> Result<regex::Regex> {
+    static PATTERNS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, regex::Regex>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut patterns = PATTERNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(pattern) = patterns.get(name) {
+        return Ok(pattern.clone());
+    }
+    let pattern = regex::Regex::new(&format!(
+        r#"\s+{}\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
+        regex::escape(name)
+    ))?;
+    patterns.insert(name.to_owned(), pattern.clone());
+    Ok(pattern)
+}
+
+/// The raw value of attribute `name` in an opening tag.
+pub(super) fn xml_attribute_value<'a>(opening: &'a str, name: &str) -> Result<Option<&'a str>> {
+    Ok(attribute_pattern(name)?
+        .captures(opening)
+        .and_then(|captures| captures.get(1).or_else(|| captures.get(2)))
+        .map(|value| value.as_str()))
+}
+
 pub(super) fn replace_xml_attribute(opening: &str, name: &str, value: &str) -> Result<String> {
-    let pattern = format!(r#"\s+{}\s*=\s*(?:"[^"]*"|'[^']*')"#, regex::escape(name));
-    let re = regex::Regex::new(&pattern)?;
+    let re = attribute_pattern(name)?;
     ensure!(re.is_match(opening), "missing XML attribute: {name}");
+    // NoExpand: a value such as `$B$4` holds `$`, which would read as a group reference.
+    let replacement = format!(" {name}=\"{value}\"");
     Ok(re
-        .replace(opening, format!(" {name}=\"{value}\""))
+        .replace(opening, regex::NoExpand(&replacement))
         .into_owned())
 }
 
+/// Sets an attribute of an opening or empty-element tag, adding it when absent.
+pub(super) fn set_xml_attribute(opening: &str, name: &str, value: &str) -> Result<String> {
+    if let Ok(replaced) = replace_xml_attribute(opening, name, value) {
+        return Ok(replaced);
+    }
+    let end = opening
+        .strip_suffix("/>")
+        .or_else(|| opening.strip_suffix('>'))
+        .context("invalid XML element")?
+        .trim_end()
+        .len();
+    Ok(format!(
+        "{} {name}=\"{value}\"{}",
+        &opening[..end],
+        opening[end..].trim_start()
+    ))
+}
+
 pub(super) fn remove_xml_attribute(opening: &str, name: &str) -> Result<String> {
-    let pattern = format!(r#"\s+{}\s*=\s*(?:"[^"]*"|'[^']*')"#, regex::escape(name));
-    let re = regex::Regex::new(&pattern)?;
-    Ok(re.replace(opening, "").into_owned())
+    Ok(attribute_pattern(name)?.replace(opening, "").into_owned())
 }
 
 pub(super) fn xml_opening(raw: &str) -> Result<(&str, &str)> {
@@ -245,4 +290,34 @@ pub(super) fn write_archive_without(
     }
     output.finish()?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attribute_edits_keep_dollar_signs_literal() {
+        // Twice, so the second call runs on the cached pattern.
+        for _ in 0..2 {
+            assert_eq!(
+                replace_xml_attribute(r#"<c r='A1' t="n">"#, "r", "$B$4").unwrap(),
+                r#"<c r="$B$4" t="n">"#
+            );
+            assert_eq!(
+                replace_xml_attribute(r#"<mergeCell ref='A1:B2'/>"#, "ref", "$B$4").unwrap(),
+                r#"<mergeCell ref="$B$4"/>"#
+            );
+            assert!(replace_xml_attribute("<c>", "r", "A1").is_err());
+            assert_eq!(
+                remove_xml_attribute(r#"<c r="A1" t="s" st="x">"#, "t").unwrap(),
+                r#"<c r="A1" st="x">"#
+            );
+            assert_eq!(
+                xml_attribute_value(r#"<row r="3" s='7' customFormat="1">"#, "s").unwrap(),
+                Some("7")
+            );
+            assert_eq!(xml_attribute_value(r#"<row r="3">"#, "s").unwrap(), None);
+        }
+    }
 }

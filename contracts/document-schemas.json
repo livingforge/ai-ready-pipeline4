@@ -5184,6 +5184,30 @@
                 ]
               }
             },
+            "computed": {
+              "description": "Ranges Excel fills from an array formula or spill, a What-If data table or a pivot table; their member cells are not written back.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "array",
+                      "data_table",
+                      "pivot"
+                    ]
+                  }
+                },
+                "required": [
+                  "range",
+                  "kind"
+                ]
+              }
+            },
             "comments": {
               "type": "array",
               "items": {

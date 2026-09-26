@@ -168,6 +168,11 @@ pub fn diagnostics(input: &spec::Input, reply: &Value) -> Result<Vec<Value>> {
     let input_hash = hash(&encoded(&serde_json::to_value(input)?));
     let mut expanded = Vec::new();
     let mut keys = std::collections::BTreeSet::new();
+    // Relationship targets by key, so each link does not scan every item.
+    let mut by_key = std::collections::BTreeMap::new();
+    for item in items {
+        by_key.entry(item["key"].as_str().unwrap()).or_insert(item);
+    }
     for (index, original) in items.iter().enumerate() {
         let key = original["key"].as_str().unwrap();
         // Classification checks do not depend on citation expansion. Keep collecting
@@ -198,7 +203,7 @@ pub fn diagnostics(input: &spec::Input, reply: &Value) -> Result<Vec<Value>> {
                     continue;
                 }
                 let local = target.strip_prefix(&format!("{doc}/")).unwrap_or(target);
-                let other = items.iter().find(|i| i["key"] == local);
+                let other = by_key.get(local);
                 if local == key || other.is_none() {
                     report(format!("unknown or self relationship: {target}"));
                 } else if field == "requirements"

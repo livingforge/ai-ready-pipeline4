@@ -937,6 +937,10 @@
 | <code>/properties/sheets/items/properties/comments/items/properties/author</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/comments/items/properties/kind</code> | <code>{"enum":["note","thread","reply"]}</code> |
 | <code>/properties/sheets/items/properties/comments/items/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/computed</code> | <code>{"description":"Ranges Excel fills from an array formula or spill, a What-If data table or a pivot table; their member cells are not written back.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/computed/items</code> | <code>{"additionalProperties":false,"required":["range","kind"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/computed/items/properties/kind</code> | <code>{"enum":["array","data_table","pivot"]}</code> |
+| <code>/properties/sheets/items/properties/computed/items/properties/range</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","part","kind","name","description","text","anchor","group","transform","geometry","connections","image","linked_image","macro","control"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |

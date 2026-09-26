@@ -29,9 +29,9 @@ impl Workflow {
             v["repair"]["action"] == "scoped_restructure"
                 || v["finding"]["action"] == "scoped_restructure"
         };
+        let unresolved = self.unresolved()?;
         let eligible = |v: &Value| {
-            !self
-                .unresolved()
+            !unresolved
                 .iter()
                 .any(|entry| entry["code"] == "restructure_deferred" && entry["diagnostic"] == *v)
         };

@@ -36,10 +36,13 @@ impl Store {
         let mut excluded = vec![];
         let mut pending = vec![];
         let mut deleted_cells = vec![];
+        // Each cell by sheet and address, so that an entry does not scan its sheet.
+        let mut cells = BTreeMap::new();
         for sheet in array(&result.extraction["sheets"])? {
             let sheet_name = string(&sheet["name"])?;
             for cell in array(&sheet["cells"])? {
                 let address = string(&cell["address"])?;
+                cells.entry((sheet_name, address)).or_insert(cell);
                 if excel::map_coordinate(sheet_name, address, &operations)?.is_none() {
                     deleted_cells.push(json!({"sheet":sheet_name,"cell":address}));
                 }
@@ -53,14 +56,8 @@ impl Store {
                     let new = &result.values[&key(e)?];
                     match mapping_target(&e["target"])?.context("cell writeback requires target")? {
                         MappingTarget::Cell { sheet, cell } => {
-                            let old = array(&result.extraction["sheets"])?
-                                .iter()
-                                .find(|s| s["name"] == sheet)
-                                .and_then(|s| {
-                                    s["cells"].as_array()?.iter().find(|c| c["address"] == cell)
-                                })
-                                .context("missing cell")?;
-                            if let Some(mapped) = excel::map_coordinate(&sheet, &cell, &operations)?
+                            let old = cells.get(&(sheet, cell)).context("missing cell")?;
+                            if let Some(mapped) = excel::map_coordinate(sheet, cell, &operations)?
                                 && old["value"] != *new
                             {
                                 changes.push(json!({"sheet":sheet,"cell":mapped,"source_cell":cell,"before":old["value"],"after":new,"field":e["field"]}));
@@ -74,10 +71,10 @@ impl Store {
                         } => {
                             if !new.is_null() {
                                 let cell = excel::resolve_insertion(
-                                    &sheet,
-                                    &insertion,
+                                    sheet,
+                                    insertion,
                                     offset,
-                                    Some(&column),
+                                    Some(column),
                                     None,
                                     &operations,
                                 )?;
@@ -92,8 +89,8 @@ impl Store {
                         } => {
                             if !new.is_null() {
                                 let cell = excel::resolve_insertion(
-                                    &sheet,
-                                    &insertion,
+                                    sheet,
+                                    insertion,
                                     offset,
                                     None,
                                     Some(row),

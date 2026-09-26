@@ -26,6 +26,10 @@ pub fn validate_image_asset(path: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Moves cell-anchored drawings with their cells as Excel does, by the object's
+/// placement (`editAs`): `absolute` stays where it is, `oneCell` moves with its
+/// top-left cell and keeps its size, and the default `twoCell` moves and sizes
+/// with the cells under both corners.
 pub(super) fn rewrite_drawing_anchors(
     original: &str,
     operations: &[StructuralOperation],
@@ -38,43 +42,98 @@ pub(super) fn rewrite_drawing_anchors(
     for anchor in doc.descendants().filter(|node| {
         node.has_tag_name((XDR, "oneCellAnchor")) || node.has_tag_name((XDR, "twoCellAnchor"))
     }) {
-        for marker_name in ["from", "to"] {
-            let Some(marker) = child_ns(anchor, XDR, marker_name) else {
-                continue;
+        let placement = if anchor.has_tag_name((XDR, "oneCellAnchor")) {
+            "oneCell"
+        } else {
+            anchor.attribute("editAs").unwrap_or("twoCell")
+        };
+        if placement == "absolute" {
+            continue;
+        }
+        let marker = |name: &str| -> Result<Option<[(Node<'_, '_>, Node<'_, '_>, bool); 2]>> {
+            let Some(marker) = child_ns(anchor, XDR, name) else {
+                return Ok(None);
             };
-            let Some(col) = child_ns(marker, XDR, "col") else {
-                continue;
+            let part = |index: &str, offset: &str| {
+                child_ns(marker, XDR, index).zip(child_ns(marker, XDR, offset))
             };
-            let Some(row) = child_ns(marker, XDR, "row") else {
-                continue;
+            let (Some((col, col_off)), Some((row, row_off))) =
+                (part("col", "colOff"), part("row", "rowOff"))
+            else {
+                return Ok(None);
             };
-            for (node, is_row) in [(col, false), (row, true)] {
-                let text = node.text().context("drawing anchor coordinate is empty")?;
-                let position: u32 = text.parse()?;
-                let position = position
-                    .checked_add(1)
-                    .context("drawing anchor coordinate overflow")?;
-                let mapped = map_anchor_index(position, operations, is_row)?;
-                let text_node = node
-                    .children()
-                    .find(Node::is_text)
-                    .context("drawing anchor coordinate has no text")?;
-                edits.push((text_node.range(), (mapped - 1).to_string()));
+            Ok(Some([(col, col_off, false), (row, row_off, true)]))
+        };
+        let (Some(from), to) = (marker("from")?, marker("to")?) else {
+            continue;
+        };
+        let number = |node: Node<'_, '_>| -> Result<u32> {
+            node.text()
+                .context("drawing anchor coordinate is empty")?
+                .trim()
+                .parse::<u32>()?
+                .checked_add(1)
+                .context("drawing anchor coordinate overflow")
+        };
+        let mut set = |node: Node<'_, '_>, value: String| -> Result<()> {
+            let text = node
+                .children()
+                .find(Node::is_text)
+                .context("drawing anchor coordinate has no text")?;
+            edits.push((text.range(), value));
+            Ok(())
+        };
+        let mut shifts = [0i64; 2];
+        for (axis, (index, offset, is_row)) in from.into_iter().enumerate() {
+            let position = number(index)?;
+            let (mapped, deleted) = map_anchor_index(position, operations, is_row, false)?;
+            shifts[axis] = i64::from(mapped) - i64::from(position);
+            if mapped != position {
+                set(index, (mapped - 1).to_string())?;
+            }
+            if deleted {
+                set(offset, "0".to_owned())?;
+            }
+        }
+        let Some(to) = to else {
+            continue;
+        };
+        for (axis, (index, offset, is_row)) in to.into_iter().enumerate() {
+            let position = number(index)?;
+            let mapped = if placement == "oneCell" {
+                let moved = i64::from(position) + shifts[axis];
+                u32::try_from(moved.max(1)).context("drawing anchor coordinate overflow")?
+            } else {
+                let at_edge = offset.text().is_some_and(|text| text.trim() == "0");
+                let (mapped, deleted) = map_anchor_index(position, operations, is_row, at_edge)?;
+                if deleted {
+                    set(offset, "0".to_owned())?;
+                }
+                mapped
+            };
+            if mapped != position {
+                set(index, (mapped - 1).to_string())?;
             }
         }
     }
-    edits.sort_by_key(|(range, _)| range.start);
-    for pair in edits.windows(2) {
-        ensure!(
-            pair[0].0.end <= pair[1].0.start,
-            "overlapping drawing edits"
-        );
+    splice(original, edits, "drawing")
+}
+
+/// A shape can show a cell's value (`textlink="$B$5"` or `Data!$B$5`); the link
+/// follows the cell like a formula of the sheet holding the drawing.
+pub(super) fn rewrite_text_links(original: &str, sheet: &str, moves: &Moves<'_>) -> Result<String> {
+    let doc = xml(original.as_bytes())?;
+    let mut attributes = AttributeEdits::default();
+    for node in doc.descendants() {
+        let Some(link) = node.attribute("textlink").filter(|link| !link.is_empty()) else {
+            continue;
+        };
+        let rewritten = moves.rewrite(link, Some(sheet))?;
+        if rewritten != link {
+            attributes.set(original, node, "textlink", &rewritten)?;
+        }
     }
-    let mut result = original.to_owned();
-    for (range, replacement) in edits.into_iter().rev() {
-        result.replace_range(range, &replacement);
-    }
-    Ok(result)
+    apply_edits(original, attributes.into_edits().collect(), vec![])
 }
 
 pub(super) fn worksheet_drawing(
@@ -259,7 +318,7 @@ pub(super) fn image_anchor_xml(
     let to_col = operation.to.column - 1;
     let to_row = operation.to.row - 1;
     format!(
-        r#"<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>{from_col}</xdr:col><xdr:colOff>{from_col_off}</xdr:colOff><xdr:row>{from_row}</xdr:row><xdr:rowOff>{from_row_off}</xdr:rowOff></xdr:from><xdr:to><xdr:col>{to_col}</xdr:col><xdr:colOff>{to_col_off}</xdr:colOff><xdr:row>{to_row}</xdr:row><xdr:rowOff>{to_row_off}</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="{doc_pr_id}" name="{name}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="{relationship_id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>"#,
+        r#"<xdr:twoCellAnchor xmlns:xdr="{XDR}" xmlns:a="{DRAWING}" xmlns:r="{REL}" editAs="oneCell"><xdr:from><xdr:col>{from_col}</xdr:col><xdr:colOff>{from_col_off}</xdr:colOff><xdr:row>{from_row}</xdr:row><xdr:rowOff>{from_row_off}</xdr:rowOff></xdr:from><xdr:to><xdr:col>{to_col}</xdr:col><xdr:colOff>{to_col_off}</xdr:colOff><xdr:row>{to_row}</xdr:row><xdr:rowOff>{to_row_off}</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="{doc_pr_id}" name="{name}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="{relationship_id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>"#,
         from_col_off = operation.from.column_offset,
         from_row_off = operation.from.row_offset,
         to_col_off = operation.to.column_offset,
@@ -273,20 +332,21 @@ pub(super) fn new_drawing() -> String {
     format!(r#"<xdr:wsDr xmlns:xdr="{XDR}" xmlns:a="{DRAWING}" xmlns:r="{REL}"></xdr:wsDr>"#)
 }
 
-pub(super) fn ensure_relationship_namespace(worksheet: &str) -> Result<String> {
-    let (opening, _) = xml_opening(worksheet)?;
-    if opening.contains("xmlns:r=") {
-        return Ok(worksheet.to_owned());
-    }
-    let replacement = format!("{} xmlns:r=\"{}\">", opening.trim_end_matches('>'), REL);
-    Ok(worksheet.replacen(opening, &replacement, 1))
-}
-
+/// Adds `<drawing r:id>` to a worksheet. The element takes the worksheet's own
+/// prefix and declares the relationships namespace itself, so the root element
+/// (and the XML declaration before it) stay as written.
 pub(super) fn append_drawing_reference(worksheet: &str, relationship_id: &str) -> Result<String> {
-    let worksheet = ensure_relationship_namespace(worksheet)?;
-    let drawing = format!(r#"<drawing r:id="{}"/>"#, xml_attr(relationship_id));
+    let doc = xml(worksheet.as_bytes())?;
+    let root = doc.root_element();
+    let prefix = element_tag(&worksheet[root.range()])?
+        .strip_suffix("worksheet")
+        .context("invalid worksheet tag")?;
+    let drawing = format!(
+        r#"<{prefix}drawing xmlns:r="{REL}" r:id="{}"/>"#,
+        xml_attr(relationship_id)
+    );
     insert_before_root_children(
-        &worksheet,
+        worksheet,
         &drawing,
         &[
             (NS, "legacyDrawing"),

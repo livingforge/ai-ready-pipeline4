@@ -3,32 +3,70 @@ use super::*;
 
 const THREADED: &str = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments";
 
-/// Resolves a relationship of `base` to its (type, part).
-fn related(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str) -> Result<(String, String)> {
-    let key = relationships_part(base)?;
-    let doc = xml(parts.get(&key).context("missing object relationships")?)?;
-    let rel = doc
-        .descendants()
-        .find(|n| n.has_tag_name((PKG_REL, "Relationship")) && n.attribute("Id") == Some(id))
-        .context("missing object relationship")?;
-    ensure!(
-        rel.attribute("TargetMode") != Some("External"),
-        "external object relationship is unsupported"
-    );
-    let value = rel.attribute("Target").context("missing object target")?;
-    ensure!(!value.contains(['\\', ':', '%']), "invalid object target");
-    let resolved = relationship_target(base, value)?;
-    ensure!(parts.contains_key(&resolved), "missing object part");
-    Ok((rel.attribute("Type").unwrap_or("").to_owned(), resolved))
+/// A relationship as written: its type, target and whether it is external.
+struct Relationship {
+    kind: String,
+    target: Option<String>,
+    external: bool,
 }
 
-fn target(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str, kind: &str) -> Result<String> {
-    let (relationship, part) = related(parts, base, id)?;
-    ensure!(
-        relationship.ends_with(kind),
-        "unexpected object relationship type"
-    );
-    Ok(part)
+/// Relationships of parts by ID, each `.rels` part parsed once: a sheet with a
+/// picture or form control per row would otherwise re-parse it for each one.
+struct Relationships<'a> {
+    parts: &'a BTreeMap<String, Vec<u8>>,
+    parsed: BTreeMap<String, BTreeMap<String, Relationship>>,
+}
+
+impl<'a> Relationships<'a> {
+    fn new(parts: &'a BTreeMap<String, Vec<u8>>) -> Self {
+        Self {
+            parts,
+            parsed: BTreeMap::new(),
+        }
+    }
+
+    /// Resolves a relationship of `base` to its (type, part).
+    fn related(&mut self, base: &str, id: &str) -> Result<(String, String)> {
+        let key = relationships_part(base)?;
+        if !self.parsed.contains_key(&key) {
+            let doc = xml(self
+                .parts
+                .get(&key)
+                .context("missing object relationships")?)?;
+            let mut by_id = BTreeMap::new();
+            for rel in doc
+                .descendants()
+                .filter(|n| n.has_tag_name((PKG_REL, "Relationship")))
+            {
+                if let Some(id) = rel.attribute("Id") {
+                    by_id.entry(id.to_owned()).or_insert_with(|| Relationship {
+                        kind: rel.attribute("Type").unwrap_or("").to_owned(),
+                        target: rel.attribute("Target").map(str::to_owned),
+                        external: rel.attribute("TargetMode") == Some("External"),
+                    });
+                }
+            }
+            self.parsed.insert(key.clone(), by_id);
+        }
+        let rel = self.parsed[&key]
+            .get(id)
+            .context("missing object relationship")?;
+        ensure!(!rel.external, "external object relationship is unsupported");
+        let value = rel.target.as_deref().context("missing object target")?;
+        ensure!(!value.contains(['\\', ':', '%']), "invalid object target");
+        let resolved = relationship_target(base, value)?;
+        ensure!(self.parts.contains_key(&resolved), "missing object part");
+        Ok((rel.kind.clone(), resolved))
+    }
+
+    fn target(&mut self, base: &str, id: &str, kind: &str) -> Result<String> {
+        let (relationship, part) = self.related(base, id)?;
+        ensure!(
+            relationship.ends_with(kind),
+            "unexpected object relationship type"
+        );
+        Ok(part)
+    }
 }
 
 /// Controls on a sheet by shape ID, as (settings, assigned macro). Excel keeps
@@ -37,6 +75,7 @@ fn target(parts: &BTreeMap<String, Vec<u8>>, base: &str, id: &str, kind: &str) -
 /// ActiveX settings live in binary parts and are not read.
 fn controls(
     parts: &BTreeMap<String, Vec<u8>>,
+    relationships: &mut Relationships<'_>,
     sheet_part: &str,
     sheet: Node<'_, '_>,
 ) -> Result<BTreeMap<String, (Value, Option<String>)>> {
@@ -53,8 +92,7 @@ fn controls(
         if property.is_none() && output.contains_key(shape) {
             continue;
         }
-        let (relationship, part) = related(
-            parts,
+        let (relationship, part) = relationships.related(
             sheet_part,
             control
                 .attribute((REL, "id"))
@@ -84,12 +122,12 @@ pub(super) fn persons(parts: &BTreeMap<String, Vec<u8>>) -> Result<BTreeMap<Stri
         return Ok(output);
     };
     let doc = xml(rels)?;
+    let mut relationships = Relationships::new(parts);
     for rel in doc.descendants().filter(|n| {
         n.has_tag_name((PKG_REL, "Relationship"))
             && n.attribute("Type").is_some_and(|t| t.ends_with("/person"))
     }) {
-        let part = target(
-            parts,
+        let part = relationships.target(
             "xl/workbook.xml",
             rel.attribute("Id").context("missing relationship ID")?,
             "/person",
@@ -120,6 +158,7 @@ pub(super) fn extract_comments(
         return Ok(vec![]);
     };
     let rels = xml(rels)?;
+    let mut relationships = Relationships::new(parts);
     let mut notes = vec![];
     let mut threads = vec![];
     for rel in rels
@@ -131,8 +170,7 @@ pub(super) fn extract_comments(
         if kind != format!("{REL}/comments") && !threaded {
             continue;
         }
-        let part = target(
-            parts,
+        let part = relationships.target(
             sheet_part,
             rel.attribute("Id").context("missing relationship ID")?,
             if threaded {
@@ -231,16 +269,49 @@ fn alternate_content_branch<'a, 'input>(node: Node<'a, 'input>) -> Vec<Node<'a, 
         .unwrap_or_default()
 }
 
+fn drawing_object(node: Node<'_, '_>) -> bool {
+    node.tag_name().namespace() == Some(XDR)
+        && matches!(
+            node.tag_name().name(),
+            "sp" | "pic" | "cxnSp" | "grpSp" | "graphicFrame"
+        )
+}
+
+/// Whether `node` sits in an `mc:AlternateContent` branch within `anchor` that
+/// readers do not show. Excel saves a slicer, timeline or newer chart type as a
+/// graphic frame in `mc:Choice` and a shape explaining the object in
+/// `mc:Fallback`; readers show the first branch holding a drawing object.
+fn in_unshown_branch(node: Node<'_, '_>, anchor: Node<'_, '_>) -> bool {
+    node.ancestors()
+        .take_while(|ancestor| *ancestor != anchor)
+        .any(|branch| {
+            let Some(alternate) = branch
+                .parent()
+                .filter(|p| p.has_tag_name((MARKUP_COMPATIBILITY, "AlternateContent")))
+            else {
+                return false;
+            };
+            let shown = alternate.children().find(|b| {
+                (b.has_tag_name((MARKUP_COMPATIBILITY, "Choice"))
+                    || b.has_tag_name((MARKUP_COMPATIBILITY, "Fallback")))
+                    && b.descendants().any(drawing_object)
+            });
+            shown != Some(branch)
+        })
+}
+
 pub(super) fn extract_visuals(
     parts: &BTreeMap<String, Vec<u8>>,
     sheet_part: &str,
     sheet: Node<'_, '_>,
 ) -> Result<Vec<Value>> {
     let mut objects = vec![];
-    let controls = controls(parts, sheet_part, sheet)?;
+    let mut relationships = Relationships::new(parts);
+    // Pictures often share one image (a logo on every page).
+    let mut hashes = BTreeMap::new();
+    let controls = controls(parts, &mut relationships, sheet_part, sheet)?;
     for drawing in sheet.children().filter(|n| n.has_tag_name((NS, "drawing"))) {
-        let part = target(
-            parts,
+        let part = relationships.target(
             sheet_part,
             drawing
                 .attribute((REL, "id"))
@@ -254,13 +325,10 @@ pub(super) fn extract_visuals(
             .filter(Node::is_element)
             .flat_map(alternate_content_branch)
         {
-            for node in anchor.descendants().filter(|n| {
-                n.tag_name().namespace() == Some(XDR)
-                    && matches!(
-                        n.tag_name().name(),
-                        "sp" | "pic" | "cxnSp" | "grpSp" | "graphicFrame"
-                    )
-            }) {
+            for node in anchor
+                .descendants()
+                .filter(|n| drawing_object(*n) && !in_unshown_branch(*n, anchor))
+            {
                 let property = node
                     .children()
                     .find(|n| n.tag_name().name().starts_with("nv"))
@@ -333,8 +401,11 @@ pub(super) fn extract_visuals(
                         .find(|n| n.has_tag_name((DRAWING, "blip")))
                 {
                     if let Some(id) = blip.attribute((REL, "embed")) {
-                        let media = target(parts, &part, id, "/image")?;
-                        let sha = hash(&parts[&media]);
+                        let media = relationships.target(&part, id, "/image")?;
+                        let sha = hashes
+                            .entry(media.clone())
+                            .or_insert_with(|| hash(&parts[&media]))
+                            .clone();
                         image = json!({"part":media,"sha256":sha});
                     }
                     linked_image = json!(blip.attribute((REL, "link")));
@@ -363,12 +434,12 @@ pub(super) fn extract_tables(
     sheet: Node<'_, '_>,
 ) -> Result<Vec<Value>> {
     let mut tables = vec![];
+    let mut relationships = Relationships::new(parts);
     for item in sheet
         .descendants()
         .filter(|n| n.has_tag_name((NS, "tablePart")))
     {
-        let part = target(
-            parts,
+        let part = relationships.target(
             sheet_part,
             item.attribute((REL, "id")).context("missing table ID")?,
             "/table",
@@ -434,6 +505,14 @@ mod tests {
         let fallback = extract(&wrapped("", &shape("fallback"))).unwrap();
         assert_eq!(fallback.len(), 1);
         assert_eq!(fallback[0]["name"], "fallback");
+        // Excel puts a slicer's branches inside the anchor; the fallback shape
+        // only explains the slicer to older readers.
+        let slicer = extract(&parts(&format!(
+            r#"<xdr:twoCellAnchor editAs="absolute"><xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>9</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><mc:AlternateContent xmlns:mc="{MARKUP_COMPATIBILITY}"><mc:Choice Requires="sle15"><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="ItemSlicer"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr></xdr:graphicFrame></mc:Choice><mc:Fallback><xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="0" name=""/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:txBody><a:p><a:r><a:t>この図形はテーブル スライサーを表しています。</a:t></a:r></a:p></xdr:txBody></xdr:sp></mc:Fallback></mc:AlternateContent><xdr:clientData/></xdr:twoCellAnchor>"#
+        )))
+        .unwrap();
+        assert_eq!(slicer.len(), 1);
+        assert_eq!(slicer[0]["name"], "ItemSlicer");
     }
     #[test]
     fn absolute_linked_picture_is_identified_without_loading_external_content() {

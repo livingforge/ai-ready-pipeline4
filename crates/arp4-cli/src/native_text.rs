@@ -111,7 +111,7 @@ pub fn lines(raw: &str) -> Result<Value> {
 pub fn markdown(raw: &str) -> Result<Value> {
     let text = Text::new(raw);
     ensure!(
-        text.body.lines().count() <= 1_048_576,
+        text.starts.len() - usize::from(text.starts.last() == Some(&text.body.len())) <= 1_048_576,
         "text document exceeds line budget"
     );
     let parser = Parser::new_ext(
@@ -119,7 +119,8 @@ pub fn markdown(raw: &str) -> Result<Value> {
         Options::ENABLE_TABLES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_FOOTNOTES,
+            | Options::ENABLE_FOOTNOTES
+            | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
     );
     let mut spans = Vec::new();
     let mut depth = 0;
@@ -142,6 +143,8 @@ pub fn markdown(raw: &str) -> Result<Value> {
                         Tag::BlockQuote(_) => ("quote", None),
                         Tag::HtmlBlock => ("html", None),
                         Tag::FootnoteDefinition(_) => ("footnote", None),
+                        // `---` front matter is metadata, not a rule and a setext heading.
+                        Tag::MetadataBlock(_) => ("front_matter", None),
                         _ => ("raw", None),
                     };
                     active = (range, kind, level);
@@ -209,19 +212,38 @@ pub fn markdown(raw: &str) -> Result<Value> {
     let mut cells = vec![];
     let mut cursor = 0;
     let mut preceding = vec![];
-    // Keep non-event text (including link definitions) as evidence, too.
+    // Keep non-event text (including link definitions) as evidence, too. Blank
+    // lines are those CommonMark treats as blank: spaces and tabs only, so a
+    // line of full-width spaces is text.
+    let blank = |line: &str| line.trim_matches([' ', '\t', '\r', '\n']).is_empty();
     let mut append =
         |range: Range<usize>, kind: &str, headings: &[String], columns: Vec<String>| {
-            let raw = &text.body[range.clone()];
-            if !raw.trim().is_empty() {
-                let value = raw.trim_end_matches(['\r', '\n']);
-                let end = range.start + value.len();
-                cells.push(cell(
-                    cells.len() + 1,
-                    value,
-                    text.position(range.start..end, kind, headings, columns),
-                ));
+            // Leading blank lines separate the block from the one before it.
+            let mut start = range.start;
+            let mut next = text.starts.partition_point(|line| *line <= start);
+            loop {
+                if start >= range.end {
+                    return;
+                }
+                let end = text
+                    .starts
+                    .get(next)
+                    .copied()
+                    .unwrap_or(text.body.len())
+                    .min(range.end);
+                if !blank(&text.body[start..end]) {
+                    break;
+                }
+                start = end;
+                next += 1;
             }
+            let value = text.body[start..range.end].trim_end_matches(['\r', '\n']);
+            let end = start + value.len();
+            cells.push(cell(
+                cells.len() + 1,
+                value,
+                text.position(start..end, kind, headings, columns),
+            ));
         };
     for (range, kind, heading, columns) in spans {
         ensure!(
@@ -260,13 +282,17 @@ fn field_ranges(body: &str, delimiter: u8) -> Result<Vec<Vec<Range<usize>>>> {
         }
         if b == delimiter || b == b'\r' || b == b'\n' {
             fields.push(start..i);
-            count += 1;
             ensure!(
-                fields.len() <= 16_384 && count <= 1_048_576,
+                fields.len() <= 16_384,
                 "delimited text exceeds column/cell budget"
             );
             if b != delimiter {
                 if fields.len() != 1 || !fields[0].is_empty() {
+                    count += fields.len();
+                    ensure!(
+                        count <= 1_048_576,
+                        "delimited text exceeds column/cell budget"
+                    );
                     records.push(std::mem::take(&mut fields));
                 } else {
                     fields.clear();
@@ -295,8 +321,9 @@ fn field_ranges(body: &str, delimiter: u8) -> Result<Vec<Vec<Range<usize>>>> {
     ensure!(state != 2, "unterminated quoted CSV field");
     if start < bytes.len() || !fields.is_empty() {
         fields.push(start..bytes.len());
+        count += fields.len();
         ensure!(
-            fields.len() <= 16_384 && count < 1_048_576,
+            fields.len() <= 16_384 && count <= 1_048_576,
             "delimited text exceeds column/cell budget"
         );
         records.push(fields);

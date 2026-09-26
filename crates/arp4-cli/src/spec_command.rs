@@ -348,8 +348,8 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
                 for id in document {
                     ensure!(seen.insert(id.clone()), "duplicate structure document");
                     let inspected = store.inspect(&store.document(&id)?, true)?;
-                    let structure = inspected
-                        .interpretation
+                    let (structure, _) = store
+                        .interpretation(&inspected)?
                         .context("document has no structure interpretation")?;
                     let mut matching = Vec::new();
                     for path in &extraction {

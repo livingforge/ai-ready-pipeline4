@@ -7,42 +7,39 @@ pub(super) fn key(entry: &Value) -> Result<(String, String, String)> {
         entry["field"].as_str().unwrap_or("").into(),
     ))
 }
-pub(super) fn target(value: &Value) -> Result<(String, String)> {
-    Ok((
-        string(&value["sheet"])?.into(),
-        string(&value["cell"])?.into(),
-    ))
+pub(super) fn target(value: &Value) -> Result<(&str, &str)> {
+    Ok((string(&value["sheet"])?, string(&value["cell"])?))
 }
-pub(super) enum MappingTarget {
+pub(super) enum MappingTarget<'a> {
     Cell {
-        sheet: String,
-        cell: String,
+        sheet: &'a str,
+        cell: &'a str,
     },
     InsertionRow {
-        sheet: String,
-        insertion: String,
+        sheet: &'a str,
+        insertion: &'a str,
         offset: u32,
-        column: String,
+        column: &'a str,
     },
     InsertionColumn {
-        sheet: String,
-        insertion: String,
+        sheet: &'a str,
+        insertion: &'a str,
         offset: u32,
         row: u32,
     },
 }
-pub(super) fn mapping_target(value: &Value) -> Result<Option<MappingTarget>> {
+pub(super) fn mapping_target(value: &Value) -> Result<Option<MappingTarget<'_>>> {
     if value.is_null() {
         return Ok(None);
     }
     if value.get("cell").is_some() {
         return Ok(Some(MappingTarget::Cell {
-            sheet: string(&value["sheet"])?.into(),
-            cell: string(&value["cell"])?.into(),
+            sheet: string(&value["sheet"])?,
+            cell: string(&value["cell"])?,
         }));
     }
-    let sheet = string(&value["sheet"])?.to_owned();
-    let insertion = string(&value["insertion"])?.to_owned();
+    let sheet = string(&value["sheet"])?;
+    let insertion = string(&value["insertion"])?;
     let offset = u32::try_from(
         value["offset"]
             .as_u64()
@@ -53,7 +50,7 @@ pub(super) fn mapping_target(value: &Value) -> Result<Option<MappingTarget>> {
             sheet,
             insertion,
             offset,
-            column: string(&value["column"])?.to_owned(),
+            column: string(&value["column"])?,
         }));
     }
     Ok(Some(MappingTarget::InsertionColumn {
@@ -115,16 +112,20 @@ fn inserted_position(
     );
     Ok(Some((id.to_owned(), number - 1)))
 }
+/// A (page, block) or (row, column) pair borrowed from the content pages.
+type Pair<'a> = (&'a str, &'a str);
+
+/// Keeps the entries whose content still exists and maps new table cells. Takes
+/// `mappings` by value: a large document has an entry for every cell, and copying
+/// them, or keying them by owned strings, cost more than the checks themselves.
 pub(super) fn regenerate_mappings(
-    mappings: &Value,
+    mut regenerated: Value,
     extraction: &Value,
     pages: &[Value],
     operations: &[excel::StructuralOperation],
 ) -> Result<Value> {
-    let mut regenerated = mappings.clone();
-    let mut positions: BTreeMap<(String, String), BTreeMap<(String, String), Value>> =
-        BTreeMap::new();
-    let mut fields: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    let mut positions: BTreeMap<Pair, BTreeMap<Pair, &Value>> = BTreeMap::new();
+    let mut fields: BTreeMap<Pair, BTreeSet<&str>> = BTreeMap::new();
     let mut blocks = BTreeSet::new();
     for page in pages {
         let page_id = string(&page["page_id"])?;
@@ -132,83 +133,75 @@ pub(super) fn regenerate_mappings(
             .as_object()
             .context("content blocks required")?
         {
-            let block_key = (page_id.to_owned(), block.clone());
-            blocks.insert(block_key.clone());
+            let block_key = (page_id, block.as_str());
+            blocks.insert(block_key);
             if let Some(values) = body["fields"].as_object() {
                 fields
-                    .entry(block_key.clone())
+                    .entry(block_key)
                     .or_default()
-                    .extend(values.keys().cloned());
+                    .extend(values.keys().map(String::as_str));
             }
             if let Some(rows) = body["rows"].as_object() {
                 let table = positions.entry(block_key).or_default();
                 for (row, values) in rows {
                     for (column, value) in values.as_object().context("invalid table row")? {
-                        table.insert((row.clone(), column.clone()), value.clone());
+                        table.insert((row.as_str(), column.as_str()), value);
                     }
                 }
             }
         }
     }
-    let original_entries = array(&mappings["entries"])?;
+    let mut keep = vec![];
     let mut used_fields = BTreeSet::new();
-    let mut kept = vec![];
     let mut mapped_positions = BTreeSet::new();
-    for entry in original_entries {
+    for entry in array(&regenerated["entries"])? {
         let page = string(&entry["page"])?;
         let block = string(&entry["block"])?;
-        let block_key = (page.to_owned(), block.to_owned());
-        let keep = if let Some(position) = entry["position"].as_object() {
-            positions.get(&block_key).is_some_and(|values| {
-                values.contains_key(&(
-                    string(&position["row"]).unwrap_or("").to_owned(),
-                    string(&position["column"]).unwrap_or("").to_owned(),
-                ))
-            })
+        let kept = if let Some(position) = entry["position"].as_object() {
+            let cell = (
+                string(&position["row"]).unwrap_or(""),
+                string(&position["column"]).unwrap_or(""),
+            );
+            let exists = positions
+                .get(&(page, block))
+                .is_some_and(|values| values.contains_key(&cell));
+            if exists {
+                string(&position["row"])?;
+                string(&position["column"])?;
+                mapped_positions.insert((page, block, cell.0, cell.1));
+            }
+            exists
         } else if entry["field"].is_null() {
-            blocks.contains(&block_key)
+            blocks.contains(&(page, block))
         } else {
             let field = string(&entry["field"])?;
             fields
-                .get(&block_key)
+                .get(&(page, block))
                 .is_some_and(|values| values.contains(field))
         };
-        if keep {
-            if let Some(position) = entry["position"].as_object() {
-                mapped_positions.insert((
-                    page.to_owned(),
-                    block.to_owned(),
-                    string(&position["row"])?.to_owned(),
-                    string(&position["column"])?.to_owned(),
-                ));
-            }
-            if !entry["field"].is_null() {
-                used_fields.insert(string(&entry["field"])?.to_owned());
-            }
-            kept.push(entry.clone());
+        if kept && !entry["field"].is_null() {
+            used_fields.insert(string(&entry["field"])?);
         }
+        keep.push(kept);
     }
+    let mut generated = vec![];
+    let mut generated_fields = BTreeSet::new();
     for ((page, block), values) in positions {
-        let sheet = page_sheet(extraction, &page)?;
+        let sheet = page_sheet(extraction, page)?;
         for ((row, column), value) in values {
-            if mapped_positions.contains(&(
-                page.clone(),
-                block.clone(),
-                row.clone(),
-                column.clone(),
-            )) {
+            if mapped_positions.contains(&(page, block, row, column)) {
                 continue;
             }
             ensure!(
-                value.is_null() || kind(&value) != "object",
+                value.is_null() || kind(value) != "object",
                 "new table references require explicit mapping"
             );
             let target = match (
-                inserted_position(operations, &sheet, &row, true)?,
-                inserted_position(operations, &sheet, &column, false)?,
+                inserted_position(operations, &sheet, row, true)?,
+                inserted_position(operations, &sheet, column, false)?,
             ) {
                 (Some((insertion, offset)), None) => {
-                    excel::column_number(&column).with_context(|| {
+                    excel::column_number(column).with_context(|| {
                         format!("{row}/{column}: an inserted row takes values in original columns (A, B, ...)")
                     })?;
                     json!({"sheet":sheet,"insertion":insertion,"offset":offset,"column":column})
@@ -233,12 +226,12 @@ pub(super) fn regenerate_mappings(
             let field_prefix = format!("generated-{row}-{column}");
             let mut field = field_prefix.clone();
             let mut suffix = 2;
-            while used_fields.contains(&field) {
+            while used_fields.contains(field.as_str()) || generated_fields.contains(&field) {
                 field = format!("{field_prefix}-{suffix}");
                 suffix += 1;
             }
-            used_fields.insert(field.clone());
-            kept.push(json!({
+            generated_fields.insert(field.clone());
+            generated.push(json!({
                 "page":page,
                 "block":block,
                 "field":field,
@@ -246,10 +239,19 @@ pub(super) fn regenerate_mappings(
                 "reason":"structural content generated mapping",
                 "target":target,
                 "writeback":"cell",
-                "position":{"row":row,"column":column,"type":kind(&value)}
+                "position":{"row":row,"column":column,"type":kind(value)}
             }));
         }
     }
+    let Value::Array(entries) = regenerated["entries"].take() else {
+        bail!("expected array");
+    };
+    let mut kept: Vec<Value> = entries
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(entry, keep)| keep.then_some(entry))
+        .collect();
+    kept.extend(generated);
     regenerated["entries"] = Value::Array(kept);
     if let Some(tables) = regenerated["tables"].as_array_mut() {
         for table in tables {

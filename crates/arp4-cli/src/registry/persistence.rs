@@ -66,6 +66,24 @@ pub fn load(root: &Path) -> Result<Registry> {
     validate(&r)?;
     Ok(r)
 }
+/// Writes a file of the staged registry. One the current registry already holds
+/// with the same bytes is linked instead: Windows virus scanning reads every newly
+/// written file again when it is next opened, so rewriting all records for one
+/// change made the next command wait about a minute for 6,000 records.
+fn stage_file(current: Option<&Path>, out: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
+    let path = out.join(relative);
+    if let Some(current) = current {
+        let existing = current.join(relative);
+        // A file system without hard links gets a written copy.
+        if fs::read(&existing).is_ok_and(|old| old == bytes)
+            && fs::hard_link(&existing, &path).is_ok()
+        {
+            return Ok(());
+        }
+    }
+    fs::write(path, bytes)?;
+    Ok(())
+}
 pub fn save(r: &Registry, out: &Path) -> Result<()> {
     validate(r)?;
     let parent = out.parent().context("registry has no parent")?;
@@ -126,14 +144,15 @@ pub fn save(r: &Registry, out: &Path) -> Result<()> {
     for folder in ["records", "evidence", "archive"] {
         fs::create_dir(out.join(folder))?;
     }
+    let current = destination.exists().then_some(destination);
     for (id, e) in &r.entries {
-        fs::write(out.join("records").join(format!("{id}.json")), bytes(e)?)?;
+        stage_file(current, out, &format!("records/{id}.json"), &bytes(e)?)?;
     }
     for (id, v) in &r.inputs {
-        fs::write(out.join("evidence").join(format!("{id}.json")), encoded(v))?;
+        stage_file(current, out, &format!("evidence/{id}.json"), &encoded(v))?;
     }
     for (id, v) in &r.archives {
-        fs::write(out.join("archive").join(format!("{id}.json")), encoded(v))?;
+        stage_file(current, out, &format!("archive/{id}.json"), &encoded(v))?;
     }
     fs::write(out.join("registry.json"), bytes(&r.manifest)?)?;
     let backup = stage.path().join("previous");

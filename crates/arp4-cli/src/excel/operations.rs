@@ -133,6 +133,10 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
             .transpose()?;
         if let Some(style_from) = style_from {
             ensure!(
+                kind == OperationKind::InsertRows,
+                "style_from applies to insert_rows only; inserted columns take the format of the column to their left, as in Excel"
+            );
+            ensure!(
                 (1..=limit).contains(&style_from),
                 "style_from outside bounds"
             );

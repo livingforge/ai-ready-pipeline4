@@ -147,10 +147,48 @@ impl Workflow {
         )
     }
 
+    /// The `modules` a reply artifact declares, read once per artifact.
+    fn reply_modules(&self, digest: &str) -> Result<Value> {
+        if let Some(modules) = self.state.reply_modules.borrow().get(digest) {
+            return Ok(modules.clone());
+        }
+        let modules = self.store.json(digest)?["modules"].clone();
+        self.state
+            .reply_modules
+            .borrow_mut()
+            .insert(digest.to_owned(), modules.clone());
+        Ok(modules)
+    }
+
+    /// Index the modules of every live reply and forget retired ones, so the
+    /// saved index covers exactly the replies the vocabulary reads.
+    pub(super) fn index_reply_modules(&self) -> Result<()> {
+        let mut live = BTreeSet::new();
+        for digest in obj(&self.state.replies)?.values() {
+            live.insert(s(digest)?);
+        }
+        for task in &self.state.tasks {
+            if task.stage == Stage::Extract
+                && task.state == TaskState::Complete
+                && let Some(digest) = &task.reply
+            {
+                live.insert(digest);
+            }
+        }
+        self.state
+            .reply_modules
+            .borrow_mut()
+            .retain(|digest, _| live.contains(digest.as_str()));
+        for digest in live {
+            self.reply_modules(digest)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn module_vocabulary(&self) -> Result<Value> {
         let mut modules = self.state.modules.clone();
         for digest in obj(&self.state.replies)?.values() {
-            for (slug, name) in obj(&self.store.json(s(digest)?)?["modules"])? {
+            for (slug, name) in obj(&self.reply_modules(s(digest)?)?)? {
                 modules
                     .as_object_mut()
                     .unwrap()
@@ -160,8 +198,9 @@ impl Workflow {
         }
         for task in &self.state.tasks {
             if task.stage == Stage::Extract && task.state == TaskState::Complete {
-                let reply = self.artifact(&task.reply)?;
-                if let Some(values) = reply["modules"].as_object() {
+                let reply =
+                    self.reply_modules(task.reply.as_deref().context("task artifact required")?)?;
+                if let Some(values) = reply.as_object() {
                     for (slug, name) in values {
                         modules
                             .as_object_mut()
@@ -298,12 +337,28 @@ impl Workflow {
         }
         let repeated = count.saturating_sub(1);
         self.state.quality = json!({"fingerprints":fingerprints,"fingerprint":digest,"round":round,"issue_count":signature.len(),"unchanged_rounds":repeated,
-            "previous_issue_count":previous["issue_count"],"diagnostics":issues});
+            "previous_issue_count":previous["issue_count"],"diagnostics":self.store.put_json(issues)?});
         // One unchanged wave can be necessary for a multi-step correction. Three is a loop.
         Ok(repeated >= 3)
     }
 
-    pub(super) fn provenance(&self) -> Value {
+    /// The quality record with its diagnostics, which are kept as an object: every
+    /// command reads the workflow state, and they list every open issue.
+    pub(super) fn quality_view(&self) -> Result<Value> {
+        let mut quality = self.state.quality.clone();
+        if let Some(digest) = quality["diagnostics"].as_str() {
+            quality["diagnostics"] = self.store.json(digest)?;
+        }
+        Ok(quality)
+    }
+
+    pub(super) fn provenance(&self) -> Result<Value> {
+        let mut provenance = self.provenance_counters();
+        provenance["quality"] = self.quality_view()?;
+        Ok(provenance)
+    }
+
+    fn provenance_counters(&self) -> Value {
         let runs = self.state.runs.clone();
         // fold from +0.0: an empty f64 sum would print as -0.0.
         let external_usage: Vec<_> = self
@@ -351,14 +406,14 @@ impl Workflow {
             "token_usage_complete":!records.is_empty() && token_measured == records.len(),
             "unmeasured_token_calls":records.len()-token_measured,
             "unmeasured_calls":records.len()-measured,
-            "repair_rounds":self.state.repair_rounds,"quality":self.state.quality,"deferred":self.state.deferred,"notices":self.state.notices,
+            "repair_rounds":self.state.repair_rounds,"deferred":self.state.deferred,"notices":self.state.notices,
             "evaluation":"External submissions are interventions, not evidence of an unattended provider-only run. Source audits record review activity, not proof of semantic completeness."})
     }
 
     /// Agent-facing history: provenance counters plus compact submission and run rows.
     /// Object digests stay in state.json; rejection text is shown as diagnostics.
-    pub(super) fn history(&self) -> Value {
-        let mut history = self.provenance();
+    pub(super) fn history(&self) -> Result<Value> {
+        let mut history = self.provenance()?;
         history["notices"] = self.notices();
         let mut numbers = BTreeMap::<String, usize>::new();
         let submissions: Vec<_> = self
@@ -423,12 +478,12 @@ impl Workflow {
         for key in ["binary_hash", "input"] {
             history.as_object_mut().unwrap().remove(key);
         }
-        history
+        Ok(history)
     }
 
     /// Counters only; hashes, module vocabulary and evaluation text belong to history.
     pub(super) fn provenance_summary(&self) -> Value {
-        let full = self.provenance();
+        let full = self.provenance_counters();
         let mut summary = json!({"details_command":"history"});
         for key in [
             "provider_calls",
@@ -546,6 +601,60 @@ mod tests {
         input["sources"][0]["text"] = json!("changed");
         flow.state.input = flow.store.put_json(&input).unwrap();
         assert!(flow.validate_replies(&replies).is_err());
+    }
+
+    #[test]
+    fn module_vocabulary_reads_each_live_reply_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let document = store
+            .put_json(&json!({"modules":{"app":"Application"}}))
+            .unwrap();
+        let partition = store
+            .put_json(&json!({"modules":{"db":"Database","app":"Other"}}))
+            .unwrap();
+        let retired = store.put_json(&json!({"modules":{"old":"Old"}})).unwrap();
+        let task = |id: &str, reply: &str| json!({"task":"unused","id":id,"stage":"extract","state":"complete","reply":reply});
+        let flow = Workflow {
+            store,
+            state: WorkflowState {
+                replies: json!({"doc":document}),
+                tasks: serde_json::from_value(json!([task("a", &partition), task("b", &retired)]))
+                    .unwrap(),
+                ..WorkflowState::test_state()
+            },
+            validation_cache: Default::default(),
+        };
+        let vocabulary = json!({"app":"Application","db":"Database","old":"Old"});
+        assert_eq!(flow.module_vocabulary().unwrap(), vocabulary);
+        let mut state = flow.state.clone();
+        drop(flow);
+        state.tasks.truncate(1);
+        let flow = Workflow {
+            store: Store::open(temp.path()).unwrap(),
+            state,
+            validation_cache: Default::default(),
+        };
+        flow.index_reply_modules().unwrap();
+        let indexed: Vec<_> = flow.state.reply_modules.borrow().keys().cloned().collect();
+        let mut live = vec![document.clone(), partition.clone()];
+        live.sort();
+        assert_eq!(indexed, live, "retired replies leave the index");
+        // A later command answers from the saved index without reading the replies.
+        for digest in &live {
+            fs::remove_file(temp.path().join(format!("objects/{digest}.json"))).unwrap();
+        }
+        let saved = serde_json::to_value(&flow.state).unwrap();
+        drop(flow);
+        let flow = Workflow {
+            store: Store::open(temp.path()).unwrap(),
+            state: WorkflowState::decode(saved).unwrap(),
+            validation_cache: Default::default(),
+        };
+        assert_eq!(
+            flow.module_vocabulary().unwrap(),
+            json!({"app":"Application","db":"Database"})
+        );
     }
 
     #[test]

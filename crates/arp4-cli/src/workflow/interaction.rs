@@ -226,7 +226,7 @@ impl Workflow {
         };
         let instructions = match stage {
             Stage::Extract => format!(
-                "{}\nWhen scope is present, extract scope.sources only; scope.context is context, not a target. If context is insufficient return only packet, document, request_tables (sources.tables indexes), reason. Keep local keys; the CLI namespaces partitions. In modules, define new slugs only (or use an empty object); the CLI fills registered names for referenced slugs from module_vocabulary. Explicit conflicting names and undefined slugs are rejected.",
+                "{}\nWhen scope is present, extract scope.sources only; scope.context is context, not a target; sources.tables merges and structure cover only their cells and the headers they name, and omitted_cells counts element cells left out. If context is insufficient return only packet, document, request_tables (sources.tables indexes), reason. Keep local keys; the CLI namespaces partitions. In modules, define new slugs only (or use an empty object); the CLI fills registered names for referenced slugs from module_vocabulary. Explicit conflicting names and undefined slugs are rejected.",
                 crate::semantic::PROMPT
             ),
             Stage::Link => linking::instructions().to_owned(),
@@ -349,19 +349,84 @@ impl Workflow {
             format!("/{pointer}")
         };
         let pointer = normalized.as_str();
+        let options = super::paging::ReadOptions {
+            format: crate::project::agent_read_format(&self.store.root)?,
+            pointer,
+            offset,
+            limit,
+            max_bytes,
+            revision,
+        };
+        super::paging::check_options(limit, max_bytes)?;
+        let task_ref = self.short_id(task);
+        let cache = super::read_cache::ReadCache::new(
+            &self.store.root,
+            &task.id,
+            self.read_key(task, &options)?,
+        );
+        if let Some(index) = cache.load() {
+            let mut missing = false;
+            let page = super::paging::select(
+                &task_ref,
+                &index.view,
+                |range| cache.fetch(&index, range).inspect_err(|_| missing = true),
+                &options,
+            );
+            // A layout another reader is replacing is laid out again.
+            if !missing {
+                return page;
+            }
+        }
         let data = self.interactive_data(task)?;
-        super::paging::page(
-            &self.short_id(task),
-            &data,
-            &SECTIONS,
-            super::paging::ReadOptions {
-                format: crate::project::agent_read_format(&self.store.root)?,
-                pointer,
-                offset,
-                limit,
-                max_bytes,
-                revision,
-            },
+        let layout = super::paging::layout(&data, &SECTIONS, &options)?;
+        let open: BTreeSet<&str> = self
+            .state
+            .tasks
+            .iter()
+            .filter(|t| t.state != TaskState::Complete || t.id == task.id)
+            .map(|t| t.id.as_str())
+            .collect();
+        // An unwritable cache only costs the next page a new layout.
+        let _ = cache
+            .store(&layout)
+            .and_then(|()| super::read_cache::prune(&self.store.root, &open));
+        super::paging::select(
+            &task_ref,
+            &layout.view,
+            |range| Ok(layout.fragments[range].to_vec()),
+            &options,
         )
+    }
+
+    /// Everything the task view is built from (see `interactive_data`), the page
+    /// shape, and this executable, whose prompts and schemas are part of the view.
+    fn read_key(&self, task: &Task, options: &super::paging::ReadOptions<'_>) -> Result<String> {
+        let completed: Vec<_> = self
+            .state
+            .tasks
+            .iter()
+            .filter(|t| t.stage == Stage::Extract && t.state == TaskState::Complete)
+            .map(|t| &t.reply)
+            .collect();
+        let executable = std::env::current_exe()?.metadata()?;
+        let modified = executable
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+            .to_string();
+        Ok(hash(&encode(&json!([
+            task,
+            self.state.modules,
+            self.state.replies,
+            completed,
+            self.state.references,
+            self.state.transport_refs,
+            options.pointer,
+            options.max_bytes,
+            options.format,
+            env!("CARGO_PKG_VERSION"),
+            executable.len(),
+            modified,
+        ]))))
     }
 }

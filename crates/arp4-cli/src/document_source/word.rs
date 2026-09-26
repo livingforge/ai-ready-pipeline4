@@ -67,6 +67,58 @@ fn value<'a>(node: Node<'a, '_>) -> Option<&'a str> {
     node.attribute((WORD, "val"))
 }
 
+/// Whether Word shows `node` as text of its paragraph. The reading of ruby
+/// (furigana) sits above its base text, text deleted or moved away under
+/// tracked changes is gone from the document, hidden text is not shown, and a
+/// content control showing its placeholder ("click or tap here to enter text")
+/// holds a prompt rather than content.
+fn shown(node: Node<'_, '_>) -> bool {
+    !node.ancestors().any(|a| {
+        word_element(a, "rt")
+            || word_element(a, "del")
+            || word_element(a, "moveFrom")
+            || (word_element(a, "sdt") && property(a, "sdtPr", "showingPlcHdr").is_some())
+    }) && !node
+        .ancestors()
+        .find(|a| word_element(*a, "r"))
+        .is_some_and(|run| on(property(run, "rPr", "vanish")))
+}
+
+/// Elements inside a field's instructions, such as the result of the inner
+/// field in `{ IF { MERGEFIELD 性別 } = "男" ... }`: Word shows only the outer
+/// field's result. Keyed by their start in the part.
+fn field_instructions(xml: &Document<'_>) -> BTreeSet<usize> {
+    let mut open: Vec<bool> = vec![];
+    let mut inside = BTreeSet::new();
+    for node in xml.descendants().filter(|n| !hidden_copy(*n, "docx")) {
+        if word_element(node, "fldChar") {
+            match node.attribute((WORD, "fldCharType")) {
+                Some("begin") => open.push(false),
+                Some("separate") => {
+                    if let Some(separated) = open.last_mut() {
+                        *separated = true;
+                    }
+                }
+                Some("end") => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        } else if node.is_element() && open.iter().any(|separated| !separated) {
+            inside.insert(node.range().start);
+        }
+    }
+    inside
+}
+
+/// Whether `node` sits in a content control bound to XML data (a cover page's
+/// title or author, for example); Word refills it from that data on opening.
+pub(super) fn data_bound(node: Node<'_, '_>) -> bool {
+    node.ancestors()
+        .filter(|a| word_element(*a, "sdt"))
+        .any(|sdt| property(sdt, "sdtPr", "dataBinding").is_some())
+}
+
 /// On/off properties are on unless their value says otherwise.
 fn on(node: Option<Node<'_, '_>>) -> bool {
     node.is_some_and(|n| !matches!(value(n), Some("0" | "false" | "off")))
@@ -79,15 +131,26 @@ fn number(node: Option<Node<'_, '_>>, default: usize) -> Result<usize> {
         .map(|v| v.unwrap_or(default))
 }
 
-#[derive(Default)]
-struct Text<'a, 'input> {
+struct Text<'a, 'input, 'f> {
     text: String,
     segments: Vec<Segment<'a, 'input>>,
     runs: usize,
     bold_runs: usize,
+    /// See [`field_instructions`].
+    instructions: &'f BTreeSet<usize>,
 }
 
-impl<'a, 'input> Text<'a, 'input> {
+impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
+    fn new(instructions: &'f BTreeSet<usize>) -> Self {
+        Self {
+            text: String::new(),
+            segments: vec![],
+            runs: 0,
+            bold_runs: 0,
+            instructions,
+        }
+    }
+
     fn push(&mut self, node: Option<Node<'a, 'input>>, text: &str) {
         let start = self.text.len();
         self.text.push_str(text);
@@ -105,12 +168,29 @@ impl<'a, 'input> Text<'a, 'input> {
             self.push(None, "\n");
         }
         let before = self.text.len();
-        for node in paragraph
-            .descendants()
-            .filter(|n| nearest(*n, "p") == Some(paragraph) && !hidden_copy(*n, "docx"))
-        {
+        for node in paragraph.descendants().filter(|n| {
+            nearest(*n, "p") == Some(paragraph)
+                && !hidden_copy(*n, "docx")
+                && shown(*n)
+                && !self.instructions.contains(&n.range().start)
+        }) {
             let in_run = node.parent().is_some_and(|p| word_element(p, "r"));
-            if word_element(node, "t") {
+            // Characters Word draws itself are shown but cannot be edited as text.
+            if in_run && word_element(node, "noBreakHyphen") {
+                self.push(None, "\u{2011}");
+            } else if in_run && word_element(node, "sym") {
+                if let Some(symbol) = node
+                    .attribute((WORD, "char"))
+                    .and_then(|code| u32::from_str_radix(code, 16).ok())
+                    .and_then(char::from_u32)
+                {
+                    self.push(None, &symbol.to_string());
+                }
+            } else if in_run && word_element(node, "ptab") {
+                self.push(None, "\t");
+            } else if node.has_tag_name((MATH, "t")) {
+                self.push(None, node.text().unwrap_or(""));
+            } else if word_element(node, "t") {
                 let text = node.text().unwrap_or("");
                 if !text.is_empty() {
                     self.runs += 1;
@@ -121,7 +201,12 @@ impl<'a, 'input> Text<'a, 'input> {
                 self.push(Some(node), text);
             } else if in_run && word_element(node, "tab") {
                 self.push(None, "\t");
-            } else if in_run && (word_element(node, "br") || word_element(node, "cr")) {
+            } else if in_run && word_element(node, "cr")
+                || in_run
+                    && word_element(node, "br")
+                    // Page and column breaks lay out pages; they are not text.
+                    && !matches!(node.attribute((WORD, "type")), Some("page" | "column"))
+            {
                 self.push(None, "\n");
             }
         }
@@ -159,12 +244,13 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a,
         merges: vec![],
         tables: vec![],
     };
+    let instructions = field_instructions(xml);
     let mut row = 1;
     for node in xml.descendants().filter(|n| !hidden_copy(*n, "docx")) {
         if word_element(node, "tbl") && nearest(node, "tbl").is_none() {
-            row += table(node, row, &mut output)?;
+            row += table(node, row, &mut output, &instructions)?;
         } else if word_element(node, "p") && nearest(node, "tc").is_none() {
-            let mut text = Text::default();
+            let mut text = Text::new(&instructions);
             text.paragraph(node);
             if !text.text.is_empty() {
                 output
@@ -183,6 +269,7 @@ fn table<'a, 'input>(
     table: Node<'a, 'input>,
     top: usize,
     output: &mut Layout<'a, 'input>,
+    instructions: &BTreeSet<usize>,
 ) -> Result<usize> {
     let rows: Vec<_> = table
         .descendants()
@@ -238,7 +325,7 @@ fn table<'a, 'input>(
                 address(bottom, cell.column + cell.span - 1)?
             ));
         }
-        let mut text = Text::default();
+        let mut text = Text::new(instructions);
         for paragraph in cell
             .node
             .descendants()
@@ -301,21 +388,8 @@ pub(super) fn edit<'a, 'input>(
     after: &str,
 ) -> Result<Vec<(Node<'a, 'input>, String)>> {
     let before = block.text.as_str();
-    let prefix: usize = before
-        .chars()
-        .zip(after.chars())
-        .take_while(|(a, b)| a == b)
-        .map(|(a, _)| a.len_utf8())
-        .sum();
-    let suffix: usize = before[prefix..]
-        .chars()
-        .rev()
-        .zip(after[prefix..].chars().rev())
-        .take_while(|(a, b)| a == b)
-        .map(|(a, _)| a.len_utf8())
-        .sum();
-    let (start, end) = (prefix, before.len() - suffix);
-    let inserted = &after[prefix..after.len() - suffix];
+    let (start, end) = changed_range(before, after, true);
+    let inserted = &after[start..after.len() - (before.len() - end)];
     if start == end && inserted.is_empty() {
         return Ok(vec![]);
     }
@@ -323,29 +397,22 @@ pub(super) fn edit<'a, 'input>(
         !inserted.contains(['\n', '\r', '\t']),
         "Word text replacement cannot add line breaks or tabs; edit existing paragraphs separately"
     );
-    let touched: Vec<_> = if start == end {
-        // An insertion joins the run ending there, else the run starting there.
-        let runs = || {
-            block
-                .segments
-                .iter()
-                .filter(|s| s.node.is_some() && s.range.start <= start && start <= s.range.end)
-        };
-        runs()
-            .find(|s| s.range.end == start && !s.range.is_empty())
-            .or_else(|| runs().next())
-            .into_iter()
-            .collect()
-    } else {
-        block
-            .segments
+    let touched = touched_segments(block, start, end);
+    // Repeated text lets the same change sit further left, as when deleting the
+    // first of "注意" + "注意事項"; when that would change other runs, which runs
+    // the user meant, and so the formatting the result keeps, is unknown.
+    let (left_start, left_end) = changed_range(before, after, false);
+    ensure!(
+        touched_segments(block, left_start, left_end)
             .iter()
-            .filter(|s| s.range.start < end && start < s.range.end)
-            .collect()
-    };
+            .map(|s| s.range.clone())
+            .eq(touched.iter().map(|s| s.range.clone())),
+        "the edit in {} could apply to more than one run because the text around it repeats; include unrepeated text in the change, or edit it in Word",
+        block.address
+    );
     ensure!(
         !touched.is_empty() && touched.iter().all(|s| s.node.is_some()),
-        "the edit crosses a paragraph, line break or tab in {}; edit each part separately",
+        "the edit crosses a paragraph, line break, tab or a character Word draws itself (non-breaking hyphen, symbol, equation) in {}; edit each part separately",
         block.address
     );
     let last = touched.len() - 1;
@@ -365,6 +432,66 @@ pub(super) fn edit<'a, 'input>(
             (s.node.unwrap(), new)
         })
         .collect())
+}
+
+/// The byte range of `before` that `after` replaces, found by matching the
+/// longest common prefix first (`prefix_first`) or the longest common suffix first.
+fn changed_range(before: &str, after: &str, prefix_first: bool) -> (usize, usize) {
+    let common_prefix = |a: &str, b: &str| -> usize {
+        a.chars()
+            .zip(b.chars())
+            .take_while(|(x, y)| x == y)
+            .map(|(x, _)| x.len_utf8())
+            .sum()
+    };
+    let common_suffix = |a: &str, b: &str| -> usize {
+        a.chars()
+            .rev()
+            .zip(b.chars().rev())
+            .take_while(|(x, y)| x == y)
+            .map(|(x, _)| x.len_utf8())
+            .sum()
+    };
+    if prefix_first {
+        let prefix = common_prefix(before, after);
+        let suffix = common_suffix(&before[prefix..], &after[prefix..]);
+        (prefix, before.len() - suffix)
+    } else {
+        let suffix = common_suffix(before, after);
+        let prefix = common_prefix(
+            &before[..before.len() - suffix],
+            &after[..after.len() - suffix],
+        );
+        (prefix, before.len() - suffix)
+    }
+}
+
+/// The segments an edit of `start..end` changes. An insertion joins the run
+/// ending there, else the run starting there.
+fn touched_segments<'b, 'a, 'input>(
+    block: &'b Block<'a, 'input>,
+    start: usize,
+    end: usize,
+) -> Vec<&'b Segment<'a, 'input>> {
+    if start == end {
+        let runs = || {
+            block
+                .segments
+                .iter()
+                .filter(|s| s.node.is_some() && s.range.start <= start && start <= s.range.end)
+        };
+        runs()
+            .find(|s| s.range.end == start && !s.range.is_empty())
+            .or_else(|| runs().next())
+            .into_iter()
+            .collect()
+    } else {
+        block
+            .segments
+            .iter()
+            .filter(|s| s.range.start < end && start < s.range.end)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -572,5 +699,93 @@ mod tests {
                 "{after}: {error}"
             );
         }
+    }
+
+    /// Ruby readings, tracked deletions and moves, and hidden text are not
+    /// part of what Word shows in the paragraph.
+    #[test]
+    fn readings_tracked_deletions_and_hidden_text_are_not_extracted() {
+        let body = document(concat!(
+            "<w:p><w:ruby><w:rt><w:r><w:t>かん</w:t></w:r></w:rt><w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby><w:r><w:t>字</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>残</w:t></w:r><w:del><w:r><w:tab/><w:delText>消</w:delText></w:r></w:del><w:moveFrom><w:r><w:t>移動元</w:t></w:r></w:moveFrom><w:moveTo><w:r><w:t>移動先</w:t></w:r></w:moveTo></w:p>",
+            "<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>隠し</w:t></w:r><w:r><w:rPr><w:vanish w:val=\"0\"/></w:rPr><w:t>表示</w:t></w:r></w:p>",
+        ));
+        let xml = Document::parse(&body).unwrap();
+        assert_eq!(
+            cells(&layout(&xml).unwrap()),
+            [("A1", "漢字"), ("A2", "残移動先"), ("A3", "表示")]
+                .map(|(a, t)| (a.to_owned(), t.to_owned()))
+        );
+    }
+
+    /// With repeated text the change could fall in different runs, so the
+    /// formatting the result keeps is unknown and the edit is refused.
+    #[test]
+    fn edits_that_repeated_text_makes_ambiguous_are_refused() {
+        let repeated = "<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>注意</w:t></w:r><w:r><w:t>注意事項</w:t></w:r></w:p>";
+        let error = edits(repeated, "注意事項").unwrap_err().to_string();
+        assert!(error.contains("more than one run"), "{error}");
+        assert_eq!(
+            edits(repeated, "注意注意事項一覧").unwrap(),
+            [("注意事項".to_owned(), "注意事項一覧".to_owned())]
+        );
+        // Repeats inside one run change that run either way.
+        assert_eq!(
+            edits("<w:p><w:r><w:t>ああい</w:t></w:r></w:p>", "あい").unwrap(),
+            [("ああい".to_owned(), "あい".to_owned())]
+        );
+    }
+
+    #[test]
+    fn content_controls_bound_to_data_are_recognized() {
+        let body = document(concat!(
+            "<w:sdt><w:sdtPr><w:dataBinding w:xpath=\"/ns0:coreProperties[1]/ns1:title[1]\"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>表題</w:t></w:r></w:p></w:sdtContent></w:sdt>",
+            "<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:t>自由</w:t></w:r></w:p></w:sdtContent></w:sdt>",
+        ));
+        let xml = Document::parse(&body).unwrap();
+        let bound: Vec<_> = xml
+            .descendants()
+            .filter(|n| word_element(*n, "t"))
+            .map(data_bound)
+            .collect();
+        assert_eq!(bound, [true, false]);
+    }
+
+    /// Placeholder prompts, the inner results in a field's instructions and
+    /// page breaks are not text; characters Word draws itself are kept.
+    #[test]
+    fn prompts_field_instructions_and_page_breaks_are_not_text() {
+        let body = document(concat!(
+            "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>クリックまたはタップしてテキストを入力してください。</w:t></w:r></w:p></w:sdtContent></w:sdt>",
+            "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText>IF </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText>MERGEFIELD 性別</w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t>男</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r><w:r><w:instrText> = \"男\" \"様\" \"殿\"</w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t>様</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>",
+            "<w:p><w:r><w:br w:type=\"page\"/></w:r><w:r><w:t>第2章</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>03</w:t><w:noBreakHyphen/><w:t>1234</w:t><w:sym w:font=\"Wingdings\" w:char=\"F0FC\"/><w:ptab w:relativeTo=\"margin\" w:alignment=\"right\" w:leader=\"none\"/><w:t>右</w:t></w:r></w:p>",
+            "<w:p xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><w:r><w:t>式 </w:t></w:r><m:oMath><m:r><m:t>x=1</m:t></m:r></m:oMath></w:p>",
+        ));
+        let xml = Document::parse(&body).unwrap();
+        let layout = layout(&xml).unwrap();
+        assert_eq!(
+            cells(&layout),
+            [
+                ("A1", "様"),
+                ("A2", "第2章"),
+                ("A3", "03\u{2011}1234\u{f0fc}\t右"),
+                ("A4", "式 x=1"),
+            ]
+            .map(|(a, t)| (a.to_owned(), t.to_owned()))
+        );
+        // Characters Word draws itself cannot be replaced as text.
+        let error = edit(&layout.blocks[2], "0312345\u{f0fc}\t右")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("draws itself"), "{error}");
+        assert_eq!(
+            edit(&layout.blocks[2], "03\u{2011}9999\u{f0fc}\t右")
+                .unwrap()
+                .into_iter()
+                .map(|(node, new)| (node.text().unwrap().to_owned(), new))
+                .collect::<Vec<_>>(),
+            [("1234".to_owned(), "9999".to_owned())]
+        );
     }
 }

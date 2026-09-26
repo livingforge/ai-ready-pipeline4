@@ -24,29 +24,150 @@ pub fn coordinate(address: &str) -> Result<(u32, u32)> {
     );
     Ok((column, row))
 }
-/// The merged range that hides `address`: one containing it without it being its
-/// top-left cell. Excel shows only the top-left value, so such cells are never written.
-pub fn hiding_merge<'a>(merges: &'a Value, address: &str) -> Result<Option<&'a str>> {
-    let (col, row) = coordinate(address)?;
-    for merge in array(merges)? {
-        let merge = string(merge)?;
-        let (a, b) = merge.split_once(':').context("invalid merge")?;
-        let (c1, r1) = coordinate(a)?;
-        let (c2, r2) = coordinate(b)?;
-        if (c1..=c2).contains(&col) && (r1..=r2).contains(&row) && (col, row) != (c1, r1) {
-            return Ok(Some(merge));
-        }
-    }
-    Ok(None)
+/// Ranges indexed for per-cell lookups: sorted by first row, with the furthest
+/// last row reached up to each one, so a lookup stops once every earlier range
+/// ends above the cell instead of scanning all ranges for every cell.
+struct AreaIndex<T> {
+    areas: Vec<IndexedArea<T>>,
+    reach: Vec<u32>,
 }
-/// Rejects writing `address` of `sheet` when one of `merges` hides it.
-pub fn ensure_not_hidden(merges: &Value, sheet: &str, address: &str) -> Result<()> {
-    if let Some(merge) = hiding_merge(merges, address)? {
-        bail!(
-            "{sheet}!{address} is hidden by merged range {merge}: Excel shows only the top-left cell of a merge, so write the value there or add the row or column outside the merge"
-        );
+
+/// First and last row or column, inclusive.
+type Span = (u32, u32);
+
+struct IndexedArea<T> {
+    rows: Span,
+    columns: Span,
+    /// Position in the sheet's list, so the first listed range wins.
+    order: usize,
+    value: T,
+}
+
+impl<T: Copy> AreaIndex<T> {
+    /// Indexes `(rows, columns, value)` in the order the sheet lists them.
+    fn new(areas: Vec<(Span, Span, T)>) -> Self {
+        let mut areas: Vec<_> = areas
+            .into_iter()
+            .enumerate()
+            .map(|(order, (rows, columns, value))| IndexedArea {
+                rows,
+                columns,
+                order,
+                value,
+            })
+            .collect();
+        areas.sort_by_key(|area| area.rows.0);
+        let reach = areas
+            .iter()
+            .scan(0, |reach, area| {
+                *reach = area.rows.1.max(*reach);
+                Some(*reach)
+            })
+            .collect();
+        Self { areas, reach }
     }
-    Ok(())
+
+    fn containing(&self, column: u32, row: u32) -> impl Iterator<Item = &IndexedArea<T>> {
+        let end = self.areas.partition_point(|area| area.rows.0 <= row);
+        (0..end)
+            .rev()
+            .take_while(move |&i| self.reach[i] >= row)
+            .map(move |i| &self.areas[i])
+            .filter(move |area| {
+                row <= area.rows.1 && (area.columns.0..=area.columns.1).contains(&column)
+            })
+    }
+}
+
+/// A sheet's merged ranges, parsed once for the cells checked against them.
+pub struct Merges<'a>(AreaIndex<&'a str>);
+
+impl<'a> Merges<'a> {
+    pub fn new(merges: &'a Value) -> Result<Self> {
+        let mut areas = vec![];
+        for merge in array(merges)? {
+            let merge = string(merge)?;
+            let (a, b) = merge.split_once(':').context("invalid merge")?;
+            let (c1, r1) = coordinate(a)?;
+            let (c2, r2) = coordinate(b)?;
+            areas.push(((r1, r2), (c1, c2), merge));
+        }
+        Ok(Self(AreaIndex::new(areas)))
+    }
+
+    /// The merged range that hides `address`: one containing it without it being its
+    /// top-left cell. Excel shows only the top-left value, so such cells are never written.
+    pub fn hiding(&self, address: &str) -> Result<Option<&'a str>> {
+        let (column, row) = coordinate(address)?;
+        Ok(self
+            .0
+            .containing(column, row)
+            .filter(|merge| (column, row) != (merge.columns.0, merge.rows.0))
+            .min_by_key(|merge| merge.order)
+            .map(|merge| merge.value))
+    }
+
+    /// Rejects writing `address` of `sheet` when one of the merges hides it.
+    pub fn ensure_not_hidden(&self, sheet: &str, address: &str) -> Result<()> {
+        if let Some(merge) = self.hiding(address)? {
+            bail!(
+                "{sheet}!{address} is hidden by merged range {merge}: Excel shows only the top-left cell of a merge, so write the value there or add the row or column outside the merge"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A sheet's computed ranges (see the extraction's `computed`), parsed once for
+/// the cells checked against them. Excel overwrites values written there.
+pub struct ComputedRanges<'a> {
+    sheet: &'a Value,
+    index: AreaIndex<(&'a str, &'a str)>,
+}
+
+impl<'a> ComputedRanges<'a> {
+    pub fn new(sheet: &'a Value) -> Result<Self> {
+        let mut areas = vec![];
+        for computed in sheet["computed"].as_array().into_iter().flatten() {
+            let range = string(&computed["range"])?;
+            let area = Area::parse(range)?;
+            areas.push((
+                area.rows.unwrap_or((1, u32::MAX)),
+                area.columns.unwrap_or((1, u32::MAX)),
+                (string(&computed["kind"])?, range),
+            ));
+        }
+        Ok(Self {
+            sheet,
+            index: AreaIndex::new(areas),
+        })
+    }
+
+    /// The computed range holding `address`, as its kind and range.
+    pub fn find(&self, address: &str) -> Result<Option<(&'a str, &'a str)>> {
+        let (column, row) = coordinate(address)?;
+        Ok(self
+            .index
+            .containing(column, row)
+            .min_by_key(|computed| computed.order)
+            .map(|computed| computed.value))
+    }
+
+    /// Rejects writing `address` when Excel fills it from a computed range.
+    pub fn ensure_not_computed(&self, address: &str) -> Result<()> {
+        if let Some((kind, range)) = self.find(address)? {
+            let source = match kind {
+                "array" => "an array formula or spill",
+                "data_table" => "a What-If data table",
+                _ => "a pivot table",
+            };
+            bail!(
+                "{}!{address} is filled by {source} over {range}, which Excel recalculates over any value written there; change its source instead",
+                string(&self.sheet["name"])?
+            );
+        }
+        Ok(())
+    }
 }
 /// The sheet's merged ranges as the written workbook keeps them after
 /// `operations`: an insertion inside a merge grows it, like Excel.
@@ -103,24 +224,34 @@ pub(super) fn transform_index(
     Some(position)
 }
 
+/// Maps a drawing marker in 1-based row or column `position`. A marker at the
+/// very start of its row or column (`boundary`, offset 0) sits on the edge before
+/// it, so rows or columns inserted there go after it. Returns the new position
+/// and whether the marker's row or column was deleted (its offset then no longer
+/// fits and becomes 0).
 pub(super) fn map_anchor_index(
     mut position: u32,
     operations: &[StructuralOperation],
     row: bool,
-) -> Result<u32> {
+    boundary: bool,
+) -> Result<(u32, bool)> {
+    let mut deleted = false;
     for operation in operations {
         if operation.row_operation() != row {
             continue;
         }
         match operation.kind {
             OperationKind::InsertRows | OperationKind::InsertColumns => {
-                position = position
-                    .checked_add(if position >= operation.at {
-                        operation.count
-                    } else {
-                        0
-                    })
-                    .context("drawing anchor coordinate overflow")?;
+                let moves = if boundary {
+                    position > operation.at
+                } else {
+                    position >= operation.at
+                };
+                if moves {
+                    position = position
+                        .checked_add(operation.count)
+                        .context("drawing anchor coordinate overflow")?;
+                }
             }
             OperationKind::DeleteRows | OperationKind::DeleteColumns => {
                 let end = operation
@@ -128,6 +259,7 @@ pub(super) fn map_anchor_index(
                     .checked_add(operation.count)
                     .context("drawing operation range overflow")?;
                 if (operation.at..end).contains(&position) {
+                    deleted |= !(boundary && position == operation.at);
                     position = operation.at;
                 } else if position >= end {
                     position -= operation.count;
@@ -135,7 +267,7 @@ pub(super) fn map_anchor_index(
             }
         }
     }
-    Ok(position)
+    Ok((position, deleted))
 }
 
 pub fn map_coordinate(
@@ -261,4 +393,39 @@ pub fn resolve_insertion(
     }
     ensure!(activated, "insertion operation not found");
     Ok(format!("{}{}", column_name(mapped_column)?, mapped_row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_lookups_find_the_hiding_range() {
+        // The tall first merge reaches past the later ones, so lookups below
+        // them must keep scanning back to it.
+        let merges = json!(["A1:A100", "C2:C3", "E5:F6"]);
+        let merges = Merges::new(&merges).unwrap();
+        assert_eq!(merges.hiding("A50").unwrap(), Some("A1:A100"));
+        assert_eq!(merges.hiding("A1").unwrap(), None);
+        assert_eq!(merges.hiding("C3").unwrap(), Some("C2:C3"));
+        assert_eq!(merges.hiding("F6").unwrap(), Some("E5:F6"));
+        assert_eq!(merges.hiding("E5").unwrap(), None);
+        assert_eq!(merges.hiding("B50").unwrap(), None);
+        assert_eq!(merges.hiding("A101").unwrap(), None);
+        assert!(merges.ensure_not_hidden("Data", "C3").is_err());
+    }
+
+    #[test]
+    fn computed_lookups_prefer_the_first_listed_range() {
+        let sheet = json!({"name": "Data", "computed": [
+            {"kind": "pivot", "range": "B5:D9"},
+            {"kind": "array", "range": "C1:C6"},
+        ]});
+        let computed = ComputedRanges::new(&sheet).unwrap();
+        assert_eq!(computed.find("C5").unwrap(), Some(("pivot", "B5:D9")));
+        assert_eq!(computed.find("C2").unwrap(), Some(("array", "C1:C6")));
+        assert_eq!(computed.find("A5").unwrap(), None);
+        assert_eq!(computed.find("C10").unwrap(), None);
+        assert!(computed.ensure_not_computed("D9").is_err());
+    }
 }

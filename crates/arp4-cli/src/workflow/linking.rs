@@ -61,6 +61,17 @@ impl Workflow {
         for (doc, digest) in obj(&self.state.replies)? {
             replies.insert(doc.clone(), self.store.json(s(digest)?)?);
         }
+        // Each item's position by document and key, so a link does not scan its reply.
+        let mut positions = BTreeMap::new();
+        for (doc, reply) in &replies {
+            for (index, item) in arr(&reply["items"])?.iter().enumerate() {
+                if let Some(key) = item["key"].as_str() {
+                    positions
+                        .entry((doc.clone(), key.to_owned()))
+                        .or_insert(index);
+                }
+            }
+        }
         let mut seen = BTreeSet::new();
         for link in arr(&value["links"])? {
             let id = s(&link["item"])?;
@@ -74,12 +85,10 @@ impl Workflow {
             let reply = replies
                 .get_mut(doc)
                 .context("unknown relationship document")?;
-            let item = reply["items"]
-                .as_array_mut()
-                .unwrap()
-                .iter_mut()
-                .find(|i| i["key"] == key)
+            let index = *positions
+                .get(&(doc.to_owned(), key.to_owned()))
                 .context("unknown relationship item")?;
+            let item = &mut reply["items"][index];
             let mut targets = BTreeSet::new();
             for field in ["requirements", "related"] {
                 let values = arr(&link[field])?;

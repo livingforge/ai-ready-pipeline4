@@ -62,13 +62,17 @@ impl Workflow {
         let next = self.restructure_candidate(&tasks[0], &value)?;
         if let Some(defer) = value.get("defer") {
             let context = self.artifact(&tasks[0].context)?;
-            for finding in arr(&context["findings"])? {
-                self.note_unresolved(json!({"code":"restructure_deferred",
+            let entries = arr(&context["findings"])?
+                .iter()
+                .map(|finding| {
+                    json!({"code":"restructure_deferred",
                     "item":patch::fingerprint(finding),"diagnostic":finding,
                     "reason":defer["reason"],"kind":defer["kind"],
                     "task":tasks[0].id,"bases":tasks[0].bases,
-                    "repair":{"action":"manual_triage"}}));
-            }
+                    "repair":{"action":"manual_triage"}})
+                })
+                .collect();
+            self.note_unresolved(entries)?;
             self.escalate("restructure_deferred");
             return Ok(true);
         }
@@ -187,6 +191,7 @@ impl Workflow {
                     ))
                 })
                 .collect::<Result<_>>()?;
+            let mut entries = Vec::new();
             for finding in arr(&scope["findings"])? {
                 let id = format!("{doc}/{}", s(&finding["key"])?);
                 let mut entry = json!({"code":"repair_declined","document":doc,"reason":reason,"task":task.id,
@@ -199,8 +204,9 @@ impl Workflow {
                     entry["code"] = finding["code"].clone();
                     entry["item"] = json!(id);
                 }
-                self.note_unresolved(entry);
+                entries.push(entry);
             }
+            self.note_unresolved(entries)?;
         }
         let mut next = self.state.replies.clone();
         let mut next_rounds = self.state.repair_rounds.clone();
@@ -240,7 +246,7 @@ impl Workflow {
         let mut known: BTreeSet<String> = findings
             .iter()
             .map(finding_signature)
-            .chain(self.unresolved().iter().map(Self::unresolved_signature))
+            .chain(self.unresolved()?.iter().map(Self::unresolved_signature))
             .collect();
         for task in tasks {
             let value = self.artifact(&task.reply)?;

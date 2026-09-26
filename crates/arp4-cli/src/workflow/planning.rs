@@ -140,7 +140,7 @@ impl Workflow {
         } = context;
         let mut tasks = Vec::new();
         let declined: BTreeSet<String> = self
-            .unresolved()
+            .unresolved()?
             .iter()
             .map(Self::unresolved_signature)
             .collect();
@@ -228,7 +228,7 @@ impl Workflow {
         // Reviewers see what repair could not resolve, limited to their document.
         let escalated_context = |doc: Option<&String>| -> Result<Value> {
             let mut context = json!({"escalation":{"reason":self.state.escalation["reason"],
-                "guidance":ESCALATION_GUIDANCE,"concerns":self.concerns(doc.map(String::as_str), open)}});
+                "guidance":ESCALATION_GUIDANCE,"concerns":self.concerns(doc.map(String::as_str), open)?}});
             if !self.reference_paths().is_empty() {
                 context["references"] =
                     json!({"guidance":REFERENCE_GUIDANCE,"documents":self.references()?});
@@ -412,7 +412,7 @@ impl Workflow {
             let known: BTreeSet<String> = arr(findings)?
                 .iter()
                 .map(finding_signature)
-                .chain(self.unresolved().iter().map(Self::unresolved_signature))
+                .chain(self.unresolved()?.iter().map(Self::unresolved_signature))
                 .collect();
             match cached {
                 Some((digest, review))
@@ -499,13 +499,13 @@ impl Workflow {
             .collect();
         self.state.exports["improvements.json"] = json!(self.store.put_json(&json!({"findings":improvements,
             "reason":"Optional refinements; no demonstrated downstream error. Reconsider when intended use or relevant source conditions change."}))?);
-        self.state.exports["provenance.json"] = json!(self.store.put_json(&self.provenance())?);
+        self.state.exports["provenance.json"] = json!(self.store.put_json(&self.provenance()?)?);
         self.state.status = WorkflowStatus::Complete;
         self.state.blocked = json!([]);
         self.state.tasks.clear();
         self.save()?;
         self.export()?;
         self.compact()?;
-        Ok(self.status())
+        self.status()
     }
 }

@@ -19,6 +19,7 @@ crates/arp4-cli/src/agent_format.rs
 crates/arp4-cli/src/agent_format/toon.rs
 crates/arp4-cli/src/cli.rs
 crates/arp4-cli/src/data.rs
+crates/arp4-cli/src/data/yaml.rs
 crates/arp4-cli/src/document_source.rs
 crates/arp4-cli/src/document_source/word.rs
 crates/arp4-cli/src/document_structure.rs
@@ -92,6 +93,7 @@ crates/arp4-cli/src/workflow/patch.rs
 crates/arp4-cli/src/workflow/planning.rs
 crates/arp4-cli/src/workflow/publication.rs
 crates/arp4-cli/src/workflow/quality.rs
+crates/arp4-cli/src/workflow/read_cache.rs
 crates/arp4-cli/src/workflow/references.rs
 crates/arp4-cli/src/workflow/restructure.rs
 crates/arp4-cli/src/workflow/runner.rs
@@ -123,6 +125,7 @@ docs/reference/semantic-contract.md
 docs/reference/semantic-generation.md
 docs/reference/semantic-output-policy.md
 docs/reference/specifications.md
+docs/reference/workflow-reports.md
 rust-toolchain.toml
 surface/agents/arp4-reviewer/body.md
 surface/agents/arp4-reviewer/description.txt

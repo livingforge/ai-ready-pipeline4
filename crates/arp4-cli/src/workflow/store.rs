@@ -22,10 +22,17 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     temp.persist(path)?;
     Ok(())
 }
+/// Parsed artifacts are kept up to this many source bytes per process.
+const PARSED_CACHE_BYTES: usize = 256 << 20;
+
 pub struct Store {
     pub root: PathBuf,
     _lock: File,
     preview: Option<std::cell::RefCell<std::collections::BTreeMap<String, Vec<u8>>>>,
+    /// Artifacts already parsed in this process with their source sizes. A digest
+    /// names its content, so the value is the one a new parse would return; one
+    /// command otherwise parses the same input, packet and replies many times.
+    parsed: std::cell::RefCell<(usize, std::collections::HashMap<String, Value>)>,
 }
 
 impl Store {
@@ -67,6 +74,7 @@ impl Store {
             root,
             _lock: lock,
             preview: None,
+            parsed: Default::default(),
         })
     }
     pub fn preview(&mut self) {
@@ -134,7 +142,18 @@ impl Store {
         self.put(&encode(v))
     }
     pub fn json(&self, digest: &str) -> Result<Value> {
-        super::parse(&self.get(digest)?)
+        if let Some(value) = self.parsed.borrow().1.get(digest) {
+            return Ok(value.clone());
+        }
+        let bytes = self.get(digest)?;
+        let value = super::parse(&bytes)?;
+        let mut parsed = self.parsed.borrow_mut();
+        if parsed.0 + bytes.len() > PARSED_CACHE_BYTES {
+            *parsed = Default::default();
+        }
+        parsed.0 += bytes.len();
+        parsed.1.insert(digest.to_owned(), value.clone());
+        Ok(value)
     }
     pub fn materialize(&self, digest: &str, path: &Path) -> Result<()> {
         atomic(path, &self.get(digest)?)

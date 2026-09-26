@@ -77,7 +77,9 @@ impl Store {
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"pages":[],"sheets":book.sheets(),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        let mut extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"pages":[],"sheets":[],"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        // Moved in rather than serialized again: the sheets hold every cell.
+        extraction["sheets"] = Value::Array(book.sheets().into_owned());
         validate("extraction", &extraction)?;
         let extraction_hash = hash(&encoded(&extraction));
         let interpretation = if current.join("mappings.yml").exists() {
@@ -113,11 +115,13 @@ impl Store {
         )?;
         let mut entries = vec![];
         let mut tables = vec![];
-        for (i, sheet) in book.sheets().iter().enumerate() {
+        for (i, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
             let page = format!("sheet-{}", i + 1);
             let mut rows = json!({});
             let mut formulas = json!({});
             let mut columns = BTreeSet::new();
+            let computed_ranges = excel::ComputedRanges::new(sheet)?;
+            let merges = excel::Merges::new(&sheet["merges"])?;
             for c in array(&sheet["cells"])? {
                 let address = string(&c["address"])?;
                 let (_, row) = excel::coordinate(address)?;
@@ -126,13 +130,21 @@ impl Store {
                 let row_id = format!("r{row}");
                 rows[&row_id][column] = c["value"].clone();
                 let target = json!({"sheet":sheet["name"],"cell":address});
-                let hidden = excel::hiding_merge(&sheet["merges"], address)?.is_some();
-                let reason = if hidden {
-                    "結合セルの左上以外のため書き戻し対象外"
-                } else {
-                    "原本から転記"
+                let computed = computed_ranges.find(address)?.map(|(kind, _)| kind);
+                let hidden = merges.hiding(address)?.is_some();
+                let reason = match computed {
+                    Some("array") => "配列数式・スピルの計算結果のため書き戻し対象外",
+                    Some("data_table") => "データテーブルの計算結果のため書き戻し対象外",
+                    Some(_) => "ピボットテーブルの集計結果のため書き戻し対象外",
+                    None if hidden => "結合セルの左上以外のため書き戻し対象外",
+                    None => "原本から転記",
                 };
-                entries.push(json!({"page":page,"block":"table-1","field":c["id"],"origins":[],"reason":reason,"target":target,"writeback":if hidden||book.parser()=="native-text/1"||c["type"]=="formula"||c["type"]=="error"{"excluded"}else{"cell"},"position":{"row":row_id,"column":column,"type":kind(&c["value"])}}));
+                let excluded = hidden
+                    || computed.is_some()
+                    || book.parser() == "native-text/1"
+                    || c["type"] == "formula"
+                    || c["type"] == "error";
+                entries.push(json!({"page":page,"block":"table-1","field":c["id"],"origins":[],"reason":reason,"target":target,"writeback":if excluded{"excluded"}else{"cell"},"position":{"row":row_id,"column":column,"type":kind(&c["value"])}}));
                 if c["type"] == "formula" {
                     let f = string(&c["id"])?;
                     formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));
@@ -169,7 +181,7 @@ impl Store {
             "source changed during import"
         );
         write(&stage.path().join("extraction.json"), &extraction)?;
-        self.inspect(stage.path(), false)?;
+        // Not inspected again here: record inspects the proposal before it can be adopted.
         let proposal = parent.join(&proposal_id);
         fs::rename(stage.path(), &proposal)?;
         Ok(

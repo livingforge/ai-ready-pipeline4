@@ -18,7 +18,11 @@ impl Workflow {
     /// One view of open concerns for status, reviewers and decision drafts.
     /// Storage provenance stays separate; being absent from `unresolved` never
     /// makes a reviewer's manual-triage finding disappear from this view.
-    pub(super) fn concerns(&self, document: Option<&str>, diagnostics: &[Value]) -> Vec<Value> {
+    pub(super) fn concerns(
+        &self,
+        document: Option<&str>,
+        diagnostics: &[Value],
+    ) -> Result<Vec<Value>> {
         fn add(
             rows: &mut BTreeMap<String, Value>,
             value: &Value,
@@ -117,7 +121,7 @@ impl Workflow {
                 deferred["reason"].as_str(),
             );
         }
-        for unresolved in self.unresolved() {
+        for unresolved in self.unresolved()? {
             add(
                 &mut rows,
                 &unresolved,
@@ -126,7 +130,8 @@ impl Workflow {
                 unresolved["reason"].as_str(),
             );
         }
-        rows.into_values()
+        Ok(rows
+            .into_values()
             .filter(|row| {
                 let Some(document) = document else {
                     return true;
@@ -157,7 +162,7 @@ impl Workflow {
                 }
                 docs.is_empty() || docs.contains(document)
             })
-            .collect()
+            .collect())
     }
 
     pub(super) fn findings(&self) -> Vec<Value> {
@@ -166,12 +171,17 @@ impl Workflow {
     /// Findings and diagnostics a repair returned without changes, with the
     /// submitter's reason. They are not reissued as repair tasks and stay listed
     /// until the affected items change or a human corrects the extraction.
-    pub(super) fn unresolved(&self) -> Vec<Value> {
-        self.state
-            .unresolved
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
+    /// Kept as an object: every command reads the workflow state, and the list
+    /// can hold every diagnostic of a large extraction.
+    pub(super) fn unresolved(&self) -> Result<Vec<Value>> {
+        match self.state.unresolved.as_str() {
+            Some(digest) => Ok(arr(&self.store.json(digest)?)?.clone()),
+            None => Ok(Vec::new()),
+        }
+    }
+    fn set_unresolved(&mut self, list: &[Value]) -> Result<()> {
+        self.state.unresolved = json!(self.store.put_json(&json!(list))?);
+        Ok(())
     }
     /// Identity of an entry in `unresolved`: a review finding by its signature,
     /// a machine diagnostic by code and item.
@@ -182,19 +192,23 @@ impl Workflow {
             diagnostic_signature(&entry["code"], entry["item"].as_str().unwrap_or(""))
         }
     }
-    pub(super) fn note_unresolved(&mut self, entry: Value) {
-        let signature = Self::unresolved_signature(&entry);
-        let mut list = self.unresolved();
-        if let Some(existing) = list
-            .iter_mut()
-            .find(|e| Self::unresolved_signature(e) == signature)
-        {
-            existing["reports"] = json!(existing["reports"].as_u64().unwrap_or(1) + 1);
-            existing["reason"] = entry["reason"].clone();
-        } else {
-            list.push(entry);
+    /// Adds entries in order, counting a repeated one as another report. The list
+    /// is read and stored once for all of them.
+    pub(super) fn note_unresolved(&mut self, entries: Vec<Value>) -> Result<()> {
+        let mut list = self.unresolved()?;
+        for entry in entries {
+            let signature = Self::unresolved_signature(&entry);
+            if let Some(existing) = list
+                .iter_mut()
+                .find(|e| Self::unresolved_signature(e) == signature)
+            {
+                existing["reports"] = json!(existing["reports"].as_u64().unwrap_or(1) + 1);
+                existing["reason"] = entry["reason"].clone();
+            } else {
+                list.push(entry);
+            }
         }
-        self.state.unresolved = json!(list);
+        self.set_unresolved(&list)
     }
     /// A declined record is void once any of its items changed: the next review
     /// judges the new content, and repair may be asked again.
@@ -208,7 +222,7 @@ impl Workflow {
                 );
             }
         }
-        let before = self.unresolved();
+        let before = self.unresolved()?;
         let kept: Vec<Value> = before
             .iter()
             .filter(|entry| {
@@ -226,13 +240,13 @@ impl Workflow {
             .cloned()
             .collect();
         if kept.len() != before.len() {
-            self.state.unresolved = json!(kept);
+            self.set_unresolved(&kept)?;
         }
         Ok(())
     }
     pub(super) fn write_unresolved(&self) -> Result<()> {
         let path = self.store.managed("unresolved.json")?;
-        let unresolved = self.unresolved();
+        let unresolved = self.unresolved()?;
         if unresolved.is_empty() {
             if path.exists() {
                 fs::remove_file(path)?;

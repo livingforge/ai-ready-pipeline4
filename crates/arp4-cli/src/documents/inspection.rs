@@ -24,14 +24,21 @@ impl Store {
         let original = under(&self.root, string(&meta["source"]["path"])?)?;
         let source_current =
             original.is_file() && hash(&fs::read(&original)?) == meta["source"]["sha256"];
-        let content_pages = self
-            .logical(dir)?
-            .into_iter()
-            .filter(|(name, _)| {
-                name.starts_with("content/") && (name.ends_with(".yml") || name.ends_with(".yaml"))
-            })
-            .map(|(_, path)| read(&path, Some("content")))
-            .collect::<Result<Vec<_>>>()?;
+        // Every file besides the records and assets is a content page, read once here.
+        let mut content_pages = vec![];
+        for (name, path) in self.logical(dir)? {
+            if name.starts_with("assets/")
+                || RECORDS.contains(&name.as_str())
+                || name == "proposal.json"
+            {
+                continue;
+            }
+            ensure!(
+                name.starts_with("content/") && (name.ends_with(".yml") || name.ends_with(".yaml")),
+                "unmanaged document file: {name}"
+            );
+            content_pages.push(read(&path, Some("content"))?);
+        }
         let mut mappings = read(&metadata.join("mappings.yml"), Some("mappings"))?;
         let journal = &mappings["interpretation"];
         crate::document_structure::validate_corrections(journal)?;
@@ -40,28 +47,14 @@ impl Store {
                 && journal["source_path"] == meta["source"]["path"],
             "document interpretation belongs to another source"
         );
-        let extension = Path::new(string(&meta["source"]["path"])?)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let structure_format =
-            crate::document_source::structure_formats().contains(&extension.as_str());
-        let (interpretation, interpretation_report) = if source_current && structure_format {
-            let (structure, report) =
-                crate::document_structure::replay_corrections(&self.root, journal, &extraction)?;
-            (Some(structure), Some(report))
-        } else if structure_format {
-            (None, None)
-        } else {
+        if !structure_format(&meta)? {
             ensure!(
                 journal["elements"].as_array().is_some_and(Vec::is_empty)
                     && journal["visuals"].as_array().is_some_and(Vec::is_empty)
                     && journal["regions"].as_array().is_some_and(Vec::is_empty),
                 "text document cannot contain structure corrections"
             );
-            (None, None)
-        };
+        }
         let native_text = extraction["parser"]
             .as_str()
             .is_some_and(|p| p.contains(";native-text/"));
@@ -81,8 +74,8 @@ impl Store {
             array(&extraction["sheets"])?,
         )?;
         self.image_assets(dir, &image_operations)?;
-        mappings = regenerate_mappings(&mappings, &extraction, &content_pages, &operations)?;
-        let content = self.validate_content(dir, &meta, &mappings)?;
+        mappings = regenerate_mappings(mappings, &extraction, &content_pages, &operations)?;
+        let content = Self::validate_content(&meta, &mappings, &content_pages)?;
         validate_coverage(
             &extraction,
             &mappings,
@@ -123,8 +116,6 @@ impl Store {
             meta,
             extraction,
             mappings,
-            interpretation,
-            interpretation_report,
             values,
             fingerprint: fp,
             reviewed,
@@ -133,15 +124,30 @@ impl Store {
     }
 }
 impl Store {
+    /// The structure interpretation and its replay report: the extraction with the
+    /// document's corrections replayed. None for text formats and a changed original.
+    /// Replaying infers every table of the extraction, so only commands reading the
+    /// structure ask for it.
+    pub fn interpretation(&self, inspected: &Inspection) -> Result<Option<(Value, Value)>> {
+        if !inspected.source_current || !structure_format(&inspected.meta)? {
+            return Ok(None);
+        }
+        crate::document_structure::replay_corrections(
+            &self.root,
+            &inspected.mappings["interpretation"],
+            &inspected.extraction,
+        )
+        .map(Some)
+    }
     fn validate_content(
-        &self,
-        dir: &Path,
         meta: &Value,
         mappings: &Value,
+        pages: &[Value],
     ) -> Result<ValidatedContent> {
         let entries = array(&mappings["entries"])?;
         let tables = mappings["tables"].as_array().cloned().unwrap_or_default();
         let mut table_keys = BTreeSet::new();
+        let mut table_definitions = BTreeMap::new();
         for t in &tables {
             ensure!(
                 table_keys.insert((
@@ -150,23 +156,21 @@ impl Store {
                 )),
                 "duplicate table definition"
             );
+            table_definitions.insert((string(&t["page"])?, string(&t["block"])?), t);
+        }
+        // Positioned entries by page and block, so that each table block does not
+        // scan every entry of a document with many sheets, slides or pages.
+        let mut positioned: BTreeMap<(&str, &str), Vec<&Value>> = BTreeMap::new();
+        for e in entries.iter().filter(|e| e.get("position").is_some()) {
+            if let (Some(page), Some(block)) = (e["page"].as_str(), e["block"].as_str()) {
+                positioned.entry((page, block)).or_default().push(e);
+            }
         }
         let mut values = BTreeMap::new();
         let mut expected = BTreeSet::new();
         let mut page_ids = BTreeSet::new();
         let mut references = vec![];
-        for (name, path) in self.logical(dir)? {
-            if name.starts_with("assets/")
-                || RECORDS.contains(&name.as_str())
-                || name == "proposal.json"
-            {
-                continue;
-            }
-            ensure!(
-                name.starts_with("content/") && (name.ends_with(".yml") || name.ends_with(".yaml")),
-                "unmanaged document file: {name}"
-            );
-            let page = read(&path, Some("content"))?;
+        for page in pages {
             ensure!(
                 page["document_id"] == meta["document_id"]
                     && page["source_path"] == meta["source"]["source_path"],
@@ -197,15 +201,16 @@ impl Store {
                     }
                 }
                 if let Some(rows) = body["rows"].as_object() {
-                    let table = tables
-                        .iter()
-                        .find(|t| t["page"] == page_id && t["block"] == *block)
+                    let table = table_definitions
+                        .get(&(page_id.as_str(), block.as_str()))
                         .context("rows require table definition")?;
                     ensure!(body.get("fields").is_none(), "table cannot contain fields");
                     let mut consumed = BTreeSet::new();
-                    for e in entries.iter().filter(|e| {
-                        e["page"] == page_id && e["block"] == *block && e.get("position").is_some()
-                    }) {
+                    for e in positioned
+                        .get(&(page_id.as_str(), block.as_str()))
+                        .into_iter()
+                        .flatten()
+                    {
                         let pos = &e["position"];
                         let row = string(&pos["row"])?;
                         let col = string(&pos["column"])?;
@@ -307,6 +312,7 @@ impl Store {
             let is_proposal = dir.join("proposal.json").is_file();
             let inspected = (|| -> Result<Value> {
                 let r = self.inspect(&dir, require_reviewed)?;
+                let report = self.interpretation(&r)?.map(|(_, report)| report);
                 let formation = self.management(&dir)?.join("formation.json");
                 let recorded = if formation.exists() {
                     let (f, _) = self.formation(&dir)?;
@@ -358,8 +364,8 @@ impl Store {
                 Ok(
                     json!({"document_id":r.meta["document_id"],"directory":dir,"reviewed":r.reviewed,
                     "source_current":r.source_current,"content":r.fingerprint,"pending":pending,
-                    "structure_ready":r.interpretation_report.as_ref().is_some_and(|report| report["ready"] == true),
-                    "structure_conflicts":r.interpretation_report.as_ref().map(|report| report["conflicts"].as_array().map(Vec::len).unwrap_or(0)),
+                    "structure_ready":report.as_ref().is_some_and(|report| report["ready"] == true),
+                    "structure_conflicts":report.as_ref().map(|report| report["conflicts"].as_array().map(Vec::len).unwrap_or(0)),
                     "state":state,"blockers":blockers}),
                 )
             })();
@@ -392,18 +398,13 @@ fn validate_coverage(
     let entries = array(&mappings["entries"])?;
     let values = &content.values;
     let expected = &content.expected;
+    // Keys borrow from the extraction and mappings: a large workbook has an entry per cell.
     let mut cells = BTreeMap::new();
     for sheet in array(&extraction["sheets"])? {
         for c in array(&sheet["cells"])? {
             ensure!(
                 cells
-                    .insert(
-                        (
-                            string(&sheet["name"])?.to_owned(),
-                            string(&c["address"])?.to_owned()
-                        ),
-                        c
-                    )
+                    .insert((string(&sheet["name"])?, string(&c["address"])?), c)
                     .is_none(),
                 "duplicate extraction cell"
             );
@@ -413,7 +414,7 @@ fn validate_coverage(
     for p in array(&extraction["pages"])? {
         for c in array(&p["chunks"])? {
             ensure!(
-                origins.insert((string(&p["id"])?.to_owned(), string(&c["id"])?.to_owned())),
+                origins.insert((string(&p["id"])?, string(&c["id"])?)),
                 "duplicate extraction origin"
             );
         }
@@ -425,30 +426,32 @@ fn validate_coverage(
     // Written positions are checked against the merges as they stand after
     // the operations: an insertion inside a merge grows it over the new cells.
     let mut merges = BTreeMap::new();
+    let mut computed = BTreeMap::new();
     for sheet in array(&extraction["sheets"])? {
         merges.insert(
             string(&sheet["name"])?.to_owned(),
             excel::merges_after(sheet, operations)?,
         );
+        computed.insert(string(&sheet["name"])?, excel::ComputedRanges::new(sheet)?);
     }
+    let merges = merges
+        .iter()
+        .map(|(name, merges)| Ok((name.as_str(), excel::Merges::new(merges)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     for e in entries {
         let k = key(e)?;
-        ensure!(actual.insert(k.clone()), "duplicate mapping");
         ensure!(
             !array(&e["origins"])?.is_empty() || !string(&e["reason"])?.trim().is_empty(),
             "new text requires reason"
         );
         for origin in array(&e["origins"])? {
-            let pair = (
-                string(&origin["page"])?.to_owned(),
-                string(&origin["block"])?.to_owned(),
-            );
+            let pair = (string(&origin["page"])?, string(&origin["block"])?);
             ensure!(origins.contains(&pair), "missing origin");
             covered_origins.insert(pair);
         }
         let mapped_target = mapping_target(&e["target"])?;
-        if let Some(MappingTarget::Cell { sheet, cell }) = &mapped_target {
-            let pair = (sheet.clone(), cell.clone());
+        if let Some(MappingTarget::Cell { sheet, cell }) = mapped_target {
+            let pair = (sheet, cell);
             ensure!(cells.contains_key(&pair), "missing Excel target");
             if native_text && let Some(value) = values.get(&k) {
                 ensure!(
@@ -466,7 +469,7 @@ fn validate_coverage(
                 if let (Some(MappingTarget::Cell { sheet, cell }), Some(value)) =
                     (&mapped_target, values.get(&k))
                 {
-                    let source = &cells[&(sheet.clone(), cell.clone())];
+                    let source = &cells[&(*sheet, *cell)];
                     let original = match source["formula"].as_str() {
                         Some(formula) if e["position"]["column"] == "formula" => {
                             json!(format!("={formula}"))
@@ -489,9 +492,7 @@ fn validate_coverage(
                 );
                 let destination = match mapped_target.context("cell writeback requires target")? {
                     MappingTarget::Cell { sheet, cell } => {
-                        let source = cells
-                            .get(&(sheet.clone(), cell.clone()))
-                            .context("missing target")?;
+                        let source = cells.get(&(sheet, cell)).context("missing target")?;
                         ensure!(
                             source["type"] != "formula" && source["type"] != "error",
                             "formula/error cell cannot be overwritten"
@@ -502,8 +503,27 @@ fn validate_coverage(
                                 || source["type"] == "null",
                             "Excel target type mismatch"
                         );
-                        excel::map_coordinate(&sheet, &cell, operations)?
-                            .map(|mapped| (sheet, mapped))
+                        if !text_format && *value != source["value"] {
+                            let (column, row) = excel::coordinate(cell)?;
+                            let book_sheet = array(&extraction["sheets"])?
+                                .iter()
+                                .find(|s| s["name"] == sheet)
+                                .context("missing Excel target sheet")?;
+                            excel::ensure_not_table_label(book_sheet, column, row)?;
+                            computed
+                                .get(sheet)
+                                .context("missing Excel target sheet")?
+                                .ensure_not_computed(cell)?;
+                        }
+                        // A cell an operation deletes is removed from the content with
+                        // it; one left behind would be an edit silently dropped.
+                        let mapped = excel::map_coordinate(sheet, cell, operations)?
+                            .with_context(|| {
+                                format!(
+                                    "{sheet}!{cell} is deleted by a delete_rows/delete_columns operation; remove it from the content too"
+                                )
+                            })?;
+                        Some((sheet, mapped))
                     }
                     MappingTarget::InsertionRow {
                         sheet,
@@ -512,10 +532,10 @@ fn validate_coverage(
                         column,
                     } => {
                         let mapped = excel::resolve_insertion(
-                            &sheet,
-                            &insertion,
+                            sheet,
+                            insertion,
                             offset,
-                            Some(&column),
+                            Some(column),
                             None,
                             operations,
                         )?;
@@ -528,8 +548,8 @@ fn validate_coverage(
                         row,
                     } => {
                         let mapped = excel::resolve_insertion(
-                            &sheet,
-                            &insertion,
+                            sheet,
+                            insertion,
                             offset,
                             None,
                             Some(row),
@@ -539,11 +559,10 @@ fn validate_coverage(
                     }
                 };
                 if let Some((sheet, cell)) = destination {
-                    excel::ensure_not_hidden(
-                        merges.get(&sheet).context("missing Excel target sheet")?,
-                        &sheet,
-                        &cell,
-                    )?;
+                    merges
+                        .get(sheet)
+                        .context("missing Excel target sheet")?
+                        .ensure_not_hidden(sheet, &cell)?;
                     ensure!(
                         destinations.insert((sheet, cell)),
                         "duplicate writeback target"
@@ -556,6 +575,7 @@ fn validate_coverage(
             "formula" => bail!("formula writeback is not supported by Rust"),
             other => bail!("unsupported writeback: {other}"),
         }
+        ensure!(actual.insert(k), "duplicate mapping");
     }
     ensure!(*expected == actual, "mapping coverage mismatch");
     for o in array(&mappings["omissions"])? {
@@ -566,8 +586,8 @@ fn validate_coverage(
         );
         if !o["origin"].is_null() {
             let pair = (
-                string(&o["origin"]["page"])?.to_owned(),
-                string(&o["origin"]["block"])?.to_owned(),
+                string(&o["origin"]["page"])?,
+                string(&o["origin"]["block"])?,
             );
             ensure!(
                 origins.contains(&pair) && covered_origins.insert(pair),
@@ -582,14 +602,24 @@ fn validate_coverage(
             );
         }
     }
-    for (sheet, cell) in cells.keys() {
+    for &(sheet, cell) in cells.keys() {
         if excel::map_coordinate(sheet, cell, operations)?.is_none() {
-            covered_cells.insert((sheet.clone(), cell.clone()));
+            covered_cells.insert((sheet, cell));
         }
     }
+    // Only existing cells are ever covered, so equal counts mean every cell is.
     ensure!(
-        covered_cells == cells.keys().cloned().collect() && covered_origins == origins,
+        covered_cells.len() == cells.len() && covered_origins == origins,
         "source coverage incomplete"
     );
     Ok(())
+}
+
+fn structure_format(meta: &Value) -> Result<bool> {
+    let extension = Path::new(string(&meta["source"]["path"])?)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    Ok(crate::document_source::structure_formats().contains(&extension.as_str()))
 }

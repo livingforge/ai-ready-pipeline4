@@ -215,22 +215,40 @@ fn extraction(path: &Path) -> Result<Value> {
 }
 
 pub fn initialize(root: &Path, extraction: &Value) -> Result<Value> {
-    let elements = inference::elements(extraction)?;
-    let value = json!({"schema_version":1,"document":extraction["document_id"],"source":{"path":extraction["source"]["path"],"sha256":extraction["source"]["sha256"]},
-        "extraction_hash":hash(&encoded(extraction)),"regions":[],"elements":elements,"visuals":policy::visuals(extraction)?,"review":{"status":"pending"}});
-    validate(root, extraction, &value)?;
+    let extraction_hash = hash(&encoded(extraction));
+    let value = inferred(extraction, &extraction_hash)?;
+    validate_hashed(root, extraction, &extraction_hash, &value)?;
     Ok(value)
+}
+
+/// The unreviewed interpretation inferred from `extraction`, whose hash the caller supplies.
+fn inferred(extraction: &Value, extraction_hash: &str) -> Result<Value> {
+    let elements = inference::elements(extraction)?;
+    Ok(
+        json!({"schema_version":1,"document":extraction["document_id"],"source":{"path":extraction["source"]["path"],"sha256":extraction["source"]["sha256"]},
+        "extraction_hash":extraction_hash,"regions":[],"elements":elements,"visuals":policy::visuals(extraction)?,"review":{"status":"pending"}}),
+    )
 }
 
 /// Validity is distinct from readiness: pending/unreadable cells remain inspectable.
 pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value> {
+    validate_hashed(root, extraction, &hash(&encoded(extraction)), value)
+}
+
+/// [`validate`] against the already computed hash of `extraction`.
+fn validate_hashed(
+    root: &Path,
+    extraction: &Value,
+    extraction_hash: &str,
+    value: &Value,
+) -> Result<Value> {
     validate_schema(value)?;
     relations::validate(value)?;
     ensure!(
         value["document"] == extraction["document_id"]
             && value["source"]["path"] == extraction["source"]["path"]
             && value["source"]["sha256"] == extraction["source"]["sha256"]
-            && value["extraction_hash"] == hash(&encoded(extraction)),
+            && value["extraction_hash"] == extraction_hash,
         "structure/extraction version mismatch"
     );
     let original = under(root, string(&value["source"]["path"])?)?;
@@ -271,6 +289,8 @@ pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value>
     let mut ids = BTreeSet::new();
     let mut owned = BTreeSet::new();
     let mut unresolved = policy::validate_visuals(extraction, value)?;
+    // Built once per sheet: a sheet holds many elements, each looking up its cells.
+    let mut sheet_cells: BTreeMap<&str, BTreeMap<&str, &Value>> = BTreeMap::new();
     for element in array(&value["elements"])? {
         ensure!(
             ids.insert(string(&element["id"])?),
@@ -278,10 +298,15 @@ pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value>
         );
         let sheet_name = string(&element["sheet"])?;
         let sheet = sheets.get(sheet_name).context("unknown element sheet")?;
-        let original_cells: BTreeMap<_, _> = array(&sheet["cells"])?
-            .iter()
-            .map(|c| (c["address"].as_str().unwrap(), c))
-            .collect();
+        let original_cells = match sheet_cells.entry(sheet_name) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
+                array(&sheet["cells"])?
+                    .iter()
+                    .map(|c| (c["address"].as_str().unwrap(), c))
+                    .collect(),
+            ),
+        };
         let cells = array(&element["cells"])?;
         let local: BTreeMap<_, _> = cells
             .iter()

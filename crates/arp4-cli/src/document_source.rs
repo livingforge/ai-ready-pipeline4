@@ -12,7 +12,7 @@ use roxmltree::{Document, Node};
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Cursor, Read},
     path::Path,
@@ -21,6 +21,7 @@ use std::{
 mod word;
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const MATH: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -94,7 +95,12 @@ pub struct TextSource {
 
 enum TextBackend {
     Office(BTreeMap<String, Vec<u8>>),
-    Pdf(Box<Pdf>),
+    /// `unparsed` lists pages whose content stream could not be read to its end;
+    /// their text after that point is missing and they are not written back.
+    Pdf {
+        doc: Box<Pdf>,
+        unparsed: Vec<u32>,
+    },
     Native,
 }
 
@@ -145,20 +151,36 @@ impl Source {
                 "encrypted PDF is not supported"
             );
             let mut sheets = vec![];
+            let mut unparsed = vec![];
             ensure!(
                 doc.get_pages().len() <= 10000,
                 "PDF page count exceeds budget"
             );
             for (page, id) in doc.get_pages() {
-                let mut content = Content::decode(&doc.get_page_content_with_limit(id, MAX_PAGE)?)?;
-                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new())?;
+                let raw_content = doc.get_page_content_with_limit(id, MAX_PAGE)?;
+                // The lenient decoder stops quietly at the first token it cannot
+                // read; keep what it read but report the page.
+                let mut content = match Content::decode_strict(&raw_content) {
+                    Ok(content) => content,
+                    Err(_) => {
+                        unparsed.push(page);
+                        Content::decode(&raw_content)?
+                    }
+                };
+                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None)?;
                 sheets.push(text_sheet(
                     &format!("page-{page}"),
                     &format!("pdf:{page}"),
                     values,
                 ));
             }
-            (TextBackend::Pdf(Box::new(doc)), sheets)
+            (
+                TextBackend::Pdf {
+                    doc: Box::new(doc),
+                    unparsed,
+                },
+                sheets,
+            )
         } else {
             let parts = office_parts(&raw)?;
             let containers = office_containers(&parts, &format)?;
@@ -173,7 +195,12 @@ impl Source {
                         .into_iter()
                         .map(|n| n.text().unwrap_or("").to_owned())
                         .collect();
-                    sheets.push(text_sheet(&name, &part, values));
+                    let mut sheet = text_sheet(&name, &part, values);
+                    // A slide hidden from the show is marked like a hidden sheet.
+                    if xml.root_element().attribute("show") == Some("0") {
+                        sheet["state"] = json!("hidden");
+                    }
+                    sheets.push(sheet);
                 }
             }
             (TextBackend::Office(parts), sheets)
@@ -197,10 +224,12 @@ impl Source {
         }
     }
 
-    pub fn sheets(&self) -> &[Value] {
+    /// The sheets as the extraction records them. A workbook builds them from
+    /// its typed cells on each call.
+    pub fn sheets(&self) -> Cow<'_, [Value]> {
         match self {
-            Self::Excel(book) => &book.sheets,
-            Self::Text(doc) => &doc.sheets,
+            Self::Excel(book) => Cow::Owned(book.sheet_values()),
+            Self::Text(doc) => Cow::Borrowed(&doc.sheets),
         }
     }
 
@@ -223,6 +252,37 @@ impl Source {
     }
 
     pub fn note(&self) -> String {
+        let mut note = self.skipped_note();
+        if let Self::Excel(book) = self
+            && book.date1904
+        {
+            note.push_str("このブックは1904年日付系です。日付・時刻のセル値は1904年1月1日を0とするシリアル値で、1900年日付系より1462日小さい値です。");
+        }
+        if let Self::Excel(book) = self
+            && !book.rich_values.is_empty()
+        {
+            note.push_str(&format!(
+                "次のセルはセル内の画像またはリンクされたデータ型（株価・地理など）で、値はセル外に保存されているため抽出していません（セルの値は#VALUE!と記録されます）: {}。",
+                book.rich_values.join("、")
+            ));
+        }
+        if let Self::Text(TextSource {
+            backend: TextBackend::Pdf { unparsed, .. },
+            ..
+        }) = self
+            && !unparsed.is_empty()
+        {
+            let pages = unparsed
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join("、");
+            note.push_str(&format!("次のページは描画命令を途中までしか解析できず、それ以降の文字を抽出していません。書き戻しもできません: {pages}ページ。"));
+        }
+        note
+    }
+
+    fn skipped_note(&self) -> String {
         let base = self.base_note();
         match self {
             Self::Excel(book) if !book.skipped_sheets.is_empty() => {
@@ -608,15 +668,30 @@ fn hidden_copy(node: Node<'_, '_>, format: &str) -> bool {
     node.ancestors().any(|branch| {
         alternate_branch(branch)
             && branch.prev_siblings().skip(1).any(|earlier| {
-                alternate_branch(earlier) && earlier.descendants().any(|n| text_node(n, format))
+                // An equation (a14:m) is text a reader shows, though not a:t.
+                alternate_branch(earlier)
+                    && earlier
+                        .descendants()
+                        .any(|n| text_node(n, format) || n.has_tag_name((MATH, "t")))
             })
     })
 }
 
 /// Text elements a reader sees, in document order; their ordinals are A1, A2, ...
+/// A PowerPoint table cell merged into its neighbor (`hMerge`, `vMerge`) is not
+/// shown, whatever text it still holds.
 fn text_nodes<'a, 'input>(xml: &'a Document<'input>, format: &str) -> Vec<Node<'a, 'input>> {
     xml.descendants()
         .filter(|n| text_node(*n, format) && !hidden_copy(*n, format))
+        .filter(|n| {
+            word(format)
+                || !n.ancestors().any(|cell| {
+                    cell.has_tag_name((DRAWING, "tc"))
+                        && ["hMerge", "vMerge"]
+                            .iter()
+                            .any(|merge| matches!(cell.attribute(*merge), Some("1" | "true")))
+                })
+        })
         .collect()
 }
 
@@ -739,12 +814,24 @@ impl TextSource {
                                     "Word field result text cannot be edited because Word recalculates it (date, page number, table of contents, cross-reference, etc.): {part} {}; edit the field in Word",
                                     block.address
                                 );
+                                ensure!(
+                                    !word::data_bound(node),
+                                    "Word content control text bound to document data (such as a cover page title or author) cannot be edited because Word restores it from that data: {part} {}; edit it in Word",
+                                    block.address
+                                );
                                 edits.push((node, new));
                             }
                         }
                     } else {
                         for (i, text) in changes {
-                            edits.push((*nodes.get(i).context("text node disappeared")?, text));
+                            let node = *nodes.get(i).context("text node disappeared")?;
+                            // Slide numbers and dates are fields PowerPoint fills in again.
+                            ensure!(
+                                !node.ancestors().any(|a| a.has_tag_name((DRAWING, "fld"))),
+                                "PowerPoint field text (slide number, date, etc.) cannot be edited because PowerPoint recalculates it: {part} A{}; edit the field in PowerPoint",
+                                i + 1
+                            );
+                            edits.push((node, text));
                         }
                     }
                     let mut targets = vec![];
@@ -754,9 +841,7 @@ impl TextSource {
                         }
                         targets.push((node, text));
                     }
-                    // Replace from the end so that earlier ranges stay valid.
-                    targets.sort_by_key(|(node, _)| std::cmp::Reverse(node.range().start));
-                    let mut result = original.to_owned();
+                    let mut text_edits = vec![];
                     for (node, text) in targets {
                         let raw = &original[node.range()];
                         let end = raw.find('>').context("invalid text element")?;
@@ -784,14 +869,24 @@ impl TextSource {
                             }
                         }
                         let replacement = format!("{opening}>{}</{name}>", xml_text(&text)?);
-                        result.replace_range(node.range(), &replacement);
+                        text_edits.push((node.range(), replacement));
                     }
+                    let result = splice(original, text_edits, "text")?;
                     Document::parse(&result)?;
                     patched.insert(part, encode_part(&result, encoding));
                 }
                 crate::excel::write_archive(&self.raw, output, &patched)?;
             }
-            TextBackend::Pdf(original) => {
+            TextBackend::Pdf {
+                doc: original,
+                unparsed,
+            } => {
+                // lopdf decrypts a PDF that opens without a password (one with only
+                // an editing or printing restriction) and would save it unprotected.
+                ensure!(
+                    !original.was_encrypted(),
+                    "encrypted PDF writeback is not supported, including PDFs protected only against editing or printing"
+                );
                 ensure!(
                     !original
                         .objects
@@ -807,12 +902,22 @@ impl TextSource {
                     crate::excel::write_unchanged(&self.raw, output)?;
                 } else {
                     let mut doc = original.clone();
+                    let glyphs = subset_glyphs(original)?;
                     for (page, id) in original.get_pages() {
                         if let Some(changes) = replacements.get(&format!("pdf:{page}")) {
-                            let mut content = Content::decode(
+                            ensure!(
+                                !unparsed.contains(&page),
+                                "PDF page {page} has drawing commands ARP cannot read to the end, so it cannot be rewritten"
+                            );
+                            let mut content = Content::decode_strict(
                                 &original.get_page_content_with_limit(id, MAX_PAGE)?,
                             )?;
-                            pdf_text(original, id, &mut content, changes)?;
+                            // lopdf cannot write an inline image back.
+                            ensure!(
+                                content.operations.iter().all(|o| o.operator != "BI"),
+                                "PDF page {page} has inline images, which ARP cannot write back; edit the text in a PDF editor"
+                            );
+                            pdf_text(original, id, &mut content, changes, Some(&glyphs))?;
                             // Always allocate a new stream: an original stream may be shared by pages.
                             let stream = doc.add_object(Stream::new(
                                 lopdf::Dictionary::new(),
@@ -837,8 +942,14 @@ impl TextSource {
 }
 
 enum PdfEncoding<'a> {
-    Mapped(lopdf::Encoding<'a>),
-    Unicode { ucs2: bool },
+    /// `width` is the length of a character code in bytes.
+    Mapped {
+        encoding: lopdf::Encoding<'a>,
+        width: usize,
+    },
+    Unicode {
+        ucs2: bool,
+    },
 }
 
 impl<'a> PdfEncoding<'a> {
@@ -886,12 +997,24 @@ impl<'a> PdfEncoding<'a> {
                 "PDF composite font requires a supported Unicode CMap or valid ToUnicode map"
             );
         }
-        Ok(Self::Mapped(encoding))
+        Ok(Self::Mapped {
+            encoding,
+            width: code_width(font),
+        })
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<String> {
         match self {
-            Self::Mapped(encoding) => Ok(Pdf::decode_text(encoding, bytes)?),
+            // Decoded code by code: lopdf reads a ToUnicode map greedily, so a code
+            // missing from it would otherwise swallow the characters after it.
+            Self::Mapped {
+                encoding: encoding @ lopdf::Encoding::UnicodeMapEncoding(_),
+                width,
+            } => bytes
+                .chunks(*width)
+                .map(|code| Ok(Pdf::decode_text(encoding, code)?))
+                .collect(),
+            Self::Mapped { encoding, .. } => Ok(Pdf::decode_text(encoding, bytes)?),
             Self::Unicode { ucs2 } => {
                 ensure!(
                     bytes.len().is_multiple_of(2),
@@ -914,7 +1037,7 @@ impl<'a> PdfEncoding<'a> {
 
     fn encode(&self, text: &str) -> Result<Vec<u8>> {
         match self {
-            Self::Mapped(encoding) => Ok(Pdf::encode_text(encoding, text)),
+            Self::Mapped { encoding, .. } => Ok(Pdf::encode_text(encoding, text)),
             Self::Unicode { ucs2 } => {
                 ensure!(
                     !ucs2 || text.chars().all(|c| c as u32 <= 0xffff),
@@ -926,14 +1049,107 @@ impl<'a> PdfEncoding<'a> {
     }
 }
 
+/// Identity of a font dictionary in a loaded document.
+fn font_key(font: &lopdf::Dictionary) -> usize {
+    std::ptr::from_ref(font) as usize
+}
+
+/// An embedded subset (`ABCDEF+Name`) holds only the glyphs its document uses.
+fn subset_font(font: &lopdf::Dictionary) -> bool {
+    font.get(b"BaseFont")
+        .and_then(Object::as_name)
+        .is_ok_and(|name| {
+            name.len() > 7 && name[6] == b'+' && name[..6].iter().all(u8::is_ascii_uppercase)
+        })
+}
+
+/// Bytes per character code: two for composite (Type0) fonts, one otherwise.
+fn code_width(font: &lopdf::Dictionary) -> usize {
+    if font
+        .get(b"Subtype")
+        .and_then(Object::as_name)
+        .is_ok_and(|n| n == b"Type0")
+    {
+        2
+    } else {
+        1
+    }
+}
+
+/// Character codes each subset font draws anywhere in the document; a subset
+/// is known to hold a glyph only for these.
+fn subset_glyphs(doc: &Pdf) -> Result<BTreeMap<usize, BTreeSet<Vec<u8>>>> {
+    let mut used: BTreeMap<usize, BTreeSet<Vec<u8>>> = BTreeMap::new();
+    for (_, id) in doc.get_pages() {
+        let fonts = doc.get_page_fonts(id)?;
+        let Ok(content) = Content::decode_strict(&doc.get_page_content_with_limit(id, MAX_PAGE)?)
+        else {
+            continue;
+        };
+        let mut font = None;
+        for operation in &content.operations {
+            match operation.operator.as_str() {
+                "Tf" => {
+                    font = operation
+                        .operands
+                        .first()
+                        .and_then(|name| name.as_name().ok())
+                        .and_then(|name| fonts.get(name))
+                        .copied();
+                }
+                "Tj" | "TJ" | "'" | "\"" => {
+                    let Some(current) = font.filter(|f| subset_font(f)) else {
+                        continue;
+                    };
+                    let strings: Vec<&Object> = match operation.operands.last() {
+                        Some(Object::Array(items)) => items.iter().collect(),
+                        Some(other) => vec![other],
+                        None => vec![],
+                    };
+                    let codes = used.entry(font_key(current)).or_default();
+                    for object in strings {
+                        if let Object::String(bytes, _) = object {
+                            codes.extend(bytes.chunks(code_width(current)).map(<[u8]>::to_vec));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(used)
+}
+
+/// Decodes the page's text strings, and with `changes` replaces the strings at
+/// those indexes. `glyphs` (from [`subset_glyphs`]) limits a replacement drawn
+/// with an embedded subset font to the codes that subset is known to hold.
 fn pdf_text(
     doc: &Pdf,
     page: lopdf::ObjectId,
     content: &mut Content<Vec<lopdf::content::Operation>>,
     changes: &BTreeMap<usize, String>,
+    glyphs: Option<&BTreeMap<usize, BTreeSet<Vec<u8>>>>,
 ) -> Result<Vec<String>> {
     let fonts = doc.get_page_fonts(page)?;
+    // A ToUnicode map says what a simple font's codes mean even when the font
+    // also names an /Encoding, which lopdf would otherwise use alone (and replace
+    // by StandardEncoding when it cannot read its glyph names).
+    let mapped: BTreeMap<&[u8], lopdf::Dictionary> = fonts
+        .iter()
+        .filter(|(_, font)| {
+            code_width(font) == 1 && font.has(b"ToUnicode") && font.has(b"Encoding")
+        })
+        .map(|(name, font)| {
+            let mut font = (*font).clone();
+            font.remove(b"Encoding");
+            (name.as_slice(), font)
+        })
+        .collect();
+    let mut encodings = BTreeMap::new();
     let mut font = Vec::new();
+    // Text render mode (Tr): 3 draws nothing and 7 only clips, as in the OCR
+    // layer of a scanned page.
+    let mut render = 0;
     let mut stack = vec![];
     let mut values = vec![];
     for operation in &mut content.operations {
@@ -946,9 +1162,16 @@ fn pdf_text(
                     .as_name()?
                     .to_vec();
             }
-            "q" => stack.push(font.clone()),
+            "Tr" => {
+                render = operation
+                    .operands
+                    .first()
+                    .and_then(|mode| mode.as_i64().ok())
+                    .unwrap_or(0);
+            }
+            "q" => stack.push((font.clone(), render)),
             "Q" => {
-                font = stack.pop().context("unbalanced PDF graphics state")?;
+                (font, render) = stack.pop().context("unbalanced PDF graphics state")?;
             }
             "Tj" | "TJ" | "'" | "\"" => {
                 let operand = operation
@@ -963,10 +1186,18 @@ fn pdf_text(
                     Object::String(..) => vec![operand],
                     _ => bail!("invalid PDF text operand"),
                 };
-                let encoding = PdfEncoding::for_font(
-                    fonts.get(&font).context("PDF text font not found")?,
-                    doc,
-                )?;
+                // Reading an encoding parses the font's ToUnicode map, so it is
+                // read once per font, not for every string drawn with it.
+                if !encodings.contains_key(&font) {
+                    let font_dictionary = *fonts.get(&font).context("PDF text font not found")?;
+                    let encoding = PdfEncoding::for_font(
+                        mapped.get(font.as_slice()).unwrap_or(font_dictionary),
+                        doc,
+                    )?;
+                    encodings.insert(font.clone(), (font_dictionary, encoding));
+                }
+                let (font_dictionary, encoding) = &encodings[&font];
+                let font_dictionary = *font_dictionary;
                 for object in strings {
                     let Object::String(bytes, _) = object else {
                         unreachable!()
@@ -976,14 +1207,37 @@ fn pdf_text(
                         .context("PDF font encoding cannot be decoded")?;
                     if let Some(replacement) = changes.get(&values.len()) {
                         ensure!(
+                            !matches!(render, 3 | 7),
+                            "PDF text {value:?} is drawn invisibly (such as the OCR text layer of a scanned page), so an edit would not change what the page shows; edit it in a PDF editor"
+                        );
+                        ensure!(
                             !replacement.contains(['\n', '\r', '\t']),
                             "PDF text replacement cannot contain line breaks or tabs; layout operations are not supported"
+                        );
+                        // The string must be what its codes say: codes the encoding
+                        // drops, or several codes for one character (such as the
+                        // vertical forms of a Japanese font), would change on re-encoding.
+                        ensure!(
+                            encoding.encode(&value)? == *bytes,
+                            "PDF text {value:?} uses character codes its font does not map one-to-one to text, so rewriting it would change the unedited characters; edit it in a PDF editor"
                         );
                         let encoded = encoding.encode(replacement)?;
                         ensure!(
                             encoding.decode(&encoded)? == *replacement,
                             "replacement contains characters unavailable in the original PDF font encoding"
                         );
+                        if let Some(glyphs) = glyphs
+                            && subset_font(font_dictionary)
+                        {
+                            let known = glyphs.get(&font_key(font_dictionary));
+                            for code in encoded.chunks(code_width(font_dictionary)) {
+                                let text = encoding.decode(code).unwrap_or_default();
+                                ensure!(
+                                    known.is_some_and(|codes| codes.contains(code)),
+                                    "the embedded font subset has no known glyph for {text:?}, which the document never draws in that font; use characters the PDF already shows in that text, or edit it in a PDF editor"
+                                );
+                            }
+                        }
                         *bytes = encoded;
                     }
                     values.push(value);

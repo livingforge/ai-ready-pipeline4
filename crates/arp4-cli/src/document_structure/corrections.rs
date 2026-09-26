@@ -15,8 +15,11 @@ pub(super) fn journal_schema() -> Value {
 }
 
 pub(super) fn validate_journal(journal: &Value) -> Result<()> {
-    let validator = jsonschema::validator_for(&journal_schema())?;
-    let errors: Vec<_> = validator
+    // Compiled once: every document inspection validates its journal.
+    static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {
+        jsonschema::validator_for(&journal_schema()).expect("embedded journal schema compiles")
+    });
+    let errors: Vec<_> = VALIDATOR
         .iter_errors(journal)
         .map(|e| e.to_string())
         .collect();
