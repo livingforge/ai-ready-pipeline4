@@ -4,9 +4,9 @@
 
 各段階の実行・再開・レビュー再利用・成果物保存をまとめて管理する場合は [進行管理ワークフロー](../guides/semantic-workflow.md) を使います。以下は個別コマンドの説明です。
 
-通常の利用はPython不要の `arp4 spec workflow` を使用します。Rust版ワークフローは局所修正・範囲選択・レビュー再利用を内部で行います。以下の個別操作もRust CLIで実行できます。Pythonは末尾の開発用計測と検証環境作成にのみ使用します。
+通常の利用は `arp4 spec workflow` を使用します。ワークフローは局所修正・範囲選択・レビュー再利用を内部で行います。以下の個別操作は同じ処理を1段階ずつ実行します。
 
-新規の生成は `spec semantic` を使います。Agentまたは人が解釈・分類・要件との対応・矛盾の判断を返し、Rust CLI がモデルJSON、出典ID、引用位置、初回採番用対応表、分類カタログを構築します。Markdown は既存の render が生成します。
+新規の生成は `spec semantic` を使います。Agentまたは人が解釈・分類・要件との対応・矛盾の判断を返し、CLI がモデルJSON、出典ID、引用位置、初回採番用対応表、分類カタログを構築します。Markdown は `spec render` が生成します。
 
 ## 処理の分担
 
@@ -18,7 +18,7 @@
 | 原文からの独立レビュー、文書間の矛盾・同義・関係の確認 | 独立したAgent実行または人 |
 | 初回ID採番、分類の参照変換、正本の検証・閲覧文書の整形 | CLI |
 
-引用・除外・監査・承認をプログラムが推測して補完することはありません。未処理文字や未レビューは従来どおり正式生成をブロックします。意味上の正しさを機械検証だけで保証するものでもありません。
+引用・除外・監査・承認をプログラムが推測して補完することはありません。未処理文字や未レビューは正式生成をブロックします。意味上の正しさを機械検証だけで保証するものでもありません。
 
 ## 1. 資料を固定し、文書ごとのタスクを作る
 
@@ -31,8 +31,6 @@ arp4 spec semantic packet --input input.json --document doc-b --out tasks/extrac
 ```
 
 タスクには契約とその文書の全文を含みます。長い出典ハッシュ、入力全体のJSON、完成形スキーマ、ソースコード、過去のログを追加で渡す必要はありません。表のセル番地・シート・結合範囲・表示形式・値と数式の区別は残ります。図形等の未抽出警告も残します。原文を省略・要約して削減しません。
-
-`build/prepare_spec_validation.py --out <新規フォルダー> --corpus examples/kotonoha/資料` も文書別タスクを生成します。既存の入力があれば再取り込みせず packet だけを作れます。
 
 ## 2. タスクの意味判断を実行する
 
@@ -79,7 +77,7 @@ arp4 spec semantic assemble --input input.json --reply extract-a.reply.json extr
 
 `assembled/model.json`、`catalog.json`、`identity-plan.json`、`check.json` ができます。assemble の成功は ready ではありません。まず check.json の診断を確認し、修正が必要な文書だけの返信を直して新しい出力先へ再構築します。数量の未対応表現があれば診断を残し、Agentに検証器を調べさせたりtext型へ逃がしたりしません。原文の解釈を変えず、検証器の対応要否を開発側で判断します。
 
-全入力文書の返信が必要です。欠けた文書や余った文字を除外扱いにしません。初回抽出ではrequirements/relatedを省略でき、ワークフローでは全抽出完了後のlink段階で既知の `document/key` による横断リンクを補完します。既存形式の文書内キーも受け付けます。モジュール名や、曖昧な分類の理由もレビュー対象です。共通のモジュール語彙を使うと文書間の表記揺れを減らせます。
+全入力文書の返信が必要です。欠けた文書や余った文字を除外扱いにしません。初回抽出ではrequirements/relatedを省略でき、ワークフローでは全抽出完了後のlink段階で既知の `document/key` による横断リンクを補完します。同じ文書内の項目は `key` だけでも参照できます。モジュール名や、曖昧な分類の理由もレビュー対象です。共通のモジュール語彙を使うと文書間の表記揺れを減らせます。
 
 ## 4. 文書別の原文レビューと全体の整合性レビュー
 
@@ -103,7 +101,7 @@ arp4 spec registry init --input input.json --model finalized/model.json --catalo
 arp4 spec registry render
 ```
 
-review-applyは監査を展開し、モデル・分類カタログのハッシュとcoverage matrixを `.semantic-review.json` に保存します。finalizeはこの一致と従来の検証を確認したうえで、初回の永続IDと台帳を発行し、関連参照を変換します。`--registry --project example` を指定すると、同じ検証済みbundleから `.arp/registry/` に初回正本も作成します。先に `documents init` を実行します。この場合、別途 `registry init` は不要です。出力モデル・台帳・カタログはセットで保存します。正本への取り込みは全件提案で、承認は行いません。正本を書き込む前にbundleの既存内容と親ディレクトリを検査しますが、システム障害に対する複数出力の原子的保存ではありません。
+review-applyは監査を展開し、モデル・分類カタログのハッシュとcoverage matrixを `.semantic-review.json` に保存します。finalizeはこの一致とモデルの検証を確認したうえで、初回の永続IDと台帳を発行し、関連参照を変換します。`--registry --project example` を指定すると、同じ検証済みbundleから `.arp/registry/` に初回正本も作成します。先に `documents init` を実行します。この場合、別途 `registry init` は不要です。出力モデル・台帳・カタログはセットで保存します。正本への取り込みは全件提案で、承認は行いません。正本を書き込む前にbundleの既存内容と親ディレクトリを検査しますが、システム障害に対する複数出力の原子的保存ではありません。
 
 ## 5. 変更のあった資料だけを再処理する
 
@@ -153,9 +151,3 @@ arp4 spec semantic review-packet --input input.json --model assembled/model.json
 抽出packetの警告も文書別に絞ります。別文書に属する警告の変更だけでは無関係な文書を再抽出しません。所属不明の警告は全体共通として残します。
 
 finalizeは**初回専用**です。正本更新の永続IDは [registry apply](../guides/registry.md) または既存の `assign-ids --previous` で明示的に継承・分割・統合・廃止します。変更計画は再抽出範囲を絞る機能で、意味上の同一性や正本変更を自動承認する機能ではありません。
-
-## 計測
-
-`python build/measure_semantic_packets.py --input input.json --binary target/debug/arp4.exe --out <新規フォルダー>` はモデルを呼ばず、原文の保存とUTF-8バイト数の削減を確認します。トークン・費用・品質の削減率はこのバイト比較だけでは分かりません。実行ログのmodel_usage、reported_cost_usd、tool_calls、compactionsと、同じ品質基準のレビュー結果を併せて比較してください。
-
-`--model assembled/model.json --catalog assembled/catalog.json` を追加すると、文書別・全体のレビュー入力を圧縮形式と展開形式で比較できます。既存Kotonohaの495項目・8文書を使ったオフライン計測では、全9タスク合計1,525,113→1,176,703バイト（22.8%減）。1文書の未解決事項だけを変更した場合は7文書のfingerprintが維持され、変更文書と全体の2タスクだけが再レビュー対象になりました。Claude Codeの実呼び出しと品質・実トークンの再測定は未実施です。

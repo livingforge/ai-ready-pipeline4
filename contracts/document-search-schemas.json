@@ -1,0 +1,97 @@
+{
+  "search-batch": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Multiple queries in input order against one saved search index snapshot. Common options apply to every query. The outer revision pins the ordered query list and index snapshot. Per-query revisions support individual searches. Normal presentation limits apply separately to each query.",
+    "type": "object", "additionalProperties": false,
+    "required": ["ok", "scope", "revision", "queries"],
+    "properties": {
+      "ok": {"type": "boolean"},
+      "scope": {"const": "adopted_extraction"},
+      "revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "queries": {
+        "type": "array", "minItems": 2, "maxItems": 32,
+        "items": {
+          "type": "object", "required": ["query", "ok"],
+          "properties": {"query": {"type": "string"}, "ok": {"type": "boolean"}}
+        }
+      }
+    }
+  },
+  "search-profile": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Disjoint wall-clock milliseconds emitted to stderr by documents search --profile after stdout. Batch timings cover all queries against one saved index snapshot. total_ms starts immediately before Store::search_many, excluding CLI startup, argument parsing and project opening; response_ms includes payload decoding, CLI formatting and stdout emission. other_ms covers unassigned internal overhead. Timings exclude emitting this diagnostic record.",
+    "type": "object", "additionalProperties": false,
+    "required": ["kind", "setup_ms", "integrity_ms", "index_update_ms", "sql_ms", "response_ms", "other_ms", "total_ms"],
+    "properties": {
+      "kind": {"const": "document-search-profile"},
+      "setup_ms": {"type": "number", "minimum": 0, "description": "Query analysis and read-only database opening."},
+      "integrity_ms": {"type": "number", "minimum": 0, "description": "Saved index metadata reads and revision calculation; canonical files are not checked by search."},
+      "index_update_ms": {"type": "number", "minimum": 0, "description": "Read-only transaction completion; search does not update the index."},
+      "sql_ms": {"type": "number", "minimum": 0, "description": "Result count, SQL preparation, ranking, deduplication ordering and stepping the result cursor."},
+      "response_ms": {"type": "number", "minimum": 0},
+      "other_ms": {"type": "number", "minimum": 0},
+      "total_ms": {"type": "number", "minimum": 0}
+    }
+  },
+  "search-synonyms": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Explicit bidirectional project vocabulary groups; expansion applies to whole whitespace-delimited query terms only, without recursion.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["schema_version", "groups"],
+    "properties": {
+      "schema_version": {"const": "1"},
+      "groups": {
+        "type": "array", "maxItems": 1000,
+        "items": {
+          "type": "array", "minItems": 2, "maxItems": 16, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^\\S+$"}
+        }
+      }
+    }
+  },
+  "search-state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object", "additionalProperties": false,
+    "required": ["source_sha256", "source_current", "source_missing", "reviewed", "content_differs_from_extraction", "content_sha256"],
+    "properties": {
+      "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "source_current": {"type": "boolean"},
+      "source_missing": {"type": "boolean"},
+      "reviewed": {"type": "boolean"},
+      "content_differs_from_extraction": {"type": "boolean"}
+    }
+  },
+  "search-passage": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Searchable extraction fragment. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.",
+    "type": "object", "additionalProperties": false,
+    "required": ["document_id", "source_path", "extraction_sha256", "kind", "title", "text", "sources", "context", "structure_reviewed"],
+    "properties": {
+      "document_id": {"type": "string"},
+      "source_path": {"type": "string"},
+      "extraction_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "kind": {"enum": ["row", "block", "comment", "drawing", "ocr"]},
+      "title": {"type": "string"},
+      "text": {"type": "string"},
+      "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+      "context": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+      "structure_reviewed": {"type": "boolean"}
+    },
+    "$defs": {
+      "source": {
+        "type": "object", "additionalProperties": false,
+        "required": ["pointer", "sheet", "address", "position", "text", "start", "end"],
+        "properties": {
+          "pointer": {"type": "string"}, "sheet": {"type": "string"},
+          "address": {"type": "string"},
+          "position": {"type": ["object", "null"]},
+          "text": {"type": "string"},
+          "start": {"type": "integer", "minimum": 0},
+          "end": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

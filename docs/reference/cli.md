@@ -43,7 +43,7 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 通常の応答は改行を含め最大16 KiB、各一覧項目は約2 KiB。大きなフィールドは値を切り詰めずフィールドごと省略し、`omitted_fields` にその名前を列挙する。項目の `index` は全体での0始まりの位置。オブジェクト全体を表示できない場合は `omitted: true` と元のJSONバイト数を返す。これは元データの空値やnullではない。ページが最終でも、値が省略されていれば全内容を確認したことにはならない。
 
-完全な差分は `documents diff ... --out <新規JSONパス>` で保存でき、保存応答には `report` を返す。JSONファイルは従来の `comparisons[].changes` 形式で、値の省略やページングはしない。`--format markdown` は `--out` との併用だけに対応する。
+完全な差分は `documents diff ... --out <新規JSONパス>` で保存でき、保存応答には `report` を返す。JSONファイルは `comparisons[].changes` 形式で、値の省略やページングはしない。`--format markdown` は `--out` との併用だけに対応する。
 
 `--full` はサイズ制限とページングを解除する明示的な選択で、`--limit/--offset` とは併用できない。読み取り操作で必要な場合に使い、巨大な結果はファイルへリダイレクトする。record/review/import/adopt/exportの書き込みを、応答の再取得のために繰り返してはならない。保存された証跡・本文・reportを読む。exportの書き込み応答はページを返さず、`--out` と `--limit/--offset` の併用を拒否する。
 

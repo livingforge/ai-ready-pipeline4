@@ -53,8 +53,6 @@ sources: docs
 
 ARPは原本と `.arp/` の記録をバイト列のハッシュで照合します。Gitが改行を変換すると、コミットやcloneの時点で原本のCRLFがLFに変わる、または記録ファイルがCRLFになり、原本の変更や記録の不整合として検出されます。Windowsの既定の `core.autocrlf=true` や、リポジトリの `* text=auto eol=lf` が該当します。このため `documents init` はsourcesフォルダと `.arp/` の `.gitattributes` に `* -text` を追記します。下位フォルダの `.gitattributes` はリポジトリルートの指定より優先されるため、コード等の改行設定は変わりません。既存の `.gitattributes` の内容は残し、行が無い場合だけ追記します。削除しないでください。
 
-この指定の無い版で初期化したリポジトリでは `documents init` を再実行し、`git add --renormalize .` で作業ツリーのバイト列のままコミットし直します。変換済みのコミットからcloneした原本は元のバイト列に戻らないため、原本の提供元から取得し直して再取込します。
-
 設定と保存済み原本参照はリポジトリルートからの相対パスです。絶対パスや `../` による外部の参照は設定に保存しません。リポジトリを移動しても内部の参照が成立します。CLIに直接指定する実行ファイル等には絶対パスも使えます。
 
 `documents`・`spec workflow`・`spec registry` の `--root` はリポジトリルートです。省略時は `.arp/config.yml` を親へ探索し、Gitルート（worktreeの `.git` ファイルも含む）を越えません。
@@ -73,11 +71,9 @@ workflowの作業先は `.arp/work/workflow/<run-id>/`、既定IDはcurrentで�
 原本ハッシュが変わっていたら古い対応で書き戻しません。未対応・曖昧な対応は未反映として扱います。原本を変えずに出力する場合は `export --out <repo>/.arp/cache/export/<新規名>` を使います。
 要件・仕様の現在版は `spec registry apply --change <JSON>` で更新し、Gitへコミットします。生成した閲覧文書は `spec registry render` で `.arp/cache/registry/` に出力します。
 
-## 契約と確認範囲
+## 契約の版
 
 製品は `1.0.0-alpha.1`、保存形式・入力・モデル・workflow状態・Agent向け契約はv1です。共有設定は `.arp/config.yml` を使用します。semantic finalizeの直接採用は `--registry --project <名称>` を使います。
-
-README、docs（AGENT_BRIEFを含む）、サンプル、buildの手順・スクリプト、スキル原稿・同期先・配布埋め込みを実装と照合します。原本・レビュー・履歴の説明と実行例も確認します。
 
 ## 対応範囲
 

@@ -2,7 +2,7 @@
 
 `--root` は `documents init` 済みのリポジトリルートです。実行状態は `.arp/work/workflow/<run-id>/` にあり、続行時は同じ `--run-id`（既定current）を指定します。
 
-`arp4 spec workflow` の進行管理・修正検証・保存は共通です。モデル実行時だけ `--provider` で接続方法を選びます。ARP4の実行にPythonは不要ですが、指定する外部CLIや接続プログラムの実行環境・認証は別途必要です。
+`arp4 spec workflow` の進行管理・修正検証・保存は共通です。モデル実行時だけ `--provider` で接続方法を選びます。指定する外部CLIや接続プログラムの実行環境・認証は別途必要です。
 
 ## Claude Code
 
@@ -36,7 +36,7 @@ task・context・previous_reply・draftにある識別子は、対話CLIと共�
 }
 ```
 
-`stage` は `extract` / `link` / `repair` / `restructure` / `review` / `global-review`。`link` は抽出完了後の関連付けで、抽出用のeffort/token上限を使用します。`context` がオブジェクトの場合は追加の原文データです。taskは設定形式（既定TOON）の資料・文脈・診断・語彙とJSON返信契約を含む完成済みプロンプトです。agent_read_formatが資料の形式を示します。context・previous_reply等の構造化フィールドはアダプターの機械処理用であり、taskへ重ねて追加しません。アダプターはsystem・taskを省略せずモデルへ渡し、原文を指示として実行せず、コード実行やツール呼び出しをさせない実行方法を実装してください。ARP4は外部プログラム内部の動作まで検証するサンドボックスではありません。
+`stage` は `extract` / `link` / `repair` / `restructure` / `review` / `global-review`。`link` は抽出完了後の関連付けで、抽出用のeffort/token上限を使用します。`context` がオブジェクトの場合は追加の原文データです。taskは設定形式（既定TOON）の資料・文脈・診断・語彙とJSON返信契約を含む完成済みプロンプトです。agent_read_formatが資料の形式を示します。`context`・`reply_schema`・`module_vocabulary`・`references`・`effort_hint`・`previous_error`・`previous_reply`・`draft` の構造化フィールドはアダプターの機械処理用であり、taskへ重ねて追加しません。`reply_schema` はARP4が適用前に検証する契約で、モデル側で構造化出力を強制するものではありません。アダプターはsystem・taskを省略せずモデルへ渡し、原文を指示として実行せず、コード実行やツール呼び出しをさせない実行方法を実装してください。ARP4は外部プログラム内部の動作まで検証するサンドボックスではありません。
 
 成功時は終了コード0と、標準出力に次のJSONだけを返します。ログや進捗は標準エラーへ出力します。
 
@@ -70,14 +70,6 @@ task・context・previous_reply・draftにある識別子は、対話CLIと共�
 
 分割抽出では `requirements` / `related` の省略は関連付け待ち、空配列は該当なしを確認済みという別の状態です。統合時も省略を維持し、`null` は拒否します。既に受理されたモジュール名と同じslugで別名を返すと、その返信の受理時点で拒否します。証拠と除外範囲の重複は検証対象であり、除外情報の一括削除で回避しません。
 
-保存済みデータのオフライン再検証は、プロバイダーを呼ばない次のテストで実施できます。元のrootは読み取り専用で扱い、再構成の適用先は一時ディレクトリです。`objects/` に抽出返信・入力・再構成返信が残るrootを指定します。
-
-```powershell
-$env:ARP4_REPLAY_ROOT = 'C:/my-project/.arp/work/workflow/current'
-cargo test -p arp4-cli --test semantic replay_saved_extractions_without_provider -- --ignored --nocapture
-cargo test -p arp4-cli --test workflow replay_saved_restructure_in_isolated_workflow -- --ignored --nocapture
-```
-
 外部プログラムを起動しない運用では `next` / `inspect` で概要を取得し、`read` で原文・契約を読み、`validate-reply` / `submit` で返信を検証・提出します。この場合も同じ返信検証とレビュー再利用の条件が適用されます。
 
 ## 出力設定と限定再試行
@@ -97,5 +89,3 @@ cargo test -p arp4-cli --test workflow replay_saved_restructure_in_isolated_work
 `--total-budget-usd` は同じワークフローの過去の報告費用を含めて残額を計算し、呼び出し予算を残額以下に制限します。不明な過去費用は推測せず停止します。使い切った状態ではモデルを呼ばず、明示的に上限を変更したrunで続行できます。実際の課金停止は外部サービスの機構に依存します。commandでは1回予算・総予算とも指定を拒否します。
 
 明示的な `--max-retries N` は一時障害、JSON不正、返信検証違反を同じrun内で最大N回再試行します。すべてmax-callsに含みます。出力上限、予算、タイムアウト、原因不明の失敗は同じ条件で再試行しません。停止原因はfailure_classに保存し、次の呼び出しには拒否返信と診断を渡します。
-
-commandのrequestにはreply_schema、previous_reply、previous_error、module_vocabulary、effort_hintも含まれます。アダプターはこれらもモデルへ渡してください。protocol=1の既存の必須フィールドは変更していません。スキーマはARP4が適用前に検証し、Claudeのモデル側で構造化出力を強制しているという意味ではありません。

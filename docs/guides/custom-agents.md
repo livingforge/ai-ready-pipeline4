@@ -44,7 +44,3 @@
 対応形式の根拠: [Codex custom agents](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[Claude Code subagents](https://code.claude.com/docs/en/sub-agents)、[GitHub custom agents](https://docs.github.com/en/copilot/reference/custom-agents-configuration)、[VS Code subagents](https://code.visualstudio.com/docs/agents/run/subagents)。
 
 効率の比較では同じ入力・モデル・監査範囲を使い、経過時間、Agent起動数、ホストの総トークン/費用、拒否と修正・再レビューの往復を記録します。CLIへ提出されたusageとホスト全体の消費は区別し、未計測をゼロ扱いしません。
-
-2026-09-23の確認では、Windowsでinstallation/workflowの78テストが成功し、保存済み実行データを必要とする1テストは未実施です。生成物の整合、Agent定義のTOML/YAML構文、スキル検証、配布入力を確認しました。独立した机上検証ではレビュー20件・担当枠2・提出拒否・修正指摘を使い、再開可能/非対応の両方を確認しました。各ホストでの実際のAgent呼出し、実案件の時間・トークン削減率は未検証です。
-
-2026-09-24の構成見直しでは、Windowsのinstallationテスト15件、3ホスト分のスキル6件の検証、ローカル参照リンク36件、Agent定義6件のTOML/YAML構文、sync_docsの整合、互換方針、配布入力を確認しました。独立した机上評価では本体コード開発・取り込みのみ・25件のレビューと担当枠2・再開非対応ホストでの提出拒否・修正上限到達を扱いました。提出拒否の訂正と残件停止の境界を明確にし、再評価で整合を確認しました。実案件での抽出精度や時間・トークン削減率を測定したものではありません。
