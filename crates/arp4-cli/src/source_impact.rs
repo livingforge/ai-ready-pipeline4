@@ -193,6 +193,38 @@ fn attach_entries(
         changes.push(json!({"path":"/registry/evidence","kind":"stale_evidence","before":[],"after":[],
             "review_required":true,"correspondence":"requires_confirmation","affected_entries":stale}));
     }
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let mut by_heading: BTreeMap<String, Vec<&Unit>> = BTreeMap::new();
+    if changes.iter().any(|change| {
+        change["review_required"] == true
+            && (change["before"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty())
+                || change["after"]
+                    .as_array()
+                    .is_some_and(|values| !values.is_empty()))
+    }) {
+        for unit in old {
+            if let Some(headings) = unit.position["headings"].as_array() {
+                for length in 0..=headings.len() {
+                    by_heading
+                        .entry(serde_json::to_string(&headings[..length])?)
+                        .or_default()
+                        .push(unit);
+                }
+            }
+        }
+    }
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, entry) in &registry.entries {
+        if !matches!(entry.status, crate::registry::Status::Retired) {
+            for target in entry.requirements.iter().chain(&entry.related) {
+                dependents.entry(target).or_default().push(id);
+            }
+        }
+    }
     for change in changes {
         let mut affected: BTreeSet<String> = if change["kind"] == "stale_evidence" {
             array(&change["affected_entries"])?
@@ -208,19 +240,14 @@ fn attach_entries(
             .collect::<Result<_>>()?;
         if change["review_required"] == true {
             // New or changed content also calls for review of claims in the same section.
-            for unit in old {
-                if array(&change["after"])?
-                    .iter()
-                    .chain(array(&change["before"])?)
-                    .any(|c| {
-                        unit.position["headings"].as_array().is_some_and(|h| {
-                            c["position"]["headings"]
-                                .as_array()
-                                .is_some_and(|scope| h.starts_with(scope))
-                        })
-                    })
+            for candidate in array(&change["after"])?
+                .iter()
+                .chain(array(&change["before"])?)
+            {
+                if let Some(scope) = candidate["position"]["headings"].as_array()
+                    && let Some(units) = by_heading.get(&serde_json::to_string(scope)?)
                 {
-                    ids.insert(unit.id.clone());
+                    ids.extend(units.iter().map(|unit| unit.id.clone()));
                 }
             }
         }
@@ -230,21 +257,14 @@ fn attach_entries(
             }
         }
         let direct = affected.clone();
-        loop {
-            let size = affected.len();
-            for (id, entry) in &registry.entries {
-                if !matches!(entry.status, crate::registry::Status::Retired)
-                    && entry
-                        .requirements
-                        .iter()
-                        .chain(&entry.related)
-                        .any(|r| affected.contains(r))
-                {
-                    affected.insert(id.clone());
+        let mut pending: Vec<String> = affected.iter().cloned().collect();
+        while let Some(id) = pending.pop() {
+            if let Some(entries) = dependents.get(id.as_str()) {
+                for entry in entries {
+                    if affected.insert((*entry).to_owned()) {
+                        pending.push((*entry).to_owned());
+                    }
                 }
-            }
-            if size == affected.len() {
-                break;
             }
         }
         change["affected_entries"] = json!(affected);

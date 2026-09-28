@@ -44,7 +44,9 @@ pub fn requirements(extraction: &Value) -> Result<Vec<String>> {
 /// Three or more shapes on a sheet are diagram candidates. Their actual relationship
 /// must be checked by the reader; disconnected DrawingML does not prove independence.
 pub fn visuals(extraction: &Value) -> Result<Vec<Value>> {
-    if !crate::document_source::is_excel(&extension(extraction)) {
+    if !crate::document_source::is_excel(&extension(extraction))
+        && !crate::document_source::WORD_FORMATS.contains(&extension(extraction).as_str())
+    {
         return Ok(vec![]);
     }
     let minimum = policy()["diagram_min_shapes"].as_u64().unwrap() as usize;
@@ -111,6 +113,24 @@ pub fn visuals(extraction: &Value) -> Result<Vec<Value>> {
         }
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod word_image_tests {
+    use super::*;
+
+    #[test]
+    fn imported_word_image_requires_visual_review() {
+        let extraction = json!({
+            "source":{"path":"docs/illustrated.docx"},
+            "sheets":[{"name":"document"}],
+            "assets":[{"path":"image-001.png","ocr":{"status":"available","text":"label","reason":"Windows OCR"}}]
+        });
+        let found = visuals(&extraction).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["sources"], json!(["/assets/0"]));
+        assert_eq!(found[0]["ocr"]["text"], "label");
+    }
 }
 
 pub fn validate_visuals(extraction: &Value, value: &Value) -> Result<Vec<Value>> {

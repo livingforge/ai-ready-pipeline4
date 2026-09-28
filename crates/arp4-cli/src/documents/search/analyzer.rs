@@ -63,8 +63,25 @@ pub(super) struct Query {
     pub groups: Vec<Vec<String>>,
 }
 
+pub(super) fn dictionary(path: Option<&Path>) -> Result<Vec<Vec<String>>> {
+    let dictionary = if let Some(path) = path {
+        read(path, Some("search-synonyms"))?
+    } else {
+        serde_json::json!({"groups":[]})
+    };
+    array(&dictionary["groups"])?
+        .iter()
+        .map(|group| {
+            array(group)?
+                .iter()
+                .map(|v| Ok(normalize(string(v)?)))
+                .collect()
+        })
+        .collect()
+}
+
 impl Query {
-    pub fn new(text: &str, synonyms: Option<&Path>) -> Result<Self> {
+    pub fn new(text: &str, dictionary: &[Vec<String>]) -> Result<Self> {
         let normalized = normalize(text);
         ensure!(
             !normalized.is_empty() && normalized.chars().count() <= 256,
@@ -74,24 +91,10 @@ impl Query {
             normalized.chars().any(char::is_alphanumeric),
             "search query must contain letters or numbers"
         );
-        let dictionary = if let Some(path) = synonyms {
-            read(path, Some("search-synonyms"))?
-        } else {
-            serde_json::json!({"groups":[]})
-        };
-        let dictionary: Vec<Vec<String>> = array(&dictionary["groups"])?
-            .iter()
-            .map(|group| {
-                array(group)?
-                    .iter()
-                    .map(|v| Ok(normalize(string(v)?)))
-                    .collect()
-            })
-            .collect::<Result<_>>()?;
         let mut groups = vec![];
         for term in normalized.split_whitespace() {
             let mut group = BTreeSet::from([term.to_owned()]);
-            for synonyms in &dictionary {
+            for synonyms in dictionary {
                 if synonyms.iter().any(|s| s == term) {
                     group.extend(synonyms.iter().cloned());
                 }

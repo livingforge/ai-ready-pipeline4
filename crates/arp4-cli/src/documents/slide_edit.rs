@@ -130,19 +130,7 @@ impl Store {
                 .and_then(|sheet| sheet["page"].as_str())
                 .map(str::to_owned)
         };
-        // Content pages by file name.
-        let mut pages = BTreeMap::new();
-        for (name, path) in self.logical(&dir)? {
-            if name.starts_with("content/") {
-                pages.insert(name, read(&path, Some("content"))?);
-            }
-        }
-        let file_of = |page: &str| {
-            pages
-                .iter()
-                .find(|(_, value)| value["page_id"] == page)
-                .map(|(name, _)| name.clone())
-        };
+        let file_of = |page: &str| inspected.page_files.get(page).cloned();
         let mut planned = Planned::new();
         let mut added = vec![];
         let mut removed = vec![];
@@ -196,11 +184,11 @@ impl Store {
                     let file = file_of(&source_page)
                         .with_context(|| format!("{source} has no content page {source_page}"))?;
                     let page_id = page_of(&after, &name).context("inserted page missing")?;
-                    let mut page = pages[&file].clone();
+                    let mut page = read(&under(&dir, &file)?, Some("content"))?;
                     page["page_id"] = json!(page_id);
                     page["title"] = json!(name);
                     let target = format!("content/{name}.yml");
-                    if pages.contains_key(&target) {
+                    if under(&dir, &target)?.exists() {
                         return Err(rejection(
                             "page_exists",
                             format!("{target} already exists; choose another --id"),

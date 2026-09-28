@@ -223,6 +223,11 @@ pub fn review_packet_selected(
         .collect::<Vec<_>>();
     let mut relevant_documents: BTreeSet<String> =
         rows.iter().map(|s| s.document.clone()).collect();
+    let source_documents: BTreeMap<_, _> = input
+        .sources
+        .iter()
+        .map(|source| (source.id.as_str(), source.document.as_str()))
+        .collect();
     relevant_documents.extend(
         input
             .sources
@@ -254,10 +259,10 @@ pub fn review_packet_selected(
         .filter(|i| target_ids.contains(&i.id))
         .map(|i| {
             for id in item_source_ids(i) {
-                if let Some(s) = input.sources.iter().find(|s| s.id == id) {
-                    relevant_documents.insert(s.document.clone());
-                    if !aliases.contains_key(&s.id) {
-                        external.insert(s.id.clone());
+                if let Some(&document) = source_documents.get(id.as_str()) {
+                    relevant_documents.insert(document.to_owned());
+                    if !aliases.contains_key(&id) {
+                        external.insert(id);
                     }
                 }
             }
@@ -302,11 +307,6 @@ pub fn review_packet_selected(
         })
         .collect();
     let warnings = relevant_warnings(input, &relevant_documents);
-    let source_documents: BTreeMap<_, _> = input
-        .sources
-        .iter()
-        .map(|source| (source.id.as_str(), source.document.as_str()))
-        .collect();
     let warning_documents: BTreeSet<_> = input
         .warnings
         .iter()

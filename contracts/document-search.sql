@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS metadata (
     signature TEXT NOT NULL,
     failed TEXT NOT NULL,
-    refreshed_unix INTEGER NOT NULL
+    refreshed_unix INTEGER NOT NULL,
+    corpus_revision TEXT NOT NULL,
+    indexed_documents INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS passages (
     id INTEGER PRIMARY KEY,
@@ -17,6 +19,7 @@ CREATE TABLE IF NOT EXISTS passages (
     title TEXT NOT NULL,
     body TEXT NOT NULL,
     context TEXT NOT NULL,
+    repetition_group INTEGER NOT NULL,
     identifiers TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS passages_document ON passages(document);

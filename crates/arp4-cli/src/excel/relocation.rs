@@ -234,6 +234,12 @@ fn relocate_table(
     let positions = (first_column..=last_column)
         .map(|column| Ok(map_span(column, column, own, false)?.map(|(p, _)| p)))
         .collect::<Result<Vec<_>>>()?;
+    let mut position_index = BTreeMap::new();
+    for (index, position) in positions.iter().enumerate() {
+        if let Some(column) = position {
+            position_index.entry(*column).or_insert(index);
+        }
+    }
     let mut names: BTreeSet<String> = old
         .iter()
         .zip(&positions)
@@ -282,7 +288,7 @@ fn relocate_table(
     }
     let mut inner = String::new();
     for column in new_first_column..=new_last_column {
-        if let Some(index) = positions.iter().position(|p| *p == Some(column)) {
+        if let Some(&index) = position_index.get(&column) {
             // An existing column's name and totals label live in this part too,
             // already set to what is written over them (see `LabelEdits`).
             for (rows, row, label) in [

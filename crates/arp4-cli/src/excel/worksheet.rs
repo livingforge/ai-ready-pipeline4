@@ -6,10 +6,113 @@ pub(super) struct RowOutput {
     pub(super) cells: BTreeSet<u32>,
 }
 
+#[cfg(test)]
+mod efficiency_measurement {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn row_cell_insertion() {
+        let mut row = new_row(None, 1, "");
+        let start = Instant::now();
+        let cells = (1..=1_000)
+            .map(|column| {
+                (
+                    column,
+                    format!("<c r=\"{}1\"/>", column_name(column).unwrap()),
+                )
+            })
+            .collect();
+        row.insert_cells(cells).unwrap();
+        eprintln!("row_cell_insertion_ms={}", start.elapsed().as_millis());
+    }
+
+    #[test]
+    #[ignore]
+    fn range_anchor_shift() {
+        let operation = StructuralOperation {
+            sheet: "Sheet1".to_owned(),
+            id: "delete".to_owned(),
+            kind: OperationKind::DeleteRows,
+            at: 1,
+            count: 500_000,
+            style_from: None,
+        };
+        let start = Instant::now();
+        for _ in 0..10 {
+            assert_eq!(
+                anchor_shift("A1:A1048576", &[&operation]).unwrap(),
+                (500_000, 0)
+            );
+        }
+        eprintln!("range_anchor_shift_ms={}", start.elapsed().as_millis());
+    }
+
+    #[test]
+    fn inserted_cells_keep_column_order() {
+        let mut row = RowOutput {
+            number: 1,
+            raw: "<row r=\"1\"><c r=\"B1\"/><c r=\"D1\"/></row>".to_owned(),
+            cells: [2, 4].into(),
+        };
+        row.insert_cells(vec![
+            (5, "<c r=\"E1\"/>".to_owned()),
+            (1, "<c r=\"A1\"/>".to_owned()),
+            (3, "<c r=\"C1\"/>".to_owned()),
+        ])
+        .unwrap();
+        assert_eq!(
+            row.raw,
+            "<row r=\"1\"><c r=\"A1\"/><c r=\"B1\"/><c r=\"C1\"/><c r=\"D1\"/><c r=\"E1\"/></row>"
+        );
+    }
+
+    #[test]
+    fn anchor_shift_matches_individual_mapping() {
+        for first_kind in [OperationKind::InsertRows, OperationKind::DeleteRows] {
+            for second_kind in [OperationKind::InsertRows, OperationKind::DeleteRows] {
+                for first_at in 1..=7 {
+                    for second_at in 1..=7 {
+                        let first = StructuralOperation {
+                            id: "first".into(),
+                            sheet: "S".into(),
+                            kind: first_kind.clone(),
+                            at: first_at,
+                            count: 2,
+                            style_from: None,
+                        };
+                        let second = StructuralOperation {
+                            id: "second".into(),
+                            sheet: "S".into(),
+                            kind: second_kind.clone(),
+                            at: second_at,
+                            count: 2,
+                            style_from: None,
+                        };
+                        let operations = [&first, &second];
+                        let expected = (1..=8).find(|&index| {
+                            map_span(index, index, &operations, true).unwrap().is_some()
+                        });
+                        let actual = anchor_shift("A1:A8", &operations).unwrap();
+                        assert_eq!(
+                            actual.0,
+                            expected.map_or(0, |index| i64::from(index) - 1),
+                            "{first_kind:?} {first_at} {second_kind:?} {second_at}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl RowOutput {
-    /// Inserts a cell before the first cell of a later column; Excel requires
-    /// cells in column order.
-    pub(super) fn insert_cell(&mut self, cell: &str, column: u32) -> Result<()> {
+    /// Merge new cells into the row in column order with a single XML scan.
+    pub(super) fn insert_cells(&mut self, mut cells: Vec<(u32, String)>) -> Result<()> {
+        if cells.is_empty() {
+            return Ok(());
+        }
         static CELL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
             regex::Regex::new(r#"<(?:[A-Za-z_][\w.-]*:)?c\s[^>]*?\br\s*=\s*["']([A-Z]+)[0-9]+["']"#)
                 .unwrap()
@@ -19,15 +122,34 @@ impl RowOutput {
             let tag = element_tag(&self.raw)?.to_owned();
             self.raw = format!("{}></{tag}>", self.raw.trim_end_matches("/>").trim_end());
         }
-        let mut position = self.raw.rfind("</").context("row has no closing tag")?;
+        cells.sort_by_key(|(column, _)| *column);
+        let closing = self.raw.rfind("</").context("row has no closing tag")?;
+        let mut output = String::with_capacity(
+            self.raw.len() + cells.iter().map(|(_, cell)| cell.len()).sum::<usize>(),
+        );
+        let mut cursor = 0;
+        let mut pending = cells.into_iter().peekable();
         for captures in CELL.captures_iter(&self.raw) {
-            if column_number(&captures[1])? > column {
-                position = captures.get(0).unwrap().start();
-                break;
+            let existing_column = column_number(&captures[1])?;
+            let position = captures.get(0).unwrap().start();
+            output.push_str(&self.raw[cursor..position]);
+            while pending
+                .peek()
+                .is_some_and(|(column, _)| *column < existing_column)
+            {
+                let (column, cell) = pending.next().unwrap();
+                output.push_str(&cell);
+                self.cells.insert(column);
             }
+            cursor = position;
         }
-        self.raw.insert_str(position, cell);
-        self.cells.insert(column);
+        output.push_str(&self.raw[cursor..closing]);
+        for (column, cell) in pending {
+            output.push_str(&cell);
+            self.cells.insert(column);
+        }
+        output.push_str(&self.raw[closing..]);
+        self.raw = output;
         Ok(())
     }
 
@@ -482,12 +604,53 @@ fn anchor_shift(sqref: &str, operations: &[&StructuralOperation]) -> Result<(i64
         let Some((start, end)) = span else {
             return Ok(Some(1));
         };
-        for index in start..=end {
-            if map_span(index, index, operations, row)?.is_some() {
-                return Ok(Some(index));
+        // Original coordinates remain ordered. Track their surviving contiguous
+        // intervals and current positions through each structural operation.
+        let mut segments = vec![(start, end, u64::from(start))];
+        for operation in operations.iter().filter(|op| op.row_operation() == row) {
+            let mut next = Vec::with_capacity(segments.len() + 1);
+            let at = u64::from(operation.at);
+            let count = u64::from(operation.count);
+            for (original_start, original_end, current_start) in segments {
+                let current_end = current_start + u64::from(original_end - original_start);
+                if operation.insertion() {
+                    if at <= current_start {
+                        next.push((original_start, original_end, current_start + count));
+                    } else if at <= current_end {
+                        let split = original_start + (at - current_start) as u32;
+                        next.push((original_start, split - 1, current_start));
+                        next.push((split, original_end, at + count));
+                    } else {
+                        next.push((original_start, original_end, current_start));
+                    }
+                } else {
+                    let last = at + count - 1;
+                    if current_start < at {
+                        let left_end =
+                            original_start + (at.min(current_end + 1) - current_start) as u32 - 1;
+                        next.push((original_start, left_end, current_start));
+                    }
+                    if current_end > last {
+                        let right_start =
+                            original_start + (current_start.max(last + 1) - current_start) as u32;
+                        next.push((
+                            right_start,
+                            original_end,
+                            current_start.max(last + 1) - count,
+                        ));
+                    }
+                }
+            }
+            segments = next;
+            if segments.is_empty() {
+                break;
             }
         }
-        Ok(None)
+        let first = segments.first().map(|segment| segment.0);
+        if let Some(index) = first {
+            map_span(index, index, operations, row)?;
+        }
+        Ok(first)
     };
     for area in &areas {
         if let (Some(row), Some(column)) =

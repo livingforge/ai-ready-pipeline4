@@ -113,6 +113,161 @@ enum TextBackend {
 }
 
 impl Source {
+    /// Images in Word's media folder are kept as independently reviewable
+    /// assets. Their bytes are read from the original package only on import.
+    pub fn word_images(&self) -> Result<BTreeMap<String, Vec<u8>>> {
+        let Self::Text(doc) = self else {
+            return Ok(BTreeMap::new());
+        };
+        if !word(&doc.format) {
+            return Ok(BTreeMap::new());
+        }
+        let mut archive = zip::ZipArchive::new(Cursor::new(&doc.raw))?;
+        let mut images = BTreeMap::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index)?;
+            if !entry.name().starts_with("word/media/") || entry.is_dir() {
+                continue;
+            }
+            ensure!(
+                entry.size() <= 256 * 1024 * 1024,
+                "Word image exceeds size budget"
+            );
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            images.insert(entry.name().to_owned(), bytes);
+        }
+        let mut named = BTreeMap::new();
+        for (index, (part, bytes)) in images.into_iter().enumerate() {
+            let extension = Path::new(&part)
+                .extension()
+                .and_then(|s| s.to_str())
+                .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()))
+                .unwrap_or("bin");
+            named.insert(format!("image-{:03}.{extension}", index + 1), bytes);
+        }
+        Ok(named)
+    }
+
+    /// Word field instructions are read-only metadata, separate from the
+    /// displayed, possibly stale field results in the extraction cells.
+    pub fn word_field_codes(&self) -> Result<Vec<Value>> {
+        let Self::Text(doc) = self else {
+            return Ok(vec![]);
+        };
+        if !word(&doc.format) {
+            return Ok(vec![]);
+        }
+        let TextBackend::Office(parts) = &doc.backend else {
+            return Ok(vec![]);
+        };
+        let mut result = Vec::new();
+        for sheet in &doc.sheets {
+            let part = string(&sheet["part"])?;
+            let (text, _) = part_text(parts.get(part).context("missing Word part")?)?;
+            result.extend(word::extract_field_codes(&Document::parse(&text)?, part));
+        }
+        Ok(result)
+    }
+
+    /// Print-related Open XML elements with their source part. Keep the XML
+    /// fragment so settings not modeled by ARP remain visible and auditable.
+    pub fn print_settings(&self) -> Result<Vec<Value>> {
+        let mut result = Vec::new();
+        let parts = match self {
+            Self::Excel(book) => &book.parts,
+            Self::Text(doc) if word(&doc.format) => {
+                let TextBackend::Office(parts) = &doc.backend else {
+                    return Ok(result);
+                };
+                parts
+            }
+            _ => return Ok(result),
+        };
+        for (part, bytes) in parts {
+            let excel_workbook = part == "xl/workbook.xml";
+            let excel_sheet = part.starts_with("xl/worksheets/") && part.ends_with(".xml");
+            let word_part = part.starts_with("word/") && part.ends_with(".xml");
+            if !(excel_workbook || excel_sheet || word_part) {
+                continue;
+            }
+            let (text, _) = part_text(bytes)?;
+            let xml = Document::parse(&text)?;
+            for node in xml.descendants().filter(Node::is_element) {
+                let name = node.tag_name().name();
+                let relevant = if excel_workbook {
+                    name == "definedName"
+                        && matches!(
+                            node.attribute("name"),
+                            Some("_xlnm.Print_Area" | "_xlnm.Print_Titles")
+                        )
+                } else if excel_sheet {
+                    matches!(
+                        name,
+                        "printOptions"
+                            | "pageMargins"
+                            | "pageSetup"
+                            | "headerFooter"
+                            | "rowBreaks"
+                            | "colBreaks"
+                            | "pageSetUpPr"
+                    )
+                } else {
+                    name == "sectPr" && node.tag_name().namespace() == Some(WORD)
+                };
+                if relevant {
+                    result.push(json!({"part":part,"component":name,"xml":&text[node.range()]}));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Expose complete chart XML and its source formulas for read-only review.
+    /// Chart editing continues through Excel.
+    pub fn chart_parts(&self) -> Result<Vec<Value>> {
+        let Self::Excel(book) = self else {
+            return Ok(vec![]);
+        };
+        let mut result = Vec::new();
+        for (part, bytes) in &book.parts {
+            if !part.starts_with("xl/charts/") || !part.ends_with(".xml") {
+                continue;
+            }
+            let (text, _) = part_text(bytes)?;
+            let xml = Document::parse(&text)?;
+            let formulas: Vec<_> = xml
+                .descendants()
+                .filter(|n| n.is_element() && n.tag_name().name() == "f")
+                .filter_map(|n| n.text().map(str::to_owned))
+                .collect();
+            result.push(json!({"part":part,"formulas":formulas,"xml":text.as_ref()}));
+        }
+        Ok(result)
+    }
+
+    /// Binary controls and printer settings cannot be interpreted safely, but
+    /// their identity and hash are part of the source fidelity record.
+    pub fn opaque_parts(&self) -> Vec<Value> {
+        let Self::Excel(book) = self else {
+            return vec![];
+        };
+        book.parts
+            .iter()
+            .filter_map(|(part, bytes)| {
+                let lower = part.to_ascii_lowercase();
+                let kind = if lower.starts_with("xl/activex/") {
+                    "activex"
+                } else if lower.starts_with("xl/printersettings/") {
+                    "printer_settings"
+                } else {
+                    return None;
+                };
+                Some(json!({"part":part,"kind":kind,"sha256":hash(bytes)}))
+            })
+            .collect()
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let format = path
             .extension()
@@ -345,13 +500,13 @@ impl Source {
                 "UTF-8テキストを空行を含め行単位で抽出します。textのA1等は原本の行番号です。positionの行・UTF-8バイト範囲と原本ハッシュで出典を確認してください。原本を直接編集して同じ文書IDで再取込してください。確認用YAMLの本文変更・export/applyは未対応です。"
             }
             Self::Excel(_) => {
-                "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味、ActiveXコントロールの設定、印刷情報、グラフ内部の内容は未抽出です。"
+                "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味とActiveXコントロールの内部設定は未抽出です。印刷設定とグラフXMLは読み取り専用で抽出し、ActiveX部品はハッシュで記録します。"
             }
             Self::Text(doc) if doc.format == "pdf" => {
                 "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。画像・OCR・フォーム・注釈・Form XObject内の文字は未抽出です。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
             }
             Self::Text(doc) if word(&doc.format) => {
-                "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表し、入れ子の表は外側のセルの本文に含めます。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像・OCR・フィールド命令は未抽出です。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
+                "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表し、入れ子の表は外側のセルの本文に含めます。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
             }
             _ => {
                 "PPTXの各スライドの本文・表を段落と表のセル単位で抽出し、スライドのノートはスライドの後にnotes-N（Nはスライド番号）として抽出します。表の外の段落は図形をまたいでスライドの上から1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。セル内の段落は改行で表します。ノートのスライド番号・日付・ヘッダー・フッターはノートマスターから表示されるため抽出しません。書き戻しは変更箇所を含むrunだけを書き換え、段落内の改行・タブを追加・削除・置換できます。段落の分割・結合となる変更は拒否し、段落・表の行はdocuments rowsで追加・削除します。スライドはdocuments slidesで複製・削除でき、複製したスライドは操作IDの名前で本文を編集します。マスター・画像・OCR・グラフ内部の文字は未抽出です。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
@@ -2490,6 +2645,43 @@ mod tests {
         ];
         parts.extend(extra.iter().cloned());
         package(path, &parts);
+    }
+
+    #[test]
+    fn word_images_and_field_codes_are_importable_without_changing_body_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("illustrated.docx");
+        word_package(
+            &path,
+            BODY,
+            &[("word/media/image1.png", b"image bytes".to_vec())],
+        );
+        let source = Source::open(&path).unwrap();
+        assert_eq!(
+            source.word_images().unwrap()["image-001.png"],
+            b"image bytes"
+        );
+        assert_eq!(
+            source.word_field_codes().unwrap(),
+            ["DATE", "PAGE", "TOC"]
+                .map(|instruction| json!({"part":"word/document.xml","instruction":instruction}))
+        );
+        assert_eq!(source.sheets()[0]["cells"][0]["value"], "plain");
+    }
+
+    #[test]
+    fn word_section_print_settings_are_recorded_with_source_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("print.docx");
+        let body = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>"#
+        );
+        word_package(&path, &body, &[]);
+        let settings = Source::open(&path).unwrap().print_settings().unwrap();
+        assert_eq!(settings.len(), 1);
+        assert_eq!(settings[0]["part"], "word/document.xml");
+        assert_eq!(settings[0]["component"], "sectPr");
+        assert!(settings[0]["xml"].as_str().unwrap().contains("11906"));
     }
 
     #[test]

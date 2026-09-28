@@ -508,6 +508,43 @@ fn field_instructions(xml: &Document<'_>, hidden: &HiddenBranches) -> BTreeSet<u
     inside
 }
 
+/// Field codes are recorded for inspection, never treated as body text or
+/// edited through the document content mapping.
+pub(super) fn extract_field_codes(xml: &Document<'_>, part: &str) -> Vec<Value> {
+    let hidden = HiddenBranches::new(xml, "docx");
+    let mut result = Vec::new();
+    let mut open: Vec<(String, bool)> = Vec::new();
+    for node in xml.descendants().filter(|n| !hidden.contains(*n)) {
+        if word_element(node, "fldSimple") {
+            if let Some(instruction) = node.attribute((WORD, "instr")) {
+                result.push(json!({"part":part,"instruction":instruction}));
+            }
+        } else if word_element(node, "fldChar") {
+            match node.attribute((WORD, "fldCharType")) {
+                Some("begin") => open.push((String::new(), false)),
+                Some("separate") => {
+                    if let Some((_, separated)) = open.last_mut() {
+                        *separated = true;
+                    }
+                }
+                Some("end") => {
+                    if let Some((instruction, _)) = open.pop() {
+                        if !instruction.trim().is_empty() {
+                            result.push(json!({"part":part,"instruction":instruction}));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if word_element(node, "instrText") {
+            if let Some((instruction, false)) = open.last_mut() {
+                instruction.push_str(node.text().unwrap_or(""));
+            }
+        }
+    }
+    result
+}
+
 /// The content control bound to XML data (a cover page's title or author, for
 /// example) that shows `node`; Word refills it from that data on opening.
 pub(super) fn bound_control<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
@@ -1554,6 +1591,11 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("draws itself"), "{error}");
+        assert_eq!(
+            extract_field_codes(&xml, "word/document.xml"),
+            ["MERGEFIELD 性別", "IF  = \"男\" \"様\" \"殿\""]
+                .map(|instruction| json!({"part":"word/document.xml","instruction":instruction}))
+        );
         assert_eq!(
             edit(&layout.blocks[2], "03\u{2011}9999\u{f0fc}\t右")
                 .unwrap()

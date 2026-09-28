@@ -269,11 +269,28 @@ impl Store {
                 }
             }
         }
+        assets.extend(book.word_images()?);
         let asset_info: Vec<_> = assets
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
         let mut extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"sheets":[],"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        let field_codes = book.word_field_codes()?;
+        if !field_codes.is_empty() {
+            extraction["field_codes"] = json!(field_codes);
+        }
+        let print_settings = book.print_settings()?;
+        if !print_settings.is_empty() {
+            extraction["print_settings"] = json!(print_settings);
+        }
+        let chart_parts = book.chart_parts()?;
+        if !chart_parts.is_empty() {
+            extraction["chart_parts"] = json!(chart_parts);
+        }
+        let opaque_parts = book.opaque_parts();
+        if !opaque_parts.is_empty() {
+            extraction["opaque_parts"] = json!(opaque_parts);
+        }
         // Moved in rather than serialized again: the sheets hold every cell.
         extraction["sheets"] = Value::Array(book.sheets().into_owned());
         validate("extraction", &extraction)?;

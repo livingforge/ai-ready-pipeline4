@@ -4881,6 +4881,18 @@
         "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
         "type": "string"
       },
+      "field_codes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {"type": "string", "minLength": 1},
+            "instruction": {"type": "string"}
+          },
+          "required": ["part", "instruction"]
+        }
+      },
       "findings": {
         "items": {
           "additionalProperties": false,
@@ -4907,6 +4919,45 @@
       "parser": {
         "minLength": 1,
         "type": "string"
+      },
+      "print_settings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {"type": "string", "minLength": 1},
+            "component": {"type": "string", "minLength": 1},
+            "xml": {"type": "string", "minLength": 1}
+          },
+          "required": ["part", "component", "xml"]
+        }
+      },
+      "chart_parts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {"type": "string", "minLength": 1},
+            "formulas": {"type": "array", "items": {"type": "string"}},
+            "xml": {"type": "string", "minLength": 1}
+          },
+          "required": ["part", "formulas", "xml"]
+        }
+      },
+      "opaque_parts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {"type": "string", "minLength": 1},
+            "kind": {"enum": ["activex", "printer_settings"]},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          },
+          "required": ["part", "kind", "sha256"]
+        }
       },
       "schema_version": {
         "const": "1"

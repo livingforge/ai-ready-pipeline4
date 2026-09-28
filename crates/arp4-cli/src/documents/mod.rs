@@ -45,6 +45,8 @@ pub struct Inspection {
     pub mappings: Value,
     /// Content values by page, block and field.
     pub values: HashMap<(String, String, String), Value>,
+    /// Content file name by validated page ID.
+    pub page_files: BTreeMap<String, String>,
     pub fingerprint: String,
     pub reviewed: bool,
     pub source_current: bool,

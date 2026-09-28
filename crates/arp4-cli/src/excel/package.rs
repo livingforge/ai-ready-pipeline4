@@ -289,6 +289,24 @@ pub(crate) fn write_archive_without(
         output.write_all(bytes)?;
     }
     output.finish()?.sync_all()?;
+    // Every untouched member, including print settings, ActiveX binaries,
+    // charts and media, must survive the package rewrite unchanged.
+    let mut written = ZipArchive::new(fs::File::open(destination)?)?;
+    for index in 0..source.len() {
+        let original = source.by_index(index)?;
+        let name = original.name();
+        if patched.contains_key(name) || removed.contains(name) {
+            continue;
+        }
+        let copy = written.by_name(name)?;
+        ensure!(
+            original.crc32() == copy.crc32()
+                && original.size() == copy.size()
+                && original.compressed_size() == copy.compressed_size()
+                && original.compression() == copy.compression(),
+            "unchanged Office part was not preserved: {name}"
+        );
+    }
     Ok(())
 }
 

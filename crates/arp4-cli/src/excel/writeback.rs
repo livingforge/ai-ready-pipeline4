@@ -390,18 +390,24 @@ impl Workbook {
                 patched.entry(part).or_insert_with(|| text.into_bytes());
             }
         }
+        let mut operations_by_sheet: BTreeMap<&str, Vec<StructuralOperation>> = BTreeMap::new();
+        for operation in &operations {
+            operations_by_sheet
+                .entry(&operation.sheet)
+                .or_default()
+                .push(operation.clone());
+        }
+        let mut changes_by_sheet: BTreeMap<String, BTreeMap<(u32, u32), Value>> = BTreeMap::new();
+        for ((sheet, row, column), value) in change_map {
+            changes_by_sheet
+                .entry(sheet)
+                .or_default()
+                .insert((row, column), value);
+        }
         for sheet in &self.sheets {
             let name = string(&sheet["name"])?;
-            let sheet_operations: Vec<_> = operations
-                .iter()
-                .filter(|operation| operation.sheet == name)
-                .cloned()
-                .collect();
-            let sheet_changes: BTreeMap<(u32, u32), Value> = change_map
-                .iter()
-                .filter(|((sheet_name, _, _), _)| sheet_name == name)
-                .map(|((_, row, column), value)| ((*row, *column), value.clone()))
-                .collect();
+            let sheet_operations = operations_by_sheet.remove(name).unwrap_or_default();
+            let sheet_changes = changes_by_sheet.remove(name).unwrap_or_default();
             let part = string(&sheet["part"])?;
             let part_text = std::str::from_utf8(&self.parts[part])?;
             let edited = formula_edits
@@ -504,6 +510,7 @@ impl Workbook {
             }
             for row in &mut rows {
                 let mut existing = row.cells.clone();
+                let mut additions = Vec::new();
                 for ((_, change_column), value) in
                     sheet_changes.range((row.number, 0)..=(row.number, u32::MAX))
                 {
@@ -512,10 +519,10 @@ impl Workbook {
                     }
                     let address = format!("{}{}", column_name(*change_column)?, row.number);
                     let style = formats.style(row, *change_column);
-                    row.insert_cell(
-                        &render_new_cell(&address, value, &prefix, style.as_deref())?,
+                    additions.push((
                         *change_column,
-                    )?;
+                        render_new_cell(&address, value, &prefix, style.as_deref())?,
+                    ));
                     existing.insert(*change_column);
                 }
                 for ((formula_row, formula_column), formula) in table_formulas
@@ -534,7 +541,7 @@ impl Workbook {
                         row.number,
                         xml_attr(formula)
                     );
-                    row.insert_cell(&cell, formula_column)?;
+                    additions.push((formula_column, cell));
                     existing.insert(formula_column);
                 }
                 for (column, style) in formats.template_cells(row.number) {
@@ -551,9 +558,10 @@ impl Workbook {
                         row.number,
                         xml_attr(style)
                     );
-                    row.insert_cell(&cell, column)?;
+                    additions.push((column, cell));
                     existing.insert(column);
                 }
+                row.insert_cells(additions)?;
             }
             let used = used_range(&rows);
             rows.sort_by_key(|row| row.number);
@@ -660,6 +668,51 @@ fn cells_by_address(book: &Workbook) -> BTreeMap<(&str, &str), &Cell> {
         }
     }
     cells
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    use std::{hint::black_box, time::Instant};
+
+    #[test]
+    #[ignore = "manual sheet change partition performance measurement"]
+    fn measure_sheet_change_partition() {
+        let names: Vec<_> = (0..200).map(|sheet| format!("S{sheet}")).collect();
+        let changes: BTreeMap<_, _> = names
+            .iter()
+            .flat_map(|sheet| (1..=100).map(move |row| ((sheet.clone(), row, 1), json!(row))))
+            .collect();
+        let mut original = Vec::new();
+        let mut optimized = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            let mut old = BTreeMap::new();
+            for name in &names {
+                let sheet_changes: BTreeMap<(u32, u32), Value> = changes
+                    .iter()
+                    .filter(|((sheet_name, _, _), _)| sheet_name == name)
+                    .map(|((_, row, column), value)| ((*row, *column), value.clone()))
+                    .collect();
+                old.insert(name.clone(), sheet_changes);
+            }
+            original.push(start.elapsed().as_secs_f64() * 1000.0);
+            let owned = changes.clone();
+            let start = Instant::now();
+            let mut new: BTreeMap<String, BTreeMap<(u32, u32), Value>> = BTreeMap::new();
+            for ((sheet, row, column), value) in owned {
+                new.entry(sheet).or_default().insert((row, column), value);
+            }
+            optimized.push(start.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(black_box(old), black_box(new));
+        }
+        original.sort_by(f64::total_cmp);
+        optimized.sort_by(f64::total_cmp);
+        eprintln!(
+            "sheet_partition_original_ms={:.3} optimized_ms={:.3}",
+            original[2], optimized[2]
+        );
+    }
 }
 
 /// Merged and computed ranges of each sheet, parsed once for all changes.

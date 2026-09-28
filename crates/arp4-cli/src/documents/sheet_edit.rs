@@ -130,10 +130,20 @@ impl<'a> Sheet<'a> {
     /// the recorded operations; 0 on an empty sheet.
     fn last(&self, rows: bool) -> Result<u32> {
         let mut last = 0;
-        for (column, cells) in &self.cells {
-            for row in cells.keys() {
-                let position = if rows { *row } else { *column };
-                if let Some(placed) = self.placed(position, rows)? {
+        if rows {
+            let occupied: BTreeSet<u32> = self
+                .cells
+                .values()
+                .flat_map(|cells| cells.keys().copied())
+                .collect();
+            for row in occupied {
+                if let Some(placed) = self.placed(row, true)? {
+                    last = last.max(placed);
+                }
+            }
+        } else {
+            for &column in self.cells.keys() {
+                if let Some(placed) = self.placed(column, false)? {
                     last = last.max(placed);
                 }
             }
@@ -543,18 +553,18 @@ impl Store {
         let date1904 = matches!(&book, Source::Excel(workbook) if workbook.date1904);
         let plan = plan(&sheet, edit, &op_id, date1904)?;
 
-        // Content pages by file name; the edited ones are written back.
+        // Inspection already resolved page IDs to files. Only read pages this
+        // operation may change or needs for its preview.
         let mut pages = BTreeMap::new();
-        for (name, path) in self.logical(&dir)? {
-            if name.starts_with("content/") {
-                pages.insert(name, read(&path, Some("content"))?);
-            }
-        }
-        let page_name = pages
-            .iter()
-            .find(|(_, page)| page["page_id"] == sheet.page.as_str())
-            .map(|(name, _)| name.clone())
+        let page_name = inspected
+            .page_files
+            .get(&sheet.page)
+            .cloned()
             .context("the sheet has no content page")?;
+        pages.insert(
+            page_name.clone(),
+            read(&under(&dir, &page_name)?, Some("content"))?,
+        );
         let mut new_values = prior_values.to_vec();
         new_values.push(plan.operation.clone());
         let operations = excel::parse_operations(&new_values, sheets)?;
@@ -576,11 +586,14 @@ impl Store {
 
         let mut changed = BTreeSet::new();
         for (page, block, row, column) in deleted_content(&inspected, &sheet, &operations)? {
-            let name = pages
-                .iter()
-                .find(|(_, value)| value["page_id"] == page.as_str())
-                .map(|(name, _)| name.clone())
+            let name = inspected
+                .page_files
+                .get(&page)
+                .cloned()
                 .context("content page missing")?;
+            if !pages.contains_key(&name) {
+                pages.insert(name.clone(), read(&under(&dir, &name)?, Some("content"))?);
+            }
             let rows = pages.get_mut(&name).unwrap()["blocks"][&block]["rows"]
                 .as_object_mut()
                 .context("content rows missing")?;
@@ -1089,6 +1102,86 @@ fn neighbors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual content page lookup performance measurement"]
+    fn measure_content_page_lookup() {
+        use std::{hint::black_box, time::Instant};
+
+        let pages: BTreeMap<_, _> = (0..200)
+            .map(|index| {
+                (
+                    format!("content/{index:03}.yml"),
+                    json!({"page_id":format!("sheet-{index}")}),
+                )
+            })
+            .collect();
+        let page_names: BTreeMap<_, _> = pages
+            .iter()
+            .map(|(name, value)| (value["page_id"].as_str().unwrap().to_owned(), name.clone()))
+            .collect();
+        let requests: Vec<_> = (0..2_000).map(|_| "sheet-199").collect();
+        let start = Instant::now();
+        for page in &requests {
+            black_box(
+                pages
+                    .iter()
+                    .find(|(_, value)| value["page_id"] == *page)
+                    .unwrap()
+                    .0,
+            );
+        }
+        let scan = start.elapsed();
+        let start = Instant::now();
+        for page in &requests {
+            black_box(page_names.get(*page).unwrap());
+        }
+        eprintln!(
+            "content_page_scan_ms={} indexed_ms={}",
+            scan.as_millis(),
+            start.elapsed().as_millis()
+        );
+    }
+
+    #[test]
+    #[ignore = "manual sheet position performance measurement"]
+    fn measure_last_occupied_row() {
+        use std::{hint::black_box, time::Instant};
+
+        let value = json!(1);
+        let cells: BTreeMap<_, _> = (1..=20)
+            .map(|column| (column, (1..=2000).map(|row| (row, &value)).collect()))
+            .collect();
+        let sheet = Sheet {
+            name: "S",
+            page: "sheet-1".to_owned(),
+            operations: &[],
+            cells,
+        };
+        let mut original = Vec::new();
+        let mut optimized = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            let mut last = 0;
+            for cells in sheet.cells.values() {
+                for row in cells.keys() {
+                    if let Some(placed) = sheet.placed(*row, true).unwrap() {
+                        last = last.max(placed);
+                    }
+                }
+            }
+            original.push(start.elapsed().as_secs_f64() * 1000.0);
+            let start = Instant::now();
+            assert_eq!(black_box(sheet.last(true).unwrap()), last);
+            optimized.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        original.sort_by(f64::total_cmp);
+        optimized.sort_by(f64::total_cmp);
+        eprintln!(
+            "sheet_last_original_ms={:.3} optimized_ms={:.3}",
+            original[2], optimized[2]
+        );
+    }
 
     #[test]
     fn dates_become_excel_serials() {

@@ -10,7 +10,7 @@ pub use timing::SearchTimings;
 use timing::Timer;
 
 use super::*;
-use analyzer::{Query, grams, identifiers, normalize, words};
+use analyzer::{Query, dictionary, grams, identifiers, normalize, words};
 use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Default)]
@@ -133,9 +133,10 @@ impl Store {
                     .then_some(default_dictionary.as_path())
             })
         };
+        let dictionary = dictionary(synonyms)?;
         let queries = texts
             .iter()
-            .map(|text| Query::new(text, synonyms))
+            .map(|text| Query::new(text, &dictionary))
             .collect::<Result<Vec<_>>>()?;
         let path = under(&self.arp, "cache/search/index.sqlite")?;
         for suffix in ["-journal", "-wal", "-shm"] {
@@ -168,7 +169,7 @@ impl Store {
             if saved.as_deref() != Some(&signature) {
                 tx.execute_batch("DROP TABLE IF EXISTS terms; DROP TABLE IF EXISTS passages; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS metadata;")?;
                 tx.execute_batch(SQL)?;
-                tx.execute("INSERT INTO metadata VALUES (?1,'[]',0)", [&signature])?;
+                tx.execute("INSERT INTO metadata VALUES (?1,'[]',0,'',0)", [&signature])?;
             }
             tx.commit()?;
             if saved.is_some() && saved.as_deref() != Some(&signature) {
@@ -186,141 +187,149 @@ impl Store {
                 id == scope || id.strip_prefix(scope).is_some_and(|s| s.starts_with('/'))
             })
         };
-        let (stamps, failed, refreshed, indexed_at_unix, config_hash) = if refresh {
-            let base = under(&self.arp, "documents")?;
-            let config_hash = hash(&fs::read(under(&self.arp, "config.yml")?)?);
-            let ids = self.ids("documents", None)?;
-            let live: BTreeSet<_> = ids.iter().collect();
-            if let Some(scope) = options.document {
-                // Validate scope even when the corpus is empty.
-                under(&under(&self.arp, "documents")?, scope)?;
-            }
-            let cached = tx
-                .prepare("SELECT id,fingerprint,refs FROM documents")?
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
-                    ))
-                })?
-                .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
-            for id in cached.keys() {
-                if !live.contains(id) {
-                    let _timer = Timer::new(&mut timings.index_update);
-                    delete_document(&tx, id)?;
+        let (corpus_revision, indexed_documents, failed, refreshed, indexed_at_unix, config_hash) =
+            if refresh {
+                let base = under(&self.arp, "documents")?;
+                let config_hash = hash(&fs::read(under(&self.arp, "config.yml")?)?);
+                let ids = self.ids("documents", None)?;
+                let live: BTreeSet<_> = ids.iter().collect();
+                if let Some(scope) = options.document {
+                    // Validate scope even when the corpus is empty.
+                    under(&under(&self.arp, "documents")?, scope)?;
                 }
-            }
-            let mut failed = vec![];
-            let mut refreshed = 0;
-            let mut stamps = BTreeMap::new();
-            // BM25 uses corpus-wide frequencies. Refresh the same complete corpus for
-            // every scope so ranking never depends on which folder was searched first.
-            let checked = self.search_stamps(&ids, &base, &config_hash, &cached)?;
-            let mut read_buffer = vec![0; stamp::READ_BUFFER_SIZE];
-            for (id, checked) in ids.iter().zip(checked) {
-                let result = (|| -> Result<()> {
-                    // IDs were enumerated from actual directory entries. Do not repeat
-                    // the sibling-name scan used when accepting a user-supplied ID.
-                    let (stamp, references) = checked?;
-                    if cached.get(id).map(|(stamp, _)| stamp) != Some(&stamp) {
-                        // Revalidate paths before reading a changed document for indexing.
-                        let dir = under(&base, id)?;
-                        let inspected = self.inspect(&dir, false)?;
-                        let (formation, _) = self.formation(&dir)?;
-                        ensure!(
-                            formation["document_id"] == *id
-                                && formation["extraction"] == inspected.meta["extraction"],
-                            "formation identity mismatch"
-                        );
-                        let (passages, state) = {
-                            let _timer = Timer::new(&mut timings.index_update);
-                            (corpus::build(self, &inspected)?, search_state(&inspected)?)
-                        };
-                        ensure!(
-                            self.search_stamp(&dir, &config_hash, None, &mut read_buffer)?
-                                .0
-                                == stamp,
-                            "document changed while indexing; retry search-refresh"
-                        );
+                let cached = tx
+                    .prepare("SELECT id,fingerprint,refs FROM documents")?
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
+                for id in cached.keys() {
+                    if !live.contains(id) {
                         let _timer = Timer::new(&mut timings.index_update);
                         delete_document(&tx, id)?;
-                        for passage in passages {
-                            let title = normalize(string(&passage["title"])?);
-                            let body = normalize(string(&passage["text"])?);
-                            let raw_context = array(&passage["context"])?
-                                .iter()
-                                .map(|s| s["text"].as_str().unwrap_or(""))
-                                .collect::<Vec<_>>()
-                                .join(" | ");
-                            let context = normalize(&raw_context);
-                            let identifiers = identifiers(string(&passage["text"])?);
-                            tx.execute("INSERT INTO passages(document,payload,title,body,context,identifiers) VALUES (?1,?2,?3,?4,?5,?6)",
-                            params![id, passage.to_string(), title, body, context, identifiers])?;
-                            tx.execute("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)",
-                            params![tx.last_insert_rowid(), words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
-                        }
-                        tx.execute(
-                            "INSERT INTO documents VALUES (?1,?2,?3,?4)",
-                            params![
-                                id,
-                                stamp,
-                                state.to_string(),
-                                serde_json::to_string(&references)?
-                            ],
-                        )?;
-                        refreshed += 1;
                     }
-                    stamps.insert(id.clone(), stamp);
-                    Ok(())
-                })();
-                if let Err(error) = result {
-                    // Never return old cached hits for a now-invalid document.
-                    let _timer = Timer::new(&mut timings.index_update);
-                    delete_document(&tx, id)?;
-                    failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
                 }
-            }
-            let indexed_at_unix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs();
-            tx.execute(
-                "UPDATE metadata SET failed=?1,refreshed_unix=?2",
-                params![serde_json::to_string(&failed)?, indexed_at_unix],
+                let mut failed = vec![];
+                let mut refreshed = 0;
+                let mut stamps = BTreeMap::new();
+                // BM25 uses corpus-wide frequencies. Refresh the same complete corpus for
+                // every scope so ranking never depends on which folder was searched first.
+                let checked = self.search_stamps(&ids, &base, &config_hash, &cached)?;
+                let mut read_buffer = vec![0; stamp::READ_BUFFER_SIZE];
+                for (id, checked) in ids.iter().zip(checked) {
+                    let result = (|| -> Result<()> {
+                        // IDs were enumerated from actual directory entries. Do not repeat
+                        // the sibling-name scan used when accepting a user-supplied ID.
+                        let (stamp, references) = checked?;
+                        if cached.get(id).map(|(stamp, _)| stamp) != Some(&stamp) {
+                            // Revalidate paths before reading a changed document for indexing.
+                            let dir = under(&base, id)?;
+                            let inspected = self.inspect(&dir, false)?;
+                            let (formation, _) = self.formation(&dir)?;
+                            ensure!(
+                                formation["document_id"] == *id
+                                    && formation["extraction"] == inspected.meta["extraction"],
+                                "formation identity mismatch"
+                            );
+                            let (passages, state) = {
+                                let _timer = Timer::new(&mut timings.index_update);
+                                (corpus::build(self, &inspected)?, search_state(&inspected)?)
+                            };
+                            ensure!(
+                                self.search_stamp(&dir, &config_hash, None, &mut read_buffer)?
+                                    .0
+                                    == stamp,
+                                "document changed while indexing; retry search-refresh"
+                            );
+                            let _timer = Timer::new(&mut timings.index_update);
+                            delete_document(&tx, id)?;
+                            let mut repetition_groups = BTreeMap::<(String, String), i64>::new();
+                            for passage in passages {
+                                let title = normalize(string(&passage["title"])?);
+                                let body = normalize(string(&passage["text"])?);
+                                let raw_context = array(&passage["context"])?
+                                    .iter()
+                                    .map(|s| s["text"].as_str().unwrap_or(""))
+                                    .collect::<Vec<_>>()
+                                    .join(" | ");
+                                let context = normalize(&raw_context);
+                                let next_group = i64::try_from(repetition_groups.len() + 1)?;
+                                let repetition_group = *repetition_groups
+                                    .entry((body.clone(), context.clone()))
+                                    .or_insert(next_group);
+                                let identifiers = identifiers(string(&passage["text"])?);
+                                tx.execute("INSERT INTO passages(document,payload,title,body,context,repetition_group,identifiers) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                            params![id, passage.to_string(), title, body, context, repetition_group, identifiers])?;
+                                tx.execute("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)",
+                            params![tx.last_insert_rowid(), words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
+                            }
+                            tx.execute(
+                                "INSERT INTO documents VALUES (?1,?2,?3,?4)",
+                                params![
+                                    id,
+                                    stamp,
+                                    state.to_string(),
+                                    serde_json::to_string(&references)?
+                                ],
+                            )?;
+                            refreshed += 1;
+                        }
+                        stamps.insert(id.clone(), stamp);
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        // Never return old cached hits for a now-invalid document.
+                        let _timer = Timer::new(&mut timings.index_update);
+                        delete_document(&tx, id)?;
+                        failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
+                    }
+                }
+                let indexed_at_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+                let corpus_revision = hash(&encoded(
+                    &json!({"index":signature,"documents":stamps,"failed":failed}),
+                ));
+                tx.execute(
+                "UPDATE metadata SET failed=?1,refreshed_unix=?2,corpus_revision=?3,indexed_documents=?4",
+                params![serde_json::to_string(&failed)?, indexed_at_unix, corpus_revision, stamps.len()],
             )?;
-            (
-                stamps,
-                failed,
-                refreshed,
-                indexed_at_unix,
-                Some(config_hash),
-            )
-        } else {
-            let (saved, failed_json, indexed_at_unix): (String, String, u64) = tx
+                (
+                    corpus_revision,
+                    stamps.len(),
+                    failed,
+                    refreshed,
+                    indexed_at_unix,
+                    Some(config_hash),
+                )
+            } else {
+                let (saved, failed_json, indexed_at_unix, corpus_revision, indexed_documents): (String, String, u64, String, usize) = tx
                 .query_row(
-                    "SELECT signature,failed,refreshed_unix FROM metadata",
+                    "SELECT signature,failed,refreshed_unix,corpus_revision,indexed_documents FROM metadata",
                     [],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .context("invalid search index; run documents search-refresh")?;
-            ensure!(
-                saved == signature,
-                "search index version changed; run documents search-refresh"
-            );
-            let stamps = tx
-                .prepare("SELECT id,fingerprint FROM documents")?
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
-            let failed: Vec<Value> = serde_json::from_str(&failed_json)?;
-            (stamps, failed, 0, indexed_at_unix, None)
-        };
+                ensure!(
+                    saved == signature,
+                    "search index version changed; run documents search-refresh"
+                );
+                let failed: Vec<Value> = serde_json::from_str(&failed_json)?;
+                (
+                    corpus_revision,
+                    indexed_documents,
+                    failed,
+                    0,
+                    indexed_at_unix,
+                    None,
+                )
+            };
         timings.integrity = integrity_started
             .elapsed()
             .saturating_sub(timings.index_update);
-        let revision_started = Instant::now();
-        let corpus_revision = hash(&encoded(
-            &json!({"index":signature,"documents":stamps,"failed":failed}),
-        ));
-        timings.integrity += revision_started.elapsed();
         let mut results: Vec<SearchResult> = Vec::with_capacity(texts.len());
         let mut query_cache: BTreeMap<_, usize> = BTreeMap::new();
         for (text, query) in texts.iter().zip(queries) {
@@ -331,7 +340,7 @@ impl Store {
             timings.integrity += revision_started.elapsed();
             let mut sql_started = Instant::now();
             let scope = options.document.unwrap_or("");
-            let filter = "FROM terms JOIN passages p ON p.id=terms.rowid JOIN documents d ON d.id=p.document WHERE terms MATCH ?1 AND (?2='' OR p.document=?2 OR substr(p.document,1,length(?2)+1)=?2||'/')";
+            let filter = "FROM terms JOIN passages p ON p.id=terms.rowid WHERE terms MATCH ?1 AND (?2='' OR p.document=?2 OR substr(p.document,1,length(?2)+1)=?2||'/')";
             let cache_key = (
                 query.expression.clone(),
                 query.identifier.clone(),
@@ -350,32 +359,29 @@ impl Store {
                         .filter(|failure| selected(failure["document_id"].as_str().unwrap()))
                         .cloned()
                         .collect(),
-                    indexed_documents: stamps.len(),
+                    indexed_documents,
                     refreshed_documents: refreshed,
                     indexed_at_unix,
                     query_terms: query.groups,
                 });
                 continue;
             }
-            let total: usize = tx.query_row(
-                &format!("SELECT count(*) {filter}"),
-                params![query.expression, scope],
-                |r| r.get(0),
-            )?;
             // Materialize BM25 while the FTS cursor is active, before window ranking.
+            // Count the same candidates for a nonempty page instead of running MATCH twice.
             // Repeated text with the same header text is deferred, never discarded:
             // different sheets/positions remain addressable through normal paging.
             let sql = format!(
                 "WITH matches AS MATERIALIZED (
-            SELECT p.id,p.document,p.body,p.context,bm25(terms,3.0,1.0,1.5,0.15) AS cost,
+            SELECT p.id,p.document,p.repetition_group,bm25(terms,3.0,1.0,1.5,0.15) AS cost,
                 instr(p.identifiers,?3)>0 AS exact, instr(p.body,?4)>0 AS phrase,
                 instr(p.title,?4)>0 AS heading {filter}
             ), ranked AS (
                 SELECT *,row_number() OVER (
-                    PARTITION BY document,body,context
+                    PARTITION BY document,repetition_group
                     ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
                 ) AS repetition FROM matches
-            ) SELECT p.payload,d.state,-r.cost,r.exact,r.phrase,r.heading
+            ) SELECT p.payload,d.state,-r.cost,r.exact,r.phrase,r.heading,
+                     (SELECT count(*) FROM matches)
             FROM ranked r JOIN passages p ON p.id=r.id JOIN documents d ON d.id=r.document
             ORDER BY r.exact DESC,r.phrase DESC,r.heading DESC,r.repetition,r.cost,r.document,r.id
             LIMIT ?5 OFFSET ?6"
@@ -391,10 +397,14 @@ impl Store {
                 i64::try_from(options.offset)?
             ])?;
             let mut items = vec![];
+            let mut total = None;
             loop {
                 let row = rows.next()?;
                 timings.sql += sql_started.elapsed();
                 let Some(row) = row else { break };
+                if total.is_none() {
+                    total = Some(row.get::<_, usize>(6)?);
+                }
                 let response_started = Instant::now();
                 let mut item: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
                 item["state"] = serde_json::from_str(&row.get::<_, String>(1)?)?;
@@ -410,6 +420,20 @@ impl Store {
             }
             drop(rows);
             drop(statement);
+            // An empty page (including an offset beyond the end) still needs its
+            // exact total. This path is uncommon and keeps normal pages to one MATCH.
+            let total = if let Some(total) = total {
+                total
+            } else {
+                let count_started = Instant::now();
+                let total = tx.query_row(
+                    &format!("SELECT count(*) {filter}"),
+                    params![query.expression, scope],
+                    |r| r.get(0),
+                )?;
+                timings.sql += count_started.elapsed();
+                total
+            };
             query_cache.insert(cache_key, results.len());
             results.push(SearchResult {
                 timings: SearchTimings::default(),
@@ -421,7 +445,7 @@ impl Store {
                     .filter(|failure| selected(failure["document_id"].as_str().unwrap()))
                     .cloned()
                     .collect(),
-                indexed_documents: stamps.len(),
+                indexed_documents,
                 refreshed_documents: refreshed,
                 indexed_at_unix,
                 query_terms: query.groups,

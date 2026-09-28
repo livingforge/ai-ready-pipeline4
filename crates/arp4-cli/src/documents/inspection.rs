@@ -53,6 +53,7 @@ impl Store {
             .unwrap_or(false);
         // Every file besides the records and assets is a content page, read once here.
         let mut content_pages = vec![];
+        let mut page_files = BTreeMap::new();
         for (name, path) in self.planned_files(dir, planned)? {
             if name.starts_with("assets/")
                 || RECORDS.contains(&name.as_str())
@@ -64,7 +65,9 @@ impl Store {
                 name.starts_with("content/") && (name.ends_with(".yml") || name.ends_with(".yaml")),
                 "unmanaged document file: {name}"
             );
-            content_pages.push(read_planned(&name, &path, planned, "content")?);
+            let page = read_planned(&name, &path, planned, "content")?;
+            page_files.insert(string(&page["page_id"])?.to_owned(), name);
+            content_pages.push(page);
         }
         let stored = read_planned(
             "mappings.yml",
@@ -172,6 +175,7 @@ impl Store {
             extraction,
             mappings,
             values,
+            page_files,
             fingerprint: fp,
             reviewed,
             source_current,

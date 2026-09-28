@@ -284,8 +284,10 @@ pub(super) fn regenerate_mappings(
     let mut positions: BTreeMap<Pair, BTreeMap<Pair, &Value>> = BTreeMap::new();
     let mut fields: BTreeMap<Pair, BTreeSet<&str>> = BTreeMap::new();
     let mut blocks = BTreeSet::new();
+    let mut by_page = BTreeMap::new();
     for page in pages {
         let page_id = string(&page["page_id"])?;
+        by_page.insert(page_id, page);
         for (block, body) in page["blocks"]
             .as_object()
             .context("content blocks required")?
@@ -413,7 +415,7 @@ pub(super) fn regenerate_mappings(
         for table in tables {
             let page = string(&table["page"])?;
             let block = string(&table["block"])?;
-            let Some(page_value) = pages.iter().find(|value| value["page_id"] == page) else {
+            let Some(page_value) = by_page.get(page) else {
                 continue;
             };
             let Some(rows) = page_value["blocks"][block]["rows"].as_object() else {
