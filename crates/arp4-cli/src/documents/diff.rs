@@ -1,5 +1,32 @@
 use super::*;
 
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn measure_diff_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::init(temp.path(), "sources").unwrap();
+        let dir = store.arp.join("documents/bench");
+        fs::create_dir_all(dir.join("assets")).unwrap();
+        fs::write(dir.join("document.yml"), "benchmark").unwrap();
+        let bytes = vec![42u8; 256 * 1024];
+        for i in 0..48 {
+            fs::write(dir.join(format!("assets/{i:03}.bin")), &bytes).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let files = store.diff_files(Some(&dir)).unwrap();
+        assert_eq!(files.len(), 49);
+        eprintln!(
+            "diff_files_ms={:.3} files={}",
+            start.elapsed().as_secs_f64() * 1000.0,
+            files.len()
+        );
+    }
+}
+
 /// A compared file: YAML/JSON text, parsed only when the other side differs, or an
 /// asset's hash. A large workbook's mappings.yml is mostly unchanged between versions.
 enum DiffFile {
@@ -62,7 +89,7 @@ impl Store {
     fn diff_files(&self, dir: Option<&Path>) -> Result<BTreeMap<String, DiffFile>> {
         let mut out = BTreeMap::new();
         let Some(dir) = dir else { return Ok(out) };
-        if self.fingerprint(dir)?.is_none() {
+        if !self.management(dir)?.join("document.yml").exists() {
             return Ok(out);
         }
         for (name, path) in self.logical(dir)? {

@@ -262,23 +262,6 @@ pub(super) fn transform_row(
     })
 }
 
-pub(super) fn find_row_raw<'a>(
-    sheet_data: Node<'_, 'a>,
-    number: u32,
-    original: &'a str,
-) -> Option<&'a str> {
-    sheet_data
-        .children()
-        .find(|node| {
-            node.has_tag_name((NS, "row"))
-                && node
-                    .attribute("r")
-                    .and_then(|value| value.parse::<u32>().ok())
-                    == Some(number)
-        })
-        .map(|node| &original[node.range()])
-}
-
 /// The area the cells of `rows` span, or `None` when the rows hold no cells.
 pub(super) fn used_range(rows: &[RowOutput]) -> Option<Area> {
     let mut span: Option<Area> = None;

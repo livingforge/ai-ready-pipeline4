@@ -102,15 +102,24 @@ pub fn render(r: &Registry, out: &Path) -> Result<()> {
         index.push('\n');
     }
     let mut trace = String::from("# 要件と仕様の対応\n\n");
+    let mut specifications_by_requirement = BTreeMap::<&str, Vec<&Entry>>::new();
+    for entry in r.entries.values().filter(|e| e.status != Status::Retired) {
+        for requirement in &entry.requirements {
+            specifications_by_requirement
+                .entry(requirement)
+                .or_default()
+                .push(entry);
+        }
+    }
     for req in r
         .entries
         .values()
         .filter(|e| e.category == Category::Requirement && e.status != Status::Retired)
     {
-        let specs: Vec<_> = r
-            .entries
-            .values()
-            .filter(|e| e.status != Status::Retired && e.requirements.contains(&req.id))
+        let specs: Vec<_> = specifications_by_requirement
+            .get(req.id.as_str())
+            .into_iter()
+            .flatten()
             .map(|e| {
                 format!(
                     "[{}](../modules/{}.md#{})",

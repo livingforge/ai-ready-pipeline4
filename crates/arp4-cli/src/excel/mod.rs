@@ -3,6 +3,7 @@ pub use coordinates::{
     resolve_insertion,
 };
 mod coordinates;
+pub(crate) use coordinates::MergeState;
 pub(crate) use coordinates::axis_deleted;
 use coordinates::*;
 pub use operations::{parse_image_operations, parse_operations};

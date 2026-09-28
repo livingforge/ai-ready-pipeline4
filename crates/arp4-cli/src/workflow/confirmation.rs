@@ -59,6 +59,19 @@ fn mentions(value: &Value, id: &str) -> bool {
     }
 }
 
+fn mentioned_ids(value: &Value, ids: &BTreeSet<String>, found: &mut BTreeSet<String>) {
+    match value {
+        Value::String(v) => {
+            if ids.contains(v) {
+                found.insert(v.clone());
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|v| mentioned_ids(v, ids, found)),
+        Value::Object(o) => o.values().for_each(|v| mentioned_ids(v, ids, found)),
+        _ => {}
+    }
+}
+
 pub(super) fn plan(previous: &Value, current: &Value, review: &Value) -> Result<Value> {
     let index = |packet: &Value| -> Result<BTreeMap<String, Value>> {
         arr(&packet["items"])?
@@ -85,18 +98,28 @@ pub(super) fn plan(previous: &Value, current: &Value, review: &Value) -> Result<
             );
         }
     }
-    loop {
-        let prior = affected.clone();
-        for (id, item) in before.iter().chain(after.iter()) {
-            for other in &ids {
-                if (prior.contains(id) || prior.contains(other)) && mentions(item, other) {
-                    affected.insert(id.clone());
-                    affected.insert(other.clone());
-                }
+    let mut neighbors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (id, item) in before.iter().chain(after.iter()) {
+        let mut referenced = BTreeSet::new();
+        mentioned_ids(item, &ids, &mut referenced);
+        for other in referenced {
+            if id != &other {
+                neighbors
+                    .entry(id.clone())
+                    .or_default()
+                    .insert(other.clone());
+                neighbors.entry(other).or_default().insert(id.clone());
             }
         }
-        if prior == affected {
-            break;
+    }
+    let mut pending: Vec<_> = affected.iter().cloned().collect();
+    while let Some(id) = pending.pop() {
+        if let Some(connected) = neighbors.get(&id) {
+            for other in connected {
+                if affected.insert(other.clone()) {
+                    pending.push(other.clone());
+                }
+            }
         }
     }
     let metadata = |packet: &Value| {
@@ -339,6 +362,26 @@ mod tests {
     }
     fn review() -> Value {
         json!({"packet":"before", "findings":[], "audits":[{"sources":["s1","s2","s3"],"rationale":"Checked originals"}]})
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_confirmation_plan() {
+        let items: Vec<_> = (0..180)
+            .map(|i| json!({"id":format!("doc/{i}"),"related":if i == 0 { vec![] } else { vec![format!("doc/{}", i - 1)] }}))
+            .collect();
+        let previous = json!({"packet":"before","document":"doc","sources":{"rows":[]},"items":items,"evidence_clusters":[]});
+        let mut current = previous.clone();
+        current["items"][0]["name"] = json!("changed");
+        let review = json!({"packet":"before","findings":[],"audits":[]});
+        let start = std::time::Instant::now();
+        let result = plan(&previous, &current, &review).unwrap();
+        assert_eq!(result["affected_items"].as_array().unwrap().len(), 180);
+        eprintln!(
+            "confirmation_plan_ms={:.3} affected={}",
+            start.elapsed().as_secs_f64() * 1000.0,
+            result["affected_items"].as_array().unwrap().len()
+        );
     }
 
     #[test]

@@ -271,24 +271,25 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
         e.status = Status::Retired;
         e.approval = None;
     }
-    let mut affected = changed.clone();
-    loop {
-        let next: Vec<_> = r
-            .entries
-            .values()
-            .filter(|e| {
-                !affected.contains(&e.id)
-                    && e.requirements
-                        .iter()
-                        .chain(&e.related)
-                        .any(|id| affected.contains(id))
-            })
-            .map(|e| e.id.clone())
-            .collect();
-        if next.is_empty() {
-            break;
+    let mut dependents = BTreeMap::<&str, Vec<&str>>::new();
+    for entry in r.entries.values() {
+        for target in entry.requirements.iter().chain(&entry.related) {
+            dependents
+                .entry(target)
+                .or_default()
+                .push(entry.id.as_str());
         }
-        affected.extend(next);
+    }
+    let mut affected = changed.clone();
+    let mut pending: std::collections::VecDeque<_> = changed.iter().map(String::as_str).collect();
+    while let Some(id) = pending.pop_front() {
+        if let Some(referrers) = dependents.get(id) {
+            for &referrer in referrers {
+                if affected.insert(referrer.to_owned()) {
+                    pending.push_back(referrer);
+                }
+            }
+        }
     }
     if !change.add_issues.is_empty() {
         affected.extend(

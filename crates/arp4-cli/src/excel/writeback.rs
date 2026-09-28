@@ -185,6 +185,9 @@ impl Workbook {
         for s in &self.sheets {
             let part = string(&s["part"])?;
             let name = string(&s["name"])?;
+            if !recalc && !updates.contains_key(part) && !formula_edits.contains_key(name) {
+                continue;
+            }
             let source = std::str::from_utf8(&self.parts[part])?;
             let edited = formula_edits
                 .get(name)
@@ -431,12 +434,21 @@ impl Workbook {
                 .to_owned();
             let mut formats = CellFormats::read(doc.root_element(), &sheet_operations)?;
             let mut rows = vec![];
+            let indexed_styles = sheet_operations
+                .iter()
+                .any(|operation| operation.style_from.is_some());
+            let mut original_rows = BTreeMap::new();
             for row in sheet_data
                 .children()
                 .filter(|node| node.has_tag_name((NS, "row")))
             {
                 let original_row: u32 =
                     row.attribute("r").context("missing row number")?.parse()?;
+                if indexed_styles {
+                    original_rows
+                        .entry(original_row)
+                        .or_insert(&original[row.range()]);
+                }
                 let Some(final_row) = transform_index(original_row, &sheet_operations, true) else {
                     continue;
                 };
@@ -476,7 +488,7 @@ impl Workbook {
                     let (_, row) = coordinate(&address)?;
                     let template = operation
                         .style_from
-                        .and_then(|number| find_row_raw(sheet_data, number, original));
+                        .and_then(|number| original_rows.get(&number).copied());
                     if let Some(style_from) = operation.style_from {
                         formats.template(row, style_from);
                     }

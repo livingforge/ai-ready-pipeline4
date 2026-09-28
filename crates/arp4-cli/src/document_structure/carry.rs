@@ -7,7 +7,7 @@
 //! show. The result is recorded as corrections of the new extraction, so
 //! replay reproduces it.
 use super::*;
-use crate::excel::{Merges, StructuralOperation};
+use crate::excel::{MergeState, Merges, StructuralOperation};
 use anyhow::bail;
 
 /// A cell being carried: its interpretation, the address it had in the old
@@ -94,6 +94,148 @@ mod visual_performance_tests {
             scanned[2], indexed[2]
         );
     }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_carry_hotspots() {
+        use std::hint::black_box;
+        let cell = |column: u32, row: u32| {
+            let address = format!("{}{row}", crate::excel::column_name(column).unwrap());
+            json!({"id":format!("s1-{address}"),"address":address,"value":"v",
+                "role":"data","headers":["s1-A1"],"text_state":"read"})
+        };
+        let values: Vec<_> = (1..=2_000)
+            .flat_map(|row| (1..=10).map(move |column| cell(column, row)))
+            .collect();
+        let indexed_cells: BTreeMap<_, _> = values
+            .iter()
+            .map(|value| {
+                (
+                    (
+                        "S".to_owned(),
+                        string(&value["address"]).unwrap().to_owned(),
+                    ),
+                    value,
+                )
+            })
+            .collect();
+        let started = Instant::now();
+        let coordinate_cells = coordinate_cells(&indexed_cells).unwrap();
+        for row in (1..=1_000).step_by(10) {
+            let shown = format!("A{row}:J{}", row + 9);
+            black_box(moved_range("S", &shown, &[], &coordinate_cells, &coordinate_cells).unwrap());
+        }
+        eprintln!(
+            "region_100_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+
+        let existing = (1..=200)
+            .flat_map(|row| {
+                (1..=if row == 1 || row == 200 { 10 } else { 9 }).map(move |column| Carried {
+                    value: cell(column, row),
+                    origin: None,
+                })
+            })
+            .collect();
+        let mut elements = vec![Element {
+            value: json!({"id":"table","kind":"table","sheet":"S"}),
+            cells: existing,
+        }];
+        let inferred: Vec<_> = (2..200)
+            .map(|row| json!({"kind":"text","sheet":"S","cells":[cell(10,row)]}))
+            .collect();
+        let mut owned = elements[0]
+            .cells
+            .iter()
+            .map(|cell| {
+                (
+                    "S".to_owned(),
+                    string(&cell.value["address"]).unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let started = Instant::now();
+        black_box(join_new_cells(&mut elements, &inferred, &mut owned).unwrap());
+        eprintln!(
+            "join_198_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+
+        let mut element = Element {
+            value: json!({"id":"table","kind":"table","sheet":"S"}),
+            cells: (1..=200)
+                .flat_map(|row| {
+                    (1..=10).map(move |column| Carried {
+                        value: cell(column, row),
+                        origin: None,
+                    })
+                })
+                .collect(),
+        };
+        let empty = json!([]);
+        let merges = Merges::new(&empty).unwrap();
+        let started = Instant::now();
+        extend(&mut element, "s1-", true, 200, 201, 10, &merges).unwrap();
+        black_box(&element);
+        eprintln!(
+            "extend_100_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+
+        let header = "s1-J200";
+        let started = Instant::now();
+        for _ in 0..1_000 {
+            black_box(
+                element
+                    .cells
+                    .iter()
+                    .find(|cell| cell.value["id"] == header)
+                    .unwrap(),
+            );
+        }
+        eprintln!(
+            "header_linear_1000_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        let started = Instant::now();
+        let by_id: BTreeMap<_, _> = element
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| (string(&cell.value["id"]).unwrap(), index))
+            .collect();
+        for _ in 0..1_000 {
+            black_box(&element.cells[*by_id.get(header).unwrap()]);
+        }
+        eprintln!(
+            "header_indexed_1000_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+
+        let sheet = json!({"name":"S","merges":(1..=100)
+            .map(|row| format!("A{row}:B{row}")).collect::<Vec<_>>()});
+        let operations: Vec<_> = (0..100)
+            .map(|i| StructuralOperation {
+                id: format!("op{i}"),
+                sheet: "S".to_owned(),
+                kind: crate::excel::OperationKind::InsertRows,
+                at: 101 + i,
+                count: 1,
+                style_from: None,
+            })
+            .collect();
+        let started = Instant::now();
+        let mut state = MergeState::new(&sheet).unwrap();
+        for operation in &operations {
+            state.apply(operation).unwrap();
+            black_box(state.visible().unwrap());
+        }
+        eprintln!(
+            "merges_100_ms={:.2}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
 }
 
 struct Element {
@@ -141,6 +283,22 @@ fn sheet_cells(extraction: &Value) -> Result<BTreeMap<(String, String), &Value>>
         }
     }
     Ok(cells)
+}
+
+/// A numeric index for checking image regions without parsing and scanning all
+/// extraction cells for each region.
+fn coordinate_cells<'a>(
+    cells: &BTreeMap<(String, String), &'a Value>,
+) -> Result<BTreeMap<String, BTreeMap<(u32, u32), &'a Value>>> {
+    let mut indexed: BTreeMap<String, BTreeMap<(u32, u32), &Value>> = BTreeMap::new();
+    for ((sheet, address), cell) in cells {
+        let (column, row) = crate::excel::coordinate(address)?;
+        indexed
+            .entry(sheet.clone())
+            .or_default()
+            .insert((row, column), *cell);
+    }
+    Ok(indexed)
 }
 
 /// Carries `structure`, the interpretation of `before`, onto `after`, the
@@ -191,6 +349,11 @@ pub(super) fn carry(
         })
         .collect();
 
+    let mut merge_states = sheets
+        .iter()
+        .map(MergeState::new)
+        .collect::<Result<Vec<_>>>()?;
+
     for (index, operation) in operations.iter().enumerate() {
         let rows = operation.row_operation();
         let insert = operation.insertion();
@@ -200,7 +363,8 @@ pub(super) fn carry(
             .position(|name| *name == operation.sheet)
             .context("operation sheet missing")?;
         let prefix = format!("s{}-", sheet_index + 1);
-        let merges = crate::excel::merges_after(&sheets[sheet_index], &operations[..=index])?;
+        merge_states[sheet_index].apply(operation)?;
+        let merges = merge_states[sheet_index].visible()?;
         let merges = Merges::new(&merges)?;
         // The style row where the operation's own coordinates, those after the
         // operations before it, place it.
@@ -492,15 +656,24 @@ pub(super) fn carry(
     // Image regions show the old version. One is still true where the
     // operations moved its range whole and left the cells it shows as they were.
     let referenced_regions = referenced_regions(&carried, &visuals);
+    let source_regions = array(&structure["regions"])?;
+    let (before_coordinates, after_coordinates) = if source_regions.is_empty() {
+        (BTreeMap::new(), BTreeMap::new())
+    } else {
+        (
+            coordinate_cells(&before_cells)?,
+            coordinate_cells(&after_cells)?,
+        )
+    };
     let mut regions = vec![];
-    for region in array(&structure["regions"])? {
+    for region in source_regions {
         let id = string(&region["id"])?;
         let moved_to = moved_range(
             string(&region["sheet"])?,
             string(&region["range"])?,
             operations,
-            &before_cells,
-            &after_cells,
+            &before_coordinates,
+            &after_coordinates,
         )?;
         let used = referenced_regions.contains(id);
         if let Some(range) = moved_to {
@@ -601,7 +774,7 @@ fn join_new_cells(
 ) -> Result<Vec<(String, String)>> {
     let mut owner: BTreeMap<(String, String), usize> = BTreeMap::new();
     // Each element's sheet and the corners of the range its cells cover.
-    let mut ranges: Vec<(String, Corners)> = vec![];
+    let mut ranges: BTreeMap<String, Vec<(Corners, u64, usize, u32)>> = BTreeMap::new();
     for (index, element) in elements.iter().enumerate() {
         let sheet = string(&element.value["sheet"])?.to_owned();
         let mut low = (u32::MAX, u32::MAX);
@@ -615,29 +788,46 @@ fn join_new_cells(
                 index,
             );
         }
-        ranges.push((sheet, (low, high)));
+        if element.cells.is_empty() {
+            continue;
+        }
+        let area = u64::from(high.0 - low.0 + 1) * u64::from(high.1 - low.1 + 1);
+        ranges
+            .entry(sheet)
+            .or_default()
+            .push(((low, high), area, index, 0));
+    }
+    for entries in ranges.values_mut() {
+        entries.sort_unstable_by_key(|((low, _), _, _, _)| low.1);
+        let mut reach = 0;
+        for ((_, high), _, _, max_row) in entries {
+            reach = reach.max(high.1);
+            *max_row = reach;
+        }
     }
     let around = |sheet: &str, (column, row): (u32, u32)| -> Option<usize> {
-        let mut covering: Vec<(u64, usize)> = ranges
+        let entries = ranges.get(sheet)?;
+        let end = entries.partition_point(|((low, _), _, _, _)| low.1 <= row);
+        let mut best: Option<(u64, usize)> = None;
+        let mut tied = false;
+        for ((low, high), area, index, _) in entries[..end]
             .iter()
-            .enumerate()
-            .filter(|(_, (name, (low, high)))| {
-                name == sheet
-                    && (low.0..=high.0).contains(&column)
-                    && (low.1..=high.1).contains(&row)
-            })
-            .map(|(index, (_, (low, high)))| {
-                let area = u64::from(high.0 - low.0 + 1) * u64::from(high.1 - low.1 + 1);
-                (area, index)
-            })
-            .collect();
-        covering.sort_unstable();
-        match covering.as_slice() {
-            [(area, index), rest @ ..] if rest.first().is_none_or(|(next, _)| next > area) => {
-                Some(*index)
+            .rev()
+            .take_while(|(_, _, _, reach)| *reach >= row)
+        {
+            if !(low.0..=high.0).contains(&column) || row > high.1 {
+                continue;
             }
-            _ => None,
+            match best {
+                Some((smallest, _)) if *area > smallest => {}
+                Some((smallest, _)) if *area == smallest => tied = true,
+                _ => {
+                    best = Some((*area, *index));
+                    tied = false;
+                }
+            }
         }
+        best.and_then(|(_, index)| (!tied).then_some(index))
     };
     // The new cells of each element, as the parser gives them.
     let mut joining: BTreeMap<usize, Vec<Value>> = BTreeMap::new();
@@ -686,21 +876,30 @@ fn join_new_cells(
             .map(|cell| cell.value.clone())
             .collect();
         let points: Vec<(u32, u32)> = existing.iter().map(point).collect::<Result<_>>()?;
+        let mut by_column: BTreeMap<u32, BTreeMap<u32, usize>> = BTreeMap::new();
+        let mut by_row: BTreeMap<u32, BTreeMap<u32, usize>> = BTreeMap::new();
+        for (index, &(column, row)) in points.iter().enumerate() {
+            by_column.entry(column).or_default().insert(row, index);
+            by_row.entry(row).or_default().insert(column, index);
+        }
         cells.sort_by_key(|cell| point(cell).map(|(c, r)| (r, c)).unwrap_or_default());
         // The nearest cell above in the column, else left in the row, else any.
         let template = |(column, row): (u32, u32)| -> usize {
-            let nearest = |filter: &dyn Fn(&(u32, u32)) -> bool,
-                           distance: &dyn Fn(&(u32, u32)) -> u32| {
-                points
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| filter(p))
-                    .min_by_key(|(_, p)| distance(p))
-                    .map(|(i, _)| i)
-            };
-            nearest(&|p| p.0 == column && p.1 < row, &|p| row - p.1)
-                .or_else(|| nearest(&|p| p.1 == row && p.0 < column, &|p| column - p.0))
-                .or_else(|| nearest(&|_| true, &|p| p.0.abs_diff(column) + p.1.abs_diff(row)))
+            by_column
+                .get(&column)
+                .and_then(|rows| rows.range(..row).next_back().map(|(_, &index)| index))
+                .or_else(|| {
+                    by_row.get(&row).and_then(|columns| {
+                        columns.range(..column).next_back().map(|(_, &index)| index)
+                    })
+                })
+                .or_else(|| {
+                    points
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, p)| p.0.abs_diff(column) + p.1.abs_diff(row))
+                        .map(|(index, _)| index)
+                })
                 .unwrap_or(0)
         };
         let mut added: Vec<(Value, usize)> = vec![];
@@ -923,8 +1122,8 @@ fn moved_range(
     sheet: &str,
     shown: &str,
     operations: &[StructuralOperation],
-    before_cells: &BTreeMap<(String, String), &Value>,
-    after_cells: &BTreeMap<(String, String), &Value>,
+    before_cells: &BTreeMap<String, BTreeMap<(u32, u32), &Value>>,
+    after_cells: &BTreeMap<String, BTreeMap<(u32, u32), &Value>>,
 ) -> Result<Option<String>> {
     let ((left, top), (right, bottom)) = range(shown)?;
     let corner = |column: u32, row: u32| -> Option<(u32, u32)> {
@@ -943,16 +1142,16 @@ fn moved_range(
         return Ok(None);
     }
     // The cells of each range by their place in it.
-    let shown_cells = |cells: &BTreeMap<(String, String), &Value>,
+    let shown_cells = |cells: &BTreeMap<String, BTreeMap<(u32, u32), &Value>>,
                        left: u32,
                        top: u32,
                        right: u32,
                        bottom: u32| {
         cells
-            .iter()
-            .filter(|((name, _), _)| name == sheet)
-            .filter_map(|((_, address), cell)| {
-                let (column, row) = crate::excel::coordinate(address).ok()?;
+            .get(sheet)
+            .into_iter()
+            .flat_map(|sheet_cells| sheet_cells.range((top, 0)..=(bottom, u32::MAX)))
+            .filter_map(|(&(row, column), cell)| {
                 ((left..=right).contains(&column) && (top..=bottom).contains(&row))
                     .then(|| ((column - left, row - top), content(cell)))
             })
@@ -1024,10 +1223,16 @@ fn extend(
             .or_default()
             .insert(line(position, rows), index);
     }
-    let lines: BTreeMap<String, (u32, u32)> = element
+    let headers_by_id: BTreeMap<String, ((u32, u32), usize)> = element
         .cells
         .iter()
-        .map(|cell| Ok((string(&cell.value["id"])?.to_owned(), point(&cell.value)?)))
+        .enumerate()
+        .map(|(index, cell)| {
+            Ok((
+                string(&cell.value["id"])?.to_owned(),
+                (point(&cell.value)?, index),
+            ))
+        })
         .collect::<Result<_>>()?;
     let mut new_cells = vec![];
     for new_line in at..at + count {
@@ -1039,14 +1244,10 @@ fn extend(
             let mut headers = vec![];
             for header in array(&source["headers"])? {
                 let id = string(header)?;
-                let Some(&header_point) = lines.get(id) else {
+                let Some(&(header_point, header_index)) = headers_by_id.get(id) else {
                     continue;
                 };
-                let header_cell = element
-                    .cells
-                    .iter()
-                    .find(|cell| cell.value["id"] == id)
-                    .context("header cell missing")?;
+                let header_cell = &element.cells[header_index];
                 let own = format!(
                     "{prefix}{}",
                     address(new_line, across(header_point, rows), rows)?
@@ -1079,6 +1280,34 @@ fn extend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_region_compares_only_its_sheet_and_range() {
+        let before_doc = json!({"sheets":[
+            {"name":"S","cells":[
+                {"address":"A1","value":"same"},
+                {"address":"B2","value":"same"},
+                {"address":"C3","value":"outside"}]},
+            {"name":"Other","cells":[{"address":"A1","value":"before"}]}
+        ]});
+        let after_doc = json!({"sheets":[
+            {"name":"S","cells":[
+                {"address":"A1","value":"same"},
+                {"address":"B2","value":"same"},
+                {"address":"C3","value":"changed"}]},
+            {"name":"Other","cells":[{"address":"A1","value":"after"}]}
+        ]});
+        let before = coordinate_cells(&sheet_cells(&before_doc).unwrap()).unwrap();
+        let after = coordinate_cells(&sheet_cells(&after_doc).unwrap()).unwrap();
+        assert_eq!(
+            moved_range("S", "A1:B2", &[], &before, &after).unwrap(),
+            Some("A1:B2".into())
+        );
+        assert_eq!(
+            moved_range("S", "A1:C3", &[], &before, &after).unwrap(),
+            None
+        );
+    }
 
     fn cell(address: &str, role: &str, headers: &[&str]) -> Value {
         json!({"id":format!("s1-{address}"),"address":address,"role":role,

@@ -48,6 +48,17 @@ pub fn validate(r: &Registry) -> Result<()> {
         .iter()
         .map(|(k, v)| Ok((k.clone(), serde_json::from_value::<spec::Input>(v.clone())?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let source_index: BTreeMap<&str, BTreeMap<&str, &spec::Source>> = inputs
+        .iter()
+        .map(|(snapshot, input)| {
+            let mut sources = BTreeMap::new();
+            for source in &input.sources {
+                sources.entry(source.id.as_str()).or_insert(source);
+            }
+            (snapshot.as_str(), sources)
+        })
+        .collect();
+    let mut source_chars = BTreeMap::<(&str, &str), Vec<char>>::new();
     ensure!(
         m.schema_version == 1 && m.revision > 0,
         "unsupported registry version"
@@ -207,15 +218,15 @@ pub fn validate(r: &Registry) -> Result<()> {
             );
         }
         for ev in &e.evidence {
-            let input = inputs
-                .get(&ev.snapshot)
+            let sources = source_index
+                .get(ev.snapshot.as_str())
                 .context("unknown evidence snapshot")?;
-            let src = input
-                .sources
-                .iter()
-                .find(|s| s.id == ev.span.source)
+            let src = sources
+                .get(ev.span.source.as_str())
                 .context("unknown evidence source")?;
-            let chars: Vec<_> = src.text.chars().collect();
+            let chars = source_chars
+                .entry((ev.snapshot.as_str(), ev.span.source.as_str()))
+                .or_insert_with(|| src.text.chars().collect());
             ensure!(
                 ev.span.start < ev.span.end && ev.span.end <= chars.len(),
                 "invalid evidence range"

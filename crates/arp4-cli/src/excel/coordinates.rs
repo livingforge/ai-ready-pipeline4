@@ -181,6 +181,47 @@ pub fn merges_after(sheet: &Value, operations: &[StructuralOperation]) -> Result
     }
     Ok(Value::Array(merges))
 }
+
+/// Keeps merge coordinates current as structural operations are applied in
+/// order. Singleton areas remain internally so each operation is applied to
+/// the same ranges as prefix recalculation.
+pub(crate) struct MergeState {
+    areas: Vec<Area>,
+}
+
+impl MergeState {
+    pub(crate) fn new(sheet: &Value) -> Result<Self> {
+        let areas = array(&sheet["merges"])?
+            .iter()
+            .map(|merge| Area::parse(string(merge)?))
+            .collect::<Result<_>>()?;
+        Ok(Self { areas })
+    }
+
+    pub(crate) fn apply(&mut self, operation: &StructuralOperation) -> Result<()> {
+        let mut next = Vec::with_capacity(self.areas.len());
+        for &area in &self.areas {
+            if let Some(mapped) = map_area(area, &[operation])? {
+                next.push(mapped);
+            }
+        }
+        self.areas = next;
+        Ok(())
+    }
+
+    pub(crate) fn visible(&self) -> Result<Value> {
+        Ok(Value::Array(
+            self.areas
+                .iter()
+                .filter(|area| {
+                    !(area.columns.is_some_and(|(a, b)| a == b)
+                        && area.rows.is_some_and(|(a, b)| a == b))
+                })
+                .map(|area| area.render().map(|range| json!(range)))
+                .collect::<Result<_>>()?,
+        ))
+    }
+}
 pub fn column_number(name: &str) -> Result<u32> {
     coordinate(&format!("{name}1")).map(|(column, _)| column)
 }
@@ -427,6 +468,36 @@ pub fn resolve_insertion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_merges_match_prefix_recalculation() {
+        let sheet = json!({"name":"S","merges":["A1:B1","D3:E5","G7:H8"]});
+        let operations: Vec<_> = [
+            (OperationKind::DeleteColumns, 2, 1),
+            (OperationKind::InsertColumns, 2, 1),
+            (OperationKind::InsertRows, 4, 2),
+            (OperationKind::DeleteRows, 8, 1),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, at, count))| StructuralOperation {
+            id: format!("op-{index}"),
+            sheet: "S".into(),
+            kind,
+            at,
+            count,
+            style_from: None,
+        })
+        .collect();
+        let mut state = MergeState::new(&sheet).unwrap();
+        for (index, operation) in operations.iter().enumerate() {
+            state.apply(operation).unwrap();
+            assert_eq!(
+                state.visible().unwrap(),
+                merges_after(&sheet, &operations[..=index]).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn cached_axis_deletion_matches_coordinate_mapping() {
