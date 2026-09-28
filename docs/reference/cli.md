@@ -14,10 +14,15 @@
 | --- | --- | --- |
 | doctor | 実装・機能・応答仕様 | 同じ応答 |
 | skills install / documents init | state・件数またはroot | 保存先を確認 |
-| import | 文書ID・候補ID・候補パス・抽出上の注意 | 候補のcontentと対応表 |
+| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無） | 再抽出が必要なら `--force`。既存候補があれば保持する |
+| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み） | 各候補のcontentと対応表。再抽出が必要なら `--force` |
+| remove | 削除した文書ID | 残りの文書をstatusで確認 |
+| discard | 破棄した候補の文書ID | 原本と採用済み文書は保持する |
 | record / review | 対象ID・実行した状態 | 保存されたformation.json / review.json |
-| adopt | 文書ID・本文パス・reviewed | 本文と管理情報 |
-| check / status | 全体の状態別件数・対象のページ | 対象IDで絞る、または次ページ |
+| adopt | 変更時は文書ID・本文パス・needs_review。同じ内容なら `state: skipped`・`reason: no_changes` として候補だけを除去 | 本文と管理情報。変更時は確認後にreviewを記録する |
+| record / adopt / review（フォルダIDまたは `--all`） | recorded・adopted・reviewedのいずれか、skipped（状態・blockers・error・reason付き）、failed（理由付き。1件でもあれば `ok: false` だが他の文書は処理済み）、summaryの件数。処理がなければstateは `unchanged` | 一覧が省略された場合はsummaryとstatusで確認 |
+| record / adopt / review `--dry-run` | planned（`--include-hashes` でcontent付き）・skipped・summary。`--out` 指定時は保存した計画のパス `plan` | 保存された計画（`batch-plan`）の全件 |
+| check / status | 全体の状態別件数・対象のページ。候補には採用済み文書と内容が同じかを示す `no_changes` を含む | 対象IDで絞る、または次ページ |
 | diff | 比較別の全変更件数・差分のページ | 次ページ、または `--out <新規パス>` |
 | export（outなし） | 全体件数・計画のページ・complete | 次ページ、必要な場合は `--full` |
 | export（outあり） | 全体件数・written・Excelとreportのパス | 保存された完全なreport |
@@ -42,9 +47,24 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 `--full` はサイズ制限とページングを解除する明示的な選択で、`--limit/--offset` とは併用できない。読み取り操作で必要な場合に使い、巨大な結果はファイルへリダイレクトする。record/review/import/adopt/exportの書き込みを、応答の再取得のために繰り返してはならない。保存された証跡・本文・reportを読む。exportの書き込み応答はページを返さず、`--out` と `--limit/--offset` の併用を拒否する。
 
-`--include-hashes` はrecord/review/check/status/exportに検証ハッシュを含める。`--full` とは独立しており、完全な検証情報が必要なら両方を指定する。diffのハッシュで表された変更は差分そのものとして維持される。保存形式と検証に用いる完全なSHA-256は変更しない。
+`--include-hashes` はrecord/review/check/status/export/rows/columnsに検証ハッシュを含める。`--full` とは独立しており、完全な検証情報が必要なら両方を指定する。diffのハッシュで表された変更は差分そのものとして維持される。保存形式と検証に用いる完全なSHA-256は変更しない。
 
 ## 行・列の構造変更
+
+行・列の追加と削除は `documents rows insert|delete` と `documents columns insert|delete` で行います。Word文書とPowerPoint文書では `documents rows` が表の外の段落と表の行を追加・削除します（`--sheet` はWordでは `document` などのパーツ名、PowerPointでは `slide-N`・`notes-N` または追加したスライドの操作ID、行は本文YAMLの `rN`）。PowerPointの新しい段落は、書式元（`--style-from`、既定は上の行）の段落と同じ図形に入ります。対象は採用済み文書（文書ID）または候補（`--proposal <文書ID>`）です。1回の実行で、次の手順をまとめて処理します。
+
+- `mappings.yml` の `operations` への操作の追記
+- 追加分の値の、本文への `<操作ID>-<番号>` キーでの書き込み
+- 削除される原本セルの値の、本文からの除去
+
+書き込む前に、変更後の状態を `check` と同じ検証にかけます。VBA を含むブックなど export が拒否する条件も確かめます。拒否した場合は何も書き込みません。文書フォルダは検証済みのコピーと rename で入れ替えるため、途中で失敗しても `mappings.yml` と本文が食い違ったまま残ることはありません。
+
+- 位置: `--after` / `--before` には、原本シートの行番号（`15` または `r15`）、列名（`C`）、先に挿入した行・列のキー（`<操作ID>-<番号>`）、または `last`（値のある最後の行・列）を指定します。行番号は原本シートの番号のままで、記録済みの操作による移動を考慮した `at` はCLIが計算します。値のある最後の行・列より後ろの番号や、記録済みの操作で削除された行・列は `invalid_position` で拒否します。
+- 値: `--values` には、1行（列）につき1オブジェクトのリストを YAML または JSON で渡します（ファイル、または `-` で標準入力）。行は列名、列は `r<行番号>` がキーです。`--count` を省くと項目数が使われ、両方を指定して数が合わなければ `count_mismatch` になります。行の値は、同じ列の既存値の型に揃えます。基準は `--style-from` の行の値で、空ならその上で最も近い値です。文字列の列の数値は文字列に、日付書式の列の `YYYY/MM/DD` や `YYYY-MM-DD` はシリアル値にします。揃えられない値は `value_type_mismatch` で拒否します。変換した値は応答の `converted` に返します。追加する列の値は、渡したまま保存します。
+- 書式: `--style-from` を省くと、挿入位置の上の行を使います（Excelと同じ）。書き戻しでは、その行の空のセルを含む全セルの書式を追加行に写し、`dimension` を追加行まで広げます。
+- 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返し、何も書き込みません。同じIDで設定や値が違う場合は `operation_id_conflict` です。`--base` には `check --include-hashes` の `content` を渡します。その後に文書が変わっていれば `base_changed` で拒否します。
+- 応答: 成功時は `state`（`written`、`--dry-run` なら `planned`、再実行なら `unchanged`）、`operation`、`span`（反映後の最初と最後の行・列）、`keys`、`converted`、`neighbors`（行の操作のみ。前後にある本文の行）、`check`（書き込み後の検証状態）、`next_actions` を返します。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`structural_edit_unsupported`、`validation_failed`。
 
 `documents export` は本文YAMLの追加・削除を、管理側 `mappings.yml` の `operations` と組み合わせてExcelへ反映できます。対応する操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns` です。各操作には `id`、`sheet`、`reason`、`at`、`count` を指定し、行の追加時は必要に応じて `style_from` で書式をコピーする元の行を指定します（非表示・折りたたみはコピーしません）。追加した列はExcelと同じく左の列の書式を引き継ぐため、列の操作には `style_from` を指定できません。
 
@@ -52,7 +72,7 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 結合範囲の内側への挿入は、Excelと同じく結合を広げます。広がった結合の左上以外になるセルはExcelに表示されないため、そこへの書き込みは検証と書き戻しで拒否します。値は結合の左上に書くか、結合の外に行・列を追加してください。
 
-構造変更のexport reportには、反映した `operations`、値の `changes`、削除された原本セルの `deleted_cells` が保存されます。同一シートのA1形式の数式参照は移動し、数式キャッシュは無効化されます。既存のDrawing XMLにある画像・図形のセルアンカーも行・列操作に追従します。
+構造変更のexport reportには、反映した `operations`、値の `changes`、数式の `formula_changes`（原本の位置 `cell` と出力での位置 `final_cell`）、削除された原本セルの `deleted_cells` が保存されます。全シートの数式参照・名前定義・テーブル・条件付き書式・入力規則は移動し、移動した数式のキャッシュは無効化されます。既存のDrawing XMLにある画像・図形のセルアンカーも行・列操作に追従します。
 
 PNG画像は、文書の `assets/` に置いたファイルを `add_image` 操作から追加できます。`asset` は `assets/image001.png`、`anchor.from.cell` と `anchor.to.cell` は配置範囲を指定します。画像追加後のExcelは `export --out` では `.arp/cache/export/` に生成されます。原本更新は `documents apply` を使います。画像の回転・トリミング・絶対座標・図形編集・グラフ参照の変更は未対応です。
 
@@ -68,13 +88,37 @@ operations:
       to: {cell: F15}
 ```
 
+## スライドの追加・削除
+
+PowerPoint文書のスライドは `documents slides insert|delete` で追加・削除します。行の操作と同じく、採用済み文書（文書ID）または候補（`--proposal <文書ID>`）を対象に、`mappings.yml` の `operations` への追記と本文のページの追加・削除を1回の実行で行い、`check` と同じ検証と export の事前確認に通った場合だけ書き込みます。
+
+- 追加: `documents slides insert <文書ID> --from <スライド> --after|--before <スライド>` は、`--from` のスライドを PowerPoint の「スライドの複製」と同じく複製して、指定した位置に置きます。追加したスライドの名前は操作ID（`--id`、省略時は `add-slide-<番号>`）です。本文には `content/<操作ID>.yml` を作り、複製元のページの現在の値（編集済みの値を含む）を写します。複製元にノートがあれば、ノートも複製して `content/notes-<操作ID>.yml` を作ります。追加したスライドの文字は、このページの `rN/A` を通常どおり編集して書き戻します。
+- 削除: `documents slides delete <文書ID> --slide slide-<番号>` は、原本のスライドを、そのノートと本文のページとともに削除します。追加したスライドは削除せず、それを追加した操作を取り除いてください。
+- スライドの指定: 原本のスライドは `slide-<番号>`（原本での番号）、追加したスライドは操作IDで指定します。番号は操作後も変わりません。操作は記録順に適用し、先の操作で削除したスライドや後の操作で追加するスライドは指定できません。最後の1枚は削除できません。
+- 複製する部品: レイアウト・マスター・画像・動画・ハイパーリンク先は元のスライドと共有し、グラフ（埋め込みブックを含む）・SmartArt・埋め込みオブジェクト・ノートなどそのスライドだけの部品は新しい名前で複製します。コメントは元のスライドへのレビューのため複製しません。セクションは隣のスライドと同じセクションに入ります。
+- 削除する部品: スライドとそのスライドからしか参照されない部品（ノート・グラフ・コメント等）を取り除き、セクション・目的別スライドショー・アウトライン表示の一覧からも外します。
+- 拒否: 他のスライドのハイパーリンクや動作設定から参照されているスライドの削除と、目的別スライドショーが空になる削除は `structural_edit_unsupported` で拒否します。リンクを PowerPoint で外してから削除してください。操作IDがスライド名・ノート名と重なる場合、数字だけの場合、存在しないスライドを指定した場合は `invalid_slide` です。
+- 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返します。同じIDで設定が違う場合は `operation_id_conflict` です。`--base` と `--dry-run` は行の操作と同じです。
+- 応答: 成功時は `state`、`operation`、`added_pages`・`removed_pages`（追加・削除した本文ファイル）、`slides`（操作後のスライドの順序）、`check`、`next_actions` を返します。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`（PowerPoint以外の文書）、`source_changed`、`invalid_reason`、`invalid_operation_id`、`operation_id_conflict`、`invalid_slide`、`page_exists`、`structural_edit_unsupported`、`validation_failed`。
+
+記録される操作は次の形です。`insert_slide` は `after` と `before` のどちらか一方を持ちます。
+
+```yaml
+operations:
+  - {id: cover, kind: insert_slide, from: slide-1, before: slide-1, reason: 表紙を追加}
+  - {id: del-slide-1, kind: delete_slide, slide: slide-3, reason: 不要なスライド}
+```
+
+export は出力を読み直し、スライドとノートの順序と文字列が操作と編集どおりであることを確かめてから書き込みます。export report の `slide_order` に出力のスライドの順序を記録します。
+
 ## 作業状態
 
 | check/statusのstate | 意味 |
 | --- | --- |
 | needs_record | 候補が未記録、または記録後に変更された。実際の成形後にrecordする |
-| ready_to_adopt | 候補の現在内容の記録があり、現在の検査で採用を妨げる条件がない。担当者が内容を確認してadoptする |
-| needs_review | 採用済み文書が未レビュー、またはレビュー後に変更された |
+| ready_to_adopt | 候補の現在内容の記録があり、現在の検査で採用を妨げる条件がない。adoptで現在版にする |
+| needs_review | 採用直後、またはレビュー後に変更された。確認した担当者がreviewする |
 | reviewed | 現在内容のレビュー記録がある |
 | blocked | blockersにsource_changed / unresolved_mappings / authority_changedがある |
 | invalid | 証跡や文書構造の検証に失敗。errorを確認する |

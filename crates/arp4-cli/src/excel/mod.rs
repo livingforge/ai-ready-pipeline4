@@ -3,12 +3,16 @@ pub use coordinates::{
     resolve_insertion,
 };
 mod coordinates;
+pub(crate) use coordinates::axis_deleted;
 use coordinates::*;
 pub use operations::{parse_image_operations, parse_operations};
 mod operations;
 pub use drawings::validate_image_asset;
 mod drawings;
 use drawings::*;
+pub use formula_edit::check_formula;
+mod formula_edit;
+use formula_edit::*;
 mod import;
 mod visuals;
 mod worksheet;
@@ -17,9 +21,11 @@ mod package;
 mod references;
 use references::*;
 mod relocation;
+mod sheet_objects;
 use package::*;
-pub(crate) use package::{write_archive, write_unchanged};
+pub(crate) use package::{write_archive, write_archive_without, write_unchanged, xml_attr};
 use relocation::*;
+use sheet_objects::*;
 mod render;
 #[cfg(windows)]
 mod render_native;
@@ -27,7 +33,9 @@ mod writeback;
 pub use render::render;
 #[cfg(windows)]
 pub use render_native::worker as render_worker;
-pub use writeback::ensure_not_table_label;
+pub use table_labels::{ensure_table_label_edit, ensure_unique_table_headers, table_label};
+mod table_labels;
+use table_labels::*;
 
 use crate::data::*;
 use anyhow::{Context, Result, bail, ensure};

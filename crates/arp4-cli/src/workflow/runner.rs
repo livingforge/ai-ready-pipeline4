@@ -355,7 +355,8 @@ impl Workflow {
             for path in paths {
                 fs::remove_file(path)?;
             }
-            fs::remove_dir(directory)?;
+            fs::remove_dir(&directory)?;
+            crate::data::remove_empty_directories(directory.parent().unwrap(), &self.store.root);
         }
         Ok(())
     }

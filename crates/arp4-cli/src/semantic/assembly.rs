@@ -5,7 +5,7 @@ pub(super) fn span_in(input: &Input, value: &Value, rows: &[&Source]) -> Result<
         .as_str()
         .or_else(|| value["source"].as_str())
         .context("evidence selector required")?;
-    if let Some((document, reference)) = alias.split_once('/') {
+    if let Some((document, reference)) = alias.rsplit_once('/') {
         ensure!(
             value.is_object(),
             "cross-document evidence requires an exact quote"

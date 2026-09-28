@@ -11,28 +11,48 @@
 
 ## 文書ワークフロー
 
-原本は既定で `docs/`、設定は `.arp/config.yml`。初期化は既存docsやAGENTS.mdを変更しない。採用データは `.arp/documents/<文書ID>/`、候補は `.arp/changes/`。原本コピーと版別保存は作らない。原本・変換結果・要件や判断をGitへコミットする。`.arp/work/` と `.arp/cache/` はGit対象外。
+利用者が取り込みをAIに委任した場合は、原本の配置と初期化を確認し、import、候補の成形と検査、record、adoptまで進める。各CLI段階のたびに利用者を呼び戻さず、処理件数、採用済み文書、確認が必要な文書と原本位置・理由をまとめて報告する。取り込みの失敗・未対応形式、原本でしか確認できない未抽出情報、曖昧な対応、検査のblockers、判断に必要な権限や情報の不足は対象文書を明示して利用者へ確認する。確認できない内容を読めたことにしない。
+
+adoptは候補を現在版にする操作であり、確認済みの証跡ではない。採用直後の状態は `needs_review`。AIが実際に内容を確認した場合は実際の確認者名でreviewを記録できるが、人による確認を行っていない文書を人の名前でreviewしない。利用者に確認を求める場合は、該当文書と確認箇所・理由を提示し、その文書のreviewを残す。未レビュー文書が残る場合は件数を報告する。
+
+原本は既定で `docs/`、設定は `.arp/config.yml`。初期化は既存の原本やAGENTS.mdを変更せず、Gitに改行を変換させないためsourcesフォルダと `.arp/` の `.gitattributes` に `* -text` を追記する（削除しない）。文書IDはsourcesフォルダ（既定 `docs/`）からの原本の相対パス（拡張子込み、例 `xxx/yyy/仕様.xlsx`）で、採用データは `.arp/documents/<文書ID>/`、候補は `.arp/changes/<文書ID>/` と原本のフォルダ構造をそのまま映す。候補は文書ごとに1つで、再importで置き換わる。原本コピーと版別保存は作らない。原本・変換結果・要件や判断をGitへコミットする。`.arp/work/` と `.arp/cache/` はGit対象外。
 
 最初に `arp4 doctor` を確認する。`implementation: rust` の場合はこの節の範囲で作業する。
 起動できない場合は [arp4-setup](../../arp4-setup/SKILL.md) を参照する。
 
-- 初期化は `documents init --root <project>`、取り込みは `documents import <原本> --id <文書ID>`。
+- 初期化は `documents init --root <project>`、取り込みは `documents import <原本またはフォルダ>`。原本はsourcesフォルダの中に置く（外は拒否）。ファイル・フォルダのどちらも、ハッシュが同じ候補・採用済み文書はunchangedとして保持する。ファイル応答の `pending_proposal` とフォルダ応答の `pending_proposals` は残っている候補を示す。再抽出するときだけ `--force` を使う。フォルダ指定は配下の対応形式をまとめて取り込み、未対応形式はskipped、原本が消えた文書はmissingとして返す。破損などで読めない原本はfailedに文書IDと理由を返し、他の原本の取り込みは続ける。failedがあれば `ok: false`・終了コード2になるので、該当原本を直して再importする。不要な候補だけを消すときは `documents discard <文書ID>` を使う。
   対象は `.xlsx` / `.xlsm` / `.xltx` / `.xltm` のセル値・数式原文・結合範囲。PNG画像は `assets/` の画像を `add_image` 操作でセル範囲に追加できる。埋込み画像はWindowsで取込時にOCRを自動実行し、結果または失敗理由を抽出JSONのassetsへ記録する。メモ・スレッドコメント、図形の割り当てマクロ、フォームコントロールのリンク先セル・選択肢範囲は抽出する。図形の意味・ActiveXの設定・印刷情報は未抽出で、R001に記録する。
   未抽出の情報は原本で確認し、読み取れたと扱わない。
-- `.docx` / `.docm` / `.dotx` / `.dotm` / `.pptx` / `.pdf` も同じワークフローで取り込み・同形式出力できる。暗号化（パスワード・IRM・秘密度ラベル）、バイナリ形式（`.xls` / `.xlsb` / `.doc` / `.ppt`）、Strict Open XMLはエラーになる。利用者にOfficeで保護を外すか標準のOpen XML形式で保存し直すよう依頼し、読み取れたと扱わない。Wordは本文・表・テキストボックス・ヘッダー・脚注・コメント等を段落と表のセル単位で扱い、表は行・列・結合と表の範囲を保つ（`rN` は段落・表の行の番号、列は表の列）。見出し行は推定なので構造レビューで確認する。PPTXはスライド本文・表のrun単位の文字列、PDFはページのテキスト描画文字列を扱い、その `rows/rN/A` は文字列の通し番号。いずれも物理セルではない。Wordの書き戻しは変更箇所のrunだけを書き換え、段落・改行・タブをまたぐ変更は拒否する。既存文字列を編集し、空にするには `""` を使う。構造操作はExcel限定。PDFの画像/OCR・Form XObject・注釈・フォーム、PPTXのノート・マスター等は未抽出。PDFは原フォントで表現できない文字と改行・タブを拒否する。Wordのフィールドの表示結果（日付・ページ番号・目次等）はWordが再計算するため書き戻しを拒否する。Excelのマクロシート・ダイアログシート・グラフシートは抽出せずR001にシート名を記録し、原本の部品は保持する。行・列の追加削除は全シートの数式・名前付き範囲・条件付き書式・入力規則・テーブル・ピボット参照元・グラフ系列等をExcelと同じ結果になるよう移動する。VBA・マクロシート・ダイアログシート・操作シート上のフォームコントロール/コメントを含むブックと、Excelも拒否する変更（テーブル見出し行の削除、ピボットや配列数式を横切る変更等）はexportの計画時点で拒否する。その場合は行・列の変更をExcelで行い再取り込みする（セル値の編集は可能）。文字のはみ出しや再組版は出力ファイルを開いて確認する。
+- 原本の移動・リネーム・削除は、別文書の追加と旧文書の削除として扱う。原本を動かしたら `documents import docs` で新しいパスを取り込み、missingの文書を `documents remove <文書IDまたはフォルダ>` で削除する（原本が残っていれば拒否）。旧文書の根拠・承認は引き継がないため、新しいextractionでcaptureし直してレビューする。
+- `.arp/documents/<文書ID>/` 以下のパスが200文字を超える原本と、Windowsで使えない名前（末尾の `.`・空白、`CON` 等の予約名）の原本は取込を拒否する。原本のフォルダ名・ファイル名の変更を利用者に依頼する。
+- `.docx` / `.docm` / `.dotx` / `.dotm` / `.pptx` / `.pdf` も同じワークフローで取り込み・同形式出力できる。暗号化（パスワード・IRM・秘密度ラベル）、バイナリ形式（`.xls` / `.xlsb` / `.doc` / `.ppt`）、Strict Open XMLはエラーになる。利用者にOfficeで保護を外すか標準のOpen XML形式で保存し直すよう依頼し、読み取れたと扱わない。Wordは本文・表・テキストボックス・ヘッダー・脚注・コメント等を段落と表のセル単位で扱い、表は行・列・結合と表の範囲を保つ（`rN` は段落・表の行の番号、列は表の列）。見出し行は推定なので構造レビューで確認する。PPTXもWordと同じく、スライドとノートの段落と表のセルを扱う（`rN` は段落・表の行の番号）。PDFはページのテキスト描画文字列を扱い、その `rows/rN/A` は文字列の通し番号。いずれも物理セルではない。WordとPPTXの書き戻しは変更箇所のrunだけを書き換える。段落内の改行・タブは追加・削除・置換できるが（YAMLの `\n` は段落内の改行として書く）、段落の分割・結合は拒否する。既存文字列を編集し、空にするには `""` を使う。行の追加削除はExcelとWord・PowerPoint（段落・表の行）、スライドの複製・削除はPowerPoint、列の追加削除と画像はExcel限定。PDFの画像/OCR・Form XObject・注釈・フォーム、PPTXのマスター等は未抽出（ノートは全スライドの後に `notes-N` として抽出し、書き戻せる）。PDFは原フォントで表現できない文字と改行・タブを拒否する。Wordのフィールドの表示結果（日付・ページ番号・目次等）はWordが再計算するため書き戻しを拒否する。文書データと連携したテキストのコンテンツコントロール（表紙の表題等）は、連携先データと同じデータの他のコントロールもまとめて書き換える。Excelのマクロシート・ダイアログシート・グラフシートは抽出せずR001にシート名を記録し、原本の部品は保持する。行・列の追加削除は全シートの数式・名前付き範囲・条件付き書式・入力規則・テーブル・ピボット参照元・グラフ系列等をExcelと同じ結果になるよう移動する。メモ・スレッドコメント・フォームコントロール（アンカーとリンク先セル）も移動する。VBA・マクロシート・ダイアログシート・ActiveXコントロールを含むブックと、Excelも拒否する変更（テーブル見出し行の削除、ピボットや配列数式を横切る変更等）はexportの計画時点で拒否する。その場合は行・列の変更をExcelで行い再取り込みする（セル値の編集は可能）。文字のはみ出しや再組版は出力ファイルを開いて確認する。
 - `.txt` / `.md` / `.csv` / `.tsv` はUTF-8（BOM可、最大32 MiB）の正式な原本としてimportし、extractionからspec captureで出典化できる。TXTは行、Markdownは見出し・段落・リスト・表・コード等のブロック、CSV/TSVはレコード・列単位で抽出する。Markdown記法・複数行本文を保持し、positionに見出し階層・行範囲・原本基準のUTF-8バイト範囲を持つ。MarkdownのA1等はブロック番号、CSV/TSVのA1等は列・レコード番号で物理行ではない。CSV/TSVは全項目文字列、先頭行も通常レコードとして扱い、先頭ゼロ・空欄・引用符内改行を保持する。リンク先・画像は読まない。TXT/Markdownは最大1,048,576行、CSV/TSVは16,384列・1,048,576フィールド。非UTF-8・NUL・不正CSVを拒否し、型や文字コードは推測変換しない。
-- 本文は原本を直接編集し、同じ文書IDで再import→候補のdiff→record→adoptする。contentのYAMLは確認用の派生ビューで、本文変更・構造操作・export/applyは未対応。再取込候補の `documents diff <候補ID>` はsource_impactで位置移動・文脈/順序変更・本文変更候補・追加削除・曖昧な対応を示し、registryがあれば同じ見出し範囲と依存する項目をaffected_entriesに示す。modified_candidate・ambiguousは対応を自動確定しない。根拠と承認は自動移行せず、再取込後はcaptureを更新して必要なレビューを行う。参照資料だけに使う--referenceとは区別する。
-- importのJSONにある `proposal_id` と `proposal` を使い、本文YAMLと対応表を確認して実際の成形を行う。
-  Word/PPTX/PDFは置換文字列に改行・タブを含めず、既存runを個別に編集する。
-  型、page_id、既存の行・列、field ID、セル対応を維持する。行・列の追加削除は管理側 `mappings.yml` に `insert_rows` / `delete_rows` / `insert_columns` / `delete_columns` をreason付きで記録する。本文の追加行・列は `<操作ID>-<番号>`（1始まり）のキーで書き、既存の `r<行番号>`・列名に追加分の値を入れない。挿入で広がる結合の左上以外になるセルへの値は拒否されるため、結合の左上に書くか結合の外に挿入する。本文の追加行・列のmappingはCLIが再生成する。
-- `documents check --proposal <候補ID>` と `documents diff <候補ID>` で確認し、
-  実際に作業したactor/model/promptを `documents record <候補ID> --model <モデル> --actor <担当> --prompt <ファイル>` で記録する。
-  実施していない成形を記録しない。権限のある担当者が `documents adopt <候補ID> --reviewer <担当>` を行う。
-- 採用後は既存の本文の値を同じ型で編集し、`documents check <文書ID>`、`documents diff --document <文書ID>`、
+- 本文は原本を直接編集し、同じパスのまま再import→候補のdiff→record→adoptする。contentのYAMLは確認用の派生ビューで、本文変更・構造操作・export/applyは未対応。再取込候補の `documents diff <文書ID>` はsource_impactで位置移動・文脈/順序変更・本文変更候補・追加削除・曖昧な対応を示し、registryがあれば同じ見出し範囲と依存する項目をaffected_entriesに示す。modified_candidate・ambiguousは対応を自動確定しない。根拠と承認は自動移行せず、再取込後はcaptureを更新して必要なレビューを行う。参照資料だけに使う--referenceとは区別する。
+- importのJSONにある `document_id` と `proposal` を使い、本文YAMLと対応表を確認して実際の成形を行う。
+  WordとPPTXは段落内の改行・タブを編集できる。PDFは改行・タブを置換文字列に含めず、既存の文字列を個別に編集する。
+  型、page_id、既存の行・列、field ID、セル対応を維持する。
+- Excel・Word・PowerPointの行（Word・PowerPointは表の外の段落と表の行。PowerPointの新しい段落は書式元の段落と同じ図形に入る）とExcelの列の追加削除は `mappings.yml` と本文YAMLを手で編集せず、`documents rows insert|delete` / `documents columns insert|delete` で行う（候補は `--proposal <文書ID>`、採用後は文書ID）。1回の実行で操作をreason付きで記録し、追加分の値を本文の `<操作ID>-<番号>` キーへ書き、削除した行・列の値を本文から除く。checkと同じ検証に通らなければ何も書き込まず、成功時は応答の `check` に結果を返す。
+  - 位置は `--after` / `--before` に、原本シートの行番号（`15`・`r15`）か列名（`C`）、先に挿入した行・列のキー（`<操作ID>-<番号>`）、または `last`（値のある最後の行・列）で指定する。削除は `--from` に原本の行・列を指定する。
+  - 値は `--values <YAML/JSONファイル>`（`-` で標準入力）に1行（列）1オブジェクトのリストで書く。行は列名がキー（`- {B: "8", C: 2025/11/21}`）、列は `r<行番号>` がキー。`--count` を省くと項目数になる。行の値は同じ列の既存値（`--style-from` の行、空ならその上で最も近い値）の型に揃う（文字列の列の数値は文字列に、日付の列の `YYYY/MM/DD` は日付に）。揃えられない値は拒否される。変換は応答の `converted` で確認する。先頭のゼロなど、表記を保つ値は引用符で囲む。
+  - 書式は既定で挿入位置の上の行から写す（Excelと同じ）。見出しの直下に挿入するときは `--style-from <データ行>` を指定する。
+  - 先に `--dry-run` で `operation`・`span`・`neighbors`（挿入・削除位置の上下の行）・`converted` を確認する。`--id <操作ID>` を付ければ同じコマンドの再実行は `unchanged` になり、二重には挿入されない。
+  - 他の担当と並行する場合は `documents check <文書ID> --include-hashes` の `content` を `--base` に渡す。その後に文書が変わっていれば `base_changed` で拒否される。
+  - PowerPointのスライドは `documents slides insert <文書ID> --from <スライド> --after|--before <スライド> --id <操作ID> --reason <理由>` で複製し、`documents slides delete <文書ID> --slide slide-<番号> --reason <理由>` で削除する。原本のスライドは `slide-<番号>`（原本での番号のまま）、追加したスライドは操作IDで指定する。複製すると `content/<操作ID>.yml`（ノートがあれば `content/notes-<操作ID>.yml`）に複製元の値が写るので、そのページを編集して文字を変える。コメントは複製しない。追加したスライドを消すときは削除ではなく操作を取り除く。他のスライドからリンクされたスライド、目的別スライドショーが空になる削除は `structural_edit_unsupported` で拒否されるので、PowerPointでリンクを外してもらう。
+  - 拒否は `error.code` で判断する。`sheet_not_found`（`error.sheets` にシート一覧）、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`operation_id_conflict`、`merged_non_anchor`（挿入で広がる結合の左上以外への値。結合の左上に書くか、結合の外に挿入する）、`structural_edit_unsupported`（VBA・マクロシート・ActiveXコントロール等を含むブック、テーブル見出しの切断など。Excelで編集して再importする）、`invalid_document`（編集前の文書がcheckに通らない）、`validation_failed`。
+  - 取り消しのコマンドはない。Gitで文書フォルダを戻す。
+- `documents check --proposal <文書ID>` と `documents diff <文書ID>` で確認し、
+  実際に作業したactor/model/promptを `documents record <文書ID> --model <モデル> --actor <担当> --prompt <ファイル>` で記録する。
+  実施していない成形を記録しない。委任された範囲で `documents adopt <文書ID>` を行い、確認後に `documents review <文書ID> --reviewer <実際の確認者>` を行う。
+- record・adopt・reviewは文書IDの代わりにフォルダID、または `--all` で一括処理できる。対象はその操作を待つ状態（`needs_record`・`ready_to_adopt`・`needs_review`）の文書だけで、他は `skipped` に状態・blockers・errorを付けて返す。`failed` があれば他を処理したうえで終了コード2になり、同じコマンドの再実行で残りだけを処理する。
+  - 一括処理では先に `--dry-run --out <計画.json>` で対象とcontentハッシュを保存し、確認後に `--expect <計画.json>` を付けて実行する。利用者から一括処理を委任されている場合はAIが計画を確認し、判断が必要な文書だけ利用者へ示す。計画外の文書（`not_planned`）と計画後に内容が変わった文書（`changed_since_plan`）は処理されない。
+  - 一括recordは全件に同じactor/model/promptを記録する。全件で実際に同じ作業をした場合だけ使う。一括adopt・reviewも利用者から与えられた権限の範囲で行う。reviewは実際に確認した文書だけに記録する。
+- 採用後は既存の本文の値を同じ型で編集し（行・列の追加削除は上記のコマンドで行う）、`documents check <文書ID>`、`documents diff --document <文書ID>`、
   `documents review <文書ID> --reviewer <担当>`、`documents export <文書ID> --out <プロジェクト>/.arp/cache/export/<新規名>.<原本と同じ拡張子>` の順で確認・反映する。
-  文字列の先頭が `=` でも数式化しない。既存数式の直接変更、図形操作、画像の回転・トリミング・絶対座標は拒否される。`add_image` は `anchor.from.cell` / `anchor.to.cell` で配置する。構造変更時は同一シートのA1形式の数式参照と既存Drawingのセルアンカーを移動し、Excelで再計算する。
+  exportで出力した文書と `.report.json` は、reportで反映内容を確認し終えたら削除する。利用者が出力文書そのものを求めた場合だけ残す。
+  文字列の先頭が `=` でも数式化しない。既存の数式は `formulas` 表の数式原文（`=` から始まるファイル内の表記。新しい関数は `_xlfn.` 付き）を原本の行・列の位置で編集すると置き換わり、行・列操作では参照が移動する。スピルする関数・`LET`・`LAMBDA`・`#`・`@` と値セルの数式化はExcelで行う。Excelテーブルの見出しセルの編集は列名の変更になり、ブック内の構造化参照も書き換わる（空・重複・改行を含む列名は拒否）。集計行のラベルも編集できる。図形の文字は `shapes` 表の `text` を改行の数を変えずに編集する。図形の追加・削除・移動、画像の回転・トリミング・絶対座標は拒否される。`add_image` は `anchor.from.cell` / `anchor.to.cell` で配置する。構造変更時は全シートの数式参照・名前定義・テーブル・条件付き書式・入力規則・結合・既存Drawingのセルアンカーを移動し、Excelで再計算する。移動した数式の計算結果は空になり、Excelで開くと再計算される。
 - 原本へ反映する場合はレビュー後に `documents apply <文書ID>`。原本変更を検出すると拒否する。成功後は再抽出した候補が `needs_record` になり、確認・record・adoptを行う。`diff --document` はGitのHEADとの比較なので先に基準をコミットする。
 - 中断時は `documents status`。`resume`、`edit-base/plan` は未対応なので呼び出さない。
+- 設計情報を探す前に `documents search-refresh` で索引を作成・更新する。文書の採用・削除・編集後や外部で原本を変更した後にも再実行する。`documents search "検索語"` は保存済み索引だけを読み、原本の変更を確認しない。採用済み抽出の段落・表の行を検索し、原本位置・抽出版・最後の索引更新時点の原本とレビューの状態を返す。`--document <文書IDまたはフォルダ>` で絞り、続きは同じ条件で `--offset <page.next_offset> --revision <revision>`。`omitted_fields` があれば絞り込みと `--full` で本文・出典を確認する。`failed` があれば不完全な検索結果であり「該当なし」と扱わない。検索順位を仕様の承認とみなさない。索引はローカルキャッシュで、用語辞書は `.arp/search-synonyms.yml`。詳細は docs/guides/document-search.md。
   型や構造の変更が必要なら未対応と報告し、検証を回避しない。
 - `--root` は全コマンドで指定できる。importの相対パスはプロジェクト基準、prompt・outの相対パスは実行ディレクトリ基準。
 
@@ -44,6 +64,15 @@ OCR実行済みの空の結果も有効とし、未実施・OCR不可とは区�
 
 - Excelの構造解釈は `documents structure-read <ID> --out <整理YAML>` で編集用ビューを取り出し、`spec structure check/read/region/render/review` で確認してから `documents structure-save <ID> --input <整理YAML>` で文書モデルのmappingsへ修正を保存する。まずreadの簡潔なdrawingsとimage_pathsを使い、図形の文字・形状・位置・明示接続先を読む。drawingsのimage_idをimage_pathsのidと対応させ、pathの画像を直接開く。画像IDは文書の読取結果内の識別子であり、visualのevidenceにはIDではなく画像のsource参照を記録する。同じ画像の複数配置はIDを共有するがsourceは異なる。画像ファイル名は短い連番で、ハッシュ検証はCLI内部で行う。図・画像の関係はvisualのgraphへ根拠付きで整理する。表の説明を別text elementへ分離する場合は、tableのdescriptionsから参照し、セルを二重所属させない。
 - 見出し・結合・図形の配置等を描画して確認する場合は `spec structure --root <root> render --extraction <抽出JSON> --structure <整理YAML> --element <elementまたはvisualのID> --id <画像領域ID> --image evidence/<新規名>.png --range A1:H30` を呼び、返されたimage_pathを開く。range省略時はvisualのセルアンカー範囲、elementはシートのUsedRangeを使う。アンカーから範囲を決められないvisualはrangeを明示する。図形を個別に切って関係を失わないよう、図のまとまりを含める。WindowsとデスクトップExcelが必要で、クリップボードは画像に置き換わる。大きすぎる範囲は分割し、外部で用意したPNGはregionで登録する。実際に画像を見てからvision読取を記録し、描画成功だけで確認済みにしない。semantic自動runnerへの画像自動添付は未対応。画像取得・閲覧できなければ未確認・読取不能を残す。acceptedレビュー後に `documents structure-save <ID> --input <整理YAML>` と `documents review <ID> --reviewer <担当>` を行い、`spec capture --root <root> --extraction <抽出JSON> --document <ID> --out <入力JSON>` で意味抽出に接続する。編集後は再capture・workflow update・再レビューが必要。整理YAMLは派生ビューで、原本への書き戻しには使わない。詳しくは docs/guides/document-structure.md。
+- 原本が変わると、再importで採用済みの版の構造解釈を新版へ移す。`documents apply` は書き戻した行・列の操作の位置と数で移す。Excel・Word等で原本を直接編集した場合は、旧・新の抽出結果の行・列を値で照合して挿入・削除を求め、同じ処理で移す（段落の追加・削除も行として扱う）。結果は `apply`・`import` 応答の `structure` と候補の `mappings.yml` の `interpretation.carried` に記録され、`by` が `apply` か `alignment` を示す。
+  - 挿入・削除位置より後ろのセルはアドレス・ID・見出しのつながりごと移り、削除した行・列のセルとそれへのつながりは除かれる。
+  - 表の範囲の内側への挿入、または表の最終行の直後への挿入で `style_from` が表内の行（`rows insert` と直接編集の照合の既定）なら、追加行・列は表に入り、書式元の行（なければ隣の行・列）と同じ役割・見出しのつながりを持つ。広がった結合の見出しはそのまま、他の見出しは追加行・列の同じ位置のセルへつながる。値のないセルは要素に入らない。
+  - 値が変わったセルは要素・役割・見出しを保ち、`text_state` を新しい値から付け直す（読取者が `unreadable`・`not_examined` にしたセルは `not_examined`）。新しいセルは、機械推定がまとめる既存の要素、なければ範囲に含む最も小さい要素に加わり、隣のセルの役割を写す（表を本文に訂正した範囲の新しい行も本文のまま）。新しいセルだけの表や、どの範囲にも入らないセルは機械推定になる。
+  - 画像・図形の読取結果は写っている内容（画像のハッシュ、図形の文字・形状）で対応付ける。移動や他の画像の追加では失われず、内容が変わったものだけ未確認に戻る。画像領域は範囲がまるごと移動し写っているセルが変わらなければ移動後の範囲で残る。
+  - `carried.affected` に影響を受けた要素・図形・画像領域とその理由（`moved`・`added`・`removed`・`changed`・`inferred`）が1件ずつ入る。要素の項目は `cells` に対象セルのIDを持つ（`moved` は件数だけ `carried.moved`）。
+  - `carried.review` が `kept` なら構造のレビューはacceptedのまま（`apply` の操作だけで、値の変更がない場合）。`pending` でも修正はやり直さない。`affected` を確認し、`documents structure-read <ID> --proposal --out <整理YAML>` → 新しいセルの役割付与と `spec structure review` → `documents structure-save <ID> --proposal --input <整理YAML>` → `documents record` → `documents adopt` の順で候補のまま承認し直す。
+  - 修正記録には機械推定と異なる点だけが入る。構造が推定どおりの要素は読取記録だけが残り、再生のたびに推定し直される（新しい行も推定で表に入る）。値から決まらない `text_state`（`unreadable` 等）はセルのハッシュ付きで残り、値が変わると `not_examined` に戻る。
+  - 引き継げない場合（シート名・構成の変更等）は `structure.reasons` に `not carried:` と理由が入り、修正記録はセル番地で再照合される。`documents status` の `structure_conflicts` と、`structure-read --proposal` 応答の `interpretation.conflicts`（要素ごとのIDと理由）を確認する。
 
 - 操作にはnext/inspect/statusの短い `task_ref` を使える（8桁以上の一意なID接頭辞。曖昧なら拒否）。内部ID・保存ハッシュは維持する。Agent向けのpacket/base/bases/draft revisionは実行ごとの短い参照で、readの値をそのまま使う。ハッシュ計算や別実行からの転用はしない。Git Bashでは `--pointer instructions` や `--pointer packet/sources/rows` のように先頭の `/` を省くとパス変換を避けられる。返されたpointerも先頭の `/` だけ省略してよい。
 - 読取資料は `.arp/config.yml` の `agent_read_format` に従います（省略時 `toon`、選択肢は `toon` / `json`）。Agentは `workflow read` のTOONを直接読み、内部JSONファイルの先読みやJSONへの変換は行いません。JSON設定時はそのJSONを読みます。返信・差分・validate-reply/submit・機械間の受け渡しはJSONです。形式を変更した場合はreadをoffset 0から再開します。
@@ -94,7 +123,7 @@ OCR実行済みの空の結果も有効とし、未実施・OCR不可とは区�
 ## CLI応答の読み方
 
 - 通常実行は成功・失敗とも標準出力の1行JSON。`ok: false` または終了コード2なら `error` と対象の状態を確認する。`ok: true` はコマンド成功であり、成形完了・採用権限・書き戻し可能の保証ではない。
-- check/statusの `items[].state` は `needs_record`（実際の成形後にrecord）、`ready_to_adopt`（権限のある担当者がadopt）、`needs_review`（変更内容を確認してreview）、`reviewed`、`blocked`（blockersを解消）、`invalid`（errorを確認）。採用済み文書の変更にはrecordを再実行しない。
+- check/statusの `items[].state` は `needs_record`（実際の成形後にrecord）、`ready_to_adopt`（委任された範囲でadopt）、`needs_review`（採用直後または変更後で、内容を確認してreview）、`reviewed`、`blocked`（blockersを解消）、`invalid`（errorを確認）。採用済み文書の変更にはrecordを再実行しない。
 - 一覧・差分・export計画は `summary` が全体、`items` が最大20件。`page.next_offset` が数値なら、同じ読み取りコマンドに `--offset <値>` を付けて続ける。`--limit 1..100` で件数を指定できる。読み取り中に文書を変更した場合は先頭から確認し直す。
 - 通常応答は最大16 KiB。`omitted_fields` にあるフィールドや `omitted: true` は未表示であり、空値・変更なしではない。`page.next_offset: null` でも値が省略されていれば全内容を確認したと扱わない。
 - diffの詳細は `items` の `comparison/path/kind/before/after`。大きな値は `documents diff ... --out <新規JSONパス>` で完全な差分を保存し、必要な箇所を読む。exportの `--out` は原本と同形式の文書の書き込みで、応答は件数と `report` のパス。続きの取得のために書き込みコマンドを再実行しない。

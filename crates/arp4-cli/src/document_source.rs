@@ -18,11 +18,19 @@ use std::{
     path::Path,
 };
 
+mod slide_text;
+mod slides;
 mod word;
+
+pub use slides::{
+    SlideOperation, SlidePosition, is_slide_operation, parse_slide_operations, slide_order,
+    slide_view,
+};
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const MATH: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const PRESENTATION: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const MARKUP_COMPATIBILITY: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
@@ -111,25 +119,46 @@ impl Source {
             .and_then(|v| v.to_str())
             .unwrap_or("")
             .to_lowercase();
+        if !is_excel(&format) {
+            ensure!(
+                input_formats().contains(&format.as_str()),
+                "unsupported document format: {format}"
+            );
+            let size = fs::metadata(path)?.len();
+            ensure!(size <= MAX_BYTES as u64, "document exceeds size budget");
+            if matches!(format.as_str(), "txt" | "md" | "csv" | "tsv") {
+                ensure!(
+                    size <= MAX_PAGE as u64,
+                    "text document exceeds 32 MiB size budget"
+                );
+            }
+        }
+        let raw = fs::read(path)?;
+        Self::from_bytes(path, raw)
+    }
+
+    /// Parse bytes already read while checking whether an original changed.
+    pub(crate) fn from_bytes(path: &Path, raw: Vec<u8>) -> Result<Self> {
+        let format = path
+            .extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         if is_excel(&format) {
-            return Ok(Self::Excel(Workbook::open(path)?));
+            return Ok(Self::Excel(Workbook::from_bytes(raw)?));
         }
         ensure!(
             input_formats().contains(&format.as_str()),
             "unsupported document format: {format}"
         );
-        ensure!(
-            fs::metadata(path)?.len() <= MAX_BYTES as u64,
-            "document exceeds size budget"
-        );
+        ensure!(raw.len() <= MAX_BYTES, "document exceeds size budget");
         let native = matches!(format.as_str(), "txt" | "md" | "csv" | "tsv");
         if native {
             ensure!(
-                fs::metadata(path)?.len() <= MAX_PAGE as u64,
+                raw.len() <= MAX_PAGE,
                 "text document exceeds 32 MiB size budget"
             );
         }
-        let raw = fs::read(path)?;
         let (backend, sheets) = if native {
             let text = std::str::from_utf8(&raw)
                 .context("text documents require UTF-8 (optional BOM); convert the original explicitly before import")?;
@@ -182,7 +211,7 @@ impl Source {
                 sheets,
             )
         } else {
-            let parts = office_parts(&raw)?;
+            let parts = office_parts(&raw, false)?;
             let containers = office_containers(&parts, &format)?;
             let mut sheets = vec![];
             for (name, part) in containers {
@@ -191,11 +220,7 @@ impl Source {
                 if word(&format) {
                     sheets.push(word::layout(&xml)?.sheet(&name, &part));
                 } else {
-                    let values = text_nodes(&xml, &format)
-                        .into_iter()
-                        .map(|n| n.text().unwrap_or("").to_owned())
-                        .collect();
-                    let mut sheet = text_sheet(&name, &part, values);
+                    let mut sheet = slide_text::layout(&xml)?.sheet(&name, &part);
                     // A slide hidden from the show is marked like a hidden sheet.
                     if xml.root_element().attribute("show") == Some("0") {
                         sheet["state"] = json!("hidden");
@@ -247,6 +272,7 @@ impl Source {
             Self::Excel(_) => "cells/1",
             Self::Text(doc) if matches!(doc.backend, TextBackend::Native) => "native-text/1",
             Self::Text(doc) if word(&doc.format) => "word-blocks/1",
+            Self::Text(doc) if doc.format == "pptx" => "slide-blocks/1",
             Self::Text(_) => "text-runs/1",
         }
     }
@@ -325,31 +351,114 @@ impl Source {
                 "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。画像・OCR・フォーム・注釈・Form XObject内の文字は未抽出です。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
             }
             Self::Text(doc) if word(&doc.format) => {
-                "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表し、入れ子の表は外側のセルの本文に含めます。書き戻しは変更箇所を含むrunだけを書き換え、段落・改行・タブをまたぐ変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像・OCR・フィールド命令は未抽出です。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
+                "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表し、入れ子の表は外側のセルの本文に含めます。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像・OCR・フィールド命令は未抽出です。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
             }
             _ => {
-                "PPTXの各スライドの本文・表をrun単位で抽出します。A1等は文字列の通し番号です。書式境界は別行です。ノート・マスター・画像・OCR・グラフ内部の文字は未抽出です。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
+                "PPTXの各スライドの本文・表を段落と表のセル単位で抽出し、スライドのノートはスライドの後にnotes-N（Nはスライド番号）として抽出します。表の外の段落は図形をまたいでスライドの上から1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。セル内の段落は改行で表します。ノートのスライド番号・日付・ヘッダー・フッターはノートマスターから表示されるため抽出しません。書き戻しは変更箇所を含むrunだけを書き換え、段落内の改行・タブを追加・削除・置換できます。段落の分割・結合となる変更は拒否し、段落・表の行はdocuments rowsで追加・削除します。スライドはdocuments slidesで複製・削除でき、複製したスライドは操作IDの名前で本文を編集します。マスター・画像・OCR・グラフ内部の文字は未抽出です。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
             }
         }
     }
 
+    /// Rejects row/column `operations` this document cannot take, before any
+    /// output is written: Excel refuses what it cannot move, and Word and
+    /// PowerPoint what they cannot copy or remove (text boxes, section breaks,
+    /// vertical merges). `all` holds every recorded operation, so that rows of
+    /// a slide a slide operation inserts are checked on the slide it copies.
+    pub fn ensure_row_edits_supported(
+        &self,
+        operations: &[crate::excel::StructuralOperation],
+        all: &[Value],
+    ) -> Result<()> {
+        match self {
+            Self::Excel(book) => book.ensure_structural_edits_supported(operations),
+            Self::Text(doc) => {
+                if operations.is_empty() {
+                    return Ok(());
+                }
+                ensure!(
+                    word(&doc.format) || doc.format == "pptx",
+                    "row operations apply to Excel, Word and PowerPoint documents only"
+                );
+                let TextBackend::Office(parts) = &doc.backend else {
+                    bail!("Office document without parts");
+                };
+                let slide_operations = if doc.format == "pptx" {
+                    parse_slide_operations(all, &doc.sheets)?
+                } else {
+                    vec![]
+                };
+                let names: BTreeSet<&str> = operations.iter().map(|o| o.sheet.as_str()).collect();
+                let origins = slides::origins(&slide_operations, &doc.sheets)?;
+                let sheets: BTreeMap<&str, &Value> = doc
+                    .sheets
+                    .iter()
+                    .map(|sheet| Ok((string(&sheet["name"])?, sheet)))
+                    .collect::<Result<_>>()?;
+                for name in names {
+                    let own: Vec<_> = operations.iter().filter(|o| o.sheet == name).collect();
+                    // An inserted slide holds the markup of the slide it copies.
+                    let sheet = sheets
+                        .get(origins.get(name).map(String::as_str).unwrap_or(name))
+                        .with_context(|| format!("{name} is not a page of the document"))?;
+                    let (text, _) = part_text(&parts[string(&sheet["part"])?])?;
+                    let xml = Document::parse(&text)?;
+                    let values = word::InsertedText::new();
+                    if word(&doc.format) {
+                        word::layout(&xml)?.restructure(&text, &own, &values)
+                    } else {
+                        slide_text::layout(&xml)?.restructure(&text, &own, &values)
+                    }
+                    .with_context(|| name.to_owned())?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Rejects slide `operations` before any output is written: they apply to
+    /// PowerPoint only, and a slide another part links to cannot be deleted.
+    pub fn ensure_slide_edits_supported(&self, operations: &[Value]) -> Result<()> {
+        if !operations.iter().any(is_slide_operation) {
+            return Ok(());
+        }
+        let Self::Text(TextSource {
+            format,
+            sheets,
+            backend: TextBackend::Office(parts),
+            ..
+        }) = self
+        else {
+            bail!("slide operations apply to PowerPoint presentations only");
+        };
+        ensure!(
+            format == "pptx",
+            "slide operations apply to PowerPoint presentations only"
+        );
+        let operations = parse_slide_operations(operations, sheets)?;
+        slides::restructure(parts, sheets, &operations)?;
+        Ok(())
+    }
+
+    /// Writes the edited document to `output`; `formulas` are Excel formula
+    /// edits (see [`Workbook::patch_with_operations_and_assets`]).
     pub fn patch(
         &self,
         output: &Path,
         operations: &[Value],
         changes: &[Value],
+        formulas: &[Value],
         assets: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Value> {
         match self {
             Self::Excel(book) => {
-                book.patch_with_operations_and_assets(output, operations, changes, assets)
+                book.patch_with_operations_and_assets(output, operations, changes, formulas, assets)
             }
             Self::Text(doc) => {
                 ensure!(
-                    operations.is_empty() && assets.is_empty(),
-                    "text formats support existing text edits only; structural/image operations are Excel-only"
+                    assets.is_empty() && formulas.is_empty(),
+                    "text formats support text edits only; images and formulas are Excel-only"
                 );
-                doc.patch(output, changes)
+                doc.patch(output, operations, changes)
             }
         }
     }
@@ -369,7 +478,7 @@ fn text_sheet(name: &str, part: &str, texts: Vec<String>) -> Value {
     json!({"name":name,"part":part,"state":"visible","merges":[],"cells":cells})
 }
 
-fn office_parts(raw: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+fn office_parts(raw: &[u8], include_binary: bool) -> Result<BTreeMap<String, Vec<u8>>> {
     ensure_zip_package(raw)?;
     let mut zip = zip::ZipArchive::new(Cursor::new(raw))?;
     ensure!(
@@ -384,11 +493,55 @@ fn office_parts(raw: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
             entry.enclosed_name().is_some() && !name.contains('\\'),
             "invalid Office part path"
         );
+        // Keep the name for relationship checks, but do not retain media and
+        // embedded packages until a slide operation actually needs to copy them.
         let mut bytes = vec![];
-        entry.read_to_end(&mut bytes)?;
+        if include_binary || !office_binary(&name) {
+            entry.read_to_end(&mut bytes)?;
+        }
         ensure!(parts.insert(name, bytes).is_none(), "duplicate Office part");
     }
     Ok(parts)
+}
+
+fn office_binary(name: &str) -> bool {
+    name.rsplit('.').next().is_some_and(|extension| {
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "bmp"
+                | "tif"
+                | "tiff"
+                | "emf"
+                | "wmf"
+                | "bin"
+                | "xlsx"
+                | "xlsm"
+                | "xlsb"
+                | "docx"
+                | "docm"
+                | "pptx"
+                | "pdf"
+                | "mp3"
+                | "mp4"
+                | "wav"
+                | "avi"
+        )
+    })
+}
+
+fn validate_office_binary(raw: &[u8]) -> Result<()> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(raw))?;
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index)?;
+        if office_binary(entry.name()) {
+            std::io::copy(&mut entry, &mut std::io::sink())?;
+        }
+    }
+    Ok(())
 }
 
 /// Encodings an XML part may use; UTF-16 requires a byte order mark (XML 1.0 4.3.3).
@@ -461,6 +614,14 @@ fn relation_target(parts: &BTreeMap<String, Vec<u8>>, part: &str, id: &str) -> R
         .descendants()
         .find(|n| n.has_tag_name((PACKAGE_REL, "Relationship")) && n.attribute("Id") == Some(id))
         .context("missing Office relationship")?;
+    relationship_target(parts, part, rel)
+}
+
+fn relationship_target(
+    parts: &BTreeMap<String, Vec<u8>>,
+    part: &str,
+    rel: Node<'_, '_>,
+) -> Result<String> {
     ensure!(
         rel.attribute("TargetMode") != Some("External"),
         "external document part is not supported"
@@ -468,6 +629,13 @@ fn relation_target(parts: &BTreeMap<String, Vec<u8>>, part: &str, id: &str) -> R
     let target = rel
         .attribute("Target")
         .context("relationship target missing")?;
+    resolve_target(part, target, |name| parts.contains_key(name))
+}
+
+/// The part an internal relationship `target` of `part` names; `exists` tells
+/// whether a part is in the package.
+fn resolve_target(part: &str, target: &str, exists: impl Fn(&str) -> bool) -> Result<String> {
+    let directory = part.rsplit_once('/').map_or("", |(directory, _)| directory);
     ensure!(
         !target.contains(['\\', ':', '#', '?']),
         "unsupported Office part target"
@@ -490,7 +658,7 @@ fn relation_target(parts: &BTreeMap<String, Vec<u8>>, part: &str, id: &str) -> R
         }
     }
     let literal = normalized.join("/");
-    if parts.contains_key(&literal) || !literal.contains('%') {
+    if exists(&literal) || !literal.contains('%') {
         return Ok(literal);
     }
     // Targets are URIs: tools that write spaced or non-ASCII part names
@@ -559,7 +727,11 @@ fn office_containers(
         );
         let mut result = vec![("document".into(), main.clone())];
         let (directory, filename) = main.rsplit_once('/').unwrap_or(("", &main));
-        let rel_path = format!("{directory}/_rels/{filename}.rels");
+        let rel_path = if directory.is_empty() {
+            format!("_rels/{filename}.rels")
+        } else {
+            format!("{directory}/_rels/{filename}.rels")
+        };
         if parts.contains_key(&rel_path) {
             let rels_text = xml_part(parts, &rel_path)?;
             let rels = Document::parse(&rels_text)?;
@@ -576,11 +748,7 @@ fn office_containers(
                     kind,
                     "header" | "footer" | "footnotes" | "endnotes" | "comments"
                 ) {
-                    let part = relation_target(
-                        parts,
-                        &main,
-                        rel.attribute("Id").context("missing relationship id")?,
-                    )?;
+                    let part = relationship_target(parts, &main, rel)?;
                     if !result.iter().any(|(_, p)| p == &part) {
                         result.push((format!("{kind}-{}", result.len()), part));
                     }
@@ -589,27 +757,75 @@ fn office_containers(
         }
         Ok(result)
     } else {
-        const PRESENTATION: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
         ensure!(
             xml.root_element()
                 .has_tag_name((PRESENTATION, "presentation")),
             "not a supported presentation"
         );
-        xml.descendants()
+        let (directory, filename) = main.rsplit_once('/').unwrap_or(("", &main));
+        let rel_path = if directory.is_empty() {
+            format!("_rels/{filename}.rels")
+        } else {
+            format!("{directory}/_rels/{filename}.rels")
+        };
+        let rels_text = xml_part(parts, &rel_path)?;
+        let rels = Document::parse(&rels_text)?;
+        let mut by_id = BTreeMap::new();
+        for rel in rels
+            .descendants()
+            .filter(|n| n.has_tag_name((PACKAGE_REL, "Relationship")))
+        {
+            if let Some(id) = rel.attribute("Id") {
+                by_id.entry(id).or_insert(rel);
+            }
+        }
+        let slides = xml
+            .descendants()
             .filter(|n| n.has_tag_name((PRESENTATION, "sldId")))
             .enumerate()
             .map(|(i, n)| {
                 Ok((
                     format!("slide-{}", i + 1),
-                    relation_target(
+                    relationship_target(
                         parts,
                         &main,
-                        n.attribute((REL, "id"))
-                            .context("missing slide relationship")?,
+                        *by_id
+                            .get(
+                                n.attribute((REL, "id"))
+                                    .context("missing slide relationship")?,
+                            )
+                            .context("missing Office relationship")?,
                     )?,
                 ))
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        // Speaker notes follow all slides, so that a slide keeps its page.
+        let mut notes = vec![];
+        for (i, (_, slide)) in slides.iter().enumerate() {
+            let (directory, filename) = slide.rsplit_once('/').unwrap_or(("", slide));
+            let rels_path = if directory.is_empty() {
+                format!("_rels/{filename}.rels")
+            } else {
+                format!("{directory}/_rels/{filename}.rels")
+            };
+            if !parts.contains_key(&rels_path) {
+                continue;
+            }
+            let rels_text = xml_part(parts, &rels_path)?;
+            let rels = Document::parse(&rels_text)?;
+            if let Some(id) = rels
+                .descendants()
+                .filter(|n| n.has_tag_name((PACKAGE_REL, "Relationship")))
+                .find(|n| n.attribute("Type") == Some(&format!("{REL}/notesSlide")))
+                .and_then(|n| n.attribute("Id"))
+            {
+                notes.push((
+                    format!("notes-{}", i + 1),
+                    relation_target(parts, slide, id)?,
+                ));
+            }
+        }
+        Ok(slides.into_iter().chain(notes).collect())
     }
 }
 
@@ -617,13 +833,15 @@ fn word(format: &str) -> bool {
     WORD_FORMATS.contains(&format)
 }
 
-/// Flags each element of `text_nodes` that displays a field result. Complex
-/// fields show their result between `separate` and `end`; nested fields count
-/// as results when any enclosing field has reached its result.
-fn word_field_results(xml: &Document<'_>) -> Vec<bool> {
+/// The text elements, tabs and line breaks that display a field result, keyed
+/// by their start in the part. Complex fields show their result between
+/// `separate` and `end`; nested fields count as results when any enclosing
+/// field has reached its result.
+fn word_field_results(xml: &Document<'_>) -> BTreeSet<usize> {
     let mut open: Vec<bool> = vec![];
-    let mut flags = vec![];
-    for node in xml.descendants().filter(|n| !hidden_copy(*n, "docx")) {
+    let mut results = BTreeSet::new();
+    let hidden = HiddenBranches::new(xml, "docx");
+    for node in xml.descendants().filter(|n| !hidden.contains(*n)) {
         if node.has_tag_name((WORD, "fldChar")) {
             match node.attribute((WORD, "fldCharType")) {
                 Some("begin") => open.push(false),
@@ -637,16 +855,16 @@ fn word_field_results(xml: &Document<'_>) -> Vec<bool> {
                 }
                 _ => {}
             }
-        } else if node.has_tag_name((WORD, "t")) {
-            flags.push(
-                open.contains(&true)
-                    || node
-                        .ancestors()
-                        .any(|n| n.has_tag_name((WORD, "fldSimple"))),
-            );
+        } else if (node.has_tag_name((WORD, "t")) || word::text_break(node))
+            && (open.contains(&true)
+                || node
+                    .ancestors()
+                    .any(|n| n.has_tag_name((WORD, "fldSimple"))))
+        {
+            results.insert(node.range().start);
         }
     }
-    flags
+    results
 }
 
 fn text_node(node: Node<'_, '_>, format: &str) -> bool {
@@ -677,60 +895,107 @@ fn hidden_copy(node: Node<'_, '_>, format: &str) -> bool {
     })
 }
 
-/// Text elements a reader sees, in document order; their ordinals are A1, A2, ...
-/// A PowerPoint table cell merged into its neighbor (`hMerge`, `vMerge`) is not
-/// shown, whatever text it still holds.
-fn text_nodes<'a, 'input>(xml: &'a Document<'input>, format: &str) -> Vec<Node<'a, 'input>> {
-    xml.descendants()
-        .filter(|n| text_node(*n, format) && !hidden_copy(*n, format))
-        .filter(|n| {
-            word(format)
-                || !n.ancestors().any(|cell| {
-                    cell.has_tag_name((DRAWING, "tc"))
-                        && ["hMerge", "vMerge"]
-                            .iter()
-                            .any(|merge| matches!(cell.attribute(*merge), Some("1" | "true")))
-                })
-        })
-        .collect()
+/// AlternateContent branches hidden by an earlier branch containing text.
+/// Build once for document-wide scans instead of searching earlier subtrees
+/// again for every descendant of a fallback branch.
+pub(super) struct HiddenBranches {
+    branches: BTreeSet<usize>,
 }
 
-/// Hidden copies of a visible text element, matched by position within each
-/// alternate branch, so that an edit keeps both renderings of a text box equal.
+impl HiddenBranches {
+    pub(super) fn new(xml: &Document<'_>, format: &str) -> Self {
+        let mut prior_text = BTreeMap::<usize, bool>::new();
+        let mut branches = BTreeSet::new();
+        for branch in xml.descendants().filter(|n| alternate_branch(*n)) {
+            let parent = branch.parent().unwrap();
+            let seen = prior_text.entry(parent.range().start).or_default();
+            if *seen {
+                branches.insert(branch.range().start);
+            }
+            if !*seen {
+                *seen = branch
+                    .descendants()
+                    .any(|n| text_node(n, format) || n.has_tag_name((MATH, "t")));
+            }
+        }
+        Self { branches }
+    }
+
+    pub(super) fn contains(&self, node: Node<'_, '_>) -> bool {
+        node.ancestors()
+            .any(|ancestor| self.branches.contains(&ancestor.range().start))
+    }
+}
+
+/// Hidden copies of a visible text element, or of a Word tab or line break,
+/// matched by position among its kind within each alternate branch, so that an
+/// edit keeps both renderings of a text box equal.
 fn hidden_copies<'a, 'input>(
     node: Node<'a, 'input>,
     format: &str,
+    cache: &mut BTreeMap<(usize, bool), BranchTexts<'a, 'input>>,
 ) -> Result<Vec<Node<'a, 'input>>> {
-    let texts = |branch: Node<'a, 'input>| -> Vec<Node<'a, 'input>> {
-        branch
-            .descendants()
-            .filter(|n| text_node(*n, format))
-            .collect()
-    };
+    let text = text_node(node, format);
     let mut copies = vec![];
     for branch in node.ancestors().filter(|n| alternate_branch(*n)) {
-        let own = texts(branch);
-        let index = own
-            .iter()
-            .position(|n| *n == node)
+        let own = branch_texts(cache, branch, format, text);
+        let len = own.nodes.len();
+        let index = *own
+            .positions
+            .get(&node.range().start)
             .context("text element outside its branch")?;
         for other in branch
             .next_siblings()
             .skip(1)
             .filter(|n| alternate_branch(*n))
         {
-            let theirs = texts(other);
-            if theirs.is_empty() {
+            let theirs = branch_texts(cache, other, format, text);
+            if theirs.nodes.is_empty() {
                 continue;
             }
             ensure!(
-                theirs.len() == own.len(),
+                theirs.nodes.len() == len,
                 "the text box copies in mc:AlternateContent differ; edit this text in Office"
             );
-            copies.push(theirs[index]);
+            copies.push(theirs.nodes[index]);
         }
     }
     Ok(copies)
+}
+
+struct BranchTexts<'a, 'input> {
+    nodes: Vec<Node<'a, 'input>>,
+    positions: BTreeMap<usize, usize>,
+}
+
+fn branch_texts<'cache, 'a, 'input>(
+    cache: &'cache mut BTreeMap<(usize, bool), BranchTexts<'a, 'input>>,
+    branch: Node<'a, 'input>,
+    format: &str,
+    text: bool,
+) -> &'cache BranchTexts<'a, 'input> {
+    cache
+        .entry((branch.range().start, text))
+        .or_insert_with(|| {
+            let nodes: Vec<_> = branch
+                .descendants()
+                .filter(|n| {
+                    if text {
+                        text_node(*n, format)
+                    } else if word(format) {
+                        word::text_break(*n)
+                    } else {
+                        n.has_tag_name((DRAWING, "br"))
+                    }
+                })
+                .collect();
+            let positions = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.range().start, index))
+                .collect();
+            BranchTexts { nodes, positions }
+        })
 }
 
 fn xml_text(value: &str) -> Result<String> {
@@ -742,23 +1007,470 @@ fn xml_text(value: &str) -> Result<String> {
         .replace('\r', "&#13;"))
 }
 
+/// Document data that Word content controls show, by store item and XPath.
+type BoundData = BTreeMap<(String, String), (word::Binding, String)>;
+
+/// The document data that edited Word content controls are bound to, with the
+/// text it takes. Other controls bound to the same data get edits showing
+/// that text too, as Word shows it on opening.
+fn bound_data_edits<'a, 'input>(
+    parts: &[String],
+    docs: &'a [Document<'input>],
+    edits: &mut [Vec<(Node<'a, 'input>, String)>],
+) -> Result<BoundData> {
+    let mut data = BoundData::new();
+    let mut edited = BTreeSet::new();
+    for (index, part_edits) in edits.iter().enumerate() {
+        let mut edited_text = BTreeMap::new();
+        for (node, value) in part_edits {
+            edited_text
+                .entry(node.range().start)
+                .or_insert(value.as_str());
+        }
+        let mut controls = vec![];
+        let mut control_starts = BTreeSet::new();
+        for (node, _) in part_edits {
+            if let Some(sdt) = word::bound_control(*node)
+                && control_starts.insert(sdt.range().start)
+            {
+                controls.push(sdt);
+            }
+        }
+        for sdt in controls {
+            let place = format!("a content control in {}", parts[index]);
+            let binding = word::binding(sdt, &place)?;
+            let value = word::control_text(sdt, &edited_text);
+            ensure!(
+                binding.multiline || !value.contains('\n'),
+                "{place} is a single-line text control bound to document data ({}); remove the line break",
+                binding.xpath
+            );
+            let key = (binding.store.clone(), binding.xpath.clone());
+            if let Some((_, existing)) = data.get(&key) {
+                ensure!(
+                    *existing == value,
+                    "content controls bound to the same document data ({}) were edited to different text: {existing:?} and {value:?}",
+                    binding.xpath
+                );
+            }
+            data.insert(key, (binding, value));
+            edited.insert((index, sdt.range().start));
+        }
+    }
+    if data.is_empty() {
+        return Ok(data);
+    }
+    let no_edits = BTreeMap::new();
+    for (index, doc) in docs.iter().enumerate() {
+        for sdt in doc
+            .descendants()
+            .filter(|n| n.has_tag_name((WORD, "sdt")) && !hidden_copy(*n, "docx"))
+        {
+            if edited.contains(&(index, sdt.range().start)) {
+                continue;
+            }
+            let Some((_, value)) = word::binding_key(sdt).and_then(|key| data.get(&key)) else {
+                continue;
+            };
+            if word::control_text(sdt, &no_edits) == *value {
+                continue;
+            }
+            let place = format!("a content control in {}", parts[index]);
+            word::binding(sdt, &place)?;
+            edits[index].extend(word::fill_control(sdt, value, &place)?);
+        }
+    }
+    Ok(data)
+}
+
+/// The part holding data store item `store`: the core or extended document
+/// properties, or the custom XML part whose properties name it.
+fn bound_data_part(parts: &BTreeMap<String, Vec<u8>>, store: &str) -> Result<String> {
+    const CORE_PROPERTIES: &str = "{6C3C8BC8-F283-45AE-878A-BAB7291924A1}";
+    const EXTENDED_PROPERTIES: &str = "{6668398D-A668-4E3E-A5EB-62B293D839F1}";
+    const CUSTOM_XML: &str = "http://schemas.openxmlformats.org/officeDocument/2006/customXml";
+    // The part `base` relates to with a relationship type ending in `kind`.
+    let related = |base: &str, kind: &str| -> Result<Option<String>> {
+        let (directory, filename) = base.rsplit_once('/').unwrap_or(("", base));
+        let rels = if directory.is_empty() {
+            format!("_rels/{filename}.rels")
+        } else {
+            format!("{directory}/_rels/{filename}.rels")
+        };
+        if !parts.contains_key(&rels) {
+            return Ok(None);
+        }
+        let text = xml_part(parts, &rels)?;
+        let doc = Document::parse(&text)?;
+        let Some(id) = doc
+            .descendants()
+            .filter(|n| n.has_tag_name((PACKAGE_REL, "Relationship")))
+            .find(|n| n.attribute("Type").is_some_and(|t| t.ends_with(kind)))
+            .and_then(|n| n.attribute("Id"))
+        else {
+            return Ok(None);
+        };
+        relation_target(parts, base, id).map(Some)
+    };
+    let found = match store {
+        CORE_PROPERTIES => related("", "/metadata/core-properties")?,
+        EXTENDED_PROPERTIES => related("", "/extended-properties")?,
+        _ => {
+            let mut found = None;
+            for part in parts
+                .keys()
+                .filter(|p| p.starts_with("customXml/") && !p.contains("/_rels/"))
+            {
+                let Some(properties) = related(part, "/customXmlProps")? else {
+                    continue;
+                };
+                let text = xml_part(parts, &properties)?;
+                let doc = Document::parse(&text)?;
+                if doc
+                    .root_element()
+                    .attribute((CUSTOM_XML, "itemID"))
+                    .is_some_and(|id| id.eq_ignore_ascii_case(store))
+                {
+                    found = Some(part.clone());
+                    break;
+                }
+            }
+            found
+        }
+    };
+    found.with_context(|| {
+        format!(
+            "the document data store {store} a content control shows is missing; edit it in Word"
+        )
+    })
+}
+
+/// The element an XPath of a content control binding selects: a path of
+/// `prefix:name[n]` steps from the root, with the prefixes of `prefixes`
+/// (`xmlns:ns0='...' xmlns:ns1='...'`).
+fn bound_element<'a, 'input>(
+    doc: &'a Document<'input>,
+    prefixes: &str,
+    xpath: &str,
+) -> Result<Node<'a, 'input>> {
+    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"xmlns:([\w.\-]+)\s*=\s*(?:'([^']*)'|"([^"]*)")"#).unwrap()
+    });
+    static STEP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:([\w.\-]+):)?([\w.\-]+)(?:\[([1-9][0-9]*)\])?$").unwrap()
+    });
+    let namespaces: BTreeMap<&str, &str> = PREFIX
+        .captures_iter(prefixes)
+        .map(|c| {
+            let uri = c.get(2).or_else(|| c.get(3)).map_or("", |m| m.as_str());
+            (c.get(1).map_or("", |m| m.as_str()), uri)
+        })
+        .collect();
+    let unsupported = || {
+        format!(
+            "the content control binding {xpath} is not a simple element path ARP can follow; edit it in Word"
+        )
+    };
+    let mut node = doc.root();
+    for step in xpath
+        .strip_prefix('/')
+        .with_context(unsupported)?
+        .split('/')
+    {
+        let captures = STEP.captures(step).with_context(unsupported)?;
+        let namespace = match captures.get(1) {
+            Some(prefix) => Some(*namespaces.get(prefix.as_str()).with_context(unsupported)?),
+            None => None,
+        };
+        let index: usize = captures.get(3).map_or(Ok(1), |n| n.as_str().parse())?;
+        node = node
+            .children()
+            .filter(|c| {
+                c.is_element()
+                    && c.tag_name().name() == &captures[2]
+                    && c.tag_name().namespace() == namespace
+            })
+            .nth(index - 1)
+            .with_context(|| {
+                format!(
+                    "the document data {xpath} a content control shows is missing; edit it in Word"
+                )
+            })?;
+    }
+    ensure!(
+        node.is_element() && !node.children().any(|c| c.is_element()),
+        "the document data {xpath} a content control shows is not text; edit it in Word"
+    );
+    Ok(node)
+}
+
+/// `text` with each bound element taking its new text.
+fn set_bound_values(text: &str, values: &[(&word::Binding, &String)]) -> Result<String> {
+    let doc = Document::parse(text)?;
+    let mut edits = vec![];
+    for (binding, value) in values {
+        let element = bound_element(&doc, &binding.prefixes, &binding.xpath)?;
+        let raw = &text[element.range()];
+        let name = raw[1..]
+            .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
+            .next()
+            .context("invalid bound element")?;
+        let (opening, closing) = match raw.strip_suffix("/>") {
+            Some(opening) => (format!("{}>", opening.trim_end()), format!("</{name}>")),
+            None => (
+                raw[..=raw.find('>').context("invalid bound element")?].to_owned(),
+                raw[raw.rfind("</").context("invalid bound element")?..].to_owned(),
+            ),
+        };
+        edits.push((
+            element.range(),
+            format!("{opening}{}{closing}", xml_text(value)?),
+        ));
+    }
+    let result = splice(text, edits, "document data")?;
+    Document::parse(&result)?;
+    Ok(result)
+}
+
+/// `drawing`, an Excel drawing part, with the text of the shapes of `texts`
+/// (by `cNvPr` id, the text before and after) changed run by run, as Word text
+/// is: the first run a change touches takes it. Line and paragraph breaks and
+/// field text stay as they are.
+pub fn edit_shape_texts(
+    drawing: &str,
+    texts: &BTreeMap<String, (String, String)>,
+) -> Result<String> {
+    const SPREADSHEET_DRAWING: &str =
+        "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
+    let doc = Document::parse(drawing)?;
+    let mut edits = vec![];
+    let mut found = BTreeSet::new();
+    for body in doc
+        .descendants()
+        .filter(|n| n.has_tag_name((SPREADSHEET_DRAWING, "txBody")))
+    {
+        let Some(id) = body
+            .parent_element()
+            .into_iter()
+            .flat_map(|shape| shape.children())
+            .filter(Node::is_element)
+            .flat_map(|properties| properties.children())
+            .find(|n| n.is_element() && n.tag_name().name() == "cNvPr")
+            .and_then(|n| n.attribute("id"))
+        else {
+            continue;
+        };
+        let Some((before, after)) = texts.get(id) else {
+            continue;
+        };
+        // Each line (a paragraph or a line break ends one) with its segments.
+        let mut lines: Vec<(String, Vec<word::Segment<'_, '_>>)> = vec![(String::new(), vec![])];
+        let mut paragraphs = body
+            .children()
+            .filter(|n| n.has_tag_name((DRAWING, "p")))
+            .peekable();
+        while let Some(paragraph) = paragraphs.next() {
+            for node in paragraph.descendants() {
+                if node.has_tag_name((DRAWING, "t")) {
+                    // Field text (a:fld) is filled in by Excel.
+                    let run = node
+                        .parent()
+                        .is_some_and(|p| p.has_tag_name((DRAWING, "r")));
+                    let (text, segments) = lines.last_mut().context("shape line")?;
+                    let start = text.len();
+                    text.push_str(node.text().unwrap_or(""));
+                    segments.push(word::Segment {
+                        node: run.then_some(node),
+                        range: start..text.len(),
+                    });
+                } else if node.has_tag_name((DRAWING, "br")) {
+                    lines.push((String::new(), vec![]));
+                }
+            }
+            if paragraphs.peek().is_some() {
+                lines.push((String::new(), vec![]));
+            }
+        }
+        // A copy for older readers (mc:Fallback) may hold other text.
+        let text: Vec<&str> = lines.iter().map(|(text, _)| text.as_str()).collect();
+        if text.join("\n") != *before {
+            continue;
+        }
+        let new_lines: Vec<&str> = after.split('\n').collect();
+        ensure!(
+            new_lines.len() == lines.len(),
+            "the text of shape {id} must keep its {} line(s); edit its lines in Excel",
+            lines.len()
+        );
+        let mut changed = vec![];
+        for (number, ((text, segments), new)) in lines.into_iter().zip(new_lines).enumerate() {
+            if text != new {
+                let block = word::Block::plain(
+                    format!("shape {id} line {}", number + 1),
+                    text,
+                    segments,
+                    "Excel",
+                );
+                changed.extend(word::edit(&block, new)?);
+            }
+        }
+        for (node, new) in changed {
+            let raw = &drawing[node.range()];
+            let opening =
+                raw[..raw.find('>').context("invalid text element")?].trim_end_matches('/');
+            let name = opening
+                .trim_start_matches('<')
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .context("missing text tag")?;
+            edits.push((
+                node.range(),
+                format!("{opening}>{}</{name}>", xml_text(&new)?),
+            ));
+        }
+        found.insert(id.to_owned());
+    }
+    if let Some(missing) = texts.keys().find(|id| !found.contains(*id)) {
+        bail!(
+            "shape {missing} with the text it had on import is missing from the drawing; re-import the workbook"
+        );
+    }
+    let result = splice(drawing, edits, "shape text")?;
+    Document::parse(&result)?;
+    Ok(result)
+}
+
+/// The namespace prefix of a qualified element name with its colon, such as `w:`.
+fn element_prefix(name: &str) -> String {
+    name.rsplit_once(':')
+        .map_or_else(String::new, |(prefix, _)| format!("{prefix}:"))
+}
+
+/// Word run content for `text`: tabs and line breaks become `w:tab` and
+/// `w:br`, and the text between them text elements opened with `opening`.
+fn word_run_content(text: &str, opening: &str, name: &str, prefix: &str) -> Result<String> {
+    let mut content = String::new();
+    let mut rest = text;
+    loop {
+        let end = rest.find(['\n', '\t']).unwrap_or(rest.len());
+        if end > 0 {
+            content.push_str(&format!("{opening}>{}</{name}>", xml_text(&rest[..end])?));
+        }
+        let Some(separator) = rest[end..].chars().next() else {
+            return Ok(content);
+        };
+        let element = if separator == '\t' { "tab" } else { "br" };
+        content.push_str(&format!("<{prefix}{element}/>"));
+        rest = &rest[end + 1..];
+    }
+}
+
 impl TextSource {
-    fn patch(&self, output: &Path, changes: &[Value]) -> Result<Value> {
+    /// Writes the document with `changes` to its text and its `operations`:
+    /// for Word, paragraphs and table rows inserted or deleted, and for
+    /// PowerPoint, slides copied or deleted. A change names its original cell
+    /// (`source_cell`, else `cell`), or for an inserted row its `insertion`,
+    /// `offset` and `column`; a change to an inserted slide names the slide.
+    fn patch(&self, output: &Path, operations: &[Value], changes: &[Value]) -> Result<Value> {
         ensure!(
             !matches!(self.backend, TextBackend::Native),
             "text documents use direct editing; edit the original and re-import with the same document ID (export/apply is not supported)"
         );
         ensure!(!output.exists(), "output already exists");
+        ensure!(
+            operations
+                .iter()
+                .all(|operation| if is_slide_operation(operation) {
+                    self.format == "pptx"
+                } else {
+                    word(&self.format) || self.format == "pptx"
+                }),
+            "row operations apply to Excel, Word and PowerPoint documents, slide operations to PowerPoint"
+        );
+        let slide_operations = parse_slide_operations(operations, &self.sheets)?;
+        let restructured = match &self.backend {
+            TextBackend::Office(_) if !slide_operations.is_empty() => {
+                let complete = office_parts(&self.raw, true)?;
+                Some(slides::restructure(
+                    &complete,
+                    &self.sheets,
+                    &slide_operations,
+                )?)
+            }
+            _ => None,
+        };
+        // The pages as the slide operations leave them, with their parts.
+        let view = if slide_operations.is_empty() {
+            Cow::Borrowed(&self.sheets)
+        } else {
+            Cow::Owned(slide_view(&self.sheets, &slide_operations)?)
+        };
+        let mut pages = vec![];
+        for sheet in view.iter() {
+            let name = string(&sheet["name"])?;
+            let part = match restructured.as_ref().and_then(|r| r.inserted.get(name)) {
+                Some(part) => part.clone(),
+                None => string(&sheet["part"])?.to_owned(),
+            };
+            pages.push((name.to_owned(), part));
+        }
+        let operations = crate::excel::parse_operations(operations, &view)?;
+        let mut operations_by_sheet: BTreeMap<&str, Vec<&crate::excel::StructuralOperation>> =
+            BTreeMap::new();
+        for operation in &operations {
+            operations_by_sheet
+                .entry(&operation.sheet)
+                .or_default()
+                .push(operation);
+        }
+        // Each page and address is looked up for every changed text block.
+        let mut sheet_index = BTreeMap::new();
+        for sheet in view.iter().chain(self.sheets.iter()) {
+            let name = string(&sheet["name"])?;
+            if sheet_index.contains_key(name) {
+                continue;
+            }
+            let mut addresses = BTreeMap::new();
+            for (index, cell) in array(&sheet["cells"])?.iter().enumerate() {
+                addresses.entry(string(&cell["address"])?).or_insert(index);
+            }
+            sheet_index.insert(name, (sheet, addresses));
+        }
+        // The replaced texts of each page by name, to check the output against.
+        let mut by_page: BTreeMap<String, BTreeMap<usize, String>> = BTreeMap::new();
         let mut replacements: BTreeMap<String, BTreeMap<usize, String>> = BTreeMap::new();
+        let mut inserted: BTreeMap<String, word::InsertedText> = BTreeMap::new();
         for change in changes {
-            let sheet = self
-                .sheets
-                .iter()
-                .find(|s| s["name"] == change["sheet"])
-                .context("missing text container")?;
-            let cell = array(&sheet["cells"])?
-                .iter()
-                .position(|c| c["address"] == change["cell"])
+            if change["inserted"] == true {
+                let key = (
+                    string(&change["insertion"])?.to_owned(),
+                    u32::try_from(change["offset"].as_u64().context("inserted offset")?)?,
+                    string(&change["column"])?.to_owned(),
+                );
+                let value = string(&change["after"])
+                    .context("text replacement must be a string")?
+                    .to_owned();
+                inserted
+                    .entry(string(&change["sheet"])?.to_owned())
+                    .or_default()
+                    .insert(key, value);
+                continue;
+            }
+            let name = string(&change["sheet"])?;
+            let (sheet, addresses) = sheet_index.get(name).context("missing text container")?;
+            let part = match restructured.as_ref().and_then(|r| r.inserted.get(name)) {
+                Some(part) => part.as_str(),
+                None => string(&sheet["part"])?,
+            };
+            ensure!(
+                !restructured
+                    .as_ref()
+                    .is_some_and(|r| r.removed.contains(part)),
+                "{name} is deleted by a delete_slide operation; its text cannot be edited"
+            );
+            let address = change.get("source_cell").unwrap_or(&change["cell"]);
+            let cell = *addresses
+                .get(string(address)?)
                 .context("missing text target")?;
             ensure!(
                 sheet["cells"][cell]["value"] == change["before"],
@@ -766,21 +1478,18 @@ impl TextSource {
             );
             let value = string(&change["after"])
                 .context("text replacement must be a string; use an empty string to clear text")?;
-            // Word blocks hold paragraph and line breaks; the edit is checked per run.
-            if self.format != "pdf" && !word(&self.format) {
-                ensure!(
-                    !value.contains(['\n', '\r', '\t']),
-                    "Office text replacement cannot contain line breaks or tabs; edit existing runs separately"
-                );
-            }
             ensure!(
                 replacements
-                    .entry(string(&sheet["part"])?.into())
+                    .entry(part.into())
                     .or_default()
                     .insert(cell, value.into())
                     .is_none(),
                 "duplicate text replacement"
             );
+            by_page
+                .entry(name.to_owned())
+                .or_default()
+                .insert(cell, value.into());
         }
         match &self.backend {
             TextBackend::Native => unreachable!("native text writeback rejected above"),
@@ -791,58 +1500,125 @@ impl TextSource {
                         .any(|p| p.to_ascii_lowercase().starts_with("_xmlsignatures/")),
                     "signed Office writeback is not supported"
                 );
-                let mut patched = BTreeMap::new();
-                for (part, changes) in replacements {
-                    let (original, encoding) = part_text(&parts[&part])?;
-                    let original = original.as_ref();
-                    let xml = Document::parse(original)?;
-                    let nodes = text_nodes(&xml, &self.format);
-                    let mut edits = vec![];
+                let (mut patched, removed) = match &restructured {
+                    Some(restructured) => {
+                        (restructured.patched.clone(), restructured.removed.clone())
+                    }
+                    None => (BTreeMap::new(), BTreeSet::new()),
+                };
+                // Every Word part is read, since a content control bound to
+                // edited document data shows it wherever it is; PowerPoint reads
+                // the pages whose text or rows change.
+                let pages: Vec<(String, String)> = pages
+                    .into_iter()
+                    .filter(|(name, part)| {
+                        word(&self.format)
+                            || replacements.contains_key(part)
+                            || operations_by_sheet.contains_key(name.as_str())
+                    })
+                    .collect();
+                let read: Vec<String> = pages.iter().map(|(_, part)| part.clone()).collect();
+                let texts = read
+                    .iter()
+                    .map(|part| {
+                        let bytes = match &restructured {
+                            Some(restructured) => restructured.part(parts, part),
+                            None => parts.get(part).map(Vec::as_slice),
+                        };
+                        part_text(bytes.context("missing document part")?)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let docs = texts
+                    .iter()
+                    .map(|(text, _)| Document::parse(text))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut edits: Vec<Vec<(Node<'_, '_>, String)>> = vec![vec![]; read.len()];
+                // Paragraphs and table rows inserted or deleted, by part.
+                let mut structural = vec![vec![]; read.len()];
+                let no_values = word::InsertedText::new();
+                for (index, part) in read.iter().enumerate() {
+                    let sheet_name = pages[index].0.as_str();
+                    let part_operations = operations_by_sheet
+                        .get(sheet_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let changes = replacements.get(part);
+                    if changes.is_none() && part_operations.is_empty() {
+                        continue;
+                    }
+                    let xml = &docs[index];
                     if word(&self.format) {
-                        let fields: std::collections::BTreeSet<_> = nodes
-                            .iter()
-                            .zip(word_field_results(&xml))
-                            .filter(|(_, field)| *field)
-                            .map(|(node, _)| node.range().start)
-                            .collect();
-                        let layout = word::layout(&xml)?;
-                        for (i, text) in changes {
-                            let block = layout.blocks.get(i).context("text block disappeared")?;
-                            for (node, new) in word::edit(block, &text)? {
+                        let fields = word_field_results(xml);
+                        let layout = word::layout(xml)?;
+                        structural[index] = layout
+                            .restructure(
+                                &texts[index].0,
+                                &part_operations,
+                                inserted.get(sheet_name).unwrap_or(&no_values),
+                            )
+                            .with_context(|| format!("{sheet_name} ({part})"))?;
+                        for (i, text) in changes.into_iter().flatten() {
+                            let block = layout.blocks.get(*i).context("text block disappeared")?;
+                            for (node, new) in word::edit(block, text)? {
                                 ensure!(
                                     !fields.contains(&node.range().start),
                                     "Word field result text cannot be edited because Word recalculates it (date, page number, table of contents, cross-reference, etc.): {part} {}; edit the field in Word",
                                     block.address
                                 );
-                                ensure!(
-                                    !word::data_bound(node),
-                                    "Word content control text bound to document data (such as a cover page title or author) cannot be edited because Word restores it from that data: {part} {}; edit it in Word",
-                                    block.address
-                                );
-                                edits.push((node, new));
+                                edits[index].push((node, new));
                             }
                         }
                     } else {
-                        for (i, text) in changes {
-                            let node = *nodes.get(i).context("text node disappeared")?;
-                            // Slide numbers and dates are fields PowerPoint fills in again.
-                            ensure!(
-                                !node.ancestors().any(|a| a.has_tag_name((DRAWING, "fld"))),
-                                "PowerPoint field text (slide number, date, etc.) cannot be edited because PowerPoint recalculates it: {part} A{}; edit the field in PowerPoint",
-                                i + 1
-                            );
-                            edits.push((node, text));
+                        let layout = slide_text::layout(xml)?;
+                        structural[index] = layout
+                            .restructure(
+                                &texts[index].0,
+                                &part_operations,
+                                inserted.get(sheet_name).unwrap_or(&no_values),
+                            )
+                            .with_context(|| format!("{sheet_name} ({part})"))?;
+                        for (i, text) in changes.into_iter().flatten() {
+                            let block = layout.blocks.get(*i).context("text block disappeared")?;
+                            for (node, new) in word::edit(block, text)? {
+                                // Slide numbers and dates are fields PowerPoint fills in again.
+                                ensure!(
+                                    !node.ancestors().any(|a| a.has_tag_name((DRAWING, "fld"))),
+                                    "PowerPoint field text (slide number, date, etc.) cannot be edited because PowerPoint recalculates it: {sheet_name} {}; edit the field in PowerPoint",
+                                    block.address
+                                );
+                                edits[index].push((node, new));
+                            }
                         }
                     }
+                }
+                let bound = if word(&self.format) {
+                    bound_data_edits(&read, &docs, &mut edits)?
+                } else {
+                    BTreeMap::new()
+                };
+                for ((index, edits), part) in edits.into_iter().enumerate().zip(&read) {
+                    if edits.is_empty() && structural[index].is_empty() {
+                        continue;
+                    }
+                    let (original, encoding) = &texts[index];
+                    let original = original.as_ref();
+                    let encoding = *encoding;
+                    let part = part.clone();
                     let mut targets = vec![];
+                    let mut hidden_cache = BTreeMap::new();
                     for (node, text) in edits {
-                        for copy in hidden_copies(node, &self.format)? {
+                        for copy in hidden_copies(node, &self.format, &mut hidden_cache)? {
                             targets.push((copy, text.clone()));
                         }
                         targets.push((node, text));
                     }
-                    let mut text_edits = vec![];
+                    // Insertions sort ahead of an element removed at the same place.
+                    let mut text_edits = std::mem::take(&mut structural[index]);
                     for (node, text) in targets {
+                        if !word(&self.format) {
+                            text_edits.push(slide_text::replacement(original, node, &text)?);
+                            continue;
+                        }
                         let raw = &original[node.range()];
                         let end = raw.find('>').context("invalid text element")?;
                         let opening = &raw[..end];
@@ -851,6 +1627,18 @@ impl TextSource {
                             .split(|c: char| c.is_whitespace() || c == '/')
                             .next()
                             .context("missing text tag")?;
+                        if word::text_break(node) {
+                            // A tab or line break of the run becomes the new text.
+                            let prefix = element_prefix(name);
+                            let replacement = word_run_content(
+                                &text,
+                                &format!("<{prefix}t xml:space=\"preserve\""),
+                                &format!("{prefix}t"),
+                                &prefix,
+                            )?;
+                            text_edits.push((node.range(), replacement));
+                            continue;
+                        }
                         // Preserve attributes, enforcing whitespace preservation for Word.
                         let mut opening = opening.trim_end_matches('/').to_owned();
                         if word(&self.format) {
@@ -868,14 +1656,54 @@ impl TextSource {
                                 opening.push_str(" xml:space=\"preserve\"");
                             }
                         }
-                        let replacement = format!("{opening}>{}</{name}>", xml_text(&text)?);
+                        let replacement = if word(&self.format) && text.contains(['\n', '\t']) {
+                            word_run_content(&text, &opening, name, &element_prefix(name))?
+                        } else {
+                            format!("{opening}>{}</{name}>", xml_text(&text)?)
+                        };
                         text_edits.push((node.range(), replacement));
                     }
                     let result = splice(original, text_edits, "text")?;
                     Document::parse(&result)?;
                     patched.insert(part, encode_part(&result, encoding));
                 }
-                crate::excel::write_archive(&self.raw, output, &patched)?;
+                // The data bound controls show takes their new text.
+                let mut by_part: BTreeMap<String, Vec<(&word::Binding, &String)>> = BTreeMap::new();
+                let mut stores: BTreeMap<&str, String> = BTreeMap::new();
+                for (binding, value) in bound.values() {
+                    let part = match stores.get(binding.store.as_str()) {
+                        Some(part) => part.clone(),
+                        None => {
+                            let part = bound_data_part(parts, &binding.store)?;
+                            stores.insert(binding.store.as_str(), part.clone());
+                            part
+                        }
+                    };
+                    by_part.entry(part).or_default().push((binding, value));
+                }
+                for (part, values) in by_part {
+                    let (text, encoding) = part_text(&parts[&part])?;
+                    let updated = set_bound_values(&text, &values)?;
+                    patched.insert(part, encode_part(&updated, encoding));
+                }
+                if restructured.is_none() {
+                    validate_office_binary(&self.raw)?;
+                }
+                crate::excel::write_archive_without(&self.raw, output, &patched, &removed)?;
+                if let Some(restructured) = &restructured {
+                    let rows_changed: BTreeSet<&str> =
+                        operations.iter().map(|o| o.sheet.as_str()).collect();
+                    self.ensure_slides_read_back(
+                        output,
+                        restructured,
+                        &slide_operations,
+                        &by_page,
+                        &rows_changed,
+                    )
+                    .inspect_err(|_| {
+                        let _ = fs::remove_file(output);
+                    })?;
+                }
             }
             TextBackend::Pdf {
                 doc: original,
@@ -909,19 +1737,14 @@ impl TextSource {
                                 !unparsed.contains(&page),
                                 "PDF page {page} has drawing commands ARP cannot read to the end, so it cannot be rewritten"
                             );
-                            let mut content = Content::decode_strict(
-                                &original.get_page_content_with_limit(id, MAX_PAGE)?,
-                            )?;
-                            // lopdf cannot write an inline image back.
-                            ensure!(
-                                content.operations.iter().all(|o| o.operator != "BI"),
-                                "PDF page {page} has inline images, which ARP cannot write back; edit the text in a PDF editor"
-                            );
+                            let raw = original.get_page_content_with_limit(id, MAX_PAGE)?;
+                            let mut content = Content::decode_strict(&raw)?;
                             pdf_text(original, id, &mut content, changes, Some(&glyphs))?;
                             // Always allocate a new stream: an original stream may be shared by pages.
                             let stream = doc.add_object(Stream::new(
                                 lopdf::Dictionary::new(),
-                                content.encode()?,
+                                encode_content(&raw, &content)
+                                    .with_context(|| format!("PDF page {page}"))?,
                             ));
                             doc.get_object_mut(id)?
                                 .as_dict_mut()?
@@ -937,8 +1760,231 @@ impl TextSource {
                 }
             }
         }
-        Ok(json!({"format":self.format,"text_changes":changes.len(),"layout_review_required":true}))
+        let mut report = json!({"format":self.format,"text_changes":changes.len(),"layout_review_required":true});
+        if let Some(restructured) = &restructured {
+            report["slide_order"] = json!(
+                restructured
+                    .order
+                    .iter()
+                    .map(|(slide, _)| slide)
+                    .collect::<Vec<_>>()
+            );
+        }
+        Ok(report)
     }
+
+    /// Reads the written presentation back and compares its slides and notes
+    /// pages, in order, with the pages the operations and `edits` should make.
+    /// A page whose rows change (`rows_changed`) is compared by its place only.
+    fn ensure_slides_read_back(
+        &self,
+        output: &Path,
+        restructured: &slides::Restructured,
+        operations: &[SlideOperation],
+        edits: &BTreeMap<String, BTreeMap<usize, String>>,
+        rows_changed: &BTreeSet<&str>,
+    ) -> Result<()> {
+        let origins = slides::origins(operations, &self.sheets)?;
+        let sheets: BTreeMap<&str, &Value> = self
+            .sheets
+            .iter()
+            .map(|sheet| Ok((string(&sheet["name"])?, sheet)))
+            .collect::<Result<_>>()?;
+        let expected_page = |name: &str| -> Result<Option<Vec<String>>> {
+            if rows_changed.contains(name) {
+                return Ok(None);
+            }
+            let sheet = sheets
+                .get(origins.get(name).map(String::as_str).unwrap_or(name))
+                .context("missing text container")?;
+            let mut values = array(&sheet["cells"])?
+                .iter()
+                .map(|cell| cell["value"].as_str().unwrap_or("").to_owned())
+                .collect::<Vec<_>>();
+            for (index, text) in edits.get(name).into_iter().flatten() {
+                values[*index] = text.clone();
+            }
+            Ok(Some(values))
+        };
+        let mut expected = vec![];
+        for (slide, _) in &restructured.order {
+            expected.push(expected_page(slide)?);
+        }
+        for (_, notes) in &restructured.order {
+            if let Some(notes) = notes {
+                expected.push(expected_page(notes)?);
+            }
+        }
+        let Source::Text(written) = Source::open(output)? else {
+            bail!("the written presentation is not read as a presentation");
+        };
+        let actual = written
+            .sheets
+            .iter()
+            .map(|sheet| {
+                Ok(array(&sheet["cells"])?
+                    .iter()
+                    .map(|cell| cell["value"].as_str().unwrap_or("").to_owned())
+                    .collect::<Vec<_>>())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            actual.len() == expected.len()
+                && actual
+                    .iter()
+                    .zip(&expected)
+                    .all(|(actual, expected)| expected.as_ref().is_none_or(|e| e == actual)),
+            "the written presentation does not read back as the slide operations and edits make it; nothing is written"
+        );
+        Ok(())
+    }
+}
+
+/// The byte ranges of the inline images (`BI` ... `ID` data `EI`) of a page's
+/// content stream, outside strings and comments. `lengths` gives, in order,
+/// the data length of each image lopdf could read, which marks its end
+/// exactly; otherwise the image ends at the first `EI` set off by whitespace,
+/// as PDF readers find it.
+fn inline_images(raw: &[u8], lengths: &[Option<usize>]) -> Result<Vec<std::ops::Range<usize>>> {
+    let space = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'\x0c' | b'\0');
+    let delimiter = |b: u8| space(b) || b"()<>[]{}/%".contains(&b);
+    let token = |at: usize, word: &[u8]| {
+        raw[at..].starts_with(word)
+            && (at == 0 || delimiter(raw[at - 1]))
+            && raw.get(at + word.len()).is_none_or(|b| delimiter(*b))
+    };
+    // The end of the name, string, comment or hex string starting at `at`.
+    let skip = |at: usize| -> Option<usize> {
+        match raw[at] {
+            b'/' => Some(
+                raw[at + 1..]
+                    .iter()
+                    .position(|b| delimiter(*b))
+                    .map_or(raw.len(), |p| at + 1 + p),
+            ),
+            b'%' => Some(
+                raw[at..]
+                    .iter()
+                    .position(|b| matches!(b, b'\r' | b'\n'))
+                    .map_or(raw.len(), |p| at + p),
+            ),
+            b'(' => {
+                let (mut depth, mut i) = (0usize, at);
+                while i < raw.len() {
+                    match raw[i] {
+                        b'\\' => i += 1,
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(i + 1);
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                Some(raw.len())
+            }
+            b'<' if raw.get(at + 1) != Some(&b'<') => Some(
+                raw[at..]
+                    .iter()
+                    .position(|b| *b == b'>')
+                    .map_or(raw.len(), |p| at + p + 1),
+            ),
+            _ => None,
+        }
+    };
+    let mut images = vec![];
+    let mut i = 0;
+    while i < raw.len() {
+        if let Some(end) = skip(i) {
+            i = end;
+            continue;
+        }
+        if !token(i, b"BI") {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 2;
+        while i < raw.len() && !token(i, b"ID") {
+            i = skip(i).unwrap_or(i + 1);
+        }
+        ensure!(i < raw.len(), "a PDF inline image has no ID");
+        let mut data = i + 2;
+        let exact = lengths
+            .get(images.len())
+            .copied()
+            .flatten()
+            .and_then(|length| {
+                while data < raw.len() && space(raw[data]) {
+                    data += 1;
+                }
+                let mut end = data.checked_add(length)?;
+                while end < raw.len() && space(raw[end]) {
+                    end += 1;
+                }
+                token(end, b"EI").then_some(end + 2)
+            });
+        let end = match exact {
+            Some(end) => end,
+            None => (i + 3..raw.len().saturating_sub(1))
+                .find(|&at| space(raw[at - 1]) && token(at, b"EI"))
+                .map(|at| at + 2)
+                .context("a PDF inline image has no EI")?,
+        };
+        images.push(start..end);
+        i = end;
+    }
+    Ok(images)
+}
+
+/// Encodes `content` decoded from `raw`, copying its inline images from `raw`
+/// as they were: lopdf would write one as a stream object, and drops those it
+/// cannot read.
+fn encode_content(raw: &[u8], content: &Content) -> Result<Vec<u8>> {
+    let lengths: Vec<_> = content
+        .operations
+        .iter()
+        .filter(|o| o.operator == "BI")
+        .map(|o| match o.operands.first() {
+            Some(Object::Stream(stream)) => Some(stream.content.len()),
+            _ => None,
+        })
+        .collect();
+    let images = inline_images(raw, &lengths)?;
+    ensure!(
+        images.len() == lengths.len(),
+        "the inline images of a PDF page could not be told apart from its other drawing commands; edit the text in a PDF editor"
+    );
+    let mut output = vec![];
+    let mut pending = vec![];
+    let mut images = images.into_iter();
+    let flush =
+        |output: &mut Vec<u8>, pending: &mut Vec<lopdf::content::Operation>| -> Result<()> {
+            if !pending.is_empty() {
+                output.extend(
+                    Content {
+                        operations: std::mem::take(pending),
+                    }
+                    .encode()?,
+                );
+                output.push(b'\n');
+            }
+            Ok(())
+        };
+    for operation in &content.operations {
+        if operation.operator == "BI" {
+            flush(&mut output, &mut pending)?;
+            output.extend_from_slice(&raw[images.next().context("inline image missing")?]);
+            output.push(b'\n');
+        } else {
+            pending.push(operation.clone());
+        }
+    }
+    flush(&mut output, &mut pending)?;
+    Ok(output)
 }
 
 enum PdfEncoding<'a> {
@@ -1259,6 +2305,123 @@ mod tests {
     use std::io::Write;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
+    #[test]
+    fn office_parts_keep_binary_names_without_retaining_bytes() {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("word/document.xml", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"<document/>").unwrap();
+        writer
+            .start_file("word/media/image1.png", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"image bytes").unwrap();
+        let raw = writer.finish().unwrap().into_inner();
+        let selected = office_parts(&raw, false).unwrap();
+        assert_eq!(selected["word/document.xml"], b"<document/>");
+        assert!(selected["word/media/image1.png"].is_empty());
+        assert_eq!(
+            office_parts(&raw, true).unwrap()["word/media/image1.png"],
+            b"image bytes"
+        );
+    }
+
+    #[test]
+    fn skipped_binary_crc_is_checked_before_writeback() {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "word/media/image1.png",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(b"image bytes").unwrap();
+        let mut raw = writer.finish().unwrap().into_inner();
+        let offset = raw
+            .windows(b"image bytes".len())
+            .position(|window| window == b"image bytes")
+            .unwrap();
+        raw[offset] ^= 1;
+        assert!(office_parts(&raw, false).is_ok());
+        assert!(validate_office_binary(&raw).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_office_parts() {
+        use std::time::Instant;
+
+        let media = vec![0x5a; 32 * 1024 * 1024];
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("word/document.xml", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"<document/>").unwrap();
+        writer
+            .start_file("word/media/image1.png", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&media).unwrap();
+        let raw = writer.finish().unwrap().into_inner();
+        for include_binary in [true, false] {
+            let start = Instant::now();
+            let parts = office_parts(&raw, include_binary).unwrap();
+            let retained: usize = parts.values().map(Vec::len).sum();
+            eprintln!(
+                "office_parts include_binary={include_binary} elapsed_ms={} retained_bytes={retained}",
+                start.elapsed().as_millis()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_bound_controls() {
+        use std::time::Instant;
+
+        let body = (0..500)
+            .map(|index| format!("<w:sdt><w:sdtContent><w:p><w:r><w:t>{index}</w:t></w:r></w:p></w:sdtContent></w:sdt>"))
+            .collect::<String>();
+        let xml = format!("<w:document xmlns:w=\"{WORD}\"><w:body>{body}</w:body></w:document>");
+        let doc = Document::parse(&xml).unwrap();
+        let edits: Vec<_> = doc
+            .descendants()
+            .filter(|node| node.has_tag_name((WORD, "t")))
+            .map(|node| (node, "replacement".to_owned()))
+            .collect();
+        let controls: Vec<_> = doc
+            .descendants()
+            .filter(|node| node.has_tag_name((WORD, "sdt")))
+            .collect();
+        let start = Instant::now();
+        let old: Vec<_> = controls
+            .iter()
+            .map(|control| {
+                let mut indexed = BTreeMap::new();
+                for (node, value) in &edits {
+                    indexed.entry(node.range().start).or_insert(value.as_str());
+                }
+                word::control_text(*control, &indexed)
+            })
+            .collect();
+        let old_ms = start.elapsed().as_millis();
+        let start = Instant::now();
+        let mut indexed = BTreeMap::new();
+        for (node, value) in &edits {
+            indexed.entry(node.range().start).or_insert(value.as_str());
+        }
+        let new: Vec<_> = controls
+            .iter()
+            .map(|control| word::control_text(*control, &indexed))
+            .collect();
+        let new_ms = start.elapsed().as_millis();
+        assert_eq!(old, new);
+        eprintln!(
+            "bound_controls old_ms={old_ms} new_ms={new_ms} controls={} edits={}",
+            controls.len(),
+            edits.len()
+        );
+    }
+
     const BODY: &str = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
         <w:p><w:r><w:t>plain</w:t></w:r></w:p>
         <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>DATE</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>2026/09/25</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>after</w:t></w:r></w:p>
@@ -1268,13 +2431,41 @@ mod tests {
         <w:p><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>tail</w:t></w:r></w:p>
         </w:body></w:document>"#;
 
+    /// Names, strings and comments holding `BI` are not images; a known data
+    /// length ends an image even when its data holds ` EI `.
+    #[test]
+    fn inline_images_are_found_outside_names_strings_and_comments() {
+        let raw = b"/BI 1 gs % BI\n(BI ID EI) Tj BI /W 4 /H 1 /BPC 8 /CS /G ID  EI  EI Q BI /F /AHx ID 00> EI";
+        let text = |ranges: Vec<std::ops::Range<usize>>| -> Vec<String> {
+            ranges
+                .into_iter()
+                .map(|r| String::from_utf8_lossy(&raw[r]).into_owned())
+                .collect()
+        };
+        assert_eq!(
+            text(inline_images(raw, &[Some(4), None]).unwrap()),
+            [
+                "BI /W 4 /H 1 /BPC 8 /CS /G ID  EI  EI",
+                "BI /F /AHx ID 00> EI"
+            ]
+        );
+        // Without the length, the first EI set off by whitespace ends the data.
+        assert_eq!(
+            text(inline_images(raw, &[None, None]).unwrap())[0],
+            "BI /W 4 /H 1 /BPC 8 /CS /G ID  EI"
+        );
+    }
+
     #[test]
     fn word_field_results_cover_complex_simple_and_multi_paragraph_fields() {
         let xml = Document::parse(BODY).unwrap();
-        assert_eq!(
-            word_field_results(&xml),
-            [false, true, false, true, true, false]
-        );
+        let results = word_field_results(&xml);
+        let flags: Vec<_> = xml
+            .descendants()
+            .filter(|n| n.has_tag_name((WORD, "t")))
+            .map(|n| results.contains(&n.range().start))
+            .collect();
+        assert_eq!(flags, [false, true, false, true, true, false]);
     }
 
     fn package(path: &Path, parts: &[(&str, Vec<u8>)]) {
@@ -1326,7 +2517,7 @@ mod tests {
         ] {
             let rejected = dir.path().join("rejected.docm");
             let error = doc
-                .patch(&rejected, &[change(cell, before, after)])
+                .patch(&rejected, &[], &[change(cell, before, after)])
                 .unwrap_err();
             assert!(
                 error.to_string().contains("Word field result"),
@@ -1337,6 +2528,7 @@ mod tests {
         let written = dir.path().join("written.docm");
         doc.patch(
             &written,
+            &[],
             &[change("A2", "2026/09/25after", "2026/09/25edited")],
         )
         .unwrap();
@@ -1468,12 +2660,13 @@ mod tests {
         let error = doc
             .patch(
                 &dir.path().join("field.docx"),
+                &[],
                 &[change("A2", "2026/09/25after")],
             )
             .unwrap_err();
         assert!(error.to_string().contains("Word field result"), "{error}");
         let written = dir.path().join("written.docx");
-        doc.patch(&written, &[change("A1", "note")]).unwrap();
+        doc.patch(&written, &[], &[change("A1", "note")]).unwrap();
         let xml = String::from_utf8(written_part(&written, "word/document.xml")).unwrap();
         assert_eq!(xml.matches(">edited</w:t>").count(), 2, "{xml}");
         assert!(!xml.contains(">note<"));
@@ -1487,6 +2680,7 @@ mod tests {
         let error = doc
             .patch(
                 &dir.path().join("differing-out.docx"),
+                &[],
                 &[change("A1", "note")],
             )
             .unwrap_err();
@@ -1594,6 +2788,7 @@ mod tests {
         let written = dir.path().join("written.docx");
         doc.patch(
             &written,
+            &[],
             &[json!({"sheet":"document","cell":"A1","before":"本文","after":"更新"})],
         )
         .unwrap();
@@ -1602,5 +2797,607 @@ mod tests {
             encoded(&body.replace("<w:t>本文", r#"<w:t xml:space="preserve">更新"#))
         );
         assert_eq!(values(&open_word(&written), 0), ["更新"]);
+    }
+
+    #[test]
+    fn word_line_breaks_and_tabs_are_written_as_run_elements() {
+        let text_box = || r#"<w:txbxContent><w:p><w:r><w:t>注</w:t><w:br/><w:t>記</w:t></w:r></w:p></w:txbxContent>"#;
+        let body = format!(
+            r#"<w:document xmlns:w="{W}" xmlns:mc="{MARKUP_COMPATIBILITY}"><w:body><w:p><w:r><w:t>項目</w:t><w:tab/><w:t>値</w:t></w:r></w:p><w:p><w:r><w:t>一行目</w:t><w:br/><w:t>二行目</w:t></w:r></w:p><w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing>{}</w:drawing></mc:Choice><mc:Fallback><w:pict>{}</w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p><w:p><w:fldSimple w:instr="PAGE"><w:r><w:t>1</w:t><w:tab/><w:t>2</w:t></w:r></w:fldSimple></w:p></w:body></w:document>"#,
+            text_box(),
+            text_box()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("breaks.docx");
+        word_package(&source, &body, &[]);
+        let doc = open_word(&source);
+        assert_eq!(
+            values(&doc, 0),
+            ["項目\t値", "一行目\n二行目", "注\n記", "1\t2"]
+        );
+        let change = |cell: &str, before: &str, after: &str| json!({"sheet":"document","cell":cell,"before":before,"after":after});
+        // A tab or break in a field result is recalculated like its text.
+        let error = doc
+            .patch(
+                &dir.path().join("field.docx"),
+                &[],
+                &[change("A4", "1\t2", "12")],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Word field result"), "{error}");
+        let written = dir.path().join("written.docx");
+        doc.patch(
+            &written,
+            &[],
+            &[
+                change("A1", "項目\t値", "項目\n値\t（単位）"),
+                change("A2", "一行目\n二行目", "一行目二行目"),
+                change("A3", "注\n記", "注\t記"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            values(&open_word(&written), 0),
+            ["項目\n値\t（単位）", "一行目二行目", "注\t記", "1\t2"]
+        );
+        let xml = String::from_utf8(written_part(&written, "word/document.xml")).unwrap();
+        assert!(
+            xml.contains(r#"<w:t>項目</w:t><w:br/><w:t xml:space="preserve">値</w:t><w:tab/><w:t xml:space="preserve">（単位）</w:t>"#),
+            "{xml}"
+        );
+        assert!(xml.contains("<w:t>一行目</w:t><w:t>二行目</w:t>"), "{xml}");
+        // Both renderings of the text box change.
+        assert_eq!(
+            xml.matches("<w:t>注</w:t><w:tab/><w:t>記</w:t>").count(),
+            2,
+            "{xml}"
+        );
+    }
+
+    /// A Word package whose title shows the core properties' title twice (a
+    /// block control and an inline one split over two runs) and whose cover
+    /// page date and abstract show a custom XML part.
+    fn bound_package(path: &Path) {
+        const DC: &str = "http://purl.org/dc/elements/1.1/";
+        const CP: &str = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties";
+        const COVER: &str = "http://schemas.microsoft.com/office/2006/coverPageProps";
+        let binding = |store: &str, prefixes: &str, xpath: &str, kind: &str| {
+            format!(
+                r#"<w:sdtPr><w:dataBinding w:prefixMappings="{prefixes}" w:xpath="{xpath}" w:storeItemID="{store}"/>{kind}</w:sdtPr>"#
+            )
+        };
+        let title = binding(
+            "{6C3C8BC8-F283-45AE-878A-BAB7291924A1}",
+            &format!("xmlns:ns0='{DC}' xmlns:ns1='{CP}'"),
+            "/ns1:coreProperties[1]/ns0:title[1]",
+            "<w:text/>",
+        );
+        let cover = |field: &str, kind: &str| {
+            binding(
+                "{55AF091B-3C7A-41E3-B477-F2FDAA23CFDA}",
+                &format!("xmlns:ns0='{COVER}'"),
+                &format!("/ns0:CoverPageProperties[1]/ns0:{field}[1]"),
+                kind,
+            )
+        };
+        let body = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:sdt>{title}<w:sdtContent><w:p><w:r><w:t>旧題</w:t></w:r></w:p></w:sdtContent></w:sdt><w:p><w:r><w:t>題名：</w:t></w:r><w:sdt>{title}<w:sdtContent><w:r><w:t>旧</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>題</w:t></w:r></w:sdtContent></w:sdt></w:p><w:sdt>{}<w:sdtContent><w:p><w:r><w:t>2026/9/1</w:t></w:r></w:p></w:sdtContent></w:sdt><w:sdt>{}<w:sdtContent><w:p><w:r><w:t>概要</w:t></w:r></w:p></w:sdtContent></w:sdt></w:body></w:document>"#,
+            cover("PublishDate", "<w:date/>"),
+            cover("Abstract", "<w:text/>")
+        );
+        package(
+            path,
+            &[
+                (
+                    "_rels/.rels",
+                    format!(
+                        r#"<Relationships xmlns="{PACKAGE_REL}"><Relationship Id="r1" Type="{REL}/officeDocument" Target="word/document.xml"/><Relationship Id="r2" Type="{PACKAGE_REL}/metadata/core-properties" Target="docProps/core.xml"/></Relationships>"#
+                    )
+                    .into_bytes(),
+                ),
+                ("word/document.xml", body.into_bytes()),
+                (
+                    "docProps/core.xml",
+                    format!(r#"<cp:coreProperties xmlns:cp="{CP}" xmlns:dc="{DC}"><dc:title>旧題</dc:title><dc:creator/></cp:coreProperties>"#).into_bytes(),
+                ),
+                (
+                    "customXml/item1.xml",
+                    format!(r#"<CoverPageProperties xmlns="{COVER}"><PublishDate>2026-09-01</PublishDate><Abstract>概要</Abstract></CoverPageProperties>"#).into_bytes(),
+                ),
+                (
+                    "customXml/_rels/item1.xml.rels",
+                    format!(r#"<Relationships xmlns="{PACKAGE_REL}"><Relationship Id="p" Type="{REL}/customXmlProps" Target="itemProps1.xml"/></Relationships>"#).into_bytes(),
+                ),
+                (
+                    "customXml/itemProps1.xml",
+                    br#"<ds:datastoreItem ds:itemID="{55af091b-3c7a-41e3-b477-f2fdaa23cfda}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml"/>"#.to_vec(),
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn edits_to_bound_content_controls_update_their_data_and_twins() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("bound.docx");
+        bound_package(&source);
+        let doc = open_word(&source);
+        assert_eq!(values(&doc, 0), ["旧題", "題名：旧題", "2026/9/1", "概要"]);
+        let change = |cell: &str, before: &str, after: &str| json!({"sheet":"document","cell":cell,"before":before,"after":after});
+        let written = dir.path().join("written.docx");
+        doc.patch(
+            &written,
+            &[],
+            &[
+                change("A1", "旧題", "新題"),
+                change("A4", "概要", "新しい概要"),
+            ],
+        )
+        .unwrap();
+        // The inline control bound to the same title shows it too.
+        assert_eq!(
+            values(&open_word(&written), 0),
+            ["新題", "題名：新題", "2026/9/1", "新しい概要"]
+        );
+        let core = String::from_utf8(written_part(&written, "docProps/core.xml")).unwrap();
+        assert!(
+            core.contains("<dc:title>新題</dc:title><dc:creator/>"),
+            "{core}"
+        );
+        let cover = String::from_utf8(written_part(&written, "customXml/item1.xml")).unwrap();
+        assert!(cover.contains("<Abstract>新しい概要</Abstract>"), "{cover}");
+
+        for (changes, message) in [
+            (vec![change("A3", "2026/9/1", "2026/10/1")], "date, list"),
+            (vec![change("A1", "旧題", "新\n題")], "single-line"),
+            (
+                vec![
+                    change("A1", "旧題", "新題"),
+                    change("A2", "題名：旧題", "題名：別題"),
+                ],
+                "edited to different text",
+            ),
+        ] {
+            let error = doc
+                .patch(&dir.path().join("rejected.docx"), &[], &changes)
+                .unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    /// A one-slide presentation whose slide holds `slide` text and, with
+    /// `notes`, a notes page with that text, its slide image and slide number.
+    fn pptx_package(path: &Path, slide: &str, notes: Option<&str>) {
+        let mut parts = vec![
+            (
+                "_rels/.rels",
+                format!(
+                    r#"<Relationships xmlns="{PACKAGE_REL}"><Relationship Id="r1" Type="{REL}/officeDocument" Target="ppt/presentation.xml"/></Relationships>"#
+                )
+                .into_bytes(),
+            ),
+            (
+                "ppt/presentation.xml",
+                format!(
+                    r#"<p:presentation xmlns:p="{PRESENTATION}" xmlns:r="{REL}"><p:sldIdLst><p:sldId id="256" r:id="s1"/></p:sldIdLst></p:presentation>"#
+                )
+                .into_bytes(),
+            ),
+            (
+                "ppt/_rels/presentation.xml.rels",
+                format!(
+                    r#"<Relationships xmlns="{PACKAGE_REL}"><Relationship Id="s1" Type="{REL}/slide" Target="slides/slide1.xml"/></Relationships>"#
+                )
+                .into_bytes(),
+            ),
+            (
+                "ppt/slides/slide1.xml",
+                format!(
+                    "<p:sld xmlns:p=\"{PRESENTATION}\" xmlns:a=\"{DRAWING}\"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:rPr lang=\"ja-JP\" b=\"1\"/><a:t>{slide}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+                )
+                .into_bytes(),
+            ),
+        ];
+        if let Some(notes) = notes {
+            let placeholder = |kind: &str, body: &str| {
+                format!(
+                    r#"<p:sp><p:nvSpPr><p:cNvPr id="1" name="{kind}"/><p:cNvSpPr/><p:nvPr><p:ph type="{kind}"/></p:nvPr></p:nvSpPr>{body}</p:sp>"#
+                )
+            };
+            parts.push((
+                "ppt/slides/_rels/slide1.xml.rels",
+                format!(
+                    r#"<Relationships xmlns="{PACKAGE_REL}"><Relationship Id="n1" Type="{REL}/notesSlide" Target="../notesSlides/notesSlide1.xml"/></Relationships>"#
+                )
+                .into_bytes(),
+            ));
+            parts.push((
+                "ppt/notesSlides/notesSlide1.xml",
+                format!(
+                    r#"<p:notes xmlns:p="{PRESENTATION}" xmlns:a="{DRAWING}"><p:cSld><p:spTree>{}{}{}</p:spTree></p:cSld></p:notes>"#,
+                    placeholder("sldImg", ""),
+                    placeholder("body", &format!("<p:txBody><a:p><a:r><a:t>{notes}</a:t></a:r></a:p></p:txBody>")),
+                    placeholder("sldNum", r#"<p:txBody><a:p><a:fld id="{1}" type="slidenum"><a:t>1</a:t></a:fld></a:p></p:txBody>"#),
+                )
+                .into_bytes(),
+            ));
+        }
+        package(path, &parts);
+    }
+
+    fn open_text(path: &Path) -> TextSource {
+        let Source::Text(doc) = Source::open(path).unwrap() else {
+            panic!("text source expected")
+        };
+        doc
+    }
+
+    #[test]
+    fn powerpoint_paragraphs_take_tabs_and_line_breaks_in_the_run_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("tabs.pptx");
+        pptx_package(&source, "項目\t値", None);
+        let doc = open_text(&source);
+        assert_eq!(values(&doc, 0), ["項目\t値"]);
+        let written = dir.path().join("written.pptx");
+        doc.patch(
+            &written,
+            &[],
+            &[json!({"sheet":"slide-1","cell":"A1","before":"項目\t値","after":"項目\n\t値"})],
+        )
+        .unwrap();
+        let doc = open_text(&written);
+        assert_eq!(values(&doc, 0), ["項目\n\t値"]);
+        let slide = String::from_utf8(written_part(&written, "ppt/slides/slide1.xml")).unwrap();
+        let format = r#"<a:rPr lang="ja-JP" b="1"/>"#;
+        assert!(
+            slide.contains(&format!(
+                "<a:r>{format}<a:t>項目</a:t></a:r><a:br>{format}</a:br><a:r>{format}<a:t>\t値</a:t></a:r>"
+            )),
+            "{slide}"
+        );
+        // Taking the line break out joins the lines again.
+        let joined = dir.path().join("joined.pptx");
+        doc.patch(
+            &joined,
+            &[],
+            &[json!({"sheet":"slide-1","cell":"A1","before":"項目\n\t値","after":"項目、値"})],
+        )
+        .unwrap();
+        assert_eq!(values(&open_text(&joined), 0), ["項目、値"]);
+    }
+
+    /// Notes pages follow the slides; the slide number they show is left out.
+    #[test]
+    fn powerpoint_notes_follow_the_slides_and_are_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("notes.pptx");
+        pptx_package(&source, "表題", Some("話す内容"));
+        let doc = open_text(&source);
+        let names: Vec<_> = doc
+            .sheets
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["slide-1", "notes-1"]);
+        assert_eq!(doc.sheets[1]["part"], "ppt/notesSlides/notesSlide1.xml");
+        assert_eq!(values(&doc, 1), ["話す内容"]);
+        let written = dir.path().join("written.pptx");
+        doc.patch(
+            &written,
+            &[], &[json!({"sheet":"notes-1","cell":"A1","before":"話す内容","after":"話す内容（改訂）"})],
+        )
+        .unwrap();
+        let doc = open_text(&written);
+        assert_eq!(values(&doc, 0), ["表題"]);
+        assert_eq!(values(&doc, 1), ["話す内容（改訂）"]);
+        let notes =
+            String::from_utf8(written_part(&written, "ppt/notesSlides/notesSlide1.xml")).unwrap();
+        assert!(notes.contains("<a:t>1</a:t></a:fld>"), "{notes}");
+    }
+
+    /// A two-slide presentation. Slide 1 has a notes page, a chart with its
+    /// workbook and a comment; with `link`, slide 2 links to slide 1. Both
+    /// slides are in one section, and custom shows list `shows` (slide numbers).
+    fn deck_package(path: &Path, link: bool, shows: &[&[usize]]) {
+        const P14: &str = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+        const TYPES: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
+        let slide = |text: &str| {
+            format!(
+                r#"<p:sld xmlns:p="{PRESENTATION}" xmlns:a="{DRAWING}" xmlns:r="{REL}"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#
+            )
+            .into_bytes()
+        };
+        let rels = |body: &str| {
+            format!(r#"<Relationships xmlns="{PACKAGE_REL}">{body}</Relationships>"#).into_bytes()
+        };
+        let override_type = |part: &str, kind: &str| {
+            format!(
+                r#"<Override PartName="/{part}" ContentType="application/vnd.openxmlformats-officedocument.{kind}+xml"/>"#
+            )
+        };
+        let shows: String = shows
+            .iter()
+            .enumerate()
+            .map(|(i, slides)| {
+                let slides: String = slides
+                    .iter()
+                    .map(|n| format!(r#"<p:sld r:id="rId{}"/>"#, n + 1))
+                    .collect();
+                format!(r#"<p:custShow name="show{i}" id="{i}"><p:sldLst>{slides}</p:sldLst></p:custShow>"#)
+            })
+            .collect();
+        let parts = vec![
+            (
+                "[Content_Types].xml",
+                format!(
+                    r#"<Types xmlns="{TYPES}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>{}{}{}{}{}</Types>"#,
+                    override_type("ppt/presentation.xml", "presentationml.presentation.main"),
+                    override_type("ppt/slides/slide1.xml", "presentationml.slide"),
+                    override_type("ppt/slides/slide2.xml", "presentationml.slide"),
+                    override_type("ppt/notesSlides/notesSlide1.xml", "presentationml.notesSlide"),
+                    override_type("ppt/charts/chart1.xml", "drawingml.chart"),
+                )
+                .into_bytes(),
+            ),
+            (
+                "_rels/.rels",
+                rels(&format!(
+                    r#"<Relationship Id="r1" Type="{REL}/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="r2" Type="{REL}/extended-properties" Target="docProps/app.xml"/>"#
+                )),
+            ),
+            (
+                "docProps/app.xml",
+                b"<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\"><Slides>2</Slides><Notes>1</Notes></Properties>".to_vec(),
+            ),
+            (
+                "ppt/presentation.xml",
+                format!(
+                    r#"<p:presentation xmlns:p="{PRESENTATION}" xmlns:r="{REL}"><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId3"/></p:sldIdLst><p:custShowLst>{shows}</p:custShowLst><p:extLst><p:ext uri="{{521415D9-36F7-43E2-AB2F-B90AF26B5E84}}"><p14:sectionLst xmlns:p14="{P14}"><p14:section name="All" id="{{1}}"><p14:sldIdLst><p14:sldId id="256"/><p14:sldId id="257"/></p14:sldIdLst></p14:section></p14:sectionLst></p:ext></p:extLst></p:presentation>"#
+                )
+                .into_bytes(),
+            ),
+            (
+                "ppt/_rels/presentation.xml.rels",
+                rels(&format!(
+                    r#"<Relationship Id="rId2" Type="{REL}/slide" Target="slides/slide1.xml"/><Relationship Id="rId3" Type="{REL}/slide" Target="slides/slide2.xml"/>"#
+                )),
+            ),
+            ("ppt/slides/slide1.xml", slide("表題")),
+            (
+                "ppt/slides/_rels/slide1.xml.rels",
+                rels(&format!(
+                    r#"<Relationship Id="rId1" Type="{REL}/notesSlide" Target="../notesSlides/notesSlide1.xml"/><Relationship Id="rId2" Type="{REL}/chart" Target="../charts/chart1.xml"/><Relationship Id="rId3" Type="{REL}/comments" Target="../comments/comment1.xml"/>"#
+                )),
+            ),
+            (
+                "ppt/notesSlides/notesSlide1.xml",
+                format!(
+                    r#"<p:notes xmlns:p="{PRESENTATION}" xmlns:a="{DRAWING}"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="1" name="body"/><p:cNvSpPr/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>話す内容</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+                )
+                .into_bytes(),
+            ),
+            (
+                "ppt/notesSlides/_rels/notesSlide1.xml.rels",
+                rels(&format!(
+                    r#"<Relationship Id="rId1" Type="{REL}/slide" Target="../slides/slide1.xml"/>"#
+                )),
+            ),
+            ("ppt/charts/chart1.xml", b"<chartSpace/>".to_vec()),
+            (
+                "ppt/charts/_rels/chart1.xml.rels",
+                rels(&format!(
+                    r#"<Relationship Id="rId1" Type="{REL}/package" Target="../embeddings/Book.xlsx"/>"#
+                )),
+            ),
+            ("ppt/embeddings/Book.xlsx", b"workbook".to_vec()),
+            ("ppt/comments/comment1.xml", b"<cmLst/>".to_vec()),
+            ("ppt/slides/slide2.xml", slide("二枚目")),
+            (
+                "ppt/slides/_rels/slide2.xml.rels",
+                rels(&if link {
+                    format!(r#"<Relationship Id="rId1" Type="{REL}/slide" Target="slide1.xml"/>"#)
+                } else {
+                    String::new()
+                }),
+            ),
+        ];
+        package(path, &parts);
+    }
+
+    fn slide_operation(kind: &str, fields: Value) -> Value {
+        let mut operation = json!({"id":"op","kind":kind,"reason":"test"});
+        for (key, value) in fields.as_object().unwrap() {
+            operation[key] = value.clone();
+        }
+        operation
+    }
+
+    #[test]
+    fn powerpoint_slides_are_copied_with_their_own_parts_and_deleted_with_theirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("deck.pptx");
+        deck_package(&source, false, &[&[1, 2]]);
+        let doc = open_text(&source);
+        let names: Vec<_> = doc
+            .sheets
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["slide-1", "slide-2", "notes-1"]);
+        let operations = [
+            json!({"id":"copy","kind":"insert_slide","from":"slide-1","after":"slide-2","reason":"copy"}),
+            json!({"id":"drop","kind":"delete_slide","slide":"slide-2","reason":"drop"}),
+        ];
+        let written = dir.path().join("written.pptx");
+        let report = doc
+            .patch(
+                &written,
+                &operations,
+                &[
+                    json!({"sheet":"copy","cell":"A1","before":"表題","after":"複製"}),
+                    json!({"sheet":"notes-copy","cell":"A1","before":"話す内容","after":"複製のノート"}),
+                ],
+            )
+            .unwrap();
+        assert_eq!(report["slide_order"], json!(["slide-1", "copy"]));
+        let result = open_text(&written);
+        let pages: Vec<_> = (0..result.sheets.len())
+            .map(|i| values(&result, i))
+            .collect();
+        assert_eq!(pages, [["表題"], ["複製"], ["話す内容"], ["複製のノート"]]);
+
+        let part = |name: &str| String::from_utf8(written_part(&written, name)).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&written).unwrap()).unwrap();
+        assert!(zip.by_name("ppt/slides/slide2.xml").is_err());
+        assert!(zip.by_name("ppt/slides/_rels/slide2.xml.rels").is_err());
+        // The copy has its own chart and workbook, and no comments.
+        let copy_rels = part("ppt/slides/_rels/slide3.xml.rels");
+        assert!(
+            copy_rels.contains(r#"Target="../charts/chart2.xml""#),
+            "{copy_rels}"
+        );
+        assert!(
+            copy_rels.contains(r#"Target="../notesSlides/notesSlide2.xml""#),
+            "{copy_rels}"
+        );
+        assert!(!copy_rels.contains("comments"), "{copy_rels}");
+        assert!(
+            part("ppt/charts/_rels/chart2.xml.rels")
+                .contains(r#"Target="../embeddings/Book1.xlsx""#)
+        );
+        assert_eq!(
+            written_part(&written, "ppt/embeddings/Book1.xlsx"),
+            b"workbook"
+        );
+        assert!(
+            part("ppt/notesSlides/_rels/notesSlide2.xml.rels")
+                .contains(r#"Target="../slides/slide3.xml""#)
+        );
+        assert!(part("ppt/slides/_rels/slide1.xml.rels").contains("comment1.xml"));
+
+        let presentation = part("ppt/presentation.xml");
+        assert!(presentation.contains(r#"<p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="258" r:id="rId1"/></p:sldIdLst>"#), "{presentation}");
+        assert!(
+            presentation.contains(r#"<p:sldLst><p:sld r:id="rId2"/></p:sldLst>"#),
+            "{presentation}"
+        );
+        assert!(
+            presentation.contains(
+                r#"<p14:sldIdLst><p14:sldId id="256"/><p14:sldId id="258"/></p14:sldIdLst>"#
+            ),
+            "{presentation}"
+        );
+        let types = part("[Content_Types].xml");
+        for present in [
+            "/ppt/slides/slide3.xml",
+            "/ppt/notesSlides/notesSlide2.xml",
+            "/ppt/charts/chart2.xml",
+        ] {
+            assert!(types.contains(present), "{present}: {types}");
+        }
+        assert!(!types.contains("/ppt/slides/slide2.xml"), "{types}");
+        assert!(part("docProps/app.xml").contains("<Slides>2</Slides><Notes>2</Notes>"));
+    }
+
+    #[test]
+    fn a_linked_slide_or_the_last_of_a_custom_show_is_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let delete = |source: &Path, slide: &str| {
+            open_text(source)
+                .patch(
+                    &dir.path().join(format!("out-{slide}.pptx")),
+                    &[slide_operation("delete_slide", json!({"slide":slide}))],
+                    &[],
+                )
+                .map(|_| String::new())
+                .unwrap_or_else(|error| format!("{error:#}"))
+        };
+        let linked = dir.path().join("linked.pptx");
+        deck_package(&linked, true, &[]);
+        let error = delete(&linked, "slide-1");
+        assert!(error.contains("linked from slide-2"), "{error}");
+        let shown = dir.path().join("shown.pptx");
+        deck_package(&shown, false, &[&[2]]);
+        let error = delete(&shown, "slide-2");
+        assert!(
+            error.contains("custom show show0 would have no slides left"),
+            "{error}"
+        );
+        assert!(!dir.path().join("out-slide-2.pptx").exists());
+    }
+
+    #[test]
+    fn slide_operations_name_existing_slides_and_new_pages() {
+        let sheets = [
+            json!({"name":"slide-1","part":"a"}),
+            json!({"name":"slide-2","part":"b"}),
+            json!({"name":"notes-1","part":"c"}),
+        ];
+        let error = |operations: &[Value]| {
+            format!(
+                "{:#}",
+                parse_slide_operations(operations, &sheets).unwrap_err()
+            )
+        };
+        let insert = |id: &str, from: &str| json!({"id":id,"kind":"insert_slide","from":from,"after":"slide-1","reason":"r"});
+        assert!(error(&[insert("slide-2", "slide-1")]).contains("choose another ID"));
+        assert!(error(&[insert("1", "slide-1")]).contains("is a number"));
+        assert!(error(&[insert("x", "slide-9")]).contains("slide-9 is not a slide here"));
+        let delete_copy = json!({"id":"d","kind":"delete_slide","slide":"x","reason":"r"});
+        assert!(error(&[insert("x", "slide-1"), delete_copy]).contains("remove that operation"));
+        let delete = |id: &str, slide: &str| json!({"id":id,"kind":"delete_slide","slide":slide,"reason":"r"});
+        assert!(error(&[delete("a", "slide-1"), delete("b", "slide-2")]).contains("last slide"));
+        assert!(
+            error(&[delete("a", "slide-1"), delete("b", "slide-1")]).contains("not a slide here")
+        );
+
+        let operations =
+            parse_slide_operations(&[insert("x", "slide-1"), delete("d", "slide-1")], &sheets)
+                .unwrap();
+        let view = slide_view(&sheets, &operations).unwrap();
+        let pages: Vec<_> = view
+            .iter()
+            .map(|s| (s["name"].as_str().unwrap(), s["page"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            pages,
+            [
+                ("slide-2", "sheet-2"),
+                ("x", "sheet-x"),
+                ("notes-x", "sheet-notes-x")
+            ]
+        );
+        assert_eq!(view[2]["copy_of"], "notes-1");
+    }
+
+    #[test]
+    fn root_level_presentation_relationships_are_found() {
+        let mut parts = BTreeMap::new();
+        parts.insert(
+            "_rels/.rels".into(),
+            format!("<Relationships xmlns=\"{PACKAGE_REL}\"><Relationship Id=\"r0\" Type=\"{REL}/officeDocument\" Target=\"presentation.xml\"/></Relationships>").into_bytes(),
+        );
+        parts.insert(
+            "presentation.xml".into(),
+            format!("<p:presentation xmlns:p=\"{PRESENTATION}\" xmlns:r=\"{REL}\"><p:sldId r:id=\"r1\"/></p:presentation>").into_bytes(),
+        );
+        parts.insert(
+            "_rels/presentation.xml.rels".into(),
+            format!("<Relationships xmlns=\"{PACKAGE_REL}\"><Relationship Id=\"r1\" Type=\"{REL}/slide\" Target=\"slide.xml\"/></Relationships>").into_bytes(),
+        );
+        parts.insert("slide.xml".into(), Vec::new());
+        parts.insert(
+            "_rels/slide.xml.rels".into(),
+            format!("<Relationships xmlns=\"{PACKAGE_REL}\"><Relationship Id=\"n1\" Type=\"{REL}/notesSlide\" Target=\"notes.xml\"/></Relationships>").into_bytes(),
+        );
+        parts.insert("notes.xml".into(), Vec::new());
+        assert_eq!(
+            office_containers(&parts, "pptx").unwrap(),
+            vec![
+                ("slide-1".into(), "slide.xml".into()),
+                ("notes-1".into(), "notes.xml".into())
+            ]
+        );
     }
 }

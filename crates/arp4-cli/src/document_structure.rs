@@ -8,6 +8,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+mod align;
+mod carry;
 mod context;
 mod corrections;
 mod inference;
@@ -36,7 +38,75 @@ pub fn replay_corrections(
     journal: &Value,
     extraction: &Value,
 ) -> Result<(Value, Value)> {
-    rebase::rebase(root, journal, extraction)
+    rebase::rebase(root, journal, extraction, &hash(&encoded(extraction)), true)
+}
+
+/// [`replay_corrections`] for an extraction whose canonical hash the caller has
+/// verified, such as the key of an inspected document.
+pub fn replay_verified_corrections(
+    root: &Path,
+    journal: &Value,
+    extraction: &Value,
+    extraction_hash: &str,
+) -> Result<(Value, Value)> {
+    rebase::rebase(root, journal, extraction, extraction_hash, true)
+}
+
+/// [`replay_verified_corrections`] on the extraction of an earlier version of
+/// the original, which has changed since: the interpretation the new version's
+/// import carries from.
+pub fn replay_earlier_corrections(
+    root: &Path,
+    journal: &Value,
+    extraction: &Value,
+    extraction_hash: &str,
+) -> Result<(Value, Value)> {
+    rebase::rebase(root, journal, extraction, extraction_hash, false)
+}
+
+/// How the row and column operations between two versions of an original
+/// are known when an interpretation is carried from one to the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carrier {
+    /// `documents apply` wrote them, so their positions and counts are exact.
+    Apply,
+    /// The original was edited outside ARP; they were found by aligning the
+    /// rows and columns of the two extractions by their values.
+    Alignment,
+}
+
+impl Carrier {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Apply => "apply",
+            Self::Alignment => "alignment",
+        }
+    }
+}
+
+/// The row and column operations that turn the sheets of the extraction
+/// `before` into those of `after`, found by aligning their values, for an
+/// original edited outside ARP.
+pub fn align_operations(
+    before: &Value,
+    after: &Value,
+) -> Result<Vec<crate::excel::StructuralOperation>> {
+    align::operations(before, after)
+}
+
+/// Carries `structure`, the interpretation of the extraction `before`, onto
+/// `after`, the extraction of the original changed by `operations`. Returns
+/// the correction journal for `after` and the record of what moved, was added,
+/// removed or changed, and whether the review was kept.
+pub fn carry_corrections(
+    root: &Path,
+    structure: &Value,
+    before: &Value,
+    after: &Value,
+    operations: &[crate::excel::StructuralOperation],
+    carrier: Carrier,
+) -> Result<(Value, Value)> {
+    carry::carry(root, structure, before, after, operations, carrier)
 }
 
 pub fn record_corrections(root: &Path, extraction: &Value, structure: &Value) -> Result<Value> {
@@ -217,7 +287,7 @@ fn extraction(path: &Path) -> Result<Value> {
 pub fn initialize(root: &Path, extraction: &Value) -> Result<Value> {
     let extraction_hash = hash(&encoded(extraction));
     let value = inferred(extraction, &extraction_hash)?;
-    validate_hashed(root, extraction, &extraction_hash, &value)?;
+    validate_hashed(root, extraction, &extraction_hash, &value, true)?;
     Ok(value)
 }
 
@@ -232,15 +302,18 @@ fn inferred(extraction: &Value, extraction_hash: &str) -> Result<Value> {
 
 /// Validity is distinct from readiness: pending/unreadable cells remain inspectable.
 pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value> {
-    validate_hashed(root, extraction, &hash(&encoded(extraction)), value)
+    validate_hashed(root, extraction, &hash(&encoded(extraction)), value, true)
 }
 
-/// [`validate`] against the already computed hash of `extraction`.
+/// [`validate`] against the already computed hash of `extraction`. `current`
+/// requires the original to be still the one extracted; an earlier version's
+/// interpretation, read to carry it onto the new one, is validated without.
 fn validate_hashed(
     root: &Path,
     extraction: &Value,
     extraction_hash: &str,
     value: &Value,
+    current: bool,
 ) -> Result<Value> {
     validate_schema(value)?;
     relations::validate(value)?;
@@ -251,11 +324,13 @@ fn validate_hashed(
             && value["extraction_hash"] == extraction_hash,
         "structure/extraction version mismatch"
     );
-    let original = under(root, string(&value["source"]["path"])?)?;
-    ensure!(
-        hash(&fs::read(original)?) == value["source"]["sha256"],
-        "original changed; re-import and reinterpret"
-    );
+    if current {
+        let original = under(root, string(&value["source"]["path"])?)?;
+        ensure!(
+            hash(&fs::read(original)?) == value["source"]["sha256"],
+            "original changed; re-import and reinterpret"
+        );
+    }
     let sheets: BTreeMap<_, _> = array(&extraction["sheets"])?
         .iter()
         .map(|s| (s["name"].as_str().unwrap(), s))

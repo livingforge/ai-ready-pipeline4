@@ -25,7 +25,7 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive
 ```text
 cargo install --path crates/arp4-cli --locked
 arp4 --version
-arp4 doctor --format json
+arp4 doctor
 arp4 skills install --root <project> --agent <agent>
 arp4 documents init --root <project>
 ```

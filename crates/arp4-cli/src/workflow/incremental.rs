@@ -36,7 +36,7 @@ pub(super) fn external_changed(
     let mut documents = BTreeSet::new();
     for item in arr(&base["items"])? {
         for reference in references(item) {
-            if let Some((doc, _)) = reference.split_once('/')
+            if let Some((doc, _)) = reference.rsplit_once('/')
                 && doc != owner
             {
                 documents.insert(doc.to_owned());

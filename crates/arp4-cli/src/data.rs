@@ -226,12 +226,15 @@ pub fn read(path: &Path, schema: Option<&str>) -> Result<Value> {
     Ok(value)
 }
 pub fn write(path: &Path, value: &Value) -> Result<()> {
-    let bytes = if path.extension().is_some_and(|s| s == "json") {
+    replace(path, &serialized(path, value)?)
+}
+/// The bytes [`write`] stores for `value` at `path`: canonical JSON or YAML.
+pub fn serialized(path: &Path, value: &Value) -> Result<Vec<u8>> {
+    Ok(if path.extension().is_some_and(|s| s == "json") {
         encoded(value)
     } else {
         serde_saphyr::to_string(value)?.into_bytes()
-    };
-    replace(path, &bytes)
+    })
 }
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::create_dir_all(path.parent().context("missing parent")?)?;
@@ -256,6 +259,53 @@ pub fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp.as_file().sync_all()?;
     tmp.persist_noclobber(path).map_err(|e| e.error)?;
     Ok(())
+}
+/// Remove `directory`, then each parent, while it is empty, stopping below `boundary`.
+/// Best effort: the caller's operation is already complete, so a directory that is
+/// not empty or is held open elsewhere ends the walk instead of failing it.
+pub fn remove_empty_directories(directory: &Path, boundary: &Path) {
+    let mut current = Some(directory);
+    while let Some(directory) = current.filter(|d| d.starts_with(boundary) && *d != boundary) {
+        match fs::remove_dir(directory) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => break,
+        }
+        current = directory.parent();
+    }
+}
+/// A temporary directory inside ARP-managed storage. Dropping it also removes the
+/// parents it leaves empty, up to `boundary`.
+pub struct Stage {
+    directory: Option<tempfile::TempDir>,
+    boundary: PathBuf,
+}
+impl Stage {
+    pub fn new_in(parent: &Path, boundary: &Path) -> Result<Self> {
+        fs::create_dir_all(parent)?;
+        Ok(Self {
+            directory: Some(tempfile::tempdir_in(parent)?),
+            boundary: boundary.to_owned(),
+        })
+    }
+    pub fn path(&self) -> &Path {
+        self.directory.as_ref().unwrap().path()
+    }
+    /// Keep the directory, for example as recovery data after a failed rollback.
+    pub fn keep(mut self) -> PathBuf {
+        self.directory.take().unwrap().keep()
+    }
+}
+impl Drop for Stage {
+    fn drop(&mut self) {
+        if let Some(directory) = self.directory.take() {
+            let parent = directory.path().parent().map(Path::to_owned);
+            drop(directory);
+            if let Some(parent) = parent {
+                remove_empty_directories(&parent, &self.boundary);
+            }
+        }
+    }
 }
 pub fn is_link(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
@@ -293,8 +343,11 @@ pub fn files(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
             return Ok(());
         }
         for e in fs::read_dir(dir)? {
-            let p = e?.path();
-            let meta = fs::symlink_metadata(&p)?;
+            let e = e?;
+            let p = e.path();
+            // Does not follow links. On Windows directory enumeration already
+            // carries this metadata, avoiding an extra filesystem call per entry.
+            let meta = e.metadata()?;
             ensure!(!is_link(&meta), "links are not allowed: {}", p.display());
             if meta.is_dir() {
                 walk(base, &p, out)?
@@ -319,6 +372,38 @@ pub fn identifier(id: &str) -> Result<()> {
     });
     ensure!(VALID.is_match(id), "invalid ID: {id}");
     ensure!(!RESERVED.is_match(id), "reserved ID: {id}");
+    Ok(())
+}
+
+/// A document ID is the original's path below the sources directory, so that the
+/// adopted records mirror the folders of the originals. Each segment must also be a
+/// file name that Windows and Git can check out.
+pub fn document_id(id: &str) -> Result<()> {
+    static RESERVED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$").unwrap()
+    });
+    ensure!(!id.is_empty(), "empty document ID");
+    for segment in id.split('/') {
+        ensure!(
+            !segment.is_empty() && segment != "." && segment != "..",
+            "invalid document ID: {id}"
+        );
+        ensure!(
+            !segment
+                .chars()
+                .any(|c| c.is_control() || "\\:*?\"<>|".contains(c)),
+            "document ID contains a character Windows does not allow in file names: {id}"
+        );
+        // Windows drops a trailing dot or space, so the checkout would name another file.
+        ensure!(
+            !segment.ends_with('.') && !segment.ends_with(' '),
+            "document ID segment ends with a dot or space: {id}"
+        );
+        ensure!(
+            !RESERVED.is_match(segment),
+            "document ID uses a reserved Windows device name: {id}"
+        );
+    }
     Ok(())
 }
 
@@ -420,6 +505,47 @@ mod tests {
             ])
         );
         assert_eq!(grouped_warnings([]), json!([]));
+    }
+
+    #[test]
+    fn empty_directories_are_removed_up_to_the_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let boundary = temp.path().join(".arp");
+        let kept = boundary.join("changes/kept");
+        let emptied = boundary.join("changes/doc/proposal");
+        fs::create_dir_all(&kept).unwrap();
+        fs::write(kept.join("proposal.json"), "{}").unwrap();
+        fs::create_dir_all(&emptied).unwrap();
+
+        remove_empty_directories(&emptied, &boundary);
+        assert!(!boundary.join("changes/doc").exists());
+        assert!(kept.exists());
+
+        fs::remove_dir_all(&kept).unwrap();
+        remove_empty_directories(&kept, &boundary);
+        assert!(!boundary.join("changes").exists());
+        assert!(boundary.exists());
+
+        let outside = temp.path().join("sources");
+        fs::create_dir(&outside).unwrap();
+        remove_empty_directories(&outside, &boundary);
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn stage_removes_the_parents_it_leaves_empty_unless_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let boundary = temp.path().join(".arp");
+        let parent = boundary.join("cache/export");
+        let stage = Stage::new_in(&parent, &boundary).unwrap();
+        fs::write(stage.path().join("result.xlsx"), "x").unwrap();
+        drop(stage);
+        assert!(!boundary.join("cache").exists());
+        assert!(boundary.exists());
+
+        let kept = Stage::new_in(&parent, &boundary).unwrap().keep();
+        assert!(kept.exists());
+        fs::remove_dir(&kept).unwrap();
     }
 
     #[test]

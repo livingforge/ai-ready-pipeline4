@@ -47,76 +47,121 @@ pub(super) fn rewrite_drawing_anchors(
         } else {
             anchor.attribute("editAs").unwrap_or("twoCell")
         };
-        if placement == "absolute" {
-            continue;
+        move_marker_anchor(anchor, placement, operations, &mut edits)?;
+    }
+    splice(original, edits, "drawing")
+}
+
+/// A corner of an anchor on one axis: its 0-based column or row index and
+/// whether its offset into that cell is 0.
+pub(super) type Corner = [(u32, bool); 2];
+
+/// Where an anchor's corners go when rows and columns move, by placement:
+/// `absolute` stays, `oneCell` moves with its top-left cell and keeps its
+/// size, and `twoCell` moves and sizes with the cells under both corners.
+/// Each corner is [column, row]; the result gives each new index and whether
+/// its offset resets to 0 because its cell was deleted.
+pub(super) fn move_corners(
+    placement: &str,
+    from: Corner,
+    to: Option<Corner>,
+    operations: &[StructuralOperation],
+) -> Result<(Corner, Option<Corner>)> {
+    let unchanged = |corner: Corner| corner.map(|(index, _)| (index, false));
+    if placement == "absolute" {
+        return Ok((unchanged(from), to.map(unchanged)));
+    }
+    let position = |index: u32| index.checked_add(1).context("anchor coordinate overflow");
+    let mut shifts = [0i64; 2];
+    let mut moved_from = unchanged(from);
+    for (axis, (index, _)) in from.into_iter().enumerate() {
+        let position = position(index)?;
+        let (mapped, deleted) = map_anchor_index(position, operations, axis == 1, false)?;
+        shifts[axis] = i64::from(mapped) - i64::from(position);
+        moved_from[axis] = (mapped - 1, deleted);
+    }
+    let Some(to) = to else {
+        return Ok((moved_from, None));
+    };
+    let mut moved_to = unchanged(to);
+    for (axis, (index, at_edge)) in to.into_iter().enumerate() {
+        let position = position(index)?;
+        moved_to[axis] = if placement == "oneCell" {
+            let moved = i64::from(position) + shifts[axis];
+            (
+                u32::try_from(moved.max(1)).context("anchor coordinate overflow")? - 1,
+                false,
+            )
+        } else {
+            let (mapped, deleted) = map_anchor_index(position, operations, axis == 1, at_edge)?;
+            (mapped - 1, deleted)
+        };
+    }
+    Ok((moved_from, Some(moved_to)))
+}
+
+/// Moves an anchor whose `from` and `to` markers hold XDR `col`, `colOff`,
+/// `row` and `rowOff` (drawings, form controls and embedded objects), adding
+/// the edits of their text.
+pub(super) fn move_marker_anchor(
+    anchor: Node<'_, '_>,
+    placement: &str,
+    operations: &[StructuralOperation],
+    edits: &mut Vec<(std::ops::Range<usize>, String)>,
+) -> Result<()> {
+    type Marker<'a, 'input> = [(Node<'a, 'input>, Node<'a, 'input>); 2];
+    let marker = |name: &str| -> Option<Marker<'_, '_>> {
+        let marker = anchor
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == name)?;
+        let part = |index: &str, offset: &str| {
+            child_ns(marker, XDR, index).zip(child_ns(marker, XDR, offset))
+        };
+        Some([part("col", "colOff")?, part("row", "rowOff")?])
+    };
+    let Some(from) = marker("from") else {
+        return Ok(());
+    };
+    let to = marker("to");
+    let corner = |marker: &Marker<'_, '_>| -> Result<Corner> {
+        let mut corner = [(0, false); 2];
+        for (axis, (index, offset)) in marker.iter().enumerate() {
+            corner[axis] = (
+                index
+                    .text()
+                    .context("anchor coordinate is empty")?
+                    .trim()
+                    .parse()?,
+                offset.text().is_some_and(|text| text.trim() == "0"),
+            );
         }
-        let marker = |name: &str| -> Result<Option<[(Node<'_, '_>, Node<'_, '_>, bool); 2]>> {
-            let Some(marker) = child_ns(anchor, XDR, name) else {
-                return Ok(None);
-            };
-            let part = |index: &str, offset: &str| {
-                child_ns(marker, XDR, index).zip(child_ns(marker, XDR, offset))
-            };
-            let (Some((col, col_off)), Some((row, row_off))) =
-                (part("col", "colOff"), part("row", "rowOff"))
-            else {
-                return Ok(None);
-            };
-            Ok(Some([(col, col_off, false), (row, row_off, true)]))
-        };
-        let (Some(from), to) = (marker("from")?, marker("to")?) else {
-            continue;
-        };
-        let number = |node: Node<'_, '_>| -> Result<u32> {
-            node.text()
-                .context("drawing anchor coordinate is empty")?
-                .trim()
-                .parse::<u32>()?
-                .checked_add(1)
-                .context("drawing anchor coordinate overflow")
-        };
-        let mut set = |node: Node<'_, '_>, value: String| -> Result<()> {
-            let text = node
-                .children()
-                .find(Node::is_text)
-                .context("drawing anchor coordinate has no text")?;
+        Ok(corner)
+    };
+    let (moved_from, moved_to) = move_corners(
+        placement,
+        corner(&from)?,
+        to.as_ref().map(corner).transpose()?,
+        operations,
+    )?;
+    let mut set = |node: Node<'_, '_>, value: String| -> Result<()> {
+        let text = node
+            .children()
+            .find(Node::is_text)
+            .context("anchor coordinate has no text")?;
+        if text.text() != Some(value.as_str()) {
             edits.push((text.range(), value));
-            Ok(())
-        };
-        let mut shifts = [0i64; 2];
-        for (axis, (index, offset, is_row)) in from.into_iter().enumerate() {
-            let position = number(index)?;
-            let (mapped, deleted) = map_anchor_index(position, operations, is_row, false)?;
-            shifts[axis] = i64::from(mapped) - i64::from(position);
-            if mapped != position {
-                set(index, (mapped - 1).to_string())?;
-            }
-            if deleted {
+        }
+        Ok(())
+    };
+    for (marker, moved) in std::iter::once((from, moved_from)).chain(to.zip(moved_to)) {
+        for ((index, offset), (new_index, reset)) in marker.into_iter().zip(moved) {
+            set(index, new_index.to_string())?;
+            if reset {
                 set(offset, "0".to_owned())?;
             }
         }
-        let Some(to) = to else {
-            continue;
-        };
-        for (axis, (index, offset, is_row)) in to.into_iter().enumerate() {
-            let position = number(index)?;
-            let mapped = if placement == "oneCell" {
-                let moved = i64::from(position) + shifts[axis];
-                u32::try_from(moved.max(1)).context("drawing anchor coordinate overflow")?
-            } else {
-                let at_edge = offset.text().is_some_and(|text| text.trim() == "0");
-                let (mapped, deleted) = map_anchor_index(position, operations, is_row, at_edge)?;
-                if deleted {
-                    set(offset, "0".to_owned())?;
-                }
-                mapped
-            };
-            if mapped != position {
-                set(index, (mapped - 1).to_string())?;
-            }
-        }
     }
-    splice(original, edits, "drawing")
+    Ok(())
 }
 
 /// A shape can show a cell's value (`textlink="$B$5"` or `Data!$B$5`); the link

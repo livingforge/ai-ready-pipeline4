@@ -13,6 +13,7 @@
       "json"
     ],
     "csv_import": true,
+    "document_ids": "source path below the sources folder",
     "document_input_formats": [
       "xlsx",
       "xlsm",
@@ -31,6 +32,7 @@
     ],
     "document_output": "same format as source (Office/PDF only; native text uses direct editing and re-import)",
     "document_structure": true,
+    "document_structure_apply_carry": true,
     "document_structure_compact_drawings": true,
     "document_structure_corrections_in_document": true,
     "document_structure_external_ocr_records": true,
@@ -68,12 +70,31 @@
     "document_structure_table_descriptions": true,
     "document_structure_visual_graphs": true,
     "document_structure_writeback": false,
+    "documents_batch_steps": [
+      "record",
+      "adopt",
+      "review"
+    ],
+    "documents_folder_import": true,
+    "documents_remove": true,
     "documents_schema": true,
+    "documents_search": true,
+    "documents_search_batch": true,
+    "documents_search_engine": "SQLite FTS5 BM25; TiniestSegmenter Japanese segmentation; Unicode normalization; character bigrams; explicit synonyms",
+    "documents_search_freshness": "saved index snapshot; external changes remain unchecked until search-refresh",
+    "documents_search_refresh": "explicit documents search-refresh command",
+    "documents_search_scope": "adopted extraction with structure context; proposals and unexported content edits are not indexed",
     "documents_workflow": true,
     "excel_drawing_extraction": true,
     "excel_embedded_image_extraction": true,
     "excel_image_writeback": true,
     "excel_import": true,
+    "excel_row_column_commands": [
+      "rows insert",
+      "rows delete",
+      "columns insert",
+      "columns delete"
+    ],
     "excel_screenshot_engine": "excel-com (Windows with desktop Microsoft Excel)",
     "excel_screenshot_rendering": true,
     "excel_structural_writeback": true,
@@ -117,7 +138,7 @@
   },
   "implementation": "rust",
   "limitations": [
-    "Excel supports scalar/structural writeback and PNG insertion. Windows OCR runs automatically on imported Excel image assets; unsupported images retain an unavailable reason. Word (DOCX/DOCM/DOTX/DOTM) and PPTX support existing XML text runs; Word field results are read-only because Word recalculates them. Encrypted (password, IRM, sensitivity label), binary (.xls/.xlsb/.doc/.ppt) and Strict Open XML files are rejected with resave guidance. Excel chart, dialog and macro sheets are not extracted and are preserved unchanged; row/column edits are rejected for workbooks with a VBA project, macro or dialog sheets, or form controls/comments/embedded objects on the edited sheet, and where Excel itself refuses them (table header/totals rows, cutting through pivot tables or array formulas); PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, text-container insertion/deletion, OCR for DOCX/PPTX/PDF images, PDF Form XObject text, annotations, slide notes/masters and shape editing are not supported. Text edits require visual layout review and reject line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Structural edits move references like Excel does: formulas on every sheet, defined names, conditional formats, validations, tables, pivot sources, chart series, sparklines, merges, column widths and drawing anchors; Excel performs recalculation. Content rows and columns an operation adds are keyed <operation ID>-<n>; values a grown merge would hide are rejected. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
+    "Excel supports scalar/structural writeback, renaming table columns and totals labels from their cells (structured references follow), replacing existing formulas (file notation with _xlfn. prefixes; spilling functions, LET/LAMBDA, # and @ are refused) and PNG insertion. Windows OCR runs automatically on imported Excel image assets; unsupported images retain an unavailable reason. Word (DOCX/DOCM/DOTX/DOTM) and PPTX lay paragraphs and table cells out as rows and edit the runs a change touches; Word field results are read-only because Word recalculates them; plain text content controls bound to document data write the data and the controls sharing it. Encrypted (password, IRM, sensitivity label), binary (.xls/.xlsb/.doc/.ppt) and Strict Open XML files are rejected with resave guidance. Excel chart, dialog and macro sheets are not extracted and are preserved unchanged; row/column edits move notes, threaded comments, form controls and embedded objects, and are rejected for workbooks with a VBA project, macro or dialog sheets or ActiveX controls, and where Excel itself refuses them (table header/totals rows, cutting through pivot tables or array formulas); PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, PDF page insertion/deletion (Word and PowerPoint paragraphs and table rows take row operations; PowerPoint slides are copied, with their notes but not their comments, and deleted with slide operations, refused while another slide links to a deleted slide or a custom show would be left empty), OCR for DOCX/PPTX/PDF images, PDF Form XObject text, annotations, slide masters and shape editing other than Excel shape text are not supported (slide notes are extracted and written back as notes-N). Text edits require visual layout review; Word and PowerPoint edits may add, remove or replace line breaks and tabs within a paragraph but cannot split or join paragraphs, and PDF rejects line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Structural edits move references like Excel does: formulas on every sheet, defined names, conditional formats, validations, tables, pivot sources, chart series, sparklines, merges, column widths and drawing anchors; Excel performs recalculation. Content rows and columns an operation adds are keyed <operation ID>-<n>; values a grown merge would hide are rejected. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
   ],
   "release_ready": false,
   "version": "1.0.0-alpha.1"

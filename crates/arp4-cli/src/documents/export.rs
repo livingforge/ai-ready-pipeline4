@@ -19,33 +19,89 @@ impl Store {
             "unsupported export engine for source format; use auto or {}",
             book.engine()
         );
+        // Inserted slides are written like pages of the original they copy.
+        let operated = operated_extraction(&result.extraction, &result.mappings["operations"])?;
         let operations = excel::parse_operations(
             array(&result.mappings["operations"])?,
-            array(&result.extraction["sheets"])?,
+            array(&operated["sheets"])?,
         )?;
-        // Report unsupported row/column edits in the plan, before any output is written.
-        if let Source::Excel(workbook) = &book {
-            workbook.ensure_structural_edits_supported(&operations)?;
+        let mut operations_by_sheet: BTreeMap<&str, Vec<excel::StructuralOperation>> =
+            BTreeMap::new();
+        for operation in &operations {
+            operations_by_sheet
+                .entry(&operation.sheet)
+                .or_default()
+                .push(operation.clone());
         }
+        let sheet_operations = |sheet: &str| {
+            operations_by_sheet
+                .get(sheet)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+        };
+        // Report unsupported row/column and slide edits in the plan, before any
+        // output is written.
+        book.ensure_row_edits_supported(&operations, array(&result.mappings["operations"])?)?;
+        book.ensure_slide_edits_supported(array(&result.mappings["operations"])?)?;
         let image_operations = excel::parse_image_operations(
             array(&result.mappings["operations"])?,
-            array(&result.extraction["sheets"])?,
+            array(&operated["sheets"])?,
         )?;
         let image_assets = self.image_assets(&dir, &image_operations)?;
         let mut changes = vec![];
+        let mut formulas = vec![];
         let mut excluded = vec![];
         let mut pending = vec![];
         let mut deleted_cells = vec![];
         // Each cell by sheet and address, so that an entry does not scan its sheet.
         let mut cells = BTreeMap::new();
-        for sheet in array(&result.extraction["sheets"])? {
+        for sheet in array(&operated["sheets"])? {
             let sheet_name = string(&sheet["name"])?;
+            let own_operations = sheet_operations(sheet_name);
+            let has_deletions = own_operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    excel::OperationKind::DeleteRows | excel::OperationKind::DeleteColumns
+                )
+            });
+            let mut deleted_rows = BTreeMap::new();
+            let mut deleted_columns = BTreeMap::new();
             for cell in array(&sheet["cells"])? {
                 let address = string(&cell["address"])?;
                 cells.entry((sheet_name, address)).or_insert(cell);
-                if excel::map_coordinate(sheet_name, address, &operations)?.is_none() {
+                if !has_deletions {
+                    continue;
+                }
+                let (column, row) = excel::coordinate(address)?;
+                let row_deleted = match deleted_rows.get(&row) {
+                    Some(deleted) => *deleted,
+                    None => {
+                        let deleted = excel::axis_deleted(row, own_operations, true)?;
+                        deleted_rows.insert(row, deleted);
+                        deleted
+                    }
+                };
+                let column_deleted = match deleted_columns.get(&column) {
+                    Some(deleted) => *deleted,
+                    None => {
+                        let deleted = excel::axis_deleted(column, own_operations, false)?;
+                        deleted_columns.insert(column, deleted);
+                        deleted
+                    }
+                };
+                if row_deleted || column_deleted {
                     deleted_cells.push(json!({"sheet":sheet_name,"cell":address}));
                 }
+            }
+        }
+        // The text of each shape by sheet and extraction ID.
+        let mut shapes = BTreeMap::new();
+        for sheet in array(&result.extraction["sheets"])? {
+            for drawing in sheet["drawings"].as_array().into_iter().flatten() {
+                shapes.insert(
+                    (string(&sheet["name"])?, string(&drawing["id"])?),
+                    &drawing["text"],
+                );
             }
         }
         for e in array(&result.mappings["entries"])? {
@@ -57,8 +113,9 @@ impl Store {
                     match mapping_target(&e["target"])?.context("cell writeback requires target")? {
                         MappingTarget::Cell { sheet, cell } => {
                             let old = cells.get(&(sheet, cell)).context("missing cell")?;
-                            if let Some(mapped) = excel::map_coordinate(sheet, cell, &operations)?
-                                && old["value"] != *new
+                            if old["value"] != *new
+                                && let Some(mapped) =
+                                    excel::map_coordinate(sheet, cell, sheet_operations(sheet))?
                             {
                                 changes.push(json!({"sheet":sheet,"cell":mapped,"source_cell":cell,"before":old["value"],"after":new,"field":e["field"]}));
                             }
@@ -78,7 +135,7 @@ impl Store {
                                     None,
                                     &operations,
                                 )?;
-                                changes.push(json!({"sheet":sheet,"cell":cell,"before":Value::Null,"after":new,"field":e["field"],"inserted":true}));
+                                changes.push(json!({"sheet":sheet,"cell":cell,"before":Value::Null,"after":new,"field":e["field"],"inserted":true,"insertion":insertion,"offset":offset,"column":column}));
                             }
                         }
                         MappingTarget::InsertionColumn {
@@ -99,16 +156,44 @@ impl Store {
                                 changes.push(json!({"sheet":sheet,"cell":cell,"before":Value::Null,"after":new,"field":e["field"],"inserted":true}));
                             }
                         }
+                        MappingTarget::Shape { .. } => {
+                            bail!("the text of a shape is written back with shape writeback")
+                        }
+                    }
+                }
+                "shape" => {
+                    let new = &result.values[&key(e)?];
+                    let Some(MappingTarget::Shape { sheet, shape }) = mapping_target(&e["target"])?
+                    else {
+                        bail!("shape writeback requires a shape target");
+                    };
+                    let old = shapes
+                        .get(&(sheet, shape))
+                        .with_context(|| format!("shape {shape} on {sheet} is missing"))?;
+                    if **old != *new {
+                        changes.push(json!({"sheet":sheet,"shape":shape,"before":old,"after":new,"field":e["field"]}));
                     }
                 }
                 "operation" => {
                     bail!("operation writeback entries are not supported; use operations")
                 }
-                "formula" => bail!("formula writeback is not supported by Rust"),
+                "formula" => {
+                    let new = &result.values[&key(e)?];
+                    let Some(MappingTarget::Cell { sheet, cell }) = mapping_target(&e["target"])?
+                    else {
+                        bail!("formula writeback requires a cell target");
+                    };
+                    let old = cells.get(&(sheet, cell)).context("missing cell")?;
+                    let before = format!("={}", string(&old["formula"])?);
+                    if *new != before {
+                        let mapped = excel::map_coordinate(sheet, cell, sheet_operations(sheet))?;
+                        formulas.push(json!({"sheet":sheet,"cell":cell,"final_cell":mapped,"before":before,"after":new,"field":e["field"]}));
+                    }
+                }
                 other => bail!("unsupported writeback: {other}"),
             }
         }
-        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":changes,"unreflected":pending,"excluded":excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"deleted_cells":deleted_cells,"engine":book.engine(),"complete":pending.is_empty(),"written":false});
+        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":changes,"formula_changes":formulas,"unreflected":pending,"excluded":excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"deleted_cells":deleted_cells,"engine":book.engine(),"complete":pending.is_empty(),"written":false});
         let Some(output) = output else {
             return Ok(report);
         };
@@ -137,8 +222,7 @@ impl Store {
             !output.exists() && !report_path.exists(),
             "output/report already exists"
         );
-        fs::create_dir_all(output.parent().unwrap())?;
-        let stage = tempfile::tempdir_in(output.parent().unwrap())?;
+        let stage = Stage::new_in(output.parent().unwrap(), &self.arp)?;
         let staged = stage.path().join(format!(
             "result.{}",
             source.extension().unwrap().to_string_lossy()
@@ -147,6 +231,7 @@ impl Store {
             &staged,
             array(&result.mappings["operations"])?,
             &changes,
+            &formulas,
             &image_assets,
         )?;
         for (k, v) in info.as_object().unwrap() {
@@ -173,5 +258,72 @@ impl Store {
             return Err(error.into());
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod efficiency_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_deleted_cells() {
+        use std::time::Instant;
+
+        let operations: Vec<_> = (0..24)
+            .map(|index| excel::StructuralOperation {
+                id: format!("op-{index}"),
+                sheet: "Sheet1".into(),
+                kind: if index % 3 == 0 {
+                    excel::OperationKind::DeleteRows
+                } else {
+                    excel::OperationKind::InsertRows
+                },
+                at: 400 + index * 4,
+                count: 1,
+                style_from: None,
+            })
+            .collect();
+        let addresses: Vec<_> = (1..=1000)
+            .flat_map(|row| {
+                (1..=50)
+                    .map(move |column| format!("{}{}", excel::column_name(column).unwrap(), row))
+            })
+            .collect();
+
+        let start = Instant::now();
+        let old: Vec<_> = addresses
+            .iter()
+            .filter(|address| {
+                excel::map_coordinate("Sheet1", address, &operations)
+                    .unwrap()
+                    .is_none()
+            })
+            .collect();
+        let old_ms = start.elapsed().as_millis();
+
+        let start = Instant::now();
+        let mut rows = BTreeMap::new();
+        let mut columns = BTreeMap::new();
+        let new: Vec<_> = addresses
+            .iter()
+            .filter(|address| {
+                let (column, row) = excel::coordinate(address).unwrap();
+                let row_deleted = *rows
+                    .entry(row)
+                    .or_insert_with(|| excel::axis_deleted(row, &operations, true).unwrap());
+                let column_deleted = *columns
+                    .entry(column)
+                    .or_insert_with(|| excel::axis_deleted(column, &operations, false).unwrap());
+                row_deleted || column_deleted
+            })
+            .collect();
+        let new_ms = start.elapsed().as_millis();
+        assert_eq!(old, new);
+        eprintln!(
+            "deleted_cells old_ms={old_ms} new_ms={new_ms} cells={} operations={}",
+            addresses.len(),
+            operations.len()
+        );
     }
 }

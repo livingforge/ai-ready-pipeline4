@@ -56,8 +56,8 @@ graph:
 ## 整理と画像確認
 
 ```powershell
-arp4 documents structure-read order --root C:/project --out C:/project/interpretations/order.yml
-arp4 spec structure --root C:/project check --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml
+arp4 documents structure-read order.xlsx --root C:/project --out C:/project/interpretations/order.yml
+arp4 spec structure --root C:/project check --extraction C:/project/.arp/documents/order.xlsx/extraction.json --structure C:/project/interpretations/order.yml
 ```
 
 初期状態はシートごとに `kind: text`、セルごとに `role: unassigned`、`text_state: not_examined` です。これは「文章だと判定済み」を意味しません。Agentまたは人が原本を読み、まとまりに応じてelementsを分割・統合し、kind・role・headers・text_state・readingを編集します。セル値は複製せず、sheetとaddressで原本の抽出セルを参照します。抽出済みセルは数式・注記を含め、ちょうど一つのelementへ所属させます。未収録の座標は確認済みの空欄とはみなしません。
@@ -71,7 +71,7 @@ arp4 spec structure --root C:/project check --extraction C:/project/.arp/documen
 複雑な表は `render` でExcelの指定範囲をPNGへ描画し、画像領域と原本・画像のハッシュを一度に登録できます。Windowsとデスクトップ版Microsoft Excelが必要です。原本を読み取り専用で開き、Excelの描画結果を別の一時ブック経由で出力します。原本は保存せず、前後のハッシュも確認します。
 
 ```powershell
-arp4 spec structure --root C:/project render --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml --element sheet-1 --id sheet-view --image evidence/order-sheet.png --range A1:H30
+arp4 spec structure --root C:/project render --extraction C:/project/.arp/documents/order.xlsx/extraction.json --structure C:/project/interpretations/order.yml --element sheet-1 --id sheet-view --image evidence/order-sheet.png --range A1:H30
 ```
 
 対象シートは指定したelementまたはvisualのsheetから決まります。`--range` を省略すると、elementはシートのUsedRange、visualは参照図形のセルアンカーを囲む範囲を使います。oneCellAnchor・absoluteAnchorなどセル範囲を確定できないvisualではrangeを明示します。回転・はみ出しや周囲の説明がある場合も、必要な範囲を明示して確認します。画像を自動縮小して読めなくすることはせず、8192px/辺または3200万画素の上限を超える範囲は拒否します。その場合はセル範囲を分割し、異なるidとimageで取得します。非表示シートは表示状態を変更せず拒否します。UsedRangeの外の図形や画像まで必要なら、それを含むセル範囲を明示してください。これは範囲の描画であり、埋め込み画像ファイルを個別に抽出する機能ではありません。
@@ -83,8 +83,8 @@ ExcelのCopyPictureを使うため、**実行時にWindowsのクリップボー�
 外部で取得した原本由来PNGを使う場合は、次のregionコマンドで登録します。生成AIの画像を証拠として使いません。
 
 ```powershell
-arp4 spec structure --root C:/project region --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml --element sheet-1 --id sheet-view --image evidence/order-sheet.png --range A1:H30 --bbox 0,0,1,1
-arp4 spec structure --root C:/project read --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml
+arp4 spec structure --root C:/project region --extraction C:/project/.arp/documents/order.xlsx/extraction.json --structure C:/project/interpretations/order.yml --element sheet-1 --id sheet-view --image evidence/order-sheet.png --range A1:H30 --bbox 0,0,1,1
+arp4 spec structure --root C:/project read --extraction C:/project/.arp/documents/order.xlsx/extraction.json --structure C:/project/interpretations/order.yml
 ```
 
 `range` と `bbox` は同じ領域を指します。bboxは渡す画像全体を基準にしたx,y,width,height（0〜1）です。切り抜きPNGを渡すなら、そのPNG内の座標を指定します。regionコマンドは画像のハッシュと現在の原本ハッシュを登録し、指定elementのevidenceへ追加します。画像は `.arp/work/` や `.arp/cache/` に置かず、原本・整理YAMLとともに保持してください。
@@ -98,7 +98,7 @@ arp4 spec structure --root C:/project read --extraction C:/project/.arp/document
 セルは、原文が読めたread、空欄を確認したempty、確認したが読めなかったunreadable、未確認のnot_examinedを区別します。数式のあるセルや原文が存在するセルをemptyにできません。画像だけに存在するOCR文字列を原文として追加する契約はなく、既存の引用を画像説明に置き換えません。
 
 ```powershell
-arp4 spec structure --root C:/project review --extraction C:/project/.arp/documents/order/extraction.json --structure C:/project/interpretations/order.yml --decision accepted --actor reviewer --reason "原本・画像とセル、見出し、注記の対応を確認"
+arp4 spec structure --root C:/project review --extraction C:/project/.arp/documents/order.xlsx/extraction.json --structure C:/project/interpretations/order.yml --decision accepted --actor reviewer --reason "原本・画像とセル、見出し、注記の対応を確認"
 ```
 
 reviewは実際に確認した人・Agentが実施記録を保存する操作です。機械検証の成功だけでレビュー済みにしません。accepted/rejectedは整理全体の内容ハッシュに結び付きます。未確認・読取不能・未割当のroleが残るacceptedは拒否します。kind・headers・画像参照・readingなどを変更すると以前のレビューは失効します。rejectedの記録は保存できますがcaptureには使えません。
@@ -106,17 +106,56 @@ reviewは実際に確認した人・Agentが実施記録を保存する操作で
 ## 意味抽出への接続
 
 ```powershell
-arp4 documents structure-save order --root C:/project --input C:/project/interpretations/order.yml
-arp4 documents review order --root C:/project --reviewer reviewer
-arp4 spec capture --root C:/project --extraction C:/project/.arp/documents/order/extraction.json --document order --out C:/project/.arp/cache/order-input.json
+arp4 documents structure-save order.xlsx --root C:/project --input C:/project/interpretations/order.yml
+arp4 documents review order.xlsx --root C:/project --reviewer reviewer
+arp4 spec capture --root C:/project --extraction C:/project/.arp/documents/order.xlsx/extraction.json --document order.xlsx --out C:/project/.arp/cache/order-input.json
 ```
 
 現在の原本・抽出結果・画像のハッシュと、文書モデル内のacceptedレビューを検証します。原文の文字列・出典ID・セル位置を変更せず、派生した整理結果を入力に保存し、抽出・独立レビューpacketの `sources.tables[].structure` にシートごとに渡します。構造変更でもpacketが変わるため、workflowへ新しいinputをupdateすると再抽出・再レビュー対象になります。構造の承認と、要件・仕様の意味レビューは別です。
 
 整理を変更しても、すでに保存したinputや進行中workflowは自動更新されません。再captureし、既存のworkflow update手順で渡します。原本そのものが変わった場合は再importし、旧・新の抽出結果を照合してからレビューし直します。ハッシュだけを新しい値に書き換えて古い判断を承認済みにしません。
 
-原本を変更する前に `documents structure-save` で修正を文書モデルへ保存します。記録には機械推定と異なる要素・図形だけを含め、参照する原本セル・図形オブジェクトのハッシュを付けます。画像領域の登録とレビューも記録します。現行の原本が必要なので、原本変更後に旧版の修正記録を新たに作ることはできません。
+原本を変更する前に `documents structure-save` で修正を文書モデルへ保存します。記録には機械推定と異なる点だけを含めます。
 
-同じ文書ID・原本パスで再importすると、修正記録を候補へ引き継ぎ、新版の抽出結果へ自動で再適用します。`documents status` の `structure_conflicts` を確認し、採用後に `documents structure-read` で新版のビューを取り出します。セル位置が維持された修正要素は表・本文のまとまりを引き継ぎ、内容が変わったセルは `text_state: not_examined` に戻します。セルが削除・移動された要素や旧版の画像領域に依存する要素は新版の機械推定に戻します。図形・画像は参照先の抽出オブジェクトが一致し、旧版の画像領域に依存しない場合だけ引き継ぎます。原本ハッシュが同じなら画像領域とレビューを保持できます。原本が変わった場合のレビューはpendingです。競合箇所を確認・修正し、review、structure-save、documents review、再captureを行います。
+- 構造（種類、セルの所属、役割、見出しのつながり、説明の参照、画像の根拠）が機械推定と異なる要素は、要素ごと記録し、参照する原本セルのハッシュを付けます。
+- 構造が機械推定どおりの要素は、読取記録（`reading`）だけを先頭セルとそのハッシュに結び付けて記録します。再生時には機械推定をやり直し、そのセルを含む要素に読取記録を戻します。原本の変更で表に行が増えれば、その行も推定で表に入ります。
+- `text_state` は値から機械的に決まる状態（値があれば `read`、なければ `empty`）と異なるセルだけを、セルのハッシュ付きで記録します（`unreadable` など）。セルの値が変わると `not_examined` に戻ります。
+- 機械推定と異なる図形・画像の読取結果、画像領域の登録とレビューも記録します。現行の原本が必要なので、原本変更後に旧版の修正記録を新たに作ることはできません。再import後の候補には `--proposal` を付けて保存できます。
+
+同じ文書ID・原本パスで再importすると、採用済みの版の修正記録を新版へ引き継ぎます。原本の変わり方は次の2つで、どちらも同じ引き継ぎ処理を使います。
+
+- `documents apply` で原本を書き戻した場合は、書き戻しに使った行・列の操作をそのまま使います。操作の位置と数が記録されているので、推定を使いません。
+- Excel・Wordなどで原本を直接編集した場合は、採用済みの版と新版の抽出結果を照合し、行・列の挿入と削除を求めます。各シートの行を値の並びで照合し、どちらにもある行を対応付けます。対応しない行が両側にあれば、共通の値が最も多い組み合わせで対応付けます。対応した行は値が変わっていても同じ行として扱い、残りを挿入・削除とします。続けて、対応した行の上で列を同じように照合します。Word・PPTX・PDFでは段落・文字列の通し番号が行なので、段落の追加・削除も同じ扱いです。
+
+引き継ぎでは次のように移します。
+
+- 挿入・削除位置より後ろのセルは、アドレス、セルID、見出しのつながりごと移ります。削除した行・列のセルは要素から除き、それを見出しとして参照するつながりも消します。
+- 表の範囲の内側に挿入した行・列は、表に含めます。表の最終行の直後に挿入した行も、`style_from` が表の中の行なら表に含めます（`documents rows insert` と直接編集の照合は、既定で上の行を `style_from` にします）。追加したセルは、書式元の行（なければ隣の行・列）の同じ位置のセルと同じ役割を持ちます。見出しのつながりは、次のように付けます。
+  - 広がった結合の見出し（行の途中への挿入なら、その範囲をまとめる工程のラベルなど）と、もう一方の軸の見出し（行の挿入での列見出し、列の挿入での行見出し）は、そのまま参照します。
+  - それ以外の見出しは、追加した行・列の同じ位置のセルへ付け替えます。
+  - 値のないセルは要素に入れず、そのセルへのつながりも付けません。
+- 値が変わったセルは要素と役割・見出しを保ち、`text_state` を新しい値から付け直します（値があれば `read`、なければ `empty`）。読取者が `unreadable` や `not_examined` にしていたセルは `not_examined` にします。値がなくなったセルは要素から除きます。
+- それ以外に増えたセル（どの要素にも移らなかった新しいセル）は、周りの要素に加えます。表を本文に訂正した範囲に行が増えても、その行だけが表として推定し直されることはありません。
+  - 機械推定が新しいセルを1つの要素の既存セルと同じまとまりにする場合は、その要素に加えます。
+  - そうでない場合は、新しいセルを範囲（要素のセルを囲む範囲）に含む要素のうち最も小さいものに加えます。同じ大きさの範囲が複数あれば加えません。
+  - 機械推定が新しいセルだけで表を作る場合（既存の要素と離れた位置の新しい表など）は加えず、機械推定に任せます。どの要素の範囲にも入らないセルも機械推定に任せます。
+  - 加えたセルは、同じ列で上にある最も近いセル（なければ同じ行で左、それもなければ最も近いセル）の役割を写します。見出しのつながりも写し、同じ行・列にある見出しは加えたセルの行・列の見出しに付け替えます。
+- 図形・画像の読取結果は、写っている内容で対応付けます。画像はファイルのハッシュ、図形は種類・文字・形状・大きさ・接続で比べ、配置のアンカー、パッケージ内の部品名、画像の連番名は比べません。行の挿入で動いた画像や、他の画像の追加で `image-00N` の名前が変わった画像も読取結果を保ちます。内容が変わった図形・画像は未確認に戻します。
+- 画像領域は、操作で範囲がまるごと移動し、写っているセルの値が変わっていなければ、移動後の範囲で引き継ぎます。範囲の内側への挿入・削除や、写っているセルの変更があれば引き継ぎません。この画像領域を根拠にする解釈があれば引き継ぎを中止します。
+- 移した内容は、候補の `mappings.yml` の `interpretation.carried` と、`apply`・`import` の応答の `structure` に記録します。`by`（`apply` または `alignment`）、操作ID、移したセルの数、レビューの扱い、理由に加え、`affected` に影響を受けた要素・図形・画像領域を理由ごとに1件ずつ示します。要素の項目は `cells` に追加・削除・変更したセルのIDを持ちます。セルがなくなって削除された要素は、失ったセルをすべて持ちます。`reason` は `moved`（セルが移動）、`added`（表への挿入または周りの要素に加えたセル）、`removed`（セルまたは要素・画像領域の削除）、`changed`（値または図形の変更）、`inferred`（新しいセルの機械推定）です。`documents structure-read` の応答の `interpretation` にも同じ記録が入ります。
+
+レビューの扱いは次のとおりです。`apply` の操作による移動・削除・表への追加だけなら、acceptedのレビューを新版の内容で保持します（`carried.review: kept`）。これは、上で述べた「ハッシュだけを書き換えて古い判断を承認済みにしない」の例外です。記録された操作から決まる移動だけを対象にし、その記録を残すため許容しています。直接編集の照合で求めた挿入・削除は推定なので保持しません。値が変わったセル、要素に加えたセル、機械推定に任せたセル、変わった図形、照合で求めた移動がある場合は `pending` にし、`reasons` に理由を記録します。レビューされていなかった解釈は `not_reviewed` です。
+
+`pending` でも、修正（表の誤検出の訂正、見出しの対応、図形・画像の読取結果）はやり直しません。`affected` の要素を確認して、次の手順で候補のままレビューし直します。
+
+```powershell
+arp4 documents structure-read order.xlsx --proposal --root C:/project --out C:/project/.arp/work/structure/order.xlsx.yml
+arp4 spec structure --root C:/project review --extraction C:/project/.arp/changes/order.xlsx/extraction.json --structure C:/project/.arp/work/structure/order.xlsx.yml --decision accepted --actor reviewer --reason "Checked the moved and changed elements"
+arp4 documents structure-save order.xlsx --proposal --root C:/project --input C:/project/.arp/work/structure/order.xlsx.yml
+```
+
+候補へ保存すると候補の内容が変わるので、その後に `documents record` を行ってから採用します。
+
+シート名・シート構成が変わった場合など引き継げないときは、応答の `structure.reasons` に `not carried:` と理由を示し、修正記録をそのまま候補へ写します。この場合は再生時にセル番地で照合し、新しいセルを周りの要素に加える処理も行いません（旧版と新版の対応が分からないため）。構造が機械推定どおりだった要素は新版で推定し直し、読取記録は先頭セルが変わっていなければ戻します。同じ番地のセルが残る修正要素はまとまりを保ち、内容が変わったセルは `text_state: not_examined` に戻します。セルがなくなった要素や旧版の画像領域に依存する要素は新版の機械推定に戻します。この結果は `documents status` の `structure_conflicts` と、`documents structure-read --proposal` の応答の `interpretation.conflicts`（要素・図形・読取記録・セルごとのIDと理由）で確認します。
 
 契約の全フィールドは[生成リファレンス](../reference/document-structure-contract.md)、コマンド引数は[CLIリファレンス](../reference/commands.md)を参照してください。図・画像の自動要素分解、Word/PDF/PPTXの物理的な領域モデル、画像だけの文字からの出典生成は引き続き設計対象です。

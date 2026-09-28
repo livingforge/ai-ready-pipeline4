@@ -527,12 +527,15 @@ pub(super) fn rewrite_references(
     })
 }
 
-/// Row/column operations together with the table columns they delete.
-/// Structured references to deleted columns become `#REF!`, as in Excel.
+/// Row/column operations together with the table columns they delete and the
+/// columns whose headers are renamed. Structured references to deleted columns
+/// become `#REF!` and those to renamed columns take the new name, as in Excel.
 pub(super) struct Moves<'a> {
     pub(super) operations: &'a [StructuralOperation],
     /// Lowercase table name -> lowercase names of its deleted columns.
     removed_columns: BTreeMap<String, BTreeSet<String>>,
+    /// Lowercase table name -> lowercase old column name -> new column name.
+    renamed_columns: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl<'a> Moves<'a> {
@@ -543,14 +546,24 @@ impl<'a> Moves<'a> {
         Self {
             operations,
             removed_columns,
+            renamed_columns: BTreeMap::new(),
         }
     }
 
+    pub(super) fn with_renamed_columns(
+        mut self,
+        renamed_columns: BTreeMap<String, BTreeMap<String, String>>,
+    ) -> Self {
+        self.renamed_columns = renamed_columns;
+        self
+    }
+
     pub(super) fn rewrite(&self, formula: &str, current_sheet: Option<&str>) -> Result<String> {
-        if self.removed_columns.is_empty() {
+        if self.removed_columns.is_empty() && self.renamed_columns.is_empty() {
             return rewrite_references(formula, current_sheet, self.operations);
         }
         let formula = remove_structured_references(formula, &self.removed_columns);
+        let formula = rename_structured_references(&formula, &self.renamed_columns);
         rewrite_references(&formula, current_sheet, self.operations)
     }
 }
@@ -600,25 +613,114 @@ fn structured_columns(body: &str) -> Vec<String> {
     items
         .into_iter()
         .filter(|item| !item.trim_start().starts_with('#'))
-        .map(|item| {
-            let mut name = String::new();
-            let mut escaped = false;
-            for c in item.chars() {
-                if c == '\'' && !escaped {
-                    escaped = true;
-                    continue;
-                }
-                escaped = false;
-                name.push(c);
-            }
-            name.to_lowercase()
-        })
+        .map(|item| unescape_structured(item).to_lowercase())
         .collect()
 }
 
 fn remove_structured_references(
     formula: &str,
     removed: &BTreeMap<String, BTreeSet<String>>,
+) -> String {
+    if removed.is_empty() {
+        return formula.to_owned();
+    }
+    map_structured_references(formula, |table, body| {
+        let columns = removed.get(table)?;
+        structured_columns(body)
+            .iter()
+            .any(|column| columns.contains(column))
+            .then(|| "#REF!".to_owned())
+    })
+}
+
+/// Gives the renamed columns of `renamed` their new names in structured
+/// references, keeping each reference's other items as written.
+fn rename_structured_references(
+    formula: &str,
+    renamed: &BTreeMap<String, BTreeMap<String, String>>,
+) -> String {
+    if renamed.is_empty() {
+        return formula.to_owned();
+    }
+    map_structured_references(formula, |table, body| {
+        let columns = renamed.get(table)?;
+        let inner = &body[1..body.len().saturating_sub(1).max(1)];
+        let rename = |item: &str| -> Option<String> {
+            columns
+                .get(&unescape_structured(item).to_lowercase())
+                .map(|new| escape_structured(new))
+        };
+        if !inner.starts_with('[') {
+            // `Table1[Col]`: a name with special characters needs its own brackets.
+            // `Table1[#Totals]` names a special item, never a column.
+            if inner.starts_with('#') {
+                return None;
+            }
+            let new = rename(inner)?;
+            let plain = new.chars().all(|c| c.is_alphanumeric() || c == '_');
+            return Some(if plain {
+                format!("[{new}]")
+            } else {
+                format!("[[{new}]]")
+            });
+        }
+        let mut output = String::from("[");
+        let mut index = 0;
+        let mut changed = false;
+        while let Some(offset) = inner[index..].find('[') {
+            let start = index + offset;
+            let end = bracket_end(inner, start);
+            output.push_str(&inner[index..start]);
+            let item = &inner[start + 1..end.saturating_sub(1).max(start + 1)];
+            match rename(item).filter(|_| !item.trim_start().starts_with('#')) {
+                Some(new) => {
+                    output.push_str(&format!("[{new}]"));
+                    changed = true;
+                }
+                None => output.push_str(&inner[start..end]),
+            }
+            index = end;
+        }
+        output.push_str(&inner[index..]);
+        output.push(']');
+        changed.then_some(output)
+    })
+}
+
+/// A column name as written in a structured reference, where `'` escapes the
+/// character after it.
+fn unescape_structured(item: &str) -> String {
+    let mut name = String::new();
+    let mut escaped = false;
+    for c in item.chars() {
+        if c == '\'' && !escaped {
+            escaped = true;
+            continue;
+        }
+        escaped = false;
+        name.push(c);
+    }
+    name
+}
+
+/// A column name for a structured reference: `[`, `]`, `#` and `'` take a `'`.
+fn escape_structured(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '[' | ']' | '#' | '\'') {
+            escaped.push('\'');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// Calls `replace` with the lowercase table name and bracketed body of each
+/// structured reference outside string literals (`Table1` and `[[#This Row],[Qty]]`);
+/// a returned body replaces the original one, `#REF!` the whole reference.
+fn map_structured_references(
+    formula: &str,
+    mut replace: impl FnMut(&str, &str) -> Option<String>,
 ) -> String {
     let mut output = String::with_capacity(formula.len());
     let mut index = 0;
@@ -653,18 +755,16 @@ fn remove_structured_references(
                 .find(|(_, ch)| !name_char(*ch))
                 .map_or(rest.len(), |(offset, _)| offset);
             let word = &rest[..length];
-            if rest[length..].starts_with('[')
-                && let Some(columns) = removed.get(&word.to_lowercase())
-            {
+            if rest[length..].starts_with('[') {
                 let end = bracket_end(formula, index + length);
                 let body = &formula[index + length..end];
-                if structured_columns(body)
-                    .iter()
-                    .any(|column| columns.contains(column))
-                {
-                    output.push_str("#REF!");
-                } else {
-                    output.push_str(&formula[index..end]);
+                match replace(&word.to_lowercase(), body) {
+                    Some(error) if error == "#REF!" => output.push_str(&error),
+                    Some(body) => {
+                        output.push_str(word);
+                        output.push_str(&body);
+                    }
+                    None => output.push_str(&formula[index..end]),
                 }
                 index = end;
                 continue;
@@ -735,6 +835,37 @@ mod tests {
             at,
             count,
             style_from: None,
+        }
+    }
+
+    #[test]
+    fn renamed_columns_take_their_new_name_in_structured_references() {
+        let renamed = BTreeMap::from([(
+            "orders".to_owned(),
+            BTreeMap::from([
+                ("qty".to_owned(), "Quantity".to_owned()),
+                ("unit price".to_owned(), "Price [JPY]".to_owned()),
+            ]),
+        )]);
+        let rename = |f: &str| rename_structured_references(f, &renamed);
+        assert_eq!(rename("SUM(Orders[Qty])"), "SUM(Orders[Quantity])");
+        assert_eq!(
+            rename("Orders[[#This Row],[qty]]*orders[[#This Row],[Unit Price]]"),
+            "Orders[[#This Row],[Quantity]]*orders[[#This Row],[Price '[JPY']]]"
+        );
+        assert_eq!(rename("Orders[Unit Price]"), "Orders[[Price '[JPY']]]");
+        assert_eq!(
+            rename("SUM(Orders[[Qty]:[Unit Price]])"),
+            "SUM(Orders[[Quantity]:[Price '[JPY']]])"
+        );
+        // Other tables, other columns, special items and strings stay as written.
+        for unchanged in [
+            "Other[Qty]",
+            "Orders[Total]",
+            "Orders[#Totals]",
+            "\"Orders[Qty]\"&Orders[[#Headers],[Total]]",
+        ] {
+            assert_eq!(rename(unchanged), unchanged);
         }
     }
 

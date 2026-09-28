@@ -102,7 +102,7 @@ pub(super) fn prune(root: &Path, open: &BTreeSet<&str>) -> Result<()> {
     if !directory.exists() {
         return Ok(());
     }
-    for entry in fs::read_dir(directory)? {
+    for entry in fs::read_dir(&directory)? {
         let entry = entry?;
         if !entry
             .file_name()
@@ -112,6 +112,7 @@ pub(super) fn prune(root: &Path, open: &BTreeSet<&str>) -> Result<()> {
             fs::remove_dir_all(entry.path())?;
         }
     }
+    crate::data::remove_empty_directories(&directory, root);
     Ok(())
 }
 
@@ -183,6 +184,7 @@ mod tests {
             }
         }
         prune(dir.path(), &BTreeSet::from(["other"])).unwrap();
-        assert!(!dir.path().join("read-cache").join("task").exists());
+        assert!(!dir.path().join("read-cache").exists());
+        assert!(dir.path().exists());
     }
 }

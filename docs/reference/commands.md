@@ -1630,10 +1630,6 @@ Options:
 Usage: arp4 doctor [OPTIONS]
 
 Options:
-      --format <FORMAT>
-          [default: json]
-          [possible values: json]
-
       --full
           Return all details (not supported by spec workflow; use read pagination there)
 
@@ -1706,12 +1702,19 @@ Usage: arp4 documents [OPTIONS] <COMMAND>
 Commands:
   schema
   init
-  import
-  structure-read  Write a derived structure view from the document's canonical corrections
+  import          Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped
+  remove          Remove the documents at or below an ID whose originals were moved, renamed or deleted
+  discard         Discard one proposal, leaving the original and adopted document untouched
+  search          Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+  search-refresh  Reconcile canonical documents with the local search index
+  structure-read  Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
   structure-save  Save structure corrections; remove a managed work/structure view on success
-  record
-  adopt
-  review
+  rows            Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
+  columns         Insert or delete Excel worksheet columns, like rows
+  slides          Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+  record          Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
+  adopt           Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
+  review          Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
   diff
   apply           Apply reviewed edits to the original and re-extract for verification
   export
@@ -1727,7 +1730,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1759,7 +1762,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1787,7 +1790,7 @@ Options:
           [default: docs]
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1802,24 +1805,161 @@ Options:
 ## `arp4 documents import`
 
 ```text
-Usage: arp4 documents import [OPTIONS] --id <ID> <SOURCE>
+Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped
+
+Usage: arp4 documents import [OPTIONS] <SOURCE>
 
 Arguments:
   <SOURCE>
 
 
 Options:
+      --force
+          Re-extract even when the original's SHA-256 matches a proposal or adopted document
+
       --full
           Return all details (not supported by spec workflow; use read pagination there)
-
-      --id <ID>
-          ASCII ID: letters, digits, underscore or hyphen; start with a letter/digit
 
       --root <ROOT>
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents remove`
+
+```text
+Remove the documents at or below an ID whose originals were moved, renamed or deleted
+
+Usage: arp4 documents remove [OPTIONS] <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents discard`
+
+```text
+Discard one proposal, leaving the original and adopted document untouched
+
+Usage: arp4 documents discard [OPTIONS] <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents search`
+
+```text
+Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+
+Usage: arp4 documents search [OPTIONS] <QUERY>...
+
+Arguments:
+  <QUERY>...
+          One to 32 quoted queries against one saved index snapshot. Within each query, whitespace separates literal AND terms; punctuation is not query syntax
+
+Options:
+      --document <DOCUMENT>
+          Restrict to a document ID or folder ID
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --synonyms <SYNONYMS>
+          Project vocabulary groups (search-synonyms schema). Defaults to .arp/search-synonyms.yml if present
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --profile
+          Emit disjoint search wall-clock timings as one JSON record on stderr
+
+      --revision <REVISION>
+          Pin pagination to a previous index and query revision
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents search-refresh`
+
+```text
+Reconcile canonical documents with the local search index
+
+Usage: arp4 documents search-refresh [OPTIONS]
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --rebuild
+          Recreate the disposable index before refreshing all documents
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1834,7 +1974,7 @@ Options:
 ## `arp4 documents structure-read`
 
 ```text
-Write a derived structure view from the document's canonical corrections
+Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
 
 Usage: arp4 documents structure-read [OPTIONS] --out <OUT> <DOCUMENT>
 
@@ -1853,10 +1993,13 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
+
+      --proposal
+          Read the proposal instead of the adopted document
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
@@ -1887,7 +2030,42 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --proposal
+          Save into the proposal, before it is recorded and adopted
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents rows`
+
+```text
+Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
+
+Usage: arp4 documents rows [OPTIONS] <COMMAND>
+
+Commands:
+  insert  Insert rows and write their values under the keys <operation ID>-<n>
+  delete  Delete rows of the original sheet together with their content values
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1899,36 +2077,457 @@ Options:
           Print help
 ```
 
-## `arp4 documents record`
+## `arp4 documents rows insert`
 
 ```text
-Usage: arp4 documents record [OPTIONS] --model <MODEL> --actor <ACTOR> --prompt <PROMPT> <PROPOSAL>
+Insert rows and write their values under the keys <operation ID>-<n>
+
+Usage: arp4 documents rows insert [OPTIONS] --sheet <SHEET> --reason <REASON> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
 
 Arguments:
-  <PROPOSAL>
-
+  [DOCUMENT]
+          Adopted document ID
 
 Options:
       --full
           Return all details (not supported by spec workflow; use read pagination there)
 
-      --model <MODEL>
-
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
 
       --root <ROOT>
 
 
-      --actor <ACTOR>
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet name; for Word the part (document, header-N, ...), for PowerPoint the page (slide-N, notes-N, or the operation ID of an inserted slide)
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the rows or columns change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --after <AFTER>
+          Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
+
+      --before <BEFORE>
+          Insert before this row or column, given like --after
+
+      --count <COUNT>
+          Number of rows; defaults to the number of --values items, or 1
+
+      --style-from <STYLE_FROM>
+          Original row whose formatting the new rows take; defaults to the row above them, as in Excel
+
+      --values <VALUES>
+          YAML or JSON file, or - for stdin: a list with one object per new row, keyed by column letter, e.g. [{B: "8", C: 2025/11/21}]. Values take the type of the column (the --style-from row, or the nearest value above)
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents rows delete`
+
+```text
+Delete rows of the original sheet together with their content values
+
+Usage: arp4 documents rows delete [OPTIONS] --sheet <SHEET> --reason <REASON> --from <FROM> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet name; for Word the part (document, header-N, ...), for PowerPoint the page (slide-N, notes-N, or the operation ID of an inserted slide)
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the rows or columns change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --from <FROM>
+          First row to delete: a number of the original sheet (15 or r15)
+
+      --count <COUNT>
+          Number of rows to delete
+
+          [default: 1]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents columns`
+
+```text
+Insert or delete Excel worksheet columns, like rows
+
+Usage: arp4 documents columns [OPTIONS] <COMMAND>
+
+Commands:
+  insert  Insert columns and write their values under the keys <operation ID>-<n>
+  delete  Delete columns of the original sheet together with their content values
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents columns insert`
+
+```text
+Insert columns and write their values under the keys <operation ID>-<n>
+
+Usage: arp4 documents columns insert [OPTIONS] --sheet <SHEET> --reason <REASON> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet name; for Word the part (document, header-N, ...), for PowerPoint the page (slide-N, notes-N, or the operation ID of an inserted slide)
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the rows or columns change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --after <AFTER>
+          Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
+
+      --before <BEFORE>
+          Insert before this row or column, given like --after
+
+      --count <COUNT>
+          Number of columns; defaults to the number of --values items, or 1
+
+      --values <VALUES>
+          YAML or JSON file, or - for stdin: a list with one object per new column, keyed by row of the original sheet, e.g. [{r8: 備考, r9: "1"}]. Values are stored as given
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents columns delete`
+
+```text
+Delete columns of the original sheet together with their content values
+
+Usage: arp4 documents columns delete [OPTIONS] --sheet <SHEET> --reason <REASON> --from <FROM> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet name; for Word the part (document, header-N, ...), for PowerPoint the page (slide-N, notes-N, or the operation ID of an inserted slide)
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the rows or columns change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --from <FROM>
+          First column to delete: letters of the original sheet (C)
+
+      --count <COUNT>
+          Number of columns to delete
+
+          [default: 1]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents slides`
+
+```text
+Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+
+Usage: arp4 documents slides [OPTIONS] <COMMAND>
+
+Commands:
+  insert  Insert a copy of a slide and its notes page, as PowerPoint's Duplicate Slide does, with their text in new content pages named by the operation ID (content/<ID>.yml, content/notes-<ID>.yml). Comments are not copied
+  delete  Delete a slide of the original with its notes page and their content pages. Refused while another slide links to it
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents slides insert`
+
+```text
+Insert a copy of a slide and its notes page, as PowerPoint's Duplicate Slide does, with their text in new content pages named by the operation ID (content/<ID>.yml, content/notes-<ID>.yml). Comments are not copied
+
+Usage: arp4 documents slides insert [OPTIONS] --reason <REASON> --from <FROM> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the slide is added or removed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --from <FROM>
+          Slide to copy: slide-N of the original, or the operation ID of a slide an earlier operation inserted. The copy takes its current content values
+
+      --after <AFTER>
+          Insert after this slide: slide-N of the original, or the operation ID of a slide an earlier operation inserted
+
+      --before <BEFORE>
+          Insert before this slide, given like --after
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents slides delete`
+
+```text
+Delete a slide of the original with its notes page and their content pages. Refused while another slide links to it
+
+Usage: arp4 documents slides delete [OPTIONS] --reason <REASON> --slide <SLIDE> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the slide is added or removed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --slide <SLIDE>
+          Slide to delete: slide-N of the original
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents record`
+
+```text
+Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
+
+Usage: arp4 documents record [OPTIONS] --model <MODEL> --actor <ACTOR> --prompt <PROMPT> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Document ID, or a folder ID for every document below it
+
+Options:
+      --all
+          Take every document that awaits this step
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --dry-run
+          List the documents this would take and those it skips, without writing
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --out <OUT>
+          With --dry-run, save the plan to this new file for --expect
+
+      --expect <EXPECT>
+          A plan saved by --dry-run --out: take only the documents it lists, and only while their content is the one it lists
+
+      --model <MODEL>
+
+
+      --actor <ACTOR>
+
 
       --prompt <PROMPT>
 
@@ -1940,30 +2539,41 @@ Options:
 ## `arp4 documents adopt`
 
 ```text
-Usage: arp4 documents adopt [OPTIONS] --reviewer <REVIEWER> <PROPOSAL>
+Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
+
+Usage: arp4 documents adopt [OPTIONS] [DOCUMENT]
 
 Arguments:
-  <PROPOSAL>
-
+  [DOCUMENT]
+          Document ID, or a folder ID for every document below it
 
 Options:
+      --all
+          Take every document that awaits this step
+
       --full
           Return all details (not supported by spec workflow; use read pagination there)
-
-      --reviewer <REVIEWER>
-
 
       --root <ROOT>
 
 
+      --dry-run
+          List the documents this would take and those it skips, without writing
+
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --out <OUT>
+          With --dry-run, save the plan to this new file for --expect
+
+      --expect <EXPECT>
+          A plan saved by --dry-run --out: take only the documents it lists, and only while their content is the one it lists
 
   -h, --help
           Print help
@@ -1972,30 +2582,44 @@ Options:
 ## `arp4 documents review`
 
 ```text
-Usage: arp4 documents review [OPTIONS] --reviewer <REVIEWER> <DOCUMENT>
+Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
+
+Usage: arp4 documents review [OPTIONS] --reviewer <REVIEWER> [DOCUMENT]
 
 Arguments:
-  <DOCUMENT>
-
+  [DOCUMENT]
+          Document ID, or a folder ID for every document below it
 
 Options:
+      --all
+          Take every document that awaits this step
+
       --full
           Return all details (not supported by spec workflow; use read pagination there)
-
-      --reviewer <REVIEWER>
-
 
       --root <ROOT>
 
 
+      --dry-run
+          List the documents this would take and those it skips, without writing
+
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --out <OUT>
+          With --dry-run, save the plan to this new file for --expect
+
+      --expect <EXPECT>
+          A plan saved by --dry-run --out: take only the documents it lists, and only while their content is the one it lists
+
+      --reviewer <REVIEWER>
+
 
   -h, --help
           Print help
@@ -2025,7 +2649,7 @@ Options:
           [possible values: json, markdown]
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2059,7 +2683,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2094,7 +2718,7 @@ Options:
           [default: auto]
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2126,17 +2750,13 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
       --require-reviewed
 
-
-      --format <FORMAT>
-          [default: json]
-          [possible values: json]
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
@@ -2164,12 +2784,8 @@ Options:
       --root <ROOT>
 
 
-      --format <FORMAT>
-          [default: json]
-          [possible values: json]
-
       --include-hashes
-          Include verification hashes in record/review/check/status/export output
+          Include verification hashes in record/review/check/status/export/rows/columns output
 
       --limit <LIMIT>
           Maximum items per page (default: 20)

@@ -4,7 +4,7 @@
   "required": ["schema_version", "document", "source", "extraction_hash", "regions", "elements", "visuals", "review"],
   "properties": {
     "schema_version": {"const": 1},
-    "document": {"$ref": "#/$defs/text"},
+    "document": {"$ref": "#/$defs/document_id"},
     "source": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"$ref": "#/$defs/source_path"}, "sha256": {"$ref": "#/$defs/hash"}}},
     "extraction_hash": {"$ref": "#/$defs/hash"},
     "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}},
@@ -61,6 +61,7 @@
     },
     "text": {"type": "string", "minLength": 1, "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
     "sheet_name": {"type": "string", "minLength": 1, "description": "Worksheet name exactly as stored in the workbook, including leading or trailing spaces."},
+    "document_id": {"type": "string", "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$", "description": "The original's path below the sources folder, including leading spaces in path segments."},
     "source_path": {"type": "string", "minLength": 1, "description": "Repository-relative original document path exactly as stored, including leading spaces in path segments."},
     "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
@@ -110,10 +111,10 @@
     },
     "correction_journal": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema_version", "document", "source_path", "source_sha256", "baseline_extraction_hash", "elements", "element_order", "visuals", "regions", "review"],
+      "required": ["schema_version", "document", "source_path", "source_sha256", "baseline_extraction_hash", "elements", "readings", "cell_states", "element_order", "visuals", "regions", "review"],
       "properties": {
         "schema_version": {"const": 1},
-        "document": {"$ref": "#/$defs/text"},
+        "document": {"$ref": "#/$defs/document_id"},
         "source_path": {"$ref": "#/$defs/source_path"},
         "source_sha256": {"$ref": "#/$defs/hash"},
         "baseline_extraction_hash": {"$ref": "#/$defs/hash"},
@@ -122,7 +123,9 @@
           {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"const": "pending"}}},
           {"type": "object", "additionalProperties": false, "required": ["status", "content_hash", "actor", "reason"], "properties": {"status": {"enum": ["accepted", "rejected"]}, "content_hash": {"$ref": "#/$defs/hash"}, "actor": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}}}
         ]},
-        "elements": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+        "elements": {"type": "array",
+          "description": "Elements whose structure differs from the parser's hypothesis: kind, cells, roles, headers, descriptions or evidence. Each cell's text_state is as the parser reads it; a reader's other states are in cell_states.",
+          "items": {"type": "object", "additionalProperties": false,
           "required": ["element", "sources"], "properties": {
             "element": {"$ref": "#/$defs/element"},
             "sources": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false,
@@ -132,6 +135,26 @@
             }
           }
         }},
+        "readings": {"type": "array",
+          "description": "Readings of elements whose structure the parser inferred as the reader left it, each bound to a cell of the element; replay gives the reading to the parser's element holding that cell.",
+          "items": {"type": "object", "additionalProperties": false,
+            "required": ["element", "sheet", "anchor", "reading"], "properties": {
+              "element": {"$ref": "#/$defs/text"},
+              "sheet": {"$ref": "#/$defs/sheet_name"},
+              "anchor": {"type": "object", "additionalProperties": false, "required": ["address", "sha256"], "properties": {
+                "address": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}
+              }},
+              "reading": {"$ref": "#/$defs/reading"}
+            }}},
+        "cell_states": {"type": "array",
+          "description": "Cells whose text_state is not the one the parser reads from their value (read when it holds text, empty otherwise), with the hash of the cell they were given for.",
+          "items": {"type": "object", "additionalProperties": false,
+            "required": ["sheet", "address", "sha256", "text_state"], "properties": {
+              "sheet": {"$ref": "#/$defs/sheet_name"},
+              "address": {"$ref": "#/$defs/text"},
+              "sha256": {"$ref": "#/$defs/hash"},
+              "text_state": {"enum": ["read", "empty", "unreadable", "not_examined"]}
+            }}},
         "visuals": {"type": "array", "items": {"type": "object", "additionalProperties": false,
           "required": ["visual", "sources"], "properties": {
             "visual": {"$ref": "#/$defs/visual"},
@@ -142,7 +165,23 @@
             }
           }
         }},
-        "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}}
+        "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}},
+        "carried": {"type": "object", "additionalProperties": false,
+          "description": "How the import of this version carried the interpretation of the version before: by the row/column operations documents apply wrote, or by those found aligning the rows and columns of an original edited outside ARP. moved counts the cells that moved with the operations. affected lists each element, visual and image region the carrying touched, once for each reason, with the cells of an element: added to tables by insertions or, when new, to the element around them; removed with deleted rows/columns; or changed in value (read again from the new value unless a reader had left them unreadable or unexamined). An element left without cells is removed with every cell it lost. review says whether the review was kept.",
+          "required": ["by", "operations", "moved", "review", "reasons", "affected"], "properties": {
+            "by": {"enum": ["apply", "alignment"]},
+            "operations": {"$ref": "#/$defs/ids"},
+            "moved": {"type": "integer", "minimum": 0},
+            "review": {"enum": ["kept", "pending", "not_reviewed"]},
+            "reasons": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+            "affected": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+              "required": ["kind", "id", "reason"], "properties": {
+                "kind": {"enum": ["element", "visual", "region"]},
+                "id": {"$ref": "#/$defs/text"},
+                "reason": {"enum": ["moved", "added", "removed", "changed", "inferred"]},
+                "cells": {"$ref": "#/$defs/ids"}
+              }}}
+          }}
       }
     },
     "cell": {

@@ -60,7 +60,7 @@ impl Workflow {
                     .flatten()
                     .filter_map(Value::as_str)
                 {
-                    if let Some((doc, _)) = id.split_once('/') {
+                    if let Some((doc, _)) = id.rsplit_once('/') {
                         documents.insert(doc.to_owned());
                     }
                 }
@@ -92,7 +92,7 @@ impl Workflow {
                                 .flatten(),
                         )
                     {
-                        if let Some((other, _)) = s(link)?.split_once('/') {
+                        if let Some((other, _)) = s(link)?.rsplit_once('/') {
                             if before.contains(doc) {
                                 documents.insert(other.to_owned());
                             }
@@ -106,7 +106,7 @@ impl Workflow {
                             .as_str()
                             .or_else(|| evidence["source"].as_str())
                             .unwrap_or("");
-                        if let Some((other, _)) = alias.split_once('/')
+                        if let Some((other, _)) = alias.rsplit_once('/')
                             && before.contains(doc)
                         {
                             documents.insert(other.to_owned());

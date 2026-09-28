@@ -323,6 +323,35 @@ pub fn map_coordinate(
     )))
 }
 
+/// Whether row or column operations remove an original axis position.
+pub(crate) fn axis_deleted(
+    mut position: u32,
+    operations: &[StructuralOperation],
+    row: bool,
+) -> Result<bool> {
+    for operation in operations {
+        if operation.row_operation() != row {
+            continue;
+        }
+        let end = operation
+            .at
+            .checked_add(operation.count)
+            .context("coordinate operation range overflow")?;
+        if operation.insertion() {
+            if position >= operation.at {
+                position = position
+                    .checked_add(operation.count)
+                    .context("coordinate overflow")?;
+            }
+        } else if (operation.at..end).contains(&position) {
+            return Ok(true);
+        } else if position >= end {
+            position -= operation.count;
+        }
+    }
+    Ok(false)
+}
+
 pub fn resolve_insertion(
     sheet: &str,
     insertion: &str,
@@ -398,6 +427,36 @@ pub fn resolve_insertion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_axis_deletion_matches_coordinate_mapping() {
+        let operations = [
+            (OperationKind::InsertRows, 3, 2),
+            (OperationKind::DeleteRows, 5, 2),
+            (OperationKind::InsertColumns, 2, 1),
+            (OperationKind::DeleteColumns, 4, 2),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, at, count))| StructuralOperation {
+            id: format!("op-{index}"),
+            sheet: "Sheet1".into(),
+            kind,
+            at,
+            count,
+            style_from: None,
+        })
+        .collect::<Vec<_>>();
+        for row in 1..20 {
+            for column in 1..10 {
+                let address = format!("{}{}", column_name(column).unwrap(), row);
+                let mapped = map_coordinate("Sheet1", &address, &operations).unwrap();
+                let deleted = axis_deleted(row, &operations, true).unwrap()
+                    || axis_deleted(column, &operations, false).unwrap();
+                assert_eq!(mapped.is_none(), deleted, "{address}");
+            }
+        }
+    }
 
     #[test]
     fn merge_lookups_find_the_hiding_range() {

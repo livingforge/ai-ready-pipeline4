@@ -54,11 +54,13 @@ pub fn agent_read_format(start: &Path) -> Result<AgentFormat> {
 pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
     fs::create_dir_all(root)?;
     let root = dunce::canonicalize(root)?;
-    under(&root, sources)?;
+    let folder = under(&root, sources)?;
     ensure!(
         !sources.starts_with(".arp/") && sources != ".arp" && !sources.starts_with(".git"),
         "sources must be outside ARP/Git metadata"
     );
+    // Document IDs are paths below this folder, so it exists before the first import.
+    fs::create_dir_all(&folder)?;
     let config = under(&root, ".arp/config.yml")?;
     if config.exists() {
         open(&root)?;
@@ -72,19 +74,33 @@ pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
             &json!({"schema_version":"1", "sources":sources, "agent_read_format":AgentFormat::default()}),
         )?;
     }
-    let ignore = under(&root, ".arp/.gitignore")?;
-    let mut contents = if ignore.exists() {
-        fs::read_to_string(&ignore)?
+    ensure_lines(&under(&root, ".arp/.gitignore")?, &["/work/", "/cache/"])?;
+    // Originals and records are verified byte for byte, so Git must not convert
+    // their line endings. These deeper files override the repository's own settings.
+    for folder in [".arp", sources] {
+        ensure_lines(
+            &under(&root, &format!("{folder}/.gitattributes"))?,
+            &["* -text"],
+        )?;
+    }
+    Ok(root)
+}
+
+/// Appends the lines a file lacks, keeping what the user already wrote.
+fn ensure_lines(path: &Path, lines: &[&str]) -> Result<()> {
+    let mut contents = if path.exists() {
+        fs::read_to_string(path)?
     } else {
         String::new()
     };
-    for pattern in ["/work/", "/cache/"] {
-        if !contents.lines().any(|line| line == pattern) {
-            contents.push('\n');
-            contents.push_str(pattern);
+    for line in lines {
+        if !contents.lines().any(|existing| existing == *line) {
+            if !contents.is_empty() && !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+            contents.push_str(line);
             contents.push('\n');
         }
     }
-    crate::data::replace(&ignore, contents.as_bytes())?;
-    Ok(root)
+    crate::data::replace(path, contents.as_bytes())
 }

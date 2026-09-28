@@ -2,7 +2,11 @@ mod response;
 mod workspace;
 
 use anyhow::{Context, Result, ensure};
-use arp4_cli::{data::*, documents::Store};
+use arp4_cli::{
+    data::*,
+    document_source::SlidePosition,
+    documents::{Axis, Batch, EditKind, Position, SheetEdit, SlideEdit, SlideEditKind, Store},
+};
 use clap::Parser;
 mod cli;
 mod spec_command;
@@ -50,17 +54,18 @@ fn run(cli: Cli) -> Result<bool> {
                     command: DocumentCommand::Schema { pointer: None, .. }
                         | DocumentCommand::Status { .. }
                         | DocumentCommand::Check { .. }
+                        | DocumentCommand::Search { .. }
                         | DocumentCommand::Diff { out: None, .. }
                         | DocumentCommand::Export { out: None, .. },
                     ..
                 }
             ),
-            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, diff without --out, or export without --out"
+            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, search, diff without --out, or export without --out"
         );
     }
     match cli.command {
         Command::Spec { command } => return spec_command::execute(command, output),
-        Command::Doctor { .. } => {
+        Command::Doctor => {
             let mut report = arp4_cli::capabilities();
             report["cli"] = json!({"response_version":1,"format":"json","max_response_bytes":response::MAX_RESPONSE_BYTES,"default_limit":20,"max_limit":100});
             // The prose limitations duplicate the skill text; capabilities stay.
@@ -121,12 +126,17 @@ fn run(cli: Cli) -> Result<bool> {
                 command,
                 DocumentCommand::Init { .. }
                     | DocumentCommand::Import { .. }
+                    | DocumentCommand::Remove { .. }
                     | DocumentCommand::Record { .. }
                     | DocumentCommand::Adopt { .. }
                     | DocumentCommand::Review { .. }
                     | DocumentCommand::Export { out: Some(_), .. }
                     | DocumentCommand::Apply { .. }
                     | DocumentCommand::StructureSave { .. }
+                    | DocumentCommand::Rows { .. }
+                    | DocumentCommand::Columns { .. }
+                    | DocumentCommand::Slides { .. }
+                    | DocumentCommand::SearchRefresh { .. }
             );
             let _lock = if mutate {
                 let path = under(&root, ".arp/rust-documents.lock")?;
@@ -152,10 +162,106 @@ fn run(cli: Cli) -> Result<bool> {
             }
             let store = Store::open(&root)?;
             let result = match command {
+                DocumentCommand::Search {
+                    query,
+                    document,
+                    synonyms,
+                    profile,
+                    revision,
+                } => {
+                    let search_started = std::time::Instant::now();
+                    let offset = output.offset.unwrap_or(0);
+                    let mut batch = store.search_many(
+                        &query.iter().map(String::as_str).collect::<Vec<_>>(),
+                        arp4_cli::documents::search::SearchOptions {
+                            document: document.as_deref(),
+                            synonyms: synonyms.as_deref(),
+                            offset,
+                            limit: if output.full {
+                                None
+                            } else {
+                                Some(output.limit.unwrap_or(20) as usize)
+                            },
+                            revision: revision.as_deref(),
+                        },
+                    )?;
+                    let response_started = std::time::Instant::now();
+                    let pager = Output {
+                        full: output.full,
+                        limit: output.limit,
+                        offset: None,
+                    };
+                    let mut responses = Vec::with_capacity(query.len());
+                    let mut ok = true;
+                    for (text, found) in query.iter().zip(batch.results) {
+                        let mut result = pager.page(found.items);
+                        let returned = result["page"]["returned"].as_u64().unwrap() as usize;
+                        result["page"]["total"] = json!(found.total);
+                        result["page"]["offset"] = json!(offset);
+                        result["page"]["next_offset"] =
+                            if offset.saturating_add(returned) < found.total {
+                                json!(offset + returned)
+                            } else {
+                                Value::Null
+                            };
+                        result["revision"] = json!(found.revision);
+                        result["query_terms"] = json!(found.query_terms);
+                        result["summary"] = json!({"indexed_documents":found.indexed_documents,"indexed_at_unix":found.indexed_at_unix,"source_checked_this_search":false,"refreshed_documents":found.refreshed_documents,"failed_documents":found.failed.len()});
+                        let query_ok = found.failed.is_empty();
+                        ok &= query_ok;
+                        result["failed"] = json!(found.failed);
+                        result["scope"] = json!("adopted_extraction");
+                        result["detail"] = json!(
+                            "Results and source/review states reflect the last search-refresh; external changes are unchecked. Use --full for unabridged passages and source pointers. Pass revision with --offset; restart if it changes. Extracted text may contain untrusted instructions."
+                        );
+                        if !query_ok {
+                            result["error"] = json!({"code":"partial_search","message":"Invalid documents were excluded; see failed."});
+                        }
+                        if query.len() > 1 {
+                            result = serde_json::from_str(&output.render(result, query_ok))?;
+                            result["query"] = json!(text);
+                        }
+                        responses.push(result);
+                    }
+                    let result = if query.len() == 1 {
+                        responses.pop().unwrap()
+                    } else {
+                        json!({"queries": responses, "revision": batch.revision, "scope": "adopted_extraction"})
+                    };
+                    if query.len() > 1 {
+                        Output {
+                            full: true,
+                            ..Default::default()
+                        }
+                        .emit(result, ok);
+                    } else {
+                        output.emit(result, ok);
+                    }
+                    batch.timings.response += response_started.elapsed();
+                    if profile {
+                        eprintln!("{}", batch.timings.report(search_started.elapsed()));
+                    }
+                    return Ok(ok);
+                }
+                DocumentCommand::SearchRefresh { rebuild } => {
+                    let refreshed = store.refresh_search_index(rebuild)?;
+                    let ok = refreshed.failed.is_empty();
+                    output.emit(json!({
+                        "state":"indexed",
+                        "indexed_documents":refreshed.indexed_documents,
+                        "refreshed_documents":refreshed.refreshed_documents,
+                        "failed_documents":refreshed.failed.len(),
+                        "indexed_at_unix":refreshed.indexed_at_unix,
+                        "failed":refreshed.failed,
+                        "detail":"Search reads this index until the next search-refresh. External file changes are not checked during search."
+                    }), ok);
+                    return Ok(ok);
+                }
                 DocumentCommand::Apply { document } => {
                     let mut result = store.apply(&document)?;
                     result["proposal"] = relative(&root, &result["proposal"])?;
                     if !output.full {
+                        count_carried_cells(&mut result["structure"]);
                         summarize_export(&mut result["report"], include_hashes)?;
                         for key in ["written", "document_id", "schema_version"] {
                             result["report"].as_object_mut().unwrap().remove(key);
@@ -163,35 +269,83 @@ fn run(cli: Cli) -> Result<bool> {
                     }
                     result
                 }
-                DocumentCommand::Import { source, id } => {
-                    let mut result = store.import(&source, &id)?;
-                    result["proposal"] = relative(&root, &result["proposal"])?;
-                    result["state"] = json!("needs_record");
+                DocumentCommand::Import { source, force } => {
+                    let (path, _) = store.resolve(&source)?;
+                    if path.is_dir() {
+                        let mut result = store.import_folder(&source, force)?;
+                        let imported = !array(&result["imported"])?.is_empty();
+                        result["state"] = json!(if imported {
+                            "needs_record"
+                        } else {
+                            "unchanged"
+                        });
+                        if !array(&result["failed"])?.is_empty() {
+                            result["error"] = json!({"code":"operation_failed","message":"Some originals could not be imported; see failed. The other originals were imported."});
+                            output.emit(result, false);
+                            return Ok(false);
+                        }
+                        result
+                    } else {
+                        let mut result = store.import_with_force(&source, force)?;
+                        if result["state"] != "unchanged" {
+                            result["proposal"] = relative(&root, &result["proposal"])?;
+                            result["state"] = json!("needs_record");
+                            if !output.full {
+                                count_carried_cells(&mut result["structure"]);
+                            }
+                        }
+                        result
+                    }
+                }
+                DocumentCommand::Remove { document } => {
+                    let mut result = store.remove(&document)?;
+                    result["state"] = json!("removed");
                     result
                 }
-                DocumentCommand::StructureRead { document, out } => {
+                DocumentCommand::Discard { document } => store.discard(&document)?,
+                DocumentCommand::StructureRead {
+                    document,
+                    out,
+                    proposal,
+                } => {
                     ensure!(!out.exists(), "structure output already exists");
-                    let structure = store.structure(&document)?;
+                    let (structure, mut report) = store.structure(&document, proposal)?;
                     arp4_cli::data::write(&out, &structure)?;
-                    json!({"state":"saved","structure":out,"document_id":document})
+                    if !output.full {
+                        count_carried_cells(&mut report["carried"]);
+                    }
+                    json!({"state":"saved","structure":out,"document_id":document,"interpretation":report})
                 }
-                DocumentCommand::StructureSave { document, input } => {
+                DocumentCommand::StructureSave {
+                    document,
+                    input,
+                    proposal,
+                } => {
                     let structure = read(&input, None)?;
-                    let report = store.save_structure(&document, &structure)?;
+                    let report = store.save_structure(&document, &structure, proposal)?;
                     let managed = under(&root, &format!(".arp/work/structure/{document}.yml"))?;
                     if managed.is_file()
                         && dunce::canonicalize(&input)? == dunce::canonicalize(&managed)?
                     {
                         fs::remove_file(&managed)?;
+                        remove_empty_directories(managed.parent().unwrap(), &store.arp);
                     }
                     json!({"state":"saved","document_id":document,"interpretation":report})
                 }
                 DocumentCommand::Record {
-                    proposal,
+                    targets,
                     model,
                     actor,
                     prompt,
                 } => {
+                    let Some(proposal) = single(&store, &targets)? else {
+                        let batch = Batch::Record {
+                            model: &model,
+                            actor: &actor,
+                            prompt: &prompt,
+                        };
+                        return run_batch(&store, &output, targets, &batch, include_hashes);
+                    };
                     let mut result = store.record(&proposal, &model, &actor, &prompt)?;
                     omit_hashes(
                         &mut result,
@@ -203,17 +357,28 @@ fn run(cli: Cli) -> Result<bool> {
                             result.as_object_mut().unwrap().remove(key);
                         }
                     }
-                    result["proposal_id"] = json!(proposal);
                     result["state"] = json!("recorded");
                     result
                 }
-                DocumentCommand::Adopt { proposal, reviewer } => {
-                    let mut result = store.adopt(&proposal, &reviewer)?;
+                DocumentCommand::Adopt { targets } => {
+                    let Some(proposal) = single(&store, &targets)? else {
+                        let batch = Batch::Adopt;
+                        return run_batch(&store, &output, targets, &batch, include_hashes);
+                    };
+                    let mut result = store.adopt(&proposal)?;
                     result["document"] = relative(&root, &result["document"])?;
-                    result["state"] = json!("reviewed");
+                    if result.get("state").is_none() {
+                        result["state"] = json!("needs_review");
+                    }
                     result
                 }
-                DocumentCommand::Review { document, reviewer } => {
+                DocumentCommand::Review { targets, reviewer } => {
+                    let Some(document) = single(&store, &targets)? else {
+                        let batch = Batch::Review {
+                            reviewer: &reviewer,
+                        };
+                        return run_batch(&store, &output, targets, &batch, include_hashes);
+                    };
                     let mut result = store.review(&document, &reviewer)?;
                     omit_hashes(&mut result, &["content", "formation"], include_hashes);
                     if !output.full {
@@ -286,34 +451,7 @@ fn run(cli: Cli) -> Result<bool> {
                             }
                             text
                         };
-                        let absolute = if path.is_absolute() {
-                            path
-                        } else {
-                            std::env::current_dir()?.join(path)
-                        };
-                        let parent = absolute.parent().context("missing output parent")?;
-                        let mut ancestor = parent;
-                        while !ancestor.exists() {
-                            ancestor = ancestor
-                                .parent()
-                                .context("missing existing output ancestor")?;
-                        }
-                        let suffix = parent.strip_prefix(ancestor)?;
-                        ensure!(
-                            suffix
-                                .components()
-                                .all(|c| matches!(c, std::path::Component::Normal(_))),
-                            "invalid output path"
-                        );
-                        let parent = dunce::canonicalize(ancestor)?.join(suffix);
-                        ensure!(
-                            !parent.starts_with(&store.arp)
-                                || parent.starts_with(store.arp.join("cache")),
-                            "report must be outside document data or in .arp/cache"
-                        );
-                        fs::create_dir_all(&parent)?;
-                        let path =
-                            parent.join(absolute.file_name().context("missing output filename")?);
+                        let path = report_path(&store, path)?;
                         ensure!(!path.exists(), "report already exists");
                         immutable(&path, rendered.as_bytes())?;
                         output.emit(json!({"state":"saved","report":path}), true);
@@ -345,18 +483,26 @@ fn run(cli: Cli) -> Result<bool> {
                     };
                     return Ok(true);
                 }
+                DocumentCommand::Rows { command } => {
+                    let (target, edit) = row_edit(command)?;
+                    edit_sheet(&store, target, edit, include_hashes)?
+                }
+                DocumentCommand::Columns { command } => {
+                    let (target, edit) = column_edit(command)?;
+                    edit_sheet(&store, target, edit, include_hashes)?
+                }
+                DocumentCommand::Slides { command } => {
+                    edit_slides(&store, command, include_hashes)?
+                }
                 DocumentCommand::Check {
                     document,
                     proposal,
                     require_reviewed,
-                    ..
                 } => {
                     let result = store.status(document.as_deref(), proposal.as_deref(), false)?;
                     return emit_status(&output, result, include_hashes, require_reviewed);
                 }
-                DocumentCommand::Status {
-                    document, proposal, ..
-                } => {
+                DocumentCommand::Status { document, proposal } => {
                     let result = store.status(document.as_deref(), proposal.as_deref(), false)?;
                     return emit_status(&output, result, include_hashes, false);
                 }
@@ -368,6 +514,199 @@ fn run(cli: Cli) -> Result<bool> {
     Ok(true)
 }
 
+fn row_edit(command: RowCommand) -> Result<(EditTarget, SheetEdit)> {
+    let (target, kind) = match command {
+        RowCommand::Insert {
+            target,
+            place,
+            count,
+            style_from,
+            values,
+        } => {
+            let kind = insert_kind(place, count, style_from, values)?;
+            (target, kind)
+        }
+        RowCommand::Delete {
+            target,
+            from,
+            count,
+        } => (target, EditKind::Delete { from, count }),
+    };
+    let edit = sheet_edit(&target, Axis::Rows, kind);
+    Ok((target, edit))
+}
+
+fn column_edit(command: ColumnCommand) -> Result<(EditTarget, SheetEdit)> {
+    let (target, kind) = match command {
+        ColumnCommand::Insert {
+            target,
+            place,
+            count,
+            values,
+        } => {
+            let kind = insert_kind(place, count, None, values)?;
+            (target, kind)
+        }
+        ColumnCommand::Delete {
+            target,
+            from,
+            count,
+        } => (target, EditKind::Delete { from, count }),
+    };
+    let edit = sheet_edit(&target, Axis::Columns, kind);
+    Ok((target, edit))
+}
+
+fn insert_kind(
+    place: InsertPlace,
+    count: Option<u32>,
+    style_from: Option<String>,
+    values: Option<PathBuf>,
+) -> Result<EditKind> {
+    let position = match (place.after, place.before) {
+        (Some(after), _) => Position::After(after),
+        (None, Some(before)) => Position::Before(before),
+        (None, None) => unreachable!("clap requires --after or --before"),
+    };
+    let values = values
+        .map(|path| {
+            let (text, json) = if path.as_os_str() == "-" {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                (text, false)
+            } else {
+                let text = fs::read_to_string(&path)
+                    .with_context(|| format!("read {}", path.display()))?;
+                (text, path.extension().is_some_and(|e| e == "json"))
+            };
+            // Windows PowerShell 5.1 writes UTF-8 files with a byte order mark.
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+            parse(text, json).map_err(|error| {
+                anyhow::Error::new(Rejection(json!({"code":"invalid_values","message":format!("--values is not valid YAML or JSON: {error:#}")})))
+            })
+        })
+        .transpose()?;
+    Ok(EditKind::Insert {
+        position,
+        count,
+        style_from,
+        values,
+    })
+}
+
+fn sheet_edit(target: &EditTarget, axis: Axis, kind: EditKind) -> SheetEdit {
+    SheetEdit {
+        axis,
+        kind,
+        sheet: target.sheet.clone(),
+        id: target.id.clone(),
+        reason: target.reason.clone(),
+        base: target.base.clone(),
+        dry_run: target.dry_run,
+    }
+}
+
+/// Runs a row or column edit and reports it with the check state it leaves.
+fn edit_sheet(
+    store: &Store,
+    target: EditTarget,
+    edit: SheetEdit,
+    include_hashes: bool,
+) -> Result<Value> {
+    let (id, proposal) = edited_document(&target.document, &target.proposal);
+    let result = store.edit_sheet(id, proposal, &edit)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+/// Runs a slide edit and reports it with the check state it leaves.
+fn edit_slides(store: &Store, command: SlideCommand, include_hashes: bool) -> Result<Value> {
+    let (target, kind) = match command {
+        SlideCommand::Insert {
+            target,
+            from,
+            place,
+        } => {
+            let position = match (place.after, place.before) {
+                (Some(after), _) => SlidePosition::After(after),
+                (None, Some(before)) => SlidePosition::Before(before),
+                (None, None) => unreachable!("clap requires --after or --before"),
+            };
+            (target, SlideEditKind::Insert { from, position })
+        }
+        SlideCommand::Delete { target, slide } => (target, SlideEditKind::Delete { slide }),
+    };
+    let edit = SlideEdit {
+        kind,
+        id: target.id.clone(),
+        reason: target.reason.clone(),
+        base: target.base.clone(),
+        dry_run: target.dry_run,
+    };
+    let (id, proposal) = edited_document(&target.document, &target.proposal);
+    let result = store.edit_slides(id, proposal, &edit)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+/// The document ID an edit names, and whether it names a proposal.
+fn edited_document<'a>(
+    document: &'a Option<String>,
+    proposal: &'a Option<String>,
+) -> (&'a str, bool) {
+    match (document, proposal) {
+        (_, Some(id)) => (id.as_str(), true),
+        (Some(id), None) => (id.as_str(), false),
+        (None, None) => unreachable!("clap requires a document or --proposal"),
+    }
+}
+
+/// An edit's result with the check state it leaves and the next steps.
+fn edit_report(
+    store: &Store,
+    id: &str,
+    proposal: bool,
+    mut result: Value,
+    include_hashes: bool,
+) -> Result<Value> {
+    result["document_id"] = json!(id);
+    if proposal {
+        result["proposal"] = json!(true);
+    }
+    if result["state"] != "planned" {
+        let (document, proposal_id) = if proposal {
+            (None, Some(id))
+        } else {
+            (Some(id), None)
+        };
+        let rows = store.status(document, proposal_id, false)?;
+        let row = &array(&rows)?[0];
+        let mut check = json!({"state":row["state"]});
+        for key in ["blockers", "pending", "error"] {
+            if row
+                .get(key)
+                .is_some_and(|v| v != &json!([]) && v != &json!(0))
+            {
+                check[key] = row[key].clone();
+            }
+        }
+        result["check"] = check;
+        result["next_actions"] = json!(if proposal {
+            vec![
+                format!("arp4 documents diff {id}"),
+                format!(
+                    "arp4 documents record {id} --model <model> --actor <actor> --prompt <file>"
+                ),
+            ]
+        } else {
+            vec![
+                format!("arp4 documents diff --document {id}"),
+                format!("arp4 documents review {id} --reviewer <reviewer>"),
+            ]
+        });
+    }
+    omit_hashes(&mut result, &["content"], include_hashes);
+    Ok(result)
+}
+
 /// Project-relative form of a path under the document root, for agent-facing output.
 fn relative(root: &std::path::Path, path: &Value) -> Result<Value> {
     let path = std::path::Path::new(string(path)?);
@@ -377,6 +716,19 @@ fn relative(root: &std::path::Path, path: &Value) -> Result<Value> {
             .to_string_lossy()
             .replace('\\', "/")
     ))
+}
+
+/// Replaces the cell lists of how an interpretation was carried with their
+/// counts; the lists stay in the proposal's mappings.yml.
+fn count_carried_cells(carried: &mut Value) {
+    let Some(affected) = carried.get_mut("affected").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in affected {
+        if let Some(length) = item["cells"].as_array().map(Vec::len) {
+            item["cells"] = json!(length);
+        }
+    }
 }
 
 /// Replace an export report's detail arrays with counts under `summary` and drop
@@ -392,6 +744,7 @@ fn summarize_export(report: &mut Value, include_hashes: bool) -> Result<Vec<Valu
     let mut items = vec![];
     for category in [
         "changes",
+        "formula_changes",
         "unreflected",
         "excluded",
         "omissions",
@@ -411,6 +764,110 @@ fn summarize_export(report: &mut Value, include_hashes: bool) -> Result<Vec<Valu
     report["summary"] = counts;
     report.as_object_mut().unwrap().remove("schema_version");
     Ok(items)
+}
+
+/// Where a report given as `path` goes: resolved from the working directory,
+/// outside document data or in .arp/cache, with its folder created.
+fn report_path(store: &Store, path: PathBuf) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let parent = absolute.parent().context("missing output parent")?;
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .context("missing existing output ancestor")?;
+    }
+    let suffix = parent.strip_prefix(ancestor)?;
+    ensure!(
+        suffix
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_))),
+        "invalid output path"
+    );
+    let parent = dunce::canonicalize(ancestor)?.join(suffix);
+    ensure!(
+        !parent.starts_with(&store.arp) || parent.starts_with(store.arp.join("cache")),
+        "report must be outside document data or in .arp/cache"
+    );
+    fs::create_dir_all(&parent)?;
+    Ok(parent.join(absolute.file_name().context("missing output filename")?))
+}
+
+/// The one document `targets` names, taken as before, or None for a batch.
+fn single(store: &Store, targets: &Targets) -> Result<Option<String>> {
+    Ok(match &targets.document {
+        Some(id)
+            if !targets.all
+                && !targets.dry_run
+                && targets.expect.is_none()
+                && !store.is_folder(id)? =>
+        {
+            Some(id.clone())
+        }
+        _ => None,
+    })
+}
+
+/// Takes `batch` for the documents `targets` names and emits the lists of those
+/// taken, skipped and failed. A failure fails the command after the others are taken.
+fn run_batch(
+    store: &Store,
+    output: &Output,
+    targets: Targets,
+    batch: &Batch,
+    include_hashes: bool,
+) -> Result<bool> {
+    let expect = match &targets.expect {
+        Some(path) => Some(read(path, Some("batch-plan"))?),
+        None => None,
+    };
+    let mut result = store.batch(
+        batch,
+        targets.document.as_deref(),
+        expect.as_ref(),
+        targets.dry_run,
+    )?;
+    let count = |result: &Value, key: &str| array(&result[key]).map(Vec::len);
+    if targets.dry_run {
+        result["summary"] =
+            json!({"planned":count(&result, "planned")?,"skipped":count(&result, "skipped")?});
+        if let Some(path) = targets.out {
+            let path = report_path(store, path)?;
+            ensure!(!path.exists(), "plan already exists");
+            let plan =
+                json!({"schema_version":"1","action":batch.action(),"documents":result["planned"]});
+            validate("batch-plan", &plan)?;
+            immutable(&path, &encoded(&plan))?;
+            result["plan"] = json!(path);
+        }
+        if !include_hashes {
+            let ids: Vec<_> = array(&result["planned"])?
+                .iter()
+                .map(|document| document["document_id"].clone())
+                .collect();
+            result["planned"] = json!(ids);
+        }
+        result["state"] = json!("planned");
+        output.emit(result, true);
+        return Ok(true);
+    }
+    let done = count(&result, batch.done())?;
+    let failed = count(&result, "failed")?;
+    let mut summary = json!({"skipped":count(&result, "skipped")?,"failed":failed});
+    summary[batch.done()] = json!(done);
+    result["summary"] = summary;
+    result["state"] = json!(if done > 0 { batch.state() } else { "unchanged" });
+    if failed > 0 {
+        result["error"] = json!({"code":"operation_failed","message":format!("Some documents could not be {}; see failed. The others were.", batch.done())});
+        output.emit(result, false);
+        return Ok(false);
+    }
+    output.emit(result, true);
+    Ok(true)
 }
 
 fn emit_status(

@@ -3,9 +3,10 @@ use super::*;
 impl Workbook {
     /// Row/column edits move cells and every reference ARP can rewrite
     /// (formulas on all sheets, defined names, sheet ranges, tables, pivots,
-    /// charts and DrawingML anchors). Reject workbooks whose other parts hold
-    /// cell positions that would silently point at the wrong cells, and
-    /// changes Excel itself refuses (cutting through tables or pivot tables).
+    /// charts, drawing anchors, notes, comments and form controls). Reject
+    /// workbooks whose other parts hold cell positions that would silently
+    /// point at the wrong cells, and changes Excel itself refuses (cutting
+    /// through tables or pivot tables).
     pub fn ensure_structural_edits_supported(
         &self,
         operations: &[StructuralOperation],
@@ -13,7 +14,6 @@ impl Workbook {
         if operations.is_empty() {
             return Ok(());
         }
-        let edited: BTreeSet<&str> = operations.iter().map(|o| o.sheet.as_str()).collect();
         let mut scratch = BTreeMap::new();
         let moves = Moves::new(
             operations,
@@ -28,6 +28,15 @@ impl Workbook {
             &mut scratch,
         )?;
         relocate_pivots(&self.parts, &self.sheets, operations, &mut scratch)?;
+        self.ensure_structural_parts_supported(operations)
+    }
+
+    /// Package features unsupported by structural writeback. Table and pivot
+    /// ranges are checked by relocation itself when the writeback runs.
+    fn ensure_structural_parts_supported(&self, operations: &[StructuralOperation]) -> Result<()> {
+        if operations.is_empty() {
+            return Ok(());
+        }
         let mut reasons = vec![];
         if self
             .parts
@@ -42,39 +51,15 @@ impl Workbook {
                 reasons.push(format!("{kind} '{}'", string(&sheet["name"])?));
             }
         }
-        for sheet in self
-            .sheets
-            .iter()
-            .filter(|s| s["name"].as_str().is_some_and(|name| edited.contains(name)))
+        // ActiveX controls may keep their linked cells in binary parts.
+        if self
+            .parts
+            .keys()
+            .any(|name| name.to_ascii_lowercase().starts_with("xl/activex/"))
         {
-            let doc = xml(&self.parts[string(&sheet["part"])?])?;
-            let objects: Vec<_> = ["legacyDrawing", "controls", "oleObjects"]
-                .into_iter()
-                .filter(|tag| child(doc.root_element(), tag).is_some())
-                .collect();
-            if !objects.is_empty() {
-                reasons.push(format!(
-                    "form controls, comments or embedded objects on '{}' ({})",
-                    string(&sheet["name"])?,
-                    objects.join(", ")
-                ));
-            }
-        }
-        // A form control on another sheet keeps its linked cell and input range in
-        // ctrlProp and VML parts, which ARP does not rewrite.
-        for (name, bytes) in &self.parts {
-            let lower = name.to_ascii_lowercase();
-            if !(lower.starts_with("xl/ctrlprops/") || lower.ends_with(".vml")) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(bytes)
-                .replace("&apos;", "'")
-                .replace("&amp;", "&");
-            for sheet in &edited {
-                if names_sheet(&text, sheet) {
-                    reasons.push(format!("form control links to '{sheet}' in {name}"));
-                }
-            }
+            reasons.push(
+                "ActiveX controls (their linked cells can be held in binary parts)".to_owned(),
+            );
         }
         ensure!(
             reasons.is_empty(),
@@ -82,6 +67,20 @@ impl Workbook {
             reasons.join("; ")
         );
         Ok(())
+    }
+
+    /// Whether one of `changes` writes a header or totals label of a table.
+    fn writes_table_labels(&self, changes: &[Value]) -> Result<bool> {
+        for change in changes {
+            let Some(sheet) = self.sheets.iter().find(|s| s["name"] == change["sheet"]) else {
+                continue;
+            };
+            let (column, row) = coordinate(string(&change["cell"])?)?;
+            if table_label(sheet, column, row)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Whether any cell holds a formula, whose cached result a change can make stale.
@@ -96,7 +95,47 @@ impl Workbook {
         self.patch_with_operations(destination, &[], changes)
     }
 
-    fn patch_scalar(&self, destination: &Path, changes: &[Value]) -> Result<Value> {
+    /// The formula edits (`sheet`, original `cell`, new formula `after` with
+    /// its `=`) grouped by sheet, as address to formula text without `=`.
+    fn formula_edits(
+        &self,
+        formulas: &[Value],
+    ) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+        let cells = cells_by_address(self);
+        let mut edits: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for edit in formulas {
+            let sheet = string(&edit["sheet"])?;
+            let cell = string(&edit["cell"])?;
+            let found = cells
+                .get(&(sheet, cell))
+                .with_context(|| format!("formula edit target {sheet}!{cell} is missing"))?;
+            ensure!(
+                found.kind == "formula",
+                "{sheet}!{cell} holds no formula; only existing formulas can be replaced"
+            );
+            let text = string(&edit["after"])?
+                .strip_prefix('=')
+                .with_context(|| format!("the formula of {sheet}!{cell} must start with ="))?;
+            check_formula(text).with_context(|| format!("formula of {sheet}!{cell}"))?;
+            ensure!(
+                edits
+                    .entry(sheet.to_owned())
+                    .or_default()
+                    .insert(cell.to_owned(), text.to_owned())
+                    .is_none(),
+                "duplicate formula edit of {sheet}!{cell}"
+            );
+        }
+        Ok(edits)
+    }
+
+    fn patch_scalar(
+        &self,
+        destination: &Path,
+        changes: &[Value],
+        formulas: &[Value],
+        shapes: &[Value],
+    ) -> Result<Value> {
         ensure!(
             !self
                 .parts
@@ -104,6 +143,7 @@ impl Workbook {
                 .any(|n| n.to_lowercase().starts_with("_xmlsignatures/")),
             "signed Excel cannot be modified"
         );
+        let formula_edits = self.formula_edits(formulas)?;
         let mut updates: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
         let cells = cells_by_address(self);
         let checks = SheetChecks::new(&self.sheets)?;
@@ -129,8 +169,6 @@ impl Workbook {
                 "Excel target type mismatch"
             );
             checks.merges[name].ensure_not_hidden(name, cell)?;
-            let (column, row) = coordinate(cell)?;
-            ensure_not_table_label(sheet, column, row)?;
             checks.computed[name].ensure_not_computed(cell)?;
             ensure!(
                 updates
@@ -141,12 +179,18 @@ impl Workbook {
                 "duplicate writeback target"
             );
         }
-        let recalc = !changes.is_empty() && self.has_formulas();
+        let recalc = (!changes.is_empty() || !formulas.is_empty()) && self.has_formulas();
         let mut patched = BTreeMap::new();
         let type_attribute = attribute_pattern("t")?;
         for s in &self.sheets {
             let part = string(&s["part"])?;
-            let original = std::str::from_utf8(&self.parts[part])?;
+            let name = string(&s["name"])?;
+            let source = std::str::from_utf8(&self.parts[part])?;
+            let edited = formula_edits
+                .get(name)
+                .map(|edits| edit_formulas(source, name, edits))
+                .transpose()?;
+            let original = edited.as_deref().unwrap_or(source);
             let doc = Document::parse(original)?;
             let mut edits = vec![];
             let mut seen = BTreeSet::new();
@@ -188,6 +232,8 @@ impl Workbook {
                     part.to_owned(),
                     splice(original, edits, "cell")?.into_bytes(),
                 );
+            } else if edited.is_some() {
+                patched.insert(part.to_owned(), original.as_bytes().to_vec());
             }
         }
         if recalc {
@@ -197,8 +243,9 @@ impl Workbook {
                 request_full_calculation(original)?.into_bytes(),
             );
         }
+        apply_shape_texts(&self.parts, &mut patched, shapes)?;
         write_archive(&self.raw, destination, &patched)?;
-        ensure_read_back(destination, changes)?;
+        ensure_read_back(destination, changes, formulas, shapes, &[])?;
         Ok(
             json!({"changed_parts":patched.keys().collect::<Vec<_>>(),"requires_excel_recalculation":recalc}),
         )
@@ -210,21 +257,40 @@ impl Workbook {
         operations: &[Value],
         changes: &[Value],
     ) -> Result<Value> {
-        self.patch_with_operations_and_assets(destination, operations, changes, &BTreeMap::new())
+        self.patch_with_operations_and_assets(
+            destination,
+            operations,
+            changes,
+            &[],
+            &BTreeMap::new(),
+        )
     }
 
+    /// Writes `changes` (values of cells on the final sheets, or with `shape`
+    /// the text of a shape), `formulas`
+    /// (new formulas of original cells, applied before rows and columns move so
+    /// that their references move too), the row/column and image operations
+    /// and their image assets.
     pub fn patch_with_operations_and_assets(
         &self,
         destination: &Path,
         operation_values: &[Value],
         changes: &[Value],
+        formulas: &[Value],
         assets: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Value> {
-        if operation_values.is_empty() && assets.is_empty() {
-            return self.patch_scalar(destination, changes);
+        // Shape text is written into the drawings, apart from the cells.
+        let (shapes, changes): (Vec<Value>, Vec<Value>) = changes
+            .iter()
+            .cloned()
+            .partition(|change| change.get("shape").is_some());
+        let changes = changes.as_slice();
+        // A table's header and totals labels are written with its definition.
+        if operation_values.is_empty() && assets.is_empty() && !self.writes_table_labels(changes)? {
+            return self.patch_scalar(destination, changes, formulas, &shapes);
         }
         let operations = parse_operations(operation_values, &self.sheets)?;
-        self.ensure_structural_edits_supported(&operations)?;
+        self.ensure_structural_parts_supported(&operations)?;
         let image_operations = parse_image_operations(operation_values, &self.sheets)?;
         ensure!(
             image_operations.is_empty() || !assets.is_empty(),
@@ -255,15 +321,14 @@ impl Workbook {
                 .get(sheet)
                 .context("missing writeback sheet")?
                 .ensure_not_hidden(sheet, cell)?;
-            // Tables on a sheet with row/column changes are checked as they move.
+            // Computed ranges on a sheet with row/column changes are checked as
+            // they move; table labels are checked with their table.
             if sheet_operations(sheet, &operations).is_empty() {
-                let source = self
-                    .sheets
-                    .iter()
-                    .find(|s| s["name"] == sheet)
-                    .context("missing writeback sheet")?;
-                ensure_not_table_label(source, column, row)?;
-                checks.computed[sheet].ensure_not_computed(cell)?;
+                checks
+                    .computed
+                    .get(sheet)
+                    .context("missing writeback sheet")?
+                    .ensure_not_computed(cell)?;
             }
             ensure!(
                 change_map
@@ -272,8 +337,21 @@ impl Workbook {
                 "duplicate writeback target"
             );
         }
+        let formula_edits = self.formula_edits(formulas)?;
+        for (sheet, edits) in &formula_edits {
+            for cell in edits.keys() {
+                ensure!(
+                    map_coordinate(sheet, cell, &operations)?.is_some(),
+                    "{sheet}!{cell} is deleted by a delete_rows/delete_columns operation, so its formula cannot be edited"
+                );
+            }
+        }
+        let labels = LabelEdits::new(&self.parts, &self.sheets, &operations, &change_map)?;
         let structural = !operations.is_empty();
-        let recalc = structural || !changes.is_empty() && self.has_formulas();
+        // Renamed table columns rename structured references in every formula.
+        let rewriting = structural || !labels.renamed.is_empty();
+        let recalc =
+            structural || (!changes.is_empty() || !formulas.is_empty()) && self.has_formulas();
         let mut patched = BTreeMap::new();
         let mut removed = BTreeSet::new();
         let mut table_formulas = BTreeMap::new();
@@ -284,16 +362,30 @@ impl Workbook {
             } else {
                 BTreeMap::new()
             },
-        );
-        if structural {
+        )
+        .with_renamed_columns(labels.renamed.clone());
+        if structural || !labels.parts.is_empty() {
+            let mut labeled;
+            let parts = if labels.parts.is_empty() {
+                &self.parts
+            } else {
+                labeled = self.parts.clone();
+                for (part, text) in &labels.parts {
+                    labeled.insert(part.clone(), text.clone().into_bytes());
+                }
+                &labeled
+            };
             relocate_tables(
-                &self.parts,
+                parts,
                 &self.sheets,
                 &moves,
                 &mut change_map,
                 &mut table_formulas,
                 &mut patched,
             )?;
+            for (part, text) in labels.parts {
+                patched.entry(part).or_insert_with(|| text.into_bytes());
+            }
         }
         for sheet in &self.sheets {
             let name = string(&sheet["name"])?;
@@ -308,19 +400,26 @@ impl Workbook {
                 .map(|((_, row, column), value)| ((*row, *column), value.clone()))
                 .collect();
             let part = string(&sheet["part"])?;
-            let source = std::str::from_utf8(&self.parts[part])?;
-            let unshared = if structural {
+            let part_text = std::str::from_utf8(&self.parts[part])?;
+            let edited = formula_edits
+                .get(name)
+                .map(|edits| edit_formulas(part_text, name, edits))
+                .transpose()?;
+            let source = edited.as_deref().unwrap_or(part_text);
+            let unshared = if rewriting {
                 unshare_formulas(source, name, &moves, !sheet_operations.is_empty())?
             } else {
                 None
             };
             let original = unshared.as_deref().unwrap_or(source);
             if sheet_operations.is_empty() && sheet_changes.is_empty() {
-                if structural {
-                    let rewritten = rewrite_sheet_references(original, name, &moves, false)?;
-                    if rewritten != source {
-                        patched.insert(part.to_owned(), rewritten.into_bytes());
-                    }
+                let rewritten = if rewriting {
+                    rewrite_sheet_references(original, name, &moves, false)?
+                } else {
+                    original.to_owned()
+                };
+                if rewritten != part_text {
+                    patched.insert(part.to_owned(), rewritten.into_bytes());
                 }
                 continue;
             }
@@ -330,7 +429,7 @@ impl Workbook {
                 .strip_suffix("sheetData")
                 .context("invalid sheetData tag")?
                 .to_owned();
-            let formats = CellFormats::read(doc.root_element(), &sheet_operations)?;
+            let mut formats = CellFormats::read(doc.root_element(), &sheet_operations)?;
             let mut rows = vec![];
             for row in sheet_data
                 .children()
@@ -378,6 +477,9 @@ impl Workbook {
                     let template = operation
                         .style_from
                         .and_then(|number| find_row_raw(sheet_data, number, original));
+                    if let Some(style_from) = operation.style_from {
+                        formats.template(row, style_from);
+                    }
                     rows.push(new_row(template, row, &prefix));
                 }
             }
@@ -390,8 +492,10 @@ impl Workbook {
             }
             for row in &mut rows {
                 let mut existing = row.cells.clone();
-                for ((change_row, change_column), value) in sheet_changes.iter() {
-                    if *change_row != row.number || existing.contains(change_column) {
+                for ((_, change_column), value) in
+                    sheet_changes.range((row.number, 0)..=(row.number, u32::MAX))
+                {
+                    if existing.contains(change_column) {
                         continue;
                     }
                     let address = format!("{}{}", column_name(*change_column)?, row.number);
@@ -421,7 +525,25 @@ impl Workbook {
                     row.insert_cell(&cell, formula_column)?;
                     existing.insert(formula_column);
                 }
+                for (column, style) in formats.template_cells(row.number) {
+                    let Some(column) = transform_index(column, &sheet_operations, false) else {
+                        continue;
+                    };
+                    if existing.contains(&column) {
+                        continue;
+                    }
+                    let prefix = row.prefix().to_owned();
+                    let cell = format!(
+                        r#"<{prefix}c r="{}{}" s="{}"/>"#,
+                        column_name(column)?,
+                        row.number,
+                        xml_attr(style)
+                    );
+                    row.insert_cell(&cell, column)?;
+                    existing.insert(column);
+                }
             }
+            let used = used_range(&rows);
             rows.sort_by_key(|row| row.number);
             for pair in rows.windows(2) {
                 ensure!(
@@ -447,8 +569,11 @@ impl Workbook {
                     sheet_data.range().start + raw_data.rfind("</").context("invalid sheetData")?;
                 result.replace_range(inner_start..inner_end, &joined);
             }
-            if structural {
+            if rewriting {
                 result = rewrite_sheet_references(&result, name, &moves, true)?;
+            }
+            if let Some(used) = used {
+                result = cover_dimension(&result, used)?;
             }
             patched.insert(part.to_owned(), result.into_bytes());
         }
@@ -463,6 +588,7 @@ impl Workbook {
         if structural {
             relocate_pivots(&self.parts, &self.sheets, &operations, &mut patched)?;
             relocate_charts(&self.parts, &moves, &mut patched)?;
+            relocate_sheet_objects(&self.parts, &self.sheets, &operations, &moves, &mut patched)?;
             for sheet in &self.sheets {
                 let part = string(&sheet["part"])?;
                 // Only a drawing of the original can hold links; one add_image
@@ -482,11 +608,13 @@ impl Workbook {
                     patched.insert(drawing_part, linked.into_bytes());
                 }
             }
+            drop_calc_chain(&self.parts, &mut patched, &mut removed)?;
+        }
+        if rewriting {
             let workbook = std::str::from_utf8(&self.parts["xl/workbook.xml"])?;
             if let Some(updated) = relocate_defined_names(workbook, &moves)? {
                 patched.insert("xl/workbook.xml".into(), updated.into_bytes());
             }
-            drop_calc_chain(&self.parts, &mut patched, &mut removed)?;
         }
         if recalc {
             let original = std::str::from_utf8(
@@ -497,8 +625,9 @@ impl Workbook {
             let result = request_full_calculation(original)?;
             patched.insert("xl/workbook.xml".into(), result.into_bytes());
         }
+        apply_shape_texts(&self.parts, &mut patched, &shapes)?;
         write_archive_without(&self.raw, destination, &patched, &removed)?;
-        ensure_read_back(destination, changes)?;
+        ensure_read_back(destination, changes, formulas, &shapes, &operations)?;
         Ok(json!({
             "changed_parts": patched.keys().collect::<Vec<_>>(),
             "requires_excel_recalculation": recalc,
@@ -542,10 +671,82 @@ impl<'a> SheetChecks<'a> {
     }
 }
 
-/// Re-opens the written workbook and checks that every change reads back.
-fn ensure_read_back(destination: &Path, changes: &[Value]) -> Result<()> {
+/// Writes the new text of the shapes of `shapes` (`shape` is the extraction ID
+/// `<drawing part>#<id>`) into their drawings as `patched` leaves them.
+fn apply_shape_texts(
+    parts: &BTreeMap<String, Vec<u8>>,
+    patched: &mut BTreeMap<String, Vec<u8>>,
+    shapes: &[Value],
+) -> Result<()> {
+    let mut by_part: BTreeMap<&str, BTreeMap<String, (String, String)>> = BTreeMap::new();
+    for change in shapes {
+        let (part, id) = string(&change["shape"])?
+            .rsplit_once('#')
+            .context("shape ID without drawing part")?;
+        let text = |key: &str| string(&change[key]).map(str::to_owned);
+        ensure!(
+            by_part
+                .entry(part)
+                .or_default()
+                .insert(id.to_owned(), (text("before")?, text("after")?))
+                .is_none(),
+            "duplicate shape text edit of {part}#{id}"
+        );
+    }
+    for (part, texts) in by_part {
+        let drawing = patched
+            .get(part)
+            .or_else(|| parts.get(part))
+            .with_context(|| format!("drawing part {part} is missing"))?;
+        let edited =
+            crate::document_source::edit_shape_texts(std::str::from_utf8(drawing)?, &texts)?;
+        patched.insert(part.to_owned(), edited.into_bytes());
+    }
+    Ok(())
+}
+
+/// Re-opens the written workbook and checks that every change reads back, and
+/// every formula edit as a formula where `operations` moved its cell. References
+/// move with rows and columns, so only formulas no operation moved read back
+/// verbatim.
+fn ensure_read_back(
+    destination: &Path,
+    changes: &[Value],
+    formulas: &[Value],
+    shapes: &[Value],
+    operations: &[StructuralOperation],
+) -> Result<()> {
     let reread = Workbook::open(destination)?;
     let cells = cells_by_address(&reread);
+    for change in shapes {
+        let found = reread
+            .sheets
+            .iter()
+            .filter(|s| s["name"] == change["sheet"])
+            .flat_map(|s| s["drawings"].as_array().into_iter().flatten())
+            .find(|d| d["id"] == change["shape"])
+            .map(|d| &d["text"]);
+        ensure!(
+            found == Some(&change["after"]),
+            "Excel read-back failed for shape {}: expected {}, found {found:?}",
+            change["shape"],
+            change["after"]
+        );
+    }
+    for edit in formulas {
+        let sheet = string(&edit["sheet"])?;
+        let address = map_coordinate(sheet, string(&edit["cell"])?, operations)?
+            .context("edited formula cell deleted")?;
+        let found = cells
+            .get(&(sheet, address.as_str()))
+            .and_then(|cell| cell.formula.as_deref());
+        let expected = string(&edit["after"])?.strip_prefix('=');
+        ensure!(
+            found.is_some() && (!operations.is_empty() || found == expected),
+            "Excel formula read-back failed for {sheet}!{address}: expected {}, found {found:?}",
+            edit["after"]
+        );
+    }
     for change in changes {
         let found = change["sheet"]
             .as_str()
@@ -619,45 +820,6 @@ fn request_full_calculation(original: &str) -> Result<String> {
     Ok(result)
 }
 
-/// The header and totals cells of an Excel table are repeated in `tableN.xml` as
-/// column names and totals labels (and header names in structured references), so
-/// an edit to the cell alone makes Excel repair the table.
-pub fn ensure_not_table_label(sheet: &Value, column: u32, row: u32) -> Result<()> {
-    for table in sheet["tables"].as_array().into_iter().flatten() {
-        let area = Area::parse(string(&table["range"])?)?;
-        let (Some((first_column, last_column)), Some((first_row, last_row))) =
-            (area.columns, area.rows)
-        else {
-            continue;
-        };
-        let header_rows = u32::try_from(table["header_rows"].as_u64().unwrap_or(1))?;
-        let totals_rows = u32::try_from(table["totals_rows"].as_u64().unwrap_or(0))?;
-        ensure!(
-            !(first_column..=last_column).contains(&column)
-                || (first_row + header_rows..=last_row.saturating_sub(totals_rows)).contains(&row)
-                || !(first_row..=last_row).contains(&row),
-            "{}!{}{row} is a header or totals cell of table {}; Excel keeps those names in the table definition, so rename columns and totals labels in Excel",
-            string(&sheet["name"])?,
-            column_name(column)?,
-            string(&table["name"])?
-        );
-    }
-    Ok(())
-}
-
-/// Whether `text` holds a reference qualified with `sheet` (`Data!` or `'My Data'!`).
-fn names_sheet(text: &str, sheet: &str) -> bool {
-    let quoted = format!("'{}'!", sheet.replace('\'', "''"));
-    let plain = format!("{sheet}!");
-    text.contains(&quoted)
-        || text.match_indices(&plain).any(|(at, _)| {
-            !text[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '\''))
-        })
-}
-
 /// The formatting Excel gives a cell ARP creates: an inserted row's cell is
 /// formatted like the cell above it and an inserted column's like the cell to its
 /// left; otherwise the row's format applies, then the column's.
@@ -665,6 +827,8 @@ pub(super) struct CellFormats<'a> {
     cells: BTreeMap<(u32, u32), String>,
     columns: Vec<(u32, u32, String)>,
     operations: Vec<&'a StructuralOperation>,
+    /// The original `style_from` row of each inserted row that names one.
+    templates: BTreeMap<u32, u32>,
 }
 
 impl<'a> CellFormats<'a> {
@@ -697,7 +861,27 @@ impl<'a> CellFormats<'a> {
             cells,
             columns,
             operations: operations.iter().collect(),
+            templates: BTreeMap::new(),
         })
+    }
+
+    /// Formats the inserted final `row` like the original row `style_from`.
+    pub(super) fn template(&mut self, row: u32, style_from: u32) {
+        self.templates.insert(row, style_from);
+    }
+
+    /// The original columns and formats of the cells of the `style_from` row
+    /// of the inserted final `row`. Excel formats every cell of an inserted
+    /// row, including the empty ones that draw borders and fills.
+    pub(super) fn template_cells(&self, row: u32) -> Vec<(u32, &str)> {
+        let Some(&from) = self.templates.get(&row) else {
+            return vec![];
+        };
+        self.cells
+            .range((from, 0)..=(from, u32::MAX))
+            .filter(|(_, style)| style.as_str() != "0")
+            .map(|((_, column), style)| (*column, style.as_str()))
+            .collect()
     }
 
     /// The original position a final row or column is, or takes its format from.
@@ -710,8 +894,12 @@ impl<'a> CellFormats<'a> {
 
     pub(super) fn style(&self, row: &RowOutput, column: u32) -> Option<String> {
         let source_column = self.source(column, false);
-        if let (Some(source_row), Some(source_column)) =
-            (self.source(row.number, true), source_column)
+        let source_row = self
+            .templates
+            .get(&row.number)
+            .copied()
+            .or_else(|| self.source(row.number, true));
+        if let (Some(source_row), Some(source_column)) = (source_row, source_column)
             && let Some(style) = self.cells.get(&(source_row, source_column))
         {
             return Some(style.clone());

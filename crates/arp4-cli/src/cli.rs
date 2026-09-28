@@ -21,10 +21,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: SpecCommand,
     },
-    Doctor {
-        #[arg(long, value_enum, default_value = "json")]
-        format: JsonFormat,
-    },
+    Doctor,
     Skills {
         #[command(subcommand)]
         command: SkillCommand,
@@ -32,7 +29,7 @@ pub(crate) enum Command {
     Documents {
         #[arg(long, global = true)]
         root: Option<PathBuf>,
-        /// Include verification hashes in record/review/check/status/export output.
+        /// Include verification hashes in record/review/check/status/export/rows/columns output.
         #[arg(long, global = true)]
         include_hashes: bool,
         #[command(subcommand)]
@@ -267,10 +264,6 @@ pub(crate) enum Format {
     Json,
     Markdown,
 }
-#[derive(Clone, ValueEnum)]
-pub(crate) enum JsonFormat {
-    Json,
-}
 #[derive(Subcommand)]
 pub(crate) enum SkillCommand {
     /// Install ARP skills, references and custom agents for the selected host.
@@ -280,6 +273,192 @@ pub(crate) enum SkillCommand {
         #[arg(long, value_enum, default_value = "all")]
         agent: arp4_cli::skills::Agent,
     },
+}
+/// The document, sheet and record of a row or column edit.
+#[derive(clap::Args)]
+pub(crate) struct EditTarget {
+    /// Adopted document ID.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Worksheet name; for Word the part (document, header-N, ...), for PowerPoint
+    /// the page (slide-N, notes-N, or the operation ID of an inserted slide).
+    #[arg(long)]
+    pub(crate) sheet: String,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so
+    /// that repeating the command, e.g. after a timeout, is reported unchanged.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the rows or columns change; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+/// Where inserted rows or columns go.
+#[derive(clap::Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct InsertPlace {
+    /// Insert after this row or column: a row number (15 or r15) or column letters
+    /// (C) of the original sheet, the key <operation ID>-<n> of one an earlier
+    /// operation inserted, or last (the last one holding a value).
+    #[arg(long)]
+    pub(crate) after: Option<String>,
+    /// Insert before this row or column, given like --after.
+    #[arg(long)]
+    pub(crate) before: Option<String>,
+}
+#[derive(Subcommand)]
+pub(crate) enum RowCommand {
+    /// Insert rows and write their values under the keys <operation ID>-<n>.
+    Insert {
+        #[command(flatten)]
+        target: EditTarget,
+        #[command(flatten)]
+        place: InsertPlace,
+        /// Number of rows; defaults to the number of --values items, or 1.
+        #[arg(long)]
+        count: Option<u32>,
+        /// Original row whose formatting the new rows take; defaults to the row
+        /// above them, as in Excel.
+        #[arg(long)]
+        style_from: Option<String>,
+        /// YAML or JSON file, or - for stdin: a list with one object per new row,
+        /// keyed by column letter, e.g. [{B: "8", C: 2025/11/21}]. Values take the
+        /// type of the column (the --style-from row, or the nearest value above).
+        #[arg(long)]
+        values: Option<PathBuf>,
+    },
+    /// Delete rows of the original sheet together with their content values.
+    Delete {
+        #[command(flatten)]
+        target: EditTarget,
+        /// First row to delete: a number of the original sheet (15 or r15).
+        #[arg(long)]
+        from: String,
+        /// Number of rows to delete.
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+    },
+}
+#[derive(Subcommand)]
+pub(crate) enum ColumnCommand {
+    /// Insert columns and write their values under the keys <operation ID>-<n>.
+    Insert {
+        #[command(flatten)]
+        target: EditTarget,
+        #[command(flatten)]
+        place: InsertPlace,
+        /// Number of columns; defaults to the number of --values items, or 1.
+        #[arg(long)]
+        count: Option<u32>,
+        /// YAML or JSON file, or - for stdin: a list with one object per new column,
+        /// keyed by row of the original sheet, e.g. [{r8: 備考, r9: "1"}].
+        /// Values are stored as given.
+        #[arg(long)]
+        values: Option<PathBuf>,
+    },
+    /// Delete columns of the original sheet together with their content values.
+    Delete {
+        #[command(flatten)]
+        target: EditTarget,
+        /// First column to delete: letters of the original sheet (C).
+        #[arg(long)]
+        from: String,
+        /// Number of columns to delete.
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+    },
+}
+/// The document and record of a slide edit.
+#[derive(clap::Args)]
+pub(crate) struct SlideTarget {
+    /// Adopted document ID of a PowerPoint presentation.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An
+    /// inserted slide is named by it. Give one so that repeating the command,
+    /// e.g. after a timeout, is reported unchanged.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the slide is added or removed; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+/// Where an inserted slide goes.
+#[derive(clap::Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct SlidePlace {
+    /// Insert after this slide: slide-N of the original, or the operation ID of
+    /// a slide an earlier operation inserted.
+    #[arg(long)]
+    pub(crate) after: Option<String>,
+    /// Insert before this slide, given like --after.
+    #[arg(long)]
+    pub(crate) before: Option<String>,
+}
+#[derive(Subcommand)]
+pub(crate) enum SlideCommand {
+    /// Insert a copy of a slide and its notes page, as PowerPoint's Duplicate
+    /// Slide does, with their text in new content pages named by the operation ID
+    /// (content/<ID>.yml, content/notes-<ID>.yml). Comments are not copied.
+    Insert {
+        #[command(flatten)]
+        target: SlideTarget,
+        /// Slide to copy: slide-N of the original, or the operation ID of a slide
+        /// an earlier operation inserted. The copy takes its current content values.
+        #[arg(long)]
+        from: String,
+        #[command(flatten)]
+        place: SlidePlace,
+    },
+    /// Delete a slide of the original with its notes page and their content
+    /// pages. Refused while another slide links to it.
+    Delete {
+        #[command(flatten)]
+        target: SlideTarget,
+        /// Slide to delete: slide-N of the original.
+        #[arg(long)]
+        slide: String,
+    },
+}
+/// The documents record, adopt and review take: one document, every document
+/// below a folder, or every document; those in another state are skipped.
+#[derive(clap::Args)]
+pub(crate) struct Targets {
+    /// Document ID, or a folder ID for every document below it.
+    #[arg(required_unless_present = "all")]
+    pub document: Option<String>,
+    /// Take every document that awaits this step.
+    #[arg(long, conflicts_with = "document")]
+    pub all: bool,
+    /// List the documents this would take and those it skips, without writing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// With --dry-run, save the plan to this new file for --expect.
+    #[arg(long, requires = "dry_run")]
+    pub out: Option<PathBuf>,
+    /// A plan saved by --dry-run --out: take only the documents it lists, and only
+    /// while their content is the one it lists.
+    #[arg(long)]
+    pub expect: Option<PathBuf>,
 }
 #[derive(Subcommand)]
 pub(crate) enum DocumentCommand {
@@ -293,26 +472,87 @@ pub(crate) enum DocumentCommand {
         #[arg(long, default_value = "docs")]
         sources: String,
     },
+    /// Import an original, or every original below a folder, as proposals. The document
+    /// ID is the original's path below the sources folder. Unchanged originals are skipped.
     Import {
         source: PathBuf,
-        /// ASCII ID: letters, digits, underscore or hyphen; start with a letter/digit.
+        /// Re-extract even when the original's SHA-256 matches a proposal or adopted document.
         #[arg(long)]
-        id: String,
+        force: bool,
     },
-    /// Write a derived structure view from the document's canonical corrections.
+    /// Remove the documents at or below an ID whose originals were moved, renamed or deleted.
+    Remove { document: String },
+    /// Discard one proposal, leaving the original and adopted document untouched.
+    Discard { document: String },
+    /// Search adopted extraction passages with Japanese segmentation, BM25 and
+    /// source locations from the last explicitly refreshed local index.
+    Search {
+        /// One to 32 quoted queries against one saved index snapshot. Within each query,
+        /// whitespace separates literal AND terms; punctuation is not query syntax.
+        #[arg(required = true, num_args = 1..=32)]
+        query: Vec<String>,
+        /// Restrict to a document ID or folder ID.
+        #[arg(long)]
+        document: Option<String>,
+        /// Project vocabulary groups (search-synonyms schema). Defaults to .arp/search-synonyms.yml if present.
+        #[arg(long)]
+        synonyms: Option<PathBuf>,
+        /// Emit disjoint search wall-clock timings as one JSON record on stderr.
+        #[arg(long)]
+        profile: bool,
+        /// Pin pagination to a previous index and query revision.
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// Reconcile canonical documents with the local search index.
+    SearchRefresh {
+        /// Recreate the disposable index before refreshing all documents.
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Write a derived structure view from the document's canonical corrections,
+    /// with the report of how they replay on its extraction.
     StructureRead {
         document: String,
         #[arg(long)]
         out: PathBuf,
+        /// Read the proposal instead of the adopted document.
+        #[arg(long)]
+        proposal: bool,
     },
     /// Save structure corrections; remove a managed work/structure view on success.
     StructureSave {
         document: String,
         #[arg(long)]
         input: PathBuf,
+        /// Save into the proposal, before it is recorded and adopted.
+        #[arg(long)]
+        proposal: bool,
     },
+    /// Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and
+    /// table rows. The operation in mappings.yml and the content values it adds or
+    /// removes are written together, after the same validation as check.
+    Rows {
+        #[command(subcommand)]
+        command: RowCommand,
+    },
+    /// Insert or delete Excel worksheet columns, like rows.
+    Columns {
+        #[command(subcommand)]
+        command: ColumnCommand,
+    },
+    /// Insert a copy of a PowerPoint slide or delete a slide. The operation in
+    /// mappings.yml and the content pages it adds or removes are written
+    /// together, after the same validation as check.
+    Slides {
+        #[command(subcommand)]
+        command: SlideCommand,
+    },
+    /// Record who formed a proposal, with which model and prompt. A folder ID or
+    /// --all records every proposal below it that needs a record.
     Record {
-        proposal: String,
+        #[command(flatten)]
+        targets: Targets,
         #[arg(long)]
         model: String,
         #[arg(long)]
@@ -320,13 +560,17 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         prompt: PathBuf,
     },
+    /// Adopt a recorded proposal as the document without marking it reviewed.
+    /// A folder ID or --all adopts every proposal below it that is ready.
     Adopt {
-        proposal: String,
-        #[arg(long)]
-        reviewer: String,
+        #[command(flatten)]
+        targets: Targets,
     },
+    /// Review the edits of an adopted document. A folder ID or --all reviews every
+    /// document below it that needs a review.
     Review {
-        document: String,
+        #[command(flatten)]
+        targets: Targets,
         #[arg(long)]
         reviewer: String,
     },
@@ -355,14 +599,10 @@ pub(crate) enum DocumentCommand {
         proposal: Option<String>,
         #[arg(long)]
         require_reviewed: bool,
-        #[arg(long, value_enum, default_value = "json")]
-        format: JsonFormat,
     },
     Status {
         document: Option<String>,
         #[arg(long, conflicts_with = "document")]
         proposal: Option<String>,
-        #[arg(long, value_enum, default_value = "json")]
-        format: JsonFormat,
     },
 }

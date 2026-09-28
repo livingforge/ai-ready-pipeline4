@@ -80,7 +80,7 @@ impl Workflow {
                 "duplicate or out-of-scope relationship item"
             );
             let (doc, key) = id
-                .split_once('/')
+                .rsplit_once('/')
                 .context("qualified relationship ID required")?;
             let reply = replies
                 .get_mut(doc)

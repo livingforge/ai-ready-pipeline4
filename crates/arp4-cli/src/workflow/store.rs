@@ -176,7 +176,7 @@ impl Store {
         let objects = self.managed("objects")?;
         let mut candidates = Vec::new();
         if objects.exists() {
-            for entry in fs::read_dir(objects)? {
+            for entry in fs::read_dir(&objects)? {
                 let entry = entry?;
                 let path = entry.path();
                 let digest = path
@@ -239,6 +239,7 @@ impl Store {
             );
             fs::remove_file(path)?;
         }
+        crate::data::remove_empty_directories(&objects, &self.root);
         Ok(json!({"archived_objects":candidates.len(), "archive_bytes":fs::metadata(path)?.len()}))
     }
 }

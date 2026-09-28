@@ -27,7 +27,7 @@ fn main() {
         ("github", ".github/skills"),
         ("codex", ".agents/skills"),
     ] {
-        for skill in ["arp4", "arp4-setup"] {
+        for skill in ["arp4", "arp4-setup", "arp4-structure"] {
             let dir = root.join("surface/skills").join(skill);
             println!("cargo:rerun-if-changed={}", dir.display());
             let read = |name: &str| read(&dir.join(name));
@@ -71,10 +71,19 @@ fn main() {
             }
         }
         let common = read(&root.join("surface/agents/common.md"));
-        for name in ["arp4-worker", "arp4-reviewer"] {
+        for name in [
+            "arp4-worker",
+            "arp4-reviewer",
+            "arp4-structure-worker",
+            "arp4-structure-reviewer",
+        ] {
             let dir = root.join("surface/agents").join(name);
             let description = read(&dir.join("description.txt"));
-            let body = format!("{}\n\n{common}\n", read(&dir.join("body.md")));
+            let body = if name.starts_with("arp4-structure-") {
+                format!("{}\n", read(&dir.join("body.md")))
+            } else {
+                format!("{}\n\n{common}\n", read(&dir.join("body.md")))
+            };
             let (path, content) = if agent == "codex" {
                 assert!(
                     !body.contains("'''"),

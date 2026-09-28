@@ -4,11 +4,347 @@
 //! its paragraphs, and `segments` map that text back to the `w:t` elements so
 //! that an edit changes only the runs it touches.
 use super::*;
-use crate::excel::column_name;
+use crate::excel::{OperationKind, StructuralOperation, column_name};
 use std::ops::Range;
 
+/// The text of rows operations insert: (operation ID, offset, column) to text.
+pub(super) type InsertedText = BTreeMap<(String, u32, String), String>;
+
+/// A row after row operations: an original row, or one an operation inserted
+/// that copies the paragraph or table row of the original row `template`.
+pub(super) enum Placed {
+    Original(usize),
+    Inserted {
+        operation: String,
+        offset: u32,
+        template: usize,
+    },
+}
+
+/// Attributes a copied element must not repeat: paragraph IDs are unique and
+/// revision IDs name the editing session.
+fn fresh_opening(raw: &str) -> Result<String> {
+    static IDENTITY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"\s+(?:w14:paraId|w14:textId|w:rsid\w*)\s*=\s*"[^"]*""#).unwrap()
+    });
+    let end = raw.find('>').context("invalid element")?;
+    Ok(IDENTITY
+        .replace_all(raw[..end].trim_end_matches('/'), "")
+        .into_owned())
+}
+
+/// The qualified name of an element and its namespace prefix with the colon.
+fn element_names(raw: &str) -> Result<(&str, String)> {
+    let name = raw[1..]
+        .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
+        .next()
+        .context("invalid element")?;
+    Ok((name, super::element_prefix(name)))
+}
+
+/// A paragraph like `template` (its properties, less a section break, and the
+/// format of its first run) holding `text`.
+fn new_paragraph(original: &str, template: Node<'_, '_>, text: &str) -> Result<String> {
+    let raw = &original[template.range()];
+    let (name, prefix) = element_names(raw)?;
+    let mut xml = format!("{}>", fresh_opening(raw)?);
+    if let Some(properties) = template.children().find(|n| word_element(*n, "pPr")) {
+        let mut properties_xml = original[properties.range()].to_owned();
+        if let Some(section) = properties.children().find(|n| word_element(*n, "sectPr")) {
+            let base = properties.range().start;
+            properties_xml
+                .replace_range(section.range().start - base..section.range().end - base, "");
+        }
+        xml.push_str(&properties_xml);
+    }
+    if !text.is_empty() {
+        let format = template
+            .descendants()
+            .find(|n| word_element(*n, "r") && nearest(*n, "p") == Some(template))
+            .and_then(|run| run.children().find(|n| word_element(*n, "rPr")))
+            .map_or("", |properties| &original[properties.range()]);
+        let content = super::word_run_content(
+            text,
+            &format!("<{prefix}t xml:space=\"preserve\""),
+            &format!("{prefix}t"),
+            &prefix,
+        )?;
+        xml.push_str(&format!("<{prefix}r>{format}{content}</{prefix}r>"));
+    }
+    xml.push_str(&format!("</{name}>"));
+    Ok(xml)
+}
+
+/// A table row like `template` (its row and cell properties, and the format
+/// of each cell's first paragraph) whose cells hold `text` by grid column.
+fn new_table_row(
+    original: &str,
+    template: Node<'_, '_>,
+    row: usize,
+    text: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let raw = &original[template.range()];
+    let (name, _) = element_names(raw)?;
+    let mut xml = format!("{}>", fresh_opening(raw)?);
+    for properties in template
+        .children()
+        .filter(|n| word_element(*n, "tblPrEx") || word_element(*n, "trPr"))
+    {
+        xml.push_str(&original[properties.range()]);
+    }
+    let mut column = number(property(template, "trPr", "gridBefore"), 0)?;
+    for cell in template
+        .descendants()
+        .filter(|n| word_element(*n, "tc") && nearest(*n, "tr") == Some(template))
+    {
+        ensure!(
+            property(cell, "tcPr", "vMerge").is_none(),
+            "row {row} is part of a vertically merged cell, so it cannot be copied; insert the row in Word"
+        );
+        let cell_raw = &original[cell.range()];
+        let (cell_name, _) = element_names(cell_raw)?;
+        xml.push_str(&format!("{}>", fresh_opening(cell_raw)?));
+        if let Some(properties) = cell.children().find(|n| word_element(*n, "tcPr")) {
+            xml.push_str(&original[properties.range()]);
+        }
+        let paragraph = cell
+            .children()
+            .find(|n| word_element(*n, "p"))
+            .with_context(|| format!("a cell of row {row} has no paragraph to copy"))?;
+        let letter = column_name(column as u32 + 1)?;
+        xml.push_str(&new_paragraph(
+            original,
+            paragraph,
+            &text(&letter).unwrap_or_default(),
+        )?);
+        xml.push_str(&format!("</{cell_name}>"));
+        column += number(property(cell, "tcPr", "gridSpan"), 1)?.max(1);
+    }
+    xml.push_str(&format!("</{name}>"));
+    Ok(xml)
+}
+
+/// Whether row operations can change `node`: text box paragraphs have a copy
+/// for older readers, and a section break ends a section.
+fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
+    ensure!(
+        !node
+            .ancestors()
+            .any(|a| word_element(a, "txbxContent") || alternate_branch(a)),
+        "row {row} is in a text box; insert or delete its paragraphs in Word"
+    );
+    Ok(())
+}
+
+/// The rows after `operations` (row insertions and deletions, in order) of a
+/// document whose rows are `rows`. A new row copies `style_from`, else the row
+/// above it.
+pub(super) fn placed_rows(
+    rows: &BTreeMap<usize, Node<'_, '_>>,
+    operations: &[&StructuralOperation],
+    application: &str,
+) -> Result<Vec<Placed>> {
+    let last = rows.keys().max().copied().unwrap_or(0);
+    let mut placed: Vec<Placed> = (1..=last).map(Placed::Original).collect();
+    for operation in operations {
+        let (at, count) = (operation.at as usize, operation.count as usize);
+        match operation.kind {
+            OperationKind::InsertRows => {
+                ensure!(
+                    (1..=placed.len() + 1).contains(&at),
+                    "row {at} is past the end of the document"
+                );
+                let template = match operation.style_from {
+                    Some(row) => row as usize,
+                    None => match placed
+                        .get(at.saturating_sub(2))
+                        .context("the document has no row to copy")?
+                    {
+                        Placed::Original(row) => *row,
+                        Placed::Inserted { template, .. } => *template,
+                    },
+                };
+                ensure!(
+                    rows.contains_key(&template),
+                    "row {template} has no paragraph or table row to copy"
+                );
+                placed.splice(
+                    at - 1..at - 1,
+                    (0..count).map(|offset| Placed::Inserted {
+                        operation: operation.id.clone(),
+                        offset: offset as u32,
+                        template,
+                    }),
+                );
+            }
+            OperationKind::DeleteRows => {
+                ensure!(
+                    at >= 1 && at - 1 + count <= placed.len(),
+                    "rows {at} to {} are past the end of the document",
+                    at + count - 1
+                );
+                placed.drain(at - 1..at - 1 + count);
+            }
+            _ => bail!(
+                "{application} documents take row insertions and deletions only; table columns are laid out by {application}, so change them in {application}"
+            ),
+        }
+    }
+    Ok(placed)
+}
+
+/// The closest original row on either side of each placed row. Inserted rows
+/// do not become anchors for later inserted rows.
+pub(super) fn original_neighbors(placed: &[Placed]) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+    let mut before = Vec::with_capacity(placed.len());
+    let mut previous = None;
+    for entry in placed {
+        before.push(previous);
+        if let Placed::Original(row) = entry {
+            previous = Some(*row);
+        }
+    }
+    let mut after = vec![None; placed.len()];
+    let mut next = None;
+    for (index, entry) in placed.iter().enumerate().rev() {
+        after[index] = next;
+        if let Placed::Original(row) = entry {
+            next = Some(*row);
+        }
+    }
+    (before, after)
+}
+
+impl Layout<'_, '_> {
+    /// Edits that insert and delete paragraphs and table rows as `operations`
+    /// (the row insertions and deletions of this part, in order) do. A new row
+    /// copies the paragraph or table row it takes its format from (the row
+    /// above it, or `style_from`), with the text `values` gives it; a table
+    /// whose rows are all deleted is deleted.
+    pub(super) fn restructure(
+        &self,
+        original: &str,
+        operations: &[&StructuralOperation],
+        values: &InsertedText,
+    ) -> Result<Vec<(Range<usize>, String)>> {
+        if operations.is_empty() {
+            return Ok(vec![]);
+        }
+        let placed = placed_rows(&self.rows, operations, "Word")?;
+        let (before_rows, after_rows) = original_neighbors(&placed);
+        let mut insertions: BTreeMap<usize, String> = BTreeMap::new();
+        for (index, entry) in placed.iter().enumerate() {
+            let Placed::Inserted {
+                operation,
+                offset,
+                template,
+            } = entry
+            else {
+                continue;
+            };
+            let node = self.rows[template];
+            ensure_row_editable(node, *template)?;
+            let table_row = word_element(node, "tr");
+            let text = |column: &str| {
+                values
+                    .get(&(operation.clone(), *offset, column.to_owned()))
+                    .cloned()
+            };
+            let xml = if table_row {
+                new_table_row(original, node, *template, text)?
+            } else {
+                new_paragraph(original, node, &text("A").unwrap_or_default())?
+            };
+            // Next to the nearest original row that can hold it: a paragraph goes
+            // after a paragraph or a table, a table row next to a row of its table.
+            let before = before_rows[index].map(|row| self.rows[&row]);
+            let after = after_rows[index].map(|row| self.rows[&row]);
+            let table = nearest(node, "tbl");
+            let position = if table_row {
+                before
+                    .filter(|n| word_element(*n, "tr") && nearest(*n, "tbl") == table)
+                    .map(|n| n.range().end)
+                    .or_else(|| {
+                        after
+                            .filter(|n| word_element(*n, "tr") && nearest(*n, "tbl") == table)
+                            .map(|n| n.range().start)
+                    })
+            } else {
+                before
+                    .map(|n| match nearest(n, "tbl").filter(|_| word_element(n, "tr")) {
+                        Some(table) => table.range().end,
+                        None => n.range().end,
+                    })
+                    .or_else(|| {
+                        after
+                            .filter(|n| word_element(*n, "p"))
+                            .map(|n| n.range().start)
+                    })
+            }
+            .with_context(|| {
+                format!(
+                    "a {} copied from row {template} has no place next to the rows around it; choose --style-from a row of the same kind",
+                    if table_row { "table row" } else { "paragraph" }
+                )
+            })?;
+            insertions.entry(position).or_default().push_str(&xml);
+        }
+        let kept: BTreeSet<usize> = placed
+            .iter()
+            .filter_map(|p| match p {
+                Placed::Original(row) => Some(*row),
+                Placed::Inserted { .. } => None,
+            })
+            .collect();
+        let kept_tables: BTreeSet<usize> = kept
+            .iter()
+            .filter_map(|row| {
+                let node = self.rows[row];
+                word_element(node, "tr")
+                    .then(|| nearest(node, "tbl").map(|table| table.range().start))
+                    .flatten()
+            })
+            .collect();
+        let mut edits: Vec<(Range<usize>, String)> = insertions
+            .into_iter()
+            .map(|(position, xml)| (position..position, xml))
+            .collect();
+        let mut removed_tables = BTreeSet::new();
+        for (row, node) in &self.rows {
+            if kept.contains(row) {
+                continue;
+            }
+            ensure_row_editable(*node, *row)?;
+            if word_element(*node, "tr") {
+                ensure!(
+                    node.descendants()
+                        .filter(|n| word_element(*n, "tc") && nearest(*n, "tr") == Some(*node))
+                        .all(|cell| property(cell, "tcPr", "vMerge").is_none()),
+                    "row {row} is part of a vertically merged cell; delete it in Word"
+                );
+                let table = nearest(*node, "tbl").context("table row outside a table")?;
+                let whole = !kept_tables.contains(&table.range().start);
+                if whole {
+                    if removed_tables.insert(table.range().start) {
+                        edits.push((table.range(), String::new()));
+                    }
+                    continue;
+                }
+            } else {
+                ensure!(
+                    property(*node, "pPr", "sectPr").is_none(),
+                    "row {row} ends a section of the document; delete it in Word"
+                );
+            }
+            edits.push((node.range(), String::new()));
+        }
+        Ok(edits)
+    }
+}
+
 pub(super) struct Segment<'a, 'input> {
-    /// The text element, or None for a paragraph break, line break or tab.
+    /// The text element or the line break or tab of a run ([`text_break`]),
+    /// or None for a paragraph break or a character Word draws itself.
     pub node: Option<Node<'a, 'input>>,
     pub range: Range<usize>,
 }
@@ -17,30 +353,91 @@ pub(super) struct Block<'a, 'input> {
     pub address: String,
     pub text: String,
     pub segments: Vec<Segment<'a, 'input>>,
+    /// The application that lays the text out, named in messages.
+    application: &'static str,
+    /// Whether an edit can write new line breaks, as Word and PowerPoint
+    /// paragraphs hold them.
+    breaks: bool,
     bold: bool,
     fill: bool,
     in_table: bool,
+}
+
+impl<'a, 'input> Block<'a, 'input> {
+    /// Text laid out by `application` outside Word, such as an Excel shape's.
+    /// Its line and paragraph breaks are segments without an element, so an
+    /// edit cannot add or remove them.
+    pub(super) fn plain(
+        address: String,
+        text: String,
+        segments: Vec<Segment<'a, 'input>>,
+        application: &'static str,
+    ) -> Self {
+        Self {
+            address,
+            text,
+            segments,
+            application,
+            breaks: false,
+            bold: false,
+            fill: false,
+            in_table: false,
+        }
+    }
+
+    /// PowerPoint text: a paragraph, or the paragraphs of a table cell, whose
+    /// line breaks and tabs an edit can change.
+    pub(super) fn slide(
+        address: String,
+        text: String,
+        segments: Vec<Segment<'a, 'input>>,
+        bold: bool,
+        in_table: bool,
+    ) -> Self {
+        Self {
+            address,
+            text,
+            segments,
+            application: "PowerPoint",
+            breaks: true,
+            bold,
+            fill: false,
+            in_table,
+        }
+    }
+}
+
+/// The extraction sheet of text laid out as `blocks`.
+pub(super) fn blocks_sheet(
+    name: &str,
+    part: &str,
+    blocks: &[Block<'_, '_>],
+    merges: &[String],
+    tables: &[Value],
+) -> Value {
+    let cells: Vec<_> = blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            json!({"id":format!("text-{}",i+1),"address":b.address,"type":"string","value":b.text,
+                "formula":null,"cached":null,"number_format":"",
+                "style":{"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)}})
+        })
+        .collect();
+    json!({"name":name,"part":part,"state":"visible","merges":merges,"cells":cells,"tables":tables})
 }
 
 pub(super) struct Layout<'a, 'input> {
     pub blocks: Vec<Block<'a, 'input>>,
     merges: Vec<String>,
     tables: Vec<Value>,
+    /// The element of each row: a paragraph or a table row.
+    rows: BTreeMap<usize, Node<'a, 'input>>,
 }
 
 impl Layout<'_, '_> {
     pub fn sheet(&self, name: &str, part: &str) -> Value {
-        let cells: Vec<_> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                json!({"id":format!("text-{}",i+1),"address":b.address,"type":"string","value":b.text,
-                    "formula":null,"cached":null,"number_format":"",
-                    "style":{"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)}})
-            })
-            .collect();
-        json!({"name":name,"part":part,"state":"visible","merges":self.merges,"cells":cells,"tables":self.tables})
+        blocks_sheet(name, part, &self.blocks, &self.merges, &self.tables)
     }
 }
 
@@ -87,10 +484,10 @@ fn shown(node: Node<'_, '_>) -> bool {
 /// Elements inside a field's instructions, such as the result of the inner
 /// field in `{ IF { MERGEFIELD 性別 } = "男" ... }`: Word shows only the outer
 /// field's result. Keyed by their start in the part.
-fn field_instructions(xml: &Document<'_>) -> BTreeSet<usize> {
+fn field_instructions(xml: &Document<'_>, hidden: &HiddenBranches) -> BTreeSet<usize> {
     let mut open: Vec<bool> = vec![];
     let mut inside = BTreeSet::new();
-    for node in xml.descendants().filter(|n| !hidden_copy(*n, "docx")) {
+    for node in xml.descendants().filter(|n| !hidden.contains(*n)) {
         if word_element(node, "fldChar") {
             match node.attribute((WORD, "fldCharType")) {
                 Some("begin") => open.push(false),
@@ -111,12 +508,132 @@ fn field_instructions(xml: &Document<'_>) -> BTreeSet<usize> {
     inside
 }
 
-/// Whether `node` sits in a content control bound to XML data (a cover page's
-/// title or author, for example); Word refills it from that data on opening.
-pub(super) fn data_bound(node: Node<'_, '_>) -> bool {
+/// The content control bound to XML data (a cover page's title or author, for
+/// example) that shows `node`; Word refills it from that data on opening.
+pub(super) fn bound_control<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
     node.ancestors()
         .filter(|a| word_element(*a, "sdt"))
-        .any(|sdt| property(sdt, "sdtPr", "dataBinding").is_some())
+        .find(|sdt| property(*sdt, "sdtPr", "dataBinding").is_some())
+}
+
+/// The store item and XPath of the data a content control is bound to.
+pub(super) fn binding_key(sdt: Node<'_, '_>) -> Option<(String, String)> {
+    let binding = property(sdt, "sdtPr", "dataBinding")?;
+    Some((
+        binding
+            .attribute((WORD, "storeItemID"))
+            .unwrap_or("")
+            .to_ascii_uppercase(),
+        binding.attribute((WORD, "xpath"))?.to_owned(),
+    ))
+}
+
+/// Where a content control's data lives: the store item (a custom XML part or
+/// the document properties), the XPath of its element and the namespace
+/// prefixes the XPath uses.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Binding {
+    pub store: String,
+    pub xpath: String,
+    pub prefixes: String,
+    pub multiline: bool,
+}
+
+/// The binding of a plain text content control. Date, list and picture
+/// controls show their data converted or chosen from a list, so an edit to
+/// the text they show cannot be written back to the data.
+pub(super) fn binding(sdt: Node<'_, '_>, place: &str) -> Result<Binding> {
+    let binding =
+        property(sdt, "sdtPr", "dataBinding").context("content control without binding")?;
+    let text = property(sdt, "sdtPr", "text").with_context(|| {
+        format!("{place} is a date, list, picture or other content control bound to document data, whose shown text differs from the data; edit it in Word")
+    })?;
+    Ok(Binding {
+        store: binding
+            .attribute((WORD, "storeItemID"))
+            .unwrap_or("")
+            .to_ascii_uppercase(),
+        xpath: binding
+            .attribute((WORD, "xpath"))
+            .context("content control binding without xpath")?
+            .to_owned(),
+        prefixes: binding
+            .attribute((WORD, "prefixMappings"))
+            .unwrap_or("")
+            .to_owned(),
+        multiline: matches!(
+            text.attribute((WORD, "multiLine")),
+            Some("1" | "true" | "on")
+        ),
+    })
+}
+
+/// The text elements, tabs and line breaks a content control shows.
+pub(super) fn control_nodes<'a, 'input>(sdt: Node<'a, 'input>) -> Vec<Node<'a, 'input>> {
+    let Some(content) = sdt.children().find(|n| word_element(*n, "sdtContent")) else {
+        return vec![];
+    };
+    content
+        .descendants()
+        .filter(|n| {
+            (word_element(*n, "t") || text_break(*n)) && shown(*n) && !hidden_copy(*n, "docx")
+        })
+        .collect()
+}
+
+/// The text a content control shows once `edits` are made.
+pub(super) fn control_text(sdt: Node<'_, '_>, edited: &BTreeMap<usize, &str>) -> String {
+    control_nodes(sdt)
+        .into_iter()
+        .map(|node| match edited.get(&node.range().start) {
+            Some(new) => (*new).to_owned(),
+            None if word_element(node, "t") => node.text().unwrap_or("").to_owned(),
+            None if word_element(node, "tab") => "\t".to_owned(),
+            None => "\n".to_owned(),
+        })
+        .collect()
+}
+
+/// Edits that make a content control show `value`: its first text element
+/// takes it and the other text, tabs and breaks are cleared.
+pub(super) fn fill_control<'a, 'input>(
+    sdt: Node<'a, 'input>,
+    value: &str,
+    place: &str,
+) -> Result<Vec<(Node<'a, 'input>, String)>> {
+    let nodes = control_nodes(sdt);
+    let first = nodes
+        .iter()
+        .position(|n| word_element(*n, "t"))
+        .with_context(|| {
+            format!(
+                "{place} shows the same document data but has no text to replace; edit it in Word"
+            )
+        })?;
+    Ok(nodes
+        .into_iter()
+        .enumerate()
+        .map(|(i, node)| {
+            (
+                node,
+                if i == first {
+                    value.to_owned()
+                } else {
+                    String::new()
+                },
+            )
+        })
+        .collect())
+}
+
+/// A tab or line break of a run, which an edit can remove or replace. Page and
+/// column breaks lay out pages; they are not text.
+pub(super) fn text_break(node: Node<'_, '_>) -> bool {
+    node.parent().is_some_and(|p| word_element(p, "r"))
+        && (word_element(node, "tab")
+            || word_element(node, "cr")
+            || word_element(node, "br")
+                && !matches!(node.attribute((WORD, "type")), Some("page" | "column")))
 }
 
 /// On/off properties are on unless their value says otherwise.
@@ -138,16 +655,18 @@ struct Text<'a, 'input, 'f> {
     bold_runs: usize,
     /// See [`field_instructions`].
     instructions: &'f BTreeSet<usize>,
+    hidden: &'f HiddenBranches,
 }
 
 impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
-    fn new(instructions: &'f BTreeSet<usize>) -> Self {
+    fn new(instructions: &'f BTreeSet<usize>, hidden: &'f HiddenBranches) -> Self {
         Self {
             text: String::new(),
             segments: vec![],
             runs: 0,
             bold_runs: 0,
             instructions,
+            hidden,
         }
     }
 
@@ -170,7 +689,7 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
         let before = self.text.len();
         for node in paragraph.descendants().filter(|n| {
             nearest(*n, "p") == Some(paragraph)
-                && !hidden_copy(*n, "docx")
+                && !self.hidden.contains(*n)
                 && shown(*n)
                 && !self.instructions.contains(&n.range().start)
         }) {
@@ -199,15 +718,15 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
                     }
                 }
                 self.push(Some(node), text);
-            } else if in_run && word_element(node, "tab") {
-                self.push(None, "\t");
-            } else if in_run && word_element(node, "cr")
-                || in_run
-                    && word_element(node, "br")
-                    // Page and column breaks lay out pages; they are not text.
-                    && !matches!(node.attribute((WORD, "type")), Some("page" | "column"))
-            {
-                self.push(None, "\n");
+            } else if text_break(node) {
+                self.push(
+                    Some(node),
+                    if word_element(node, "tab") {
+                        "\t"
+                    } else {
+                        "\n"
+                    },
+                );
             }
         }
         if self.text.len() == before {
@@ -220,6 +739,8 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
     fn block(self, address: String, fill: bool, in_table: bool) -> Block<'a, 'input> {
         Block {
             address,
+            application: "Word",
+            breaks: true,
             bold: self.runs > 0 && self.runs == self.bold_runs,
             text: self.text,
             segments: self.segments,
@@ -243,19 +764,22 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a,
         blocks: vec![],
         merges: vec![],
         tables: vec![],
+        rows: BTreeMap::new(),
     };
-    let instructions = field_instructions(xml);
+    let hidden = HiddenBranches::new(xml, "docx");
+    let instructions = field_instructions(xml, &hidden);
     let mut row = 1;
-    for node in xml.descendants().filter(|n| !hidden_copy(*n, "docx")) {
+    for node in xml.descendants().filter(|n| !hidden.contains(*n)) {
         if word_element(node, "tbl") && nearest(node, "tbl").is_none() {
-            row += table(node, row, &mut output, &instructions)?;
+            row += table(node, row, &mut output, &instructions, &hidden)?;
         } else if word_element(node, "p") && nearest(node, "tc").is_none() {
-            let mut text = Text::new(&instructions);
+            let mut text = Text::new(&instructions, &hidden);
             text.paragraph(node);
             if !text.text.is_empty() {
                 output
                     .blocks
                     .push(text.block(format!("A{row}"), false, false));
+                output.rows.insert(row, node);
                 row += 1;
             }
         }
@@ -270,6 +794,7 @@ fn table<'a, 'input>(
     top: usize,
     output: &mut Layout<'a, 'input>,
     instructions: &BTreeSet<usize>,
+    hidden: &HiddenBranches,
 ) -> Result<usize> {
     let rows: Vec<_> = table
         .descendants()
@@ -277,6 +802,7 @@ fn table<'a, 'input>(
         .collect();
     let mut cells = vec![];
     for (r, tr) in rows.iter().enumerate() {
+        output.rows.insert(top + r, *tr);
         let mut column = number(property(*tr, "trPr", "gridBefore"), 0)?;
         for tc in tr
             .descendants()
@@ -308,13 +834,15 @@ fn table<'a, 'input>(
         Ok(format!("{}{}", column_name(column as u32 + 1)?, top + row))
     };
     let mut emphasis = vec![];
+    let continued: BTreeSet<(usize, usize)> = cells
+        .iter()
+        .filter(|cell| cell.continued)
+        .map(|cell| (cell.row, cell.column))
+        .collect();
     for cell in &cells {
         let mut bottom = cell.row;
         if cell.restart {
-            while cells
-                .iter()
-                .any(|c| c.row == bottom + 1 && c.column == cell.column && c.continued)
-            {
+            while continued.contains(&(bottom + 1, cell.column)) {
                 bottom += 1;
             }
         }
@@ -325,11 +853,11 @@ fn table<'a, 'input>(
                 address(bottom, cell.column + cell.span - 1)?
             ));
         }
-        let mut text = Text::new(instructions);
+        let mut text = Text::new(instructions, hidden);
         for paragraph in cell
             .node
             .descendants()
-            .filter(|n| word_element(*n, "p") && !hidden_copy(*n, "docx"))
+            .filter(|n| word_element(*n, "p") && !hidden.contains(*n))
         {
             text.paragraph(paragraph);
         }
@@ -364,11 +892,14 @@ fn header_rows(rows: &[Node<'_, '_>], emphasis: &[(usize, bool)], width: usize) 
     if repeated > 0 {
         return repeated;
     }
-    let emphasized = (0..rows.len())
-        .take_while(|r| {
-            let row: Vec<_> = emphasis.iter().filter(|(row, _)| row == r).collect();
-            !row.is_empty() && row.iter().all(|(_, emphasized)| *emphasized)
-        })
+    let mut row_emphasis = vec![(0usize, true); rows.len()];
+    for &(row, emphasized) in emphasis {
+        row_emphasis[row].0 += 1;
+        row_emphasis[row].1 &= emphasized;
+    }
+    let emphasized = row_emphasis
+        .iter()
+        .take_while(|(count, all)| *count > 0 && *all)
         .count();
     if emphasized > 0 && emphasized < rows.len() {
         emphasized
@@ -379,7 +910,8 @@ fn header_rows(rows: &[Node<'_, '_>], emphasis: &[(usize, bool)], width: usize) 
     }
 }
 
-/// Maps an edit of a block's text to new text for the elements it touches. The
+/// Maps an edit of a block's text to new content for the elements it touches:
+/// text, in which a line break or tab stands for a break or tab of the run. The
 /// change between the old and new text must stay within one paragraph; when it
 /// spans runs, the first run takes the new text as Word does when typing over
 /// a selection.
@@ -393,30 +925,67 @@ pub(super) fn edit<'a, 'input>(
     if start == end && inserted.is_empty() {
         return Ok(vec![]);
     }
+    let application = block.application;
     ensure!(
-        !inserted.contains(['\n', '\r', '\t']),
-        "Word text replacement cannot add line breaks or tabs; edit existing paragraphs separately"
+        !inserted.contains('\r'),
+        "{application} text replacement cannot contain a carriage return in {}; write a line break as \\n",
+        block.address
+    );
+    ensure!(
+        block.breaks || !inserted.contains('\n'),
+        "{application} text in {} cannot take new line breaks; edit the lines in {application}",
+        block.address
     );
     let touched = touched_segments(block, start, end);
     // Repeated text lets the same change sit further left, as when deleting the
-    // first of "注意" + "注意事項"; when that would change other runs, which runs
-    // the user meant, and so the formatting the result keeps, is unknown.
+    // first of "注意" + "注意事項"; when that would leave other text in the runs,
+    // which runs the user meant, and so the formatting the result keeps, is unknown.
     let (left_start, left_end) = changed_range(before, after, false);
+    let left_inserted = &after[left_start..after.len() - (before.len() - left_end)];
     ensure!(
-        touched_segments(block, left_start, left_end)
-            .iter()
-            .map(|s| s.range.clone())
-            .eq(touched.iter().map(|s| s.range.clone())),
-        "the edit in {} could apply to more than one run because the text around it repeats; include unrepeated text in the change, or edit it in Word",
+        run_texts(block, start, end, inserted)
+            == run_texts(block, left_start, left_end, left_inserted),
+        "the edit in {} could apply to more than one run because the text around it repeats; include unrepeated text in the change, or edit it in {application}",
         block.address
     );
     ensure!(
         !touched.is_empty() && touched.iter().all(|s| s.node.is_some()),
-        "the edit crosses a paragraph, line break, tab or a character Word draws itself (non-breaking hyphen, symbol, equation) in {}; edit each part separately",
-        block.address
+        "{}",
+        if application == "Word" {
+            format!(
+                "the edit crosses a paragraph boundary or a character Word draws itself (non-breaking hyphen, symbol, equation) in {}; line breaks and tabs can be edited within a paragraph, but paragraphs cannot be split or joined",
+                block.address
+            )
+        } else if block.breaks {
+            format!(
+                "the edit crosses a paragraph boundary in {}; line breaks and tabs can be edited within a paragraph, but paragraphs cannot be split or joined (add or delete paragraphs with documents rows)",
+                block.address
+            )
+        } else {
+            format!(
+                "the edit crosses a line or paragraph break in {}; edit each line separately",
+                block.address
+            )
+        }
     );
-    let last = touched.len() - 1;
     Ok(touched
+        .iter()
+        .zip(replaced(before, &touched, start, end, inserted))
+        .map(|(s, new)| (s.node.unwrap(), new))
+        .collect())
+}
+
+/// The new text of each touched segment when `start..end` of `before` becomes
+/// `inserted`.
+fn replaced(
+    before: &str,
+    touched: &[&Segment<'_, '_>],
+    start: usize,
+    end: usize,
+    inserted: &str,
+) -> Vec<String> {
+    let last = touched.len().saturating_sub(1);
+    touched
         .iter()
         .enumerate()
         .map(|(k, s)| {
@@ -429,9 +998,47 @@ pub(super) fn edit<'a, 'input>(
             if k == last {
                 new.push_str(&text[end.saturating_sub(s.range.start).min(text.len())..]);
             }
-            (s.node.unwrap(), new)
+            new
         })
-        .collect())
+        .collect()
+}
+
+/// The text each run of the block holds after `start..end` becomes `inserted`,
+/// keyed by the run's position in the part.
+fn run_texts(
+    block: &Block<'_, '_>,
+    start: usize,
+    end: usize,
+    inserted: &str,
+) -> Vec<(usize, String)> {
+    let touched = touched_segments(block, start, end);
+    let new = replaced(&block.text, &touched, start, end, inserted);
+    let mut runs: Vec<(usize, String)> = vec![];
+    let mut touched_index = 0;
+    for segment in &block.segments {
+        let changed = touched
+            .get(touched_index)
+            .is_some_and(|next| std::ptr::eq(*next, segment));
+        if changed {
+            touched_index += 1;
+        }
+        let Some(node) = segment.node else {
+            continue;
+        };
+        let text = if changed {
+            new[touched_index - 1].as_str()
+        } else {
+            &block.text[segment.range.clone()]
+        };
+        let run = node
+            .parent()
+            .map_or(node.range().start, |r| r.range().start);
+        match runs.last_mut() {
+            Some((last, joined)) if *last == run => joined.push_str(text),
+            _ => runs.push((run, text.to_owned())),
+        }
+    }
+    runs
 }
 
 /// The byte range of `before` that `after` replaces, found by matching the
@@ -497,6 +1104,64 @@ fn touched_segments<'b, 'a, 'input>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn bench_word_efficiency() {
+        use std::time::Instant;
+        let rows = 1200;
+        let row =
+            "<w:tr><w:tc><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>x</w:t></w:r></w:p></w:tc></w:tr>";
+        let xml = document(&format!("<w:tbl>{}</w:tbl>", row.repeat(rows)));
+        let parsed = Document::parse(&xml).unwrap();
+        let start = Instant::now();
+        let result = layout(&parsed).unwrap();
+        eprintln!(
+            "table_ms={} rows={}",
+            start.elapsed().as_millis(),
+            result.rows.len()
+        );
+
+        let choice = "<w:p><w:r><w:drawing/></w:r></w:p>".repeat(1200);
+        let fallback = "<w:p><w:r><w:t>x</w:t></w:r></w:p>".repeat(1200);
+        let xml = document(&format!(
+            "<mc:AlternateContent><mc:Choice Requires=\"w\">{choice}</mc:Choice><mc:Fallback>{fallback}</mc:Fallback></mc:AlternateContent>"
+        ));
+        let parsed = Document::parse(&xml).unwrap();
+        let start = Instant::now();
+        let result = layout(&parsed).unwrap();
+        eprintln!(
+            "alternate_ms={} blocks={}",
+            start.elapsed().as_millis(),
+            result.blocks.len()
+        );
+
+        let xml = document(&format!(
+            "<w:p>{}</w:p>",
+            "<w:r><w:t>x</w:t></w:r>".repeat(1200)
+        ));
+        let parsed = Document::parse(&xml).unwrap();
+        let result = layout(&parsed).unwrap();
+        let start = Instant::now();
+        let edited = edit(&result.blocks[0], "replacement").unwrap();
+        eprintln!(
+            "edit_ms={} runs={}",
+            start.elapsed().as_millis(),
+            edited.len()
+        );
+    }
+
+    #[test]
+    fn cached_hidden_branches_match_direct_scan() {
+        let xml = document(
+            "<mc:AlternateContent><mc:Choice Requires=\"w\"><w:p><w:r><w:t>first</w:t></w:r></w:p></mc:Choice><mc:Fallback><w:p><w:r><w:t>copy</w:t></w:r></w:p></mc:Fallback></mc:AlternateContent><mc:AlternateContent><mc:Choice Requires=\"w\"><w:p><w:r><w:drawing/></w:r></w:p></mc:Choice><mc:Fallback><w:p><w:r><w:t>visible</w:t></w:r></w:p></mc:Fallback></mc:AlternateContent>",
+        );
+        let parsed = Document::parse(&xml).unwrap();
+        let hidden = HiddenBranches::new(&parsed, "docx");
+        for node in parsed.descendants() {
+            assert_eq!(hidden.contains(node), hidden_copy(node, "docx"));
+        }
+    }
 
     fn document(body: &str) -> String {
         format!(
@@ -653,8 +1318,17 @@ mod tests {
         let layout = layout(&xml).unwrap();
         Ok(edit(&layout.blocks[0], after)?
             .into_iter()
-            .map(|(node, new)| (node.text().unwrap_or("").to_owned(), new))
+            .map(|(node, new)| (element(node), new))
             .collect())
+    }
+
+    /// The text of a text element, or `<name>` for a tab or break.
+    fn element(node: Node<'_, '_>) -> String {
+        if word_element(node, "t") {
+            node.text().unwrap_or("").to_owned()
+        } else {
+            format!("<{}>", node.tag_name().name())
+        }
     }
 
     #[test]
@@ -688,17 +1362,57 @@ mod tests {
             edits(split, "\n二行目").unwrap(),
             pairs(&[("受注", ""), ("番", ""), ("号", "")])
         );
-        for after in [
-            "受注番号二行目",
-            "受注番号\n二行目\n三行目",
-            "受注\t番号\n二行目",
-        ] {
-            let error = edits(split, after).unwrap_err().to_string();
-            assert!(
-                error.contains("crosses") || error.contains("line breaks"),
-                "{after}: {error}"
-            );
-        }
+        // Paragraphs are neither joined nor split.
+        let error = edits(split, "受注番号二行目").unwrap_err().to_string();
+        assert!(error.contains("crosses"), "{error}");
+        let error = edits(split, "受注番号\r\n二行目").unwrap_err().to_string();
+        assert!(error.contains("carriage return"), "{error}");
+    }
+
+    /// A line break or tab in new text becomes a break or tab of the run it
+    /// joins; existing ones can be removed or replaced within the paragraph.
+    #[test]
+    fn line_breaks_and_tabs_are_edited_within_a_paragraph() {
+        let split = "<w:p><w:r><w:t>受注</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>番</w:t></w:r><w:r><w:t>号</w:t></w:r></w:p><w:p><w:r><w:t>二行目</w:t></w:r></w:p>";
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            edits(split, "受注番号\n二行目\n三行目").unwrap(),
+            pairs(&[("二行目", "二行目\n三行目")])
+        );
+        assert_eq!(
+            edits(split, "受注\t番号\n二行目").unwrap(),
+            pairs(&[("受注", "受注\t")])
+        );
+        let broken =
+            "<w:p><w:r><w:t>項目</w:t><w:tab/><w:t>値</w:t><w:br/><w:t>注</w:t></w:r></w:p>";
+        assert_eq!(
+            edits(broken, "項目値\n注").unwrap(),
+            pairs(&[("<tab>", "")])
+        );
+        assert_eq!(
+            edits(broken, "項目：値\n注").unwrap(),
+            pairs(&[("<tab>", "：")])
+        );
+        assert_eq!(edits(broken, "項目\t値注").unwrap(), pairs(&[("<br>", "")]));
+        assert_eq!(
+            edits(broken, "項目\t値\n\n注").unwrap(),
+            pairs(&[("<br>", "\n\n")])
+        );
+        assert_eq!(
+            edits(broken, "項目\t\t値\n注").unwrap(),
+            pairs(&[("<tab>", "\t\t")])
+        );
+        assert_eq!(
+            edits(broken, "項目 X 値\n注").unwrap(),
+            pairs(&[("<tab>", " X ")])
+        );
+        // A page break is not text, so a line break added beside it joins the text.
+        let page = "<w:p><w:r><w:t>前</w:t><w:br w:type=\"page\"/><w:t>後</w:t></w:r></w:p>";
+        assert_eq!(edits(page, "前\n後").unwrap(), pairs(&[("前", "前\n")]));
     }
 
     /// Ruby readings, tracked deletions and moves, and hidden text are not
@@ -746,9 +1460,70 @@ mod tests {
         let bound: Vec<_> = xml
             .descendants()
             .filter(|n| word_element(*n, "t"))
-            .map(data_bound)
+            .map(|n| bound_control(n).is_some())
             .collect();
         assert_eq!(bound, [true, false]);
+    }
+
+    /// A new row goes next to a row of its kind, and a table whose rows all
+    /// go is deleted.
+    #[test]
+    fn restructured_rows_follow_their_kind_and_whole_tables_go() {
+        let operation = |kind, at, style_from| StructuralOperation {
+            id: "op".into(),
+            sheet: "document".into(),
+            kind,
+            at,
+            count: 1,
+            style_from,
+        };
+        let body = document(&format!(
+            "{}<w:tbl><w:tr>{}</w:tr><w:tr>{}</w:tr></w:tbl>{}",
+            p("前"),
+            tc("", &p("a")),
+            tc("", &p("b")),
+            p("後")
+        ));
+        let xml = Document::parse(&body).unwrap();
+        let layout = layout(&xml).unwrap();
+        let apply = |operations: &[StructuralOperation]| -> Result<String> {
+            let operations: Vec<_> = operations.iter().collect();
+            let values = InsertedText::from([(("op".into(), 0, "A".into()), "新".into())]);
+            splice(
+                &body,
+                layout.restructure(&body, &operations, &values)?,
+                "test",
+            )
+        };
+        // A paragraph copied from the one above a table's end goes after the table.
+        let inserted = apply(&[operation(OperationKind::InsertRows, 4, Some(1))]).unwrap();
+        assert!(
+            inserted.contains("</w:tbl><w:p><w:r><w:t xml:space=\"preserve\">新</w:t></w:r></w:p><w:p><w:r><w:t>後</w:t>"),
+            "{inserted}"
+        );
+        // Deleting both rows deletes the table.
+        let deleted = apply(&[
+            operation(OperationKind::DeleteRows, 2, None),
+            operation(OperationKind::DeleteRows, 2, None),
+        ])
+        .unwrap();
+        assert!(
+            !deleted.contains("w:tbl") && deleted.contains("後"),
+            "{deleted}"
+        );
+        // A table row goes at the top of its table, but has no place after the
+        // last paragraph.
+        let top = apply(&[operation(OperationKind::InsertRows, 2, Some(2))]).unwrap();
+        assert!(
+            top.contains(
+                "<w:tbl><w:tr><w:tc><w:tcPr></w:tcPr><w:p><w:r><w:t xml:space=\"preserve\">新"
+            ),
+            "{top}"
+        );
+        let error = apply(&[operation(OperationKind::InsertRows, 5, Some(2))])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no place"), "{error}");
     }
 
     /// Placeholder prompts, the inner results in a field's instructions and

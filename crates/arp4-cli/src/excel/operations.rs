@@ -94,6 +94,10 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
     let mut ids = BTreeSet::new();
     let mut operations = Vec::with_capacity(values.len());
     for value in values {
+        // Slide operations name slides, not sheets; they are parsed on their own.
+        if crate::document_source::is_slide_operation(value) {
+            continue;
+        }
         let (id, sheet) = operation_header(value, &sheet_names, &mut ids)?;
         let kind = match string(&value["kind"])? {
             "insert_rows" => OperationKind::InsertRows,

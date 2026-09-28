@@ -11,7 +11,7 @@
 | JSON Pointer | 制約 |
 | --- | --- |
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","document","source","extraction_hash","regions","elements","visuals","review"],"type":"object"}</code> |
-| <code>/properties/document</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/properties/document</code> | <code>{"$ref":"#/$defs/document_id"}</code> |
 | <code>/properties/elements</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items</code> | <code>{"$ref":"#/$defs/element"}</code> |
 | <code>/properties/extraction_hash</code> | <code>{"$ref":"#/$defs/hash"}</code> |
@@ -40,17 +40,44 @@
 | <code>/$defs/cell/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/cell/properties/role</code> | <code>{"enum":["unassigned","text","data","row_header","column_header","note"]}</code> |
 | <code>/$defs/cell/properties/text_state</code> | <code>{"enum":["read","empty","unreadable","not_examined"]}</code> |
-| <code>/$defs/correction_journal</code> | <code>{"additionalProperties":false,"required":["schema_version","document","source_path","source_sha256","baseline_extraction_hash","elements","element_order","visuals","regions","review"],"type":"object"}</code> |
+| <code>/$defs/correction_journal</code> | <code>{"additionalProperties":false,"required":["schema_version","document","source_path","source_sha256","baseline_extraction_hash","elements","readings","cell_states","element_order","visuals","regions","review"],"type":"object"}</code> |
 | <code>/$defs/correction_journal/properties/baseline_extraction_hash</code> | <code>{"$ref":"#/$defs/hash"}</code> |
-| <code>/$defs/correction_journal/properties/document</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/carried</code> | <code>{"additionalProperties":false,"description":"How the import of this version carried the interpretation of the version before: by the row/column operations documents apply wrote, or by those found aligning the rows and columns of an original edited outside ARP. moved counts the cells that moved with the operations. affected lists each element, visual and image region the carrying touched, once for each reason, with the cells of an element: added to tables by insertions or, when new, to the element around them; removed with deleted rows/columns; or changed in value (read again from the new value unless a reader had left them unreadable or unexamined). An element left without cells is removed with every cell it lost. review says whether the review was kept.","required":["by","operations","moved","review","reasons","affected"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected</code> | <code>{"type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected/items</code> | <code>{"additionalProperties":false,"required":["kind","id","reason"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/cells</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/kind</code> | <code>{"enum":["element","visual","region"]}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/reason</code> | <code>{"enum":["moved","added","removed","changed","inferred"]}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/by</code> | <code>{"enum":["apply","alignment"]}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/moved</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/operations</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/reasons</code> | <code>{"type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/reasons/items</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/review</code> | <code>{"enum":["kept","pending","not_reviewed"]}</code> |
+| <code>/$defs/correction_journal/properties/cell_states</code> | <code>{"description":"Cells whose text_state is not the one the parser reads from their value (read when it holds text, empty otherwise), with the hash of the cell they were given for.","type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items</code> | <code>{"additionalProperties":false,"required":["sheet","address","sha256","text_state"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items/properties/text_state</code> | <code>{"enum":["read","empty","unreadable","not_examined"]}</code> |
+| <code>/$defs/correction_journal/properties/document</code> | <code>{"$ref":"#/$defs/document_id"}</code> |
 | <code>/$defs/correction_journal/properties/element_order</code> | <code>{"$ref":"#/$defs/ids"}</code> |
-| <code>/$defs/correction_journal/properties/elements</code> | <code>{"type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/elements</code> | <code>{"description":"Elements whose structure differs from the parser's hypothesis: kind, cells, roles, headers, descriptions or evidence. Each cell's text_state is as the parser reads it; a reader's other states are in cell_states.","type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/elements/items</code> | <code>{"additionalProperties":false,"required":["element","sources"],"type":"object"}</code> |
 | <code>/$defs/correction_journal/properties/elements/items/properties/element</code> | <code>{"$ref":"#/$defs/element"}</code> |
 | <code>/$defs/correction_journal/properties/elements/items/properties/sources</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/elements/items/properties/sources/items</code> | <code>{"additionalProperties":false,"required":["address","sha256"],"type":"object"}</code> |
 | <code>/$defs/correction_journal/properties/elements/items/properties/sources/items/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/elements/items/properties/sources/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/correction_journal/properties/readings</code> | <code>{"description":"Readings of elements whose structure the parser inferred as the reader left it, each bound to a cell of the element; replay gives the reading to the parser's element holding that cell.","type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items</code> | <code>{"additionalProperties":false,"required":["element","sheet","anchor","reading"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["address","sha256"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/anchor/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/anchor/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/element</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/reading</code> | <code>{"$ref":"#/$defs/reading"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/correction_journal/properties/regions</code> | <code>{"type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/regions/items</code> | <code>{"$ref":"#/$defs/region"}</code> |
 | <code>/$defs/correction_journal/properties/review</code> | <code>{}</code> |
@@ -71,6 +98,7 @@
 | <code>/$defs/correction_journal/properties/visuals/items/properties/sources/items/properties/pointer</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items/properties/sources/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items/properties/visual</code> | <code>{"$ref":"#/$defs/visual"}</code> |
+| <code>/$defs/document_id</code> | <code>{"description":"The original's path below the sources folder, including leading spaces in path segments.","pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
 | <code>/$defs/element</code> | <code>{"additionalProperties":false,"required":["id","kind","sheet","cells","evidence","reading"],"type":"object"}</code> |
 | <code>/$defs/element/properties/cells</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/$defs/element/properties/cells/items</code> | <code>{"$ref":"#/$defs/cell"}</code> |

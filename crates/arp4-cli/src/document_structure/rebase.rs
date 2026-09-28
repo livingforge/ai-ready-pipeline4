@@ -1,6 +1,6 @@
 use super::*;
 
-fn fresh_id(used: &mut BTreeSet<String>, preferred: &str) -> String {
+pub(super) fn fresh_id(used: &mut BTreeSet<String>, preferred: &str) -> String {
     if used.insert(preferred.to_owned()) {
         return preferred.to_owned();
     }
@@ -29,7 +29,37 @@ fn uses_region(visual: &Value, region_ids: &BTreeSet<String>) -> Result<bool> {
         .any(|reference| reference.as_str().is_some_and(|id| region_ids.contains(id))))
 }
 
-pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(Value, Value)> {
+fn holding_index(elements: &[Value]) -> BTreeMap<String, BTreeMap<String, (usize, usize)>> {
+    let mut holding: BTreeMap<String, BTreeMap<String, (usize, usize)>> = BTreeMap::new();
+    for (element_index, element) in elements.iter().enumerate() {
+        let Some(sheet) = element["sheet"].as_str() else {
+            continue;
+        };
+        if let Ok(cells) = array(&element["cells"]) {
+            for (cell_index, cell) in cells.iter().enumerate() {
+                if let Some(address) = cell["address"].as_str() {
+                    // The first element wins when inferred elements overlap.
+                    holding
+                        .entry(sheet.to_owned())
+                        .or_default()
+                        .entry(address.to_owned())
+                        .or_insert((element_index, cell_index));
+                }
+            }
+        }
+    }
+    holding
+}
+
+/// Replays `journal` on the extraction `current`. `original` requires the
+/// original to be still the one `current` was extracted from.
+pub(super) fn rebase(
+    root: &Path,
+    journal: &Value,
+    current: &Value,
+    extraction_hash: &str,
+    original: bool,
+) -> Result<(Value, Value)> {
     corrections::validate_journal(journal)?;
     ensure!(
         journal["document"] == current["document_id"]
@@ -37,8 +67,6 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
         "corrections belong to another document or source path"
     );
     let same_source = journal["source_sha256"] == current["source"]["sha256"];
-    // Hashing a large extraction costs as much as inferring its elements: do it once.
-    let extraction_hash = hash(&encoded(current));
     let mut source_cells = BTreeMap::new();
     for sheet in array(&current["sheets"])? {
         let name = string(&sheet["name"])?;
@@ -125,7 +153,7 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
     }
 
     // Validated once below, after the corrections are applied.
-    let mut result = inferred(current, &extraction_hash)?;
+    let mut result = inferred(current, extraction_hash)?;
     if same_source {
         result["regions"] = journal["regions"].clone();
     }
@@ -173,7 +201,65 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
         element["id"] = json!(fresh_id(&mut used_ids, string(&element["id"])?));
         fresh.push(element);
     }
-    result["elements"] = json!(retained.iter().chain(fresh.iter()).collect::<Vec<_>>());
+    let corrected: BTreeSet<&str> = retained
+        .iter()
+        .map(|element| element["id"].as_str().unwrap())
+        .collect();
+    let mut elements: Vec<Value> = retained.iter().chain(fresh.iter()).cloned().collect();
+
+    // A reading of an element the parser got right goes to the parser's
+    // element holding its anchor cell, while that cell is what was read.
+    let holding = holding_index(&elements);
+    for reading in array(&journal["readings"])? {
+        let sheet = string(&reading["sheet"])?;
+        let address = string(&reading["anchor"]["address"])?;
+        let now = source_cells
+            .get(&(sheet.to_owned(), address.to_owned()))
+            .copied();
+        let reason = match holding
+            .get(sheet)
+            .and_then(|cells| cells.get(address))
+            .map(|(index, _)| *index)
+        {
+            None => Some("source_cells_missing"),
+            Some(index) if corrected.contains(elements[index]["id"].as_str().unwrap_or("")) => {
+                Some("anchor_in_corrected_element")
+            }
+            Some(_) if corrections::cell_hash(now) != reading["anchor"]["sha256"] => {
+                Some("source_cells_changed")
+            }
+            Some(index) => {
+                elements[index]["reading"] = reading["reading"].clone();
+                None
+            }
+        };
+        if let Some(reason) = reason {
+            conflicts.push(json!({"kind":"reading","id":reading["element"],"reason":reason}));
+        }
+    }
+
+    // A text_state a reader gave holds while the cell is as it was; a changed
+    // cell is to be examined again.
+    for state in array(&journal["cell_states"])? {
+        let sheet = string(&state["sheet"])?;
+        let address = string(&state["address"])?;
+        let now = source_cells
+            .get(&(sheet.to_owned(), address.to_owned()))
+            .copied();
+        let Some(&(index, cell_index)) = holding.get(sheet).and_then(|cells| cells.get(address))
+        else {
+            continue;
+        };
+        let changed = corrections::cell_hash(now) != state["sha256"];
+        let cell = &mut elements[index]["cells"][cell_index];
+        if changed {
+            cell["text_state"] = json!("not_examined");
+            conflicts.push(json!({"kind":"cell","id":cell["id"],"reason":"source_cells_changed"}));
+        } else {
+            cell["text_state"] = state["text_state"].clone();
+        }
+    }
+    result["elements"] = json!(elements);
 
     let mut visuals = result["visuals"].as_array().unwrap().clone();
     let mut carried_visuals = 0;
@@ -221,11 +307,71 @@ pub(super) fn rebase(root: &Path, journal: &Value, current: &Value) -> Result<(V
             result["review"] = journal["review"].clone();
         }
     }
-    let validation = validate_hashed(root, current, &extraction_hash, &result)?;
-    Ok((
-        result,
-        json!({"state":if validation["ready"] == true {"reviewed"} else {"needs_review"},
+    let validation = validate_hashed(root, current, extraction_hash, &result, original)?;
+    let mut report = json!({"state":if validation["ready"] == true {"reviewed"} else {"needs_review"},
         "ready":validation["ready"],"carried_elements":retained.len(),
-        "carried_visuals":carried_visuals,"conflicts":conflicts}),
-    ))
+        "carried_visuals":carried_visuals,"conflicts":conflicts});
+    // How apply carried this version, while it is the version replayed.
+    if same_source
+        && journal["baseline_extraction_hash"] == extraction_hash
+        && let Some(carried) = journal.get("carried")
+    {
+        report["carried"] = carried.clone();
+    }
+    Ok((result, report))
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    use std::{hint::black_box, time::Instant};
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_holding_lookup() {
+        let elements: Vec<_> = (0..300)
+            .map(|element| {
+                json!({"sheet":"Sheet","cells":(0..10)
+                .map(|cell| json!({"address":format!("C{}", element * 10 + cell)}))
+                .collect::<Vec<_>>() })
+            })
+            .collect();
+        let addresses: Vec<_> = (0..3000).map(|i| format!("C{i}")).collect();
+        let mut old = vec![];
+        let mut new = vec![];
+        for _ in 0..5 {
+            let started = Instant::now();
+            let found: Vec<_> = addresses
+                .iter()
+                .map(|address| {
+                    elements.iter().position(|element| {
+                        element["sheet"] == "Sheet"
+                            && array(&element["cells"]).is_ok_and(|cells| {
+                                cells.iter().any(|cell| cell["address"] == *address)
+                            })
+                    })
+                })
+                .collect();
+            old.push(started.elapsed().as_secs_f64() * 1000.0);
+            let started = Instant::now();
+            let index = holding_index(&elements);
+            let indexed: Vec<_> = addresses
+                .iter()
+                .map(|address| {
+                    index
+                        .get("Sheet")
+                        .and_then(|cells| cells.get(address))
+                        .map(|(element, _)| *element)
+                })
+                .collect();
+            new.push(started.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(black_box(found), black_box(indexed));
+        }
+        old.sort_by(f64::total_cmp);
+        new.sort_by(f64::total_cmp);
+        eprintln!(
+            "holding_lookup_old_ms={:.2} indexed_ms={:.2}",
+            old[2], new[2]
+        );
+    }
 }

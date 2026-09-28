@@ -258,24 +258,47 @@ fn relocate_table(
     let data_shift = i64::from(surviving_first_data - old_first_data);
     let new_first_data = new_first_row + header_rows;
     let new_last_data = new_last_row - totals_rows;
-    let old_rows: BTreeSet<u32> = (first_row..=last_row)
-        .map(|row| Ok(map_span(row, row, own, true)?.map(|(r, _)| r)))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
-    let inserted_rows: Vec<u32> = (new_first_data..=new_last_data)
-        .filter(|row| !old_rows.contains(row))
-        .collect();
+    // Only inserted rows can lack an original table row. Derive their final
+    // positions from the operations instead of visiting every row in the table.
+    let mut inserted_rows = BTreeSet::new();
+    for (index, operation) in own.iter().enumerate() {
+        if !matches!(operation.kind, OperationKind::InsertRows) {
+            continue;
+        }
+        for offset in 0..operation.count {
+            let Some(initial) = operation.at.checked_add(offset) else {
+                continue;
+            };
+            let mut position = Some(initial);
+            for later in &own[index + 1..] {
+                position = position
+                    .and_then(|row| transform_index(row, std::slice::from_ref(*later), true));
+            }
+            if let Some(row) = position.filter(|row| (new_first_data..=new_last_data).contains(row))
+            {
+                inserted_rows.insert(row);
+            }
+        }
+    }
     let mut inner = String::new();
     for column in new_first_column..=new_last_column {
         if let Some(index) = positions.iter().position(|p| *p == Some(column)) {
-            // An existing column's name and totals label live in this part too;
-            // only a new column takes its name from the header written for it.
-            for (rows, row) in [(header_rows, new_first_row), (totals_rows, new_last_row)] {
+            // An existing column's name and totals label live in this part too,
+            // already set to what is written over them (see `LabelEdits`).
+            for (rows, row, label) in [
+                (header_rows, new_first_row, old[index].attribute("name")),
+                (
+                    totals_rows,
+                    new_last_row,
+                    old[index].attribute("totalsRowLabel"),
+                ),
+            ] {
                 ensure!(
-                    rows == 0 || !changes.contains_key(&(sheet.to_owned(), row, column)),
-                    "{sheet}!{}{row} is a header or totals cell of table {name}; Excel keeps those names in the table definition, so rename columns and totals labels in Excel",
+                    rows == 0
+                        || changes
+                            .get(&(sheet.to_owned(), row, column))
+                            .is_none_or(|value| label.is_some_and(|label| value == label)),
+                    "{sheet}!{}{row} is a header or totals cell of table {name} whose table definition was not updated",
                     column_name(column)?
                 );
             }

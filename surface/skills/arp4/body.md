@@ -8,6 +8,7 @@
 | --- | --- |
 | 文書の取り込み・成形・差分確認・書き戻し | [操作リファレンス](references/operations.md) の「文書ワークフロー」「CLI応答の読み方」 |
 | 構造解釈・capture・新規の設計書生成 | [操作リファレンス](references/operations.md) の「メタモデルと設計書」。workflowを始める時点で下記の進行管理を読む |
+| 表と本文の区分、複数図形の関係、画像OCRを原本と照合して整理 | [arp4-structure](../arp4-structure/SKILL.md) |
 | 既存workflowの再開・抽出・レビュー・修正 | [workflowの進行管理](references/orchestration.md)。同じroot・run-idのstatus --summaryから再開する |
 | 採番済みの要件・仕様の更新・承認 | [操作リファレンス](references/operations.md) の「正本の継続保守」 |
 | ARP実行ファイルの導入・更新が必要 | [arp4-setup](../arp4-setup/SKILL.md) |

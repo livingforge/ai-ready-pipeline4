@@ -279,6 +279,72 @@ pub(super) fn find_row_raw<'a>(
         .map(|node| &original[node.range()])
 }
 
+/// The area the cells of `rows` span, or `None` when the rows hold no cells.
+pub(super) fn used_range(rows: &[RowOutput]) -> Option<Area> {
+    let mut span: Option<Area> = None;
+    for row in rows {
+        let (Some(&first), Some(&last)) = (row.cells.first(), row.cells.last()) else {
+            continue;
+        };
+        let (rows, columns) = match span {
+            Some(Area {
+                rows: Some((top, bottom)),
+                columns: Some((left, right)),
+            }) => (
+                (top.min(row.number), bottom.max(row.number)),
+                (left.min(first), right.max(last)),
+            ),
+            _ => ((row.number, row.number), (first, last)),
+        };
+        span = Some(Area {
+            rows: Some(rows),
+            columns: Some(columns),
+        });
+    }
+    span
+}
+
+/// Widens the worksheet's `dimension` to cover `used`. Moving rows keeps the
+/// recorded range in place, but a row inserted below it holds cells outside it,
+/// and readers that trust the dimension would skip them.
+pub(super) fn cover_dimension(worksheet: &str, used: Area) -> Result<String> {
+    let doc = xml(worksheet.as_bytes())?;
+    let Some(dimension) = child(doc.root_element(), "dimension") else {
+        return Ok(worksheet.to_owned());
+    };
+    let Some(reference) = dimension.attribute("ref") else {
+        return Ok(worksheet.to_owned());
+    };
+    let recorded = Area::parse(reference)?;
+    let (Some((top, bottom)), Some((left, right)), Some(rows), Some(columns)) =
+        (recorded.rows, recorded.columns, used.rows, used.columns)
+    else {
+        return Ok(worksheet.to_owned());
+    };
+    // A sheet without cells records A1, which covers nothing.
+    let empty = reference == "A1";
+    let covered = Area {
+        rows: Some(if empty {
+            rows
+        } else {
+            (top.min(rows.0), bottom.max(rows.1))
+        }),
+        columns: Some(if empty {
+            columns
+        } else {
+            (left.min(columns.0), right.max(columns.1))
+        }),
+    };
+    if covered == recorded {
+        return Ok(worksheet.to_owned());
+    }
+    let range = opening_range(worksheet, dimension)?;
+    let opening = replace_xml_attribute(&worksheet[range.clone()], "ref", &covered.render()?)?;
+    let mut result = worksheet.to_owned();
+    result.replace_range(range, &opening);
+    Ok(result)
+}
+
 /// An inserted row, formatted like `template` (the `style_from` row) when given.
 /// It is shown even when the template row is hidden or collapsed, since a new
 /// row that could not be seen would hide the values written to it.

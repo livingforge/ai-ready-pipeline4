@@ -65,7 +65,7 @@ pub(super) fn xml_opening(raw: &str) -> Result<(&str, &str)> {
     Ok((&raw[..end + 1], &raw[end + 1..]))
 }
 
-pub(super) fn xml_attr(value: &str) -> String {
+pub(crate) fn xml_attr(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -242,7 +242,7 @@ pub(crate) fn write_unchanged(raw: &[u8], destination: &Path) -> Result<()> {
 
 /// Writes the package with `patched` parts replaced or added and `removed`
 /// parts left out; all other entries are copied unchanged.
-pub(super) fn write_archive_without(
+pub(crate) fn write_archive_without(
     raw: &[u8],
     destination: &Path,
     patched: &BTreeMap<String, Vec<u8>>,

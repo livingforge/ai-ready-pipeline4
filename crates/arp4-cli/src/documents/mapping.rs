@@ -27,10 +27,21 @@ pub(super) enum MappingTarget<'a> {
         offset: u32,
         row: u32,
     },
+    /// The text of an Excel shape, by its extraction ID (`<drawing part>#<id>`).
+    Shape {
+        sheet: &'a str,
+        shape: &'a str,
+    },
 }
 pub(super) fn mapping_target(value: &Value) -> Result<Option<MappingTarget<'_>>> {
     if value.is_null() {
         return Ok(None);
+    }
+    if value.get("shape").is_some() {
+        return Ok(Some(MappingTarget::Shape {
+            sheet: string(&value["sheet"])?,
+            shape: string(&value["shape"])?,
+        }));
     }
     if value.get("cell").is_some() {
         return Ok(Some(MappingTarget::Cell {
@@ -64,7 +75,19 @@ pub(super) fn mapping_target(value: &Value) -> Result<Option<MappingTarget<'_>>>
         )?,
     }))
 }
+/// The sheet whose content page is `page`: the `page` a sheet names, or else
+/// `sheet-<n>` for the n-th sheet.
 pub(super) fn page_sheet(extraction: &Value, page: &str) -> Result<String> {
+    let sheets = array(&extraction["sheets"])?;
+    if sheets.iter().any(|sheet| sheet.get("page").is_some()) {
+        return string(
+            &sheets
+                .iter()
+                .find(|sheet| sheet["page"] == page)
+                .with_context(|| format!("content page {page} has no worksheet"))?["name"],
+        )
+        .map(str::to_owned);
+    }
     let index: usize = page
         .strip_prefix("sheet-")
         .context("structural content page must be a worksheet page")?
@@ -112,6 +135,140 @@ fn inserted_position(
     );
     Ok(Some((id.to_owned(), number - 1)))
 }
+/// The mapping entries import derives from `extraction`: one per cell and formula,
+/// and one per page block. mappings.yml stores only entries that differ from these.
+pub(super) fn default_entries(extraction: &Value) -> Result<Vec<Value>> {
+    let native_text = extraction["parser"]
+        .as_str()
+        .and_then(|parser| parser.split(';').nth(1))
+        == Some("native-text/1");
+    let mut entries = vec![];
+    for (i, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+        let page = match sheet["page"].as_str() {
+            Some(page) => page.to_owned(),
+            None => format!("sheet-{}", i + 1),
+        };
+        let computed_ranges = excel::ComputedRanges::new(sheet)?;
+        let merges = excel::Merges::new(&sheet["merges"])?;
+        let cells = array(&sheet["cells"])?;
+        let mut has_formulas = false;
+        for c in cells {
+            let address = string(&c["address"])?;
+            let (_, row) = excel::coordinate(address)?;
+            let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
+            let target = json!({"sheet":sheet["name"],"cell":address});
+            let computed = computed_ranges.find(address)?.map(|(kind, _)| kind);
+            let hidden = merges.hiding(address)?.is_some();
+            let reason = match computed {
+                Some("array") => "配列数式・スピルの計算結果のため書き戻し対象外",
+                Some("data_table") => "データテーブルの計算結果のため書き戻し対象外",
+                Some(_) => "ピボットテーブルの集計結果のため書き戻し対象外",
+                None if hidden => "結合セルの左上以外のため書き戻し対象外",
+                None => "原本から転記",
+            };
+            let excluded = hidden
+                || computed.is_some()
+                || native_text
+                || c["type"] == "formula"
+                || c["type"] == "error";
+            entries.push(json!({"page":page,"block":"table-1","field":c["id"],"reason":reason,"target":target,"writeback":if excluded{"excluded"}else{"cell"},"position":{"row":format!("r{row}"),"column":column,"type":kind(&c["value"])}}));
+            if c["type"] == "formula" {
+                has_formulas = true;
+                let f = string(&c["id"])?;
+                // The formula of an array, spill or data table spans its range, and
+                // one hidden by a merge is not shown; those stay as they are.
+                let (reason, writeback) = if computed.is_some() || hidden {
+                    (
+                        "数式原文。配列数式・スピル・データテーブル・結合で隠れたセルのため書き戻し対象外",
+                        "excluded",
+                    )
+                } else {
+                    (
+                        "数式原文。変更すると書き戻しで数式を置き換え、Excelで再計算",
+                        "formula",
+                    )
+                };
+                entries.push(json!({"page":page,"block":"formulas","field":format!("{f}-formula"),"reason":reason,"target":target,"writeback":writeback,"position":{"row":f,"column":"formula","type":"string"}}));
+            }
+        }
+        let mut has_shapes = false;
+        for (key, drawing) in shape_texts(sheet)? {
+            has_shapes = true;
+            entries.push(json!({"page":page,"block":"shapes","field":format!("{key}-text"),"reason":"図形の文字","target":{"sheet":sheet["name"],"shape":drawing["id"]},"writeback":if native_text{"excluded"}else{"shape"},"position":{"row":key,"column":"text","type":"string"}}));
+        }
+        entries.push(json!({"page":page,"block":"extraction-notes","field":null,"reason":"抽出範囲の申告","target":null,"writeback":"excluded"}));
+        for (block, present) in [
+            ("table-1", !cells.is_empty()),
+            ("formulas", has_formulas),
+            ("shapes", has_shapes),
+        ] {
+            if present {
+                entries.push(json!({"page":page,"block":block,"field":null,"reason":"表の構造","target":null,"writeback":"excluded"}));
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// The shapes of an Excel sheet that hold text, by their content key
+/// (`shape-<drawing ID>`).
+pub(super) fn shape_texts(sheet: &Value) -> Result<Vec<(String, &Value)>> {
+    let mut shapes = vec![];
+    for drawing in sheet["drawings"].as_array().into_iter().flatten() {
+        if drawing["text"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+        {
+            let id = string(&drawing["id"])?;
+            let (_, raw) = id
+                .rsplit_once('#')
+                .context("shape ID without drawing part")?;
+            shapes.push((format!("shape-{raw}"), drawing));
+        }
+    }
+    Ok(shapes)
+}
+
+/// The complete entries of stored `mappings`: the defaults of `extraction`, each
+/// replaced by a stored entry with the same page, block and field, then the stored
+/// entries that replace none. Regeneration drops those whose content is gone.
+pub(super) fn with_default_entries(mut mappings: Value, extraction: &Value) -> Result<Value> {
+    let Value::Array(stored) = mappings["entries"].take() else {
+        bail!("mappings entries must be an array");
+    };
+    let mut replacements = BTreeMap::new();
+    for (index, entry) in stored.iter().enumerate() {
+        replacements.entry(entry_key(entry)?).or_insert(index);
+    }
+    let mut used = vec![false; stored.len()];
+    let mut entries = vec![];
+    for default in default_entries(extraction)? {
+        match replacements.get(&entry_key(&default)?).copied() {
+            Some(index) => {
+                used[index] = true;
+                entries.push(stored[index].clone());
+            }
+            None => entries.push(default),
+        }
+    }
+    entries.extend(
+        stored
+            .into_iter()
+            .zip(used)
+            .filter_map(|(entry, used)| (!used).then_some(entry)),
+    );
+    mappings["entries"] = Value::Array(entries);
+    Ok(mappings)
+}
+
+fn entry_key(entry: &Value) -> Result<(&str, &str, &str)> {
+    Ok((
+        string(&entry["page"])?,
+        string(&entry["block"])?,
+        entry["field"].as_str().unwrap_or(""),
+    ))
+}
+
 /// A (page, block) or (row, column) pair borrowed from the content pages.
 type Pair<'a> = (&'a str, &'a str);
 
@@ -235,7 +392,6 @@ pub(super) fn regenerate_mappings(
                 "page":page,
                 "block":block,
                 "field":field,
-                "origins":[],
                 "reason":"structural content generated mapping",
                 "target":target,
                 "writeback":"cell",
@@ -266,9 +422,14 @@ pub(super) fn regenerate_mappings(
             let columns = table["columns"]
                 .as_array_mut()
                 .context("table columns required")?;
+            let mut known_columns: BTreeSet<String> = columns
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
             for row in rows.values() {
                 for column in row.as_object().context("invalid table row")?.keys() {
-                    if !columns.iter().any(|value| value == column) {
+                    if known_columns.insert(column.clone()) {
                         columns.push(json!(column));
                     }
                 }
@@ -276,4 +437,64 @@ pub(super) fn regenerate_mappings(
         }
     }
     Ok(regenerated)
+}
+
+/// The extraction as the slide operations of `operations` leave it (see
+/// [`slide_view`]): the pages deleted slides leave out, and the copies inserted
+/// slides add. The extraction itself when there are none.
+pub(super) fn operated_extraction<'a>(
+    extraction: &'a Value,
+    operations: &Value,
+) -> Result<Cow<'a, Value>> {
+    let operations = array(operations)?;
+    if !operations.iter().any(is_slide_operation) {
+        return Ok(Cow::Borrowed(extraction));
+    }
+    let sheets = array(&extraction["sheets"])?;
+    let parsed = parse_slide_operations(operations, sheets)?;
+    let mut view = extraction.clone();
+    view["sheets"] = Value::Array(slide_view(sheets, &parsed)?);
+    Ok(Cow::Owned(view))
+}
+
+#[cfg(test)]
+mod efficiency_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_column_membership() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let columns: Vec<Value> = (0..100).map(|index| json!(format!("c{index}"))).collect();
+        let keys: Vec<String> = (0..1000)
+            .flat_map(|_| (0..100).map(|index| format!("c{index}")))
+            .collect();
+
+        let start = Instant::now();
+        let old = keys
+            .iter()
+            .filter(|key| columns.iter().any(|value| value == *key))
+            .count();
+        let old_ms = start.elapsed().as_millis();
+
+        let start = Instant::now();
+        let known: BTreeSet<String> = columns
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        let new = keys
+            .iter()
+            .filter(|key| known.contains(key.as_str()))
+            .count();
+        let new_ms = start.elapsed().as_millis();
+        assert_eq!(black_box(old), black_box(new));
+        eprintln!(
+            "column_membership old_ms={old_ms} new_ms={new_ms} cells={} columns={}",
+            keys.len(),
+            columns.len()
+        );
+    }
 }

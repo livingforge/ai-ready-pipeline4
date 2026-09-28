@@ -5,7 +5,7 @@ Windows／Linux でソースをビルドして使う試験版です。Rust と O
 ```text
 cargo install --path crates/arp4-cli --locked
 arp4 --version
-arp4 doctor --format json
+arp4 doctor
 arp4 skills install --root <project> --agent github
 arp4 documents init --root <project>
 ```
@@ -15,46 +15,73 @@ arp4 documents init --root <project>
 カスタム Agent はソース内の `surface/skills/arp4/body.md` を直接読み込めます。モデルの自動実行には [AI実行先との接続](semantic-runners.md) を別途設定します。
 
 `skills install` は対象フォルダーがなければ親フォルダーも含めて作成します。対象パスがファイルの場合や、必要な書き込み権限がない場合はエラーになります。
-`--agent` は `all`（既定）、`claude`、`github`、`none` を選べます。
+`--agent` は `all`（既定）、`claude`、`github`、`codex`、`none` を選べます。
 `none` はフォルダーも作成せず、何も書き込みません。導入するスキル・カスタムAgentは Rust 版専用です。
 スキル導入は文書管理を初期化しないため、Excelの取り込み前に `documents init` も実行してください。
 
 ## Excelの取り込みから書き戻し
 
-以下では、原本を `C:/my-project/docs/基本設計.xlsx` に置き、任意の作業フォルダーで実行します。この節の JSON 取り出し例は PowerShell 用です。Linux の Agent は JSON 応答から proposal_id を読み、同じ CLI 引数で操作します。
+取り込みをAIに委任する場合、利用者は原本またはフォルダと作業範囲を伝えます。AIはimport、候補の成形と検査、record、adoptを進め、実際に内容を確認した文書だけreviewを記録します。結果は取り込み件数、採用件数、未レビュー件数、確認が必要な文書の箇所と理由をまとめて報告します。原本でしか確認できない情報、曖昧な対応、失敗やblockersがあれば、該当文書について利用者の判断を求めます。採用はレビュー完了を意味しません。
+
+以下では、原本を `C:/my-project/docs/基本設計.xlsx` に置き、任意の作業フォルダーで実行します。この節の JSON 取り出し例は PowerShell 用です。文書IDは `docs/` からの相対パス `基本設計.xlsx` です。Linux の Agent は JSON 応答の document_id を読み、同じ CLI 引数で操作します。
 
 ```powershell
 arp4 documents init --root C:/my-project
 arp4 skills install --root C:/my-project --agent github
-$candidate = arp4 documents import docs/基本設計.xlsx --id design --root C:/my-project | ConvertFrom-Json
-arp4 documents check --proposal $candidate.proposal_id --root C:/my-project
-arp4 documents diff $candidate.proposal_id --root C:/my-project
+$candidate = arp4 documents import docs/基本設計.xlsx --root C:/my-project | ConvertFrom-Json
+arp4 documents check --proposal $candidate.document_id --root C:/my-project
+arp4 documents diff $candidate.document_id --root C:/my-project
 ```
 
 `$candidate.proposal` の `content/<シート名>.yml` をAgentまたは人が原本と照合して成形します。
 本文の値は `blocks/table-1/rows/r<行番号>/<列名>` にあり、型・ID・セル対応を保って編集します。
-行・列を追加または削除する場合は、候補の管理側 `mappings.yml` に構造操作を記録します。`insert_rows` / `delete_rows` / `insert_columns` / `delete_columns` の `sheet`、`at`、`count`、`reason` を指定してください。追加する行・列は本文に `<操作ID>-<番号>`（例: `add-1`）のキーで書きます。既存の `r<行番号>` と列名は原本の位置を指すため、追加した行・列の値には使いません。追加した本文の行・列に対応するmapping entryは、CLIが現在の本文と構造操作から再生成します。
+行・列を追加または削除する場合は、`documents rows` / `documents columns` を使います。`mappings.yml` の構造操作と本文の `<操作ID>-<番号>` キーを、1回の実行でまとめて書き込みます（仕様は [CLI応答仕様](../reference/cli.md) の「行・列の構造変更」）。
+
+```powershell
+# 課題一覧の最終行の後に1行追加する（先に --dry-run で位置と値の変換を確認する）
+Set-Content -Encoding utf8 row.yml '- {B: "8", C: 2025/11/21, E: 仕様, F: 課題内容, J: 未着手}'
+arp4 documents rows insert --proposal $candidate.document_id --sheet 課題一覧 --after last --id add-issue8 --reason 課題No.8を追加 --values row.yml --dry-run --root C:/my-project
+arp4 documents rows insert --proposal $candidate.document_id --sheet 課題一覧 --after last --id add-issue8 --reason 課題No.8を追加 --values row.yml --root C:/my-project
+```
+PowerPointのスライドは `documents slides insert --from slide-1 --after slide-2 --id <操作ID>` で複製し、`documents slides delete --slide slide-3` で削除します。複製したスライドの本文は `content/<操作ID>.yml` に作られます（仕様は [CLI応答仕様](../reference/cli.md) の「スライドの追加・削除」）。
+
 機械生成した候補をLLMの成形済みとみなさず、実際に成形した後に作業のモデル・担当・プロンプトを記録してください。
 
 ```powershell
 # 実際に成形した作業の情報を指定する
-arp4 documents record $candidate.proposal_id --model <モデル名> --actor <担当> --prompt C:/my-project/prompt.txt --root C:/my-project
-arp4 documents adopt $candidate.proposal_id --reviewer <レビュー担当> --root C:/my-project
+arp4 documents record $candidate.document_id --model <モデル名> --actor <担当> --prompt C:/my-project/prompt.txt --root C:/my-project
+arp4 documents adopt $candidate.document_id --root C:/my-project
+arp4 documents review $candidate.document_id --reviewer <確認担当> --root C:/my-project
 ```
 
-採用後の本文・管理情報は `.arp/documents/design/` に集約します。原本は `docs/基本設計.xlsx` を相対パスで参照し、コピーを保存しません。原本と `.arp/` の共有データをGitへコミットしてから `diff --document` でHEADと比較します。
+`adopt` は候補を現在版へ移しますが、レビュー記録は作りません。採用直後は `needs_review` で、内容を確認した担当者が `review` すると `reviewed` になります。`record`・`adopt`・`review` は文書IDの代わりにフォルダIDを渡すと配下の文書を、`--all` を付けると全文書をまとめて処理します。対象はその操作を待っている状態（recordは `needs_record`、adoptは `ready_to_adopt`、reviewは `needs_review`）の文書だけで、他の状態の文書は `skipped` に状態・blockersを付けて返します。1件が失敗しても他の文書は処理し、`failed` があれば終了コード2です。処理済みの文書は対象の状態から外れるので、同じコマンドの再実行で残りだけを処理します。
+
+確認した内容だけを処理するには、先に `--dry-run --out <計画.json>` で対象と各文書のcontentハッシュを保存し、確認後に `--expect <計画.json>` を付けて実行します。計画にない文書は `not_planned`、計画後に内容が変わった文書は `changed_since_plan` として処理せず `skipped` に返します。
+
+```powershell
+# 資料フォルダ配下の候補のうち、recordを待つものを確認してから記録する
+arp4 documents record 資料 --model <モデル名> --actor <担当> --prompt C:/my-project/prompt.txt --dry-run --out record-plan.json --root C:/my-project
+arp4 documents record 資料 --model <モデル名> --actor <担当> --prompt C:/my-project/prompt.txt --expect record-plan.json --root C:/my-project
+# 記録済みの全候補を採用する
+arp4 documents adopt --all --dry-run --out adopt-plan.json --root C:/my-project
+arp4 documents adopt --all --expect adopt-plan.json --root C:/my-project
+```
+
+同じ `--prompt` を全件に記録するため、全件で実際に同じ成形・確認を行った場合だけまとめて記録してください。
+
+採用後の本文・管理情報は `.arp/documents/基本設計.xlsx/` に集約します。原本は `docs/基本設計.xlsx` を相対パスで参照し、コピーを保存しません。原本と `.arp/` の共有データをGitへコミットしてから `diff --document` でHEADと比較します。
 本文の既存セル値を同じ型で編集した後は、以下の順に確認します。
 
 ```powershell
-arp4 documents check design --root C:/my-project
-arp4 documents diff --document design --root C:/my-project
-arp4 documents review design --reviewer <レビュー担当> --root C:/my-project
-arp4 documents export design --root C:/my-project
-arp4 documents export design --out C:/my-project/.arp/cache/export/基本設計-更新.xlsx --root C:/my-project
+arp4 documents check 基本設計.xlsx --root C:/my-project
+arp4 documents diff --document 基本設計.xlsx --root C:/my-project
+arp4 documents review 基本設計.xlsx --reviewer <レビュー担当> --root C:/my-project
+arp4 documents export 基本設計.xlsx --root C:/my-project
+arp4 documents export 基本設計.xlsx --out C:/my-project/.arp/cache/export/基本設計-更新.xlsx --root C:/my-project
 ```
 
-exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本への反映は `documents apply design --root C:/my-project` を使います。反映後は再抽出された候補を確認し、record・adoptしてください。
-未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・書き戻し対象外の値（結合セルの左上以外の値、数式の結果と原文）の編集・署名付きブック・既存出力の上書きを拒否します。
+exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本への反映は `documents apply 基本設計.xlsx --root C:/my-project` を使います。反映後は再抽出された候補を確認し、record・adoptしてください。
+未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・書き戻し対象外の値（結合セルの左上以外の値、数式の計算結果）の編集・署名付きブック・既存出力の上書きを拒否します。
 通常セル更新では元のZIP部品を保持し、数式がある場合はキャッシュを無効化して次回Excel起動時の再計算を指定します。
 Rust自身は数式を計算しません。`=...` で始まる通常セルの文字列は文字列のまま出力します。
 

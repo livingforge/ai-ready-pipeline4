@@ -174,6 +174,9 @@ pub fn install_assets(root: &Path, assets: &[Asset<'_>]) -> Result<usize> {
                     rollback_errors.push(format!("{}: {restore_error}", previous.display()));
                 }
             }
+            for (path, _, _) in &changes[..=index] {
+                crate::data::remove_empty_directories(path.parent().unwrap(), &root);
+            }
             bail!("installation failed: {error}; rollback errors: {rollback_errors:?}");
         }
     }

@@ -128,26 +128,6 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
                 }
             }
         }
-        for (pi, page) in array(&extraction["pages"])?.iter().enumerate() {
-            for key in ["title", "notes"] {
-                walk(
-                    &page[key],
-                    format!("/pages/{pi}/{key}"),
-                    document,
-                    &mut input.sources,
-                );
-            }
-            for (ci, chunk) in array(&page["chunks"])?.iter().enumerate() {
-                for key in ["heading", "text", "rows", "cells"] {
-                    walk(
-                        &chunk[key],
-                        format!("/pages/{pi}/chunks/{ci}/{key}"),
-                        document,
-                        &mut input.sources,
-                    );
-                }
-            }
-        }
         ensure!(
             input.sources.len() > source_count,
             "document has no extractable source text: {document}"

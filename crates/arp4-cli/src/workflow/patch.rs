@@ -549,7 +549,7 @@ pub fn plan(
         // alignment, cross-document links) goes to restructure, which can.
         let documents: BTreeSet<&str> = identifiers
             .iter()
-            .filter_map(|i| i.split_once('/').map(|(d, _)| d))
+            .filter_map(|i| i.rsplit_once('/').map(|(d, _)| d))
             .collect();
         if review && documents.len() > 1 {
             deferred.push(json!({"code":"cross_document_finding","finding":value,"items":identifiers,

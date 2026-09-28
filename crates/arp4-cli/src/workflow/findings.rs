@@ -148,7 +148,7 @@ impl Workflow {
                     .chain(value["repair"]["items"].as_array().into_iter().flatten())
                     .chain(value.get("item"))
                 {
-                    if let Some((doc, _)) = id.as_str().and_then(|id| id.split_once('/')) {
+                    if let Some((doc, _)) = id.as_str().and_then(|id| id.rsplit_once('/')) {
                         docs.insert(doc.to_owned());
                     }
                 }
