@@ -269,13 +269,9 @@ impl<'a> Sheet<'a> {
                 .and_then(|o| o.style_from),
             Anchor::Last => {
                 let last = self.last(true)?;
-                let mut style = None;
-                for row in (1..=self.last_original(true)).rev() {
-                    if self.placed(row, true)? == Some(last) {
-                        style = Some(row);
-                        break;
-                    }
-                }
+                let operations: Vec<_> = self.own(true).collect();
+                let mut style = excel::original_position(last, &operations, true)
+                    .filter(|row| *row > 0 && *row <= self.last_original(true));
                 if style.is_none() {
                     for operation in self.own(true).filter(|o| o.insertion()) {
                         if (0..operation.count).any(|offset| {
@@ -761,10 +757,7 @@ fn generated_id(recorded: &[Value], edit: &SheetEdit) -> String {
         (EditKind::Insert { .. }, Axis::Columns) => "add-cols",
         (EditKind::Delete { .. }, Axis::Columns) => "del-cols",
     };
-    (1..)
-        .map(|n| format!("{prefix}-{n}"))
-        .find(|id| !recorded.iter().any(|o| o["id"] == id.as_str()))
-        .unwrap()
+    next_operation_id(recorded, prefix)
 }
 
 fn span(plan: &Plan, axis: Axis) -> Result<Value> {
@@ -1102,6 +1095,35 @@ fn neighbors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual sparse last row style performance measurement"]
+    fn measure_sparse_last_row_style() {
+        use std::{hint::black_box, time::Instant};
+
+        let value = json!(1);
+        let cells = BTreeMap::from([(1, BTreeMap::from([(900_000, &value)]))]);
+        let operations = [StructuralOperation {
+            sheet: "S".to_owned(),
+            id: "add".to_owned(),
+            kind: crate::excel::OperationKind::InsertRows,
+            at: 900_001,
+            count: 1,
+            style_from: None,
+        }];
+        let sheet = Sheet {
+            name: "S",
+            page: "sheet-1".to_owned(),
+            operations: &operations,
+            cells,
+        };
+        let start = Instant::now();
+        assert_eq!(
+            black_box(sheet.default_style(&Anchor::Last, true).unwrap()),
+            None
+        );
+        eprintln!("sparse_last_row_style_us={}", start.elapsed().as_micros());
+    }
 
     #[test]
     #[ignore = "manual content page lookup performance measurement"]

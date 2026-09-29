@@ -42,6 +42,72 @@ fn text_of(bytes: &[u8]) -> Result<&str> {
     Ok(std::str::from_utf8(bytes)?)
 }
 
+fn table_source<'a>(
+    parts: &'a BTreeMap<String, Vec<u8>>,
+    labeled: &'a BTreeMap<String, String>,
+    part: &str,
+) -> Result<&'a str> {
+    match labeled.get(part) {
+        Some(text) => Ok(text),
+        None => text_of(&parts[part]),
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    #[test]
+    fn table_source_prefers_label_edit() {
+        let parts = BTreeMap::from([
+            ("xl/tables/table1.xml".to_owned(), b"original".to_vec()),
+            ("xl/tables/table2.xml".to_owned(), b"untouched".to_vec()),
+        ]);
+        let labeled = BTreeMap::from([("xl/tables/table1.xml".to_owned(), "edited".to_owned())]);
+        assert_eq!(
+            table_source(&parts, &labeled, "xl/tables/table1.xml").unwrap(),
+            "edited"
+        );
+        assert_eq!(
+            table_source(&parts, &labeled, "xl/tables/table2.xml").unwrap(),
+            "untouched"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual workbook part copy performance measurement"]
+    fn measure_workbook_part_copy() {
+        use std::{hint::black_box, time::Instant};
+
+        let mut parts = BTreeMap::new();
+        for index in 0..64 {
+            parts.insert(
+                format!("xl/media/image{index}.bin"),
+                vec![index as u8; 1_048_576],
+            );
+        }
+        parts.insert("xl/tables/table1.xml".to_owned(), b"original".to_vec());
+        let labeled = BTreeMap::from([("xl/tables/table1.xml".to_owned(), "edited".to_owned())]);
+        let start = Instant::now();
+        for _ in 0..3 {
+            let mut copied = black_box(parts.clone());
+            for (part, text) in &labeled {
+                copied.insert(part.clone(), text.clone().into_bytes());
+            }
+            black_box(copied);
+        }
+        let copy_us = start.elapsed().as_micros();
+        let start = Instant::now();
+        for _ in 0..3 {
+            black_box(table_source(&parts, &labeled, "xl/tables/table1.xml").unwrap());
+        }
+        eprintln!(
+            "workbook_part_copy_3x_us={copy_us} overlay_3x_us={}",
+            start.elapsed().as_micros()
+        );
+    }
+}
+
 /// Rewrites a table column's formulas, returning its XML and the rewritten
 /// calculated-column formula. `data_shift` re-bases that formula (written for
 /// the first data row) when the first data rows are deleted.
@@ -135,6 +201,7 @@ pub(super) fn removed_table_columns(
 /// totals row, the last data row or the whole table is rejected, as Excel would.
 pub(super) fn relocate_tables(
     parts: &BTreeMap<String, Vec<u8>>,
+    labeled: &BTreeMap<String, String>,
     sheets: &[Value],
     moves: &Moves<'_>,
     changes: &mut Changes,
@@ -148,7 +215,7 @@ pub(super) fn relocate_tables(
             // The table stays put, but its calculated-column and totals formulas
             // may point at a sheet whose rows or columns move.
             for part in related_parts(parts, string(&sheet["part"])?, "/table")? {
-                let original = text_of(&parts[&part])?;
+                let original = table_source(parts, labeled, &part)?;
                 let doc = xml(original.as_bytes())?;
                 let mut edits = vec![];
                 for column in doc
@@ -168,14 +235,8 @@ pub(super) fn relocate_tables(
             continue;
         }
         for part in related_parts(parts, string(&sheet["part"])?, "/table")? {
-            let updated = relocate_table(
-                text_of(&parts[&part])?,
-                sheet_name,
-                moves,
-                &own,
-                changes,
-                formulas,
-            )?;
+            let original = table_source(parts, labeled, &part)?;
+            let updated = relocate_table(original, sheet_name, moves, &own, changes, formulas)?;
             patched.insert(part, updated.into_bytes());
         }
     }

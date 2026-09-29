@@ -35,6 +35,51 @@ const RECORDS: [&str; 6] = [
     "extraction.json",
     "prompt.txt",
 ];
+
+/// The first positive suffix not already used by this operation prefix.
+fn next_operation_id(recorded: &[Value], prefix: &str) -> String {
+    let used: BTreeSet<_> = recorded.iter().filter_map(|o| o["id"].as_str()).collect();
+    (1..)
+        .map(|n| format!("{prefix}-{n}"))
+        .find(|id| !used.contains(id.as_str()))
+        .unwrap()
+}
+
+#[cfg(test)]
+mod operation_id_tests {
+    use super::*;
+
+    #[test]
+    fn operation_id_uses_first_gap_and_exact_prefix() {
+        let recorded = vec![
+            json!({"id":"add-rows-1"}),
+            json!({"id":"add-rows-3"}),
+            json!({"id":"add-rows-02"}),
+            json!({"id":"add-columns-2"}),
+        ];
+        assert_eq!(next_operation_id(&recorded, "add-rows"), "add-rows-2");
+        assert_eq!(next_operation_id(&[], "add-slides"), "add-slides-1");
+    }
+
+    #[test]
+    #[ignore = "manual operation ID performance measurement"]
+    fn measure_operation_ids() {
+        for count in [1_000, 4_000] {
+            let recorded: Vec<_> = (1..=count)
+                .map(|n| json!({"id":format!("add-rows-{n}")}))
+                .collect();
+            let mut times = vec![];
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                let id = next_operation_id(&recorded, "add-rows");
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(id, format!("add-rows-{}", count + 1));
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!("operation_ids count={count} median_ms={:.3}", times[2]);
+        }
+    }
+}
 pub struct Store {
     pub root: PathBuf,
     pub arp: PathBuf,

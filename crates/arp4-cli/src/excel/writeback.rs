@@ -21,6 +21,7 @@ impl Workbook {
         );
         relocate_tables(
             &self.parts,
+            &BTreeMap::new(),
             &self.sheets,
             &moves,
             &mut BTreeMap::new(),
@@ -368,18 +369,9 @@ impl Workbook {
         )
         .with_renamed_columns(labels.renamed.clone());
         if structural || !labels.parts.is_empty() {
-            let mut labeled;
-            let parts = if labels.parts.is_empty() {
-                &self.parts
-            } else {
-                labeled = self.parts.clone();
-                for (part, text) in &labels.parts {
-                    labeled.insert(part.clone(), text.clone().into_bytes());
-                }
-                &labeled
-            };
             relocate_tables(
-                parts,
+                &self.parts,
+                &labels.parts,
                 &self.sheets,
                 &moves,
                 &mut change_map,
@@ -892,6 +884,8 @@ pub(super) struct CellFormats<'a> {
     cells: BTreeMap<(u32, u32), String>,
     columns: Vec<(u32, u32, String)>,
     operations: Vec<&'a StructuralOperation>,
+    inserted_rows: InsertedIntervals,
+    inserted_columns: InsertedIntervals,
     /// The original `style_from` row of each inserted row that names one.
     templates: BTreeMap<u32, u32>,
 }
@@ -922,10 +916,13 @@ impl<'a> CellFormats<'a> {
                 }
             }
         }
+        let own: Vec<_> = operations.iter().collect();
         Ok(Self {
             cells,
             columns,
-            operations: operations.iter().collect(),
+            inserted_rows: InsertedIntervals::new(&own, true),
+            inserted_columns: InsertedIntervals::new(&own, false),
+            operations: own,
             templates: BTreeMap::new(),
         })
     }
@@ -951,8 +948,14 @@ impl<'a> CellFormats<'a> {
 
     /// The original position a final row or column is, or takes its format from.
     fn source(&self, position: u32, row: bool) -> Option<u32> {
+        let inserted = if row {
+            &self.inserted_rows
+        } else {
+            &self.inserted_columns
+        };
         original_position(position, &self.operations, row).or_else(|| {
-            inherited_from(position, &self.operations, row)
+            inserted
+                .inherited_from(position)
                 .and_then(|from| original_position(from, &self.operations, row))
         })
     }

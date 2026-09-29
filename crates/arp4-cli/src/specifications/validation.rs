@@ -37,17 +37,20 @@ pub fn assess(input: &Input, model: &Model) -> Result<Report> {
         .iter()
         .map(|(id, s)| (*id, vec![0; s.text.chars().count()]))
         .collect();
+    let mut source_chars = BTreeMap::<&str, Vec<char>>::new();
     let mut span = |s: &Span, excluded: bool| -> Result<()> {
         let source = sources
             .get(s.source.as_str())
             .context("unknown evidence source")?;
-        let chars: Vec<_> = source.text.chars().collect();
+        let chars = source_chars
+            .entry(source.id.as_str())
+            .or_insert_with(|| source.text.chars().collect());
         ensure!(
             s.start < s.end && s.end <= chars.len(),
             "invalid Unicode character span"
         );
         ensure!(
-            chars[s.start..s.end].iter().collect::<String>() == s.quote,
+            chars[s.start..s.end].iter().copied().eq(s.quote.chars()),
             "evidence quote mismatch"
         );
         for mark in &mut coverage.get_mut(s.source.as_str()).unwrap()[s.start..s.end] {
@@ -294,9 +297,21 @@ pub fn assess(input: &Input, model: &Model) -> Result<Report> {
                 && candidates.contains(decision.selected.as_str()),
             "invalid conflict decision"
         );
-        let group = groups
-            .values()
-            .find(|g| g.iter().map(|i| i.id.as_str()).collect::<BTreeSet<_>>() == candidates)
+        let group = items
+            .get(decision.selected.as_str())
+            .and_then(|item| {
+                groups.get(&(
+                    normalized(&item.subject),
+                    normalized(&item.property),
+                    item.condition.comparison_key(),
+                ))
+            })
+            .filter(|group| {
+                group.len() == candidates.len()
+                    && group
+                        .iter()
+                        .all(|item| candidates.contains(item.id.as_str()))
+            })
             .context("decision must cover exactly one complete conflict group")?;
         ensure!(
             group

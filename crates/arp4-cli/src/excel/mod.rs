@@ -17,6 +17,7 @@ use formula_edit::*;
 mod import;
 mod visuals;
 mod worksheet;
+pub(crate) use worksheet::original_position;
 use worksheet::*;
 mod package;
 mod references;

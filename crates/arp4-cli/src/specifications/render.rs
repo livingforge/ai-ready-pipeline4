@@ -89,7 +89,7 @@ pub fn source_view(input: &Input, document: Option<&str>) -> Result<String> {
 /// Render the selected original grid. Missing cells are not invented or filled from merges.
 pub(crate) fn render_table<'a>(
     value: &AtomicValue,
-    sources: impl Iterator<Item = &'a Source>,
+    source: impl Fn(&str) -> Option<&'a Source>,
 ) -> Result<String> {
     let AtomicValue::Table {
         title: captions,
@@ -117,15 +117,12 @@ pub(crate) fn render_table<'a>(
             })
             .collect()
     }
-    let sources: BTreeMap<_, _> = sources.map(|s| (s.id.as_str(), s)).collect();
     let mut grid: BTreeMap<u32, BTreeMap<u32, Vec<String>>> = BTreeMap::new();
     let mut columns = BTreeSet::new();
     let mut merges = BTreeSet::new();
     let mut title = String::new();
     for cell in cells {
-        let source = sources
-            .get(cell.source.as_str())
-            .context("missing original table source")?;
+        let source = source(&cell.source).context("missing original table source")?;
         let ctx = source.context.as_ref().context("missing table context")?;
         title = format!("{} / {}", escaped(&source.document), escaped(&ctx.sheet));
         columns.insert(ctx.column);
@@ -210,6 +207,12 @@ pub fn render(input: &Input, model: &Model, draft: bool) -> Result<String> {
         "数量原文照合: 有効（canonical・opaque_unit・reviewed_lexical・解釈待ち表現）。\n\n",
     );
     let mut ordered: Vec<_> = model.items.iter().collect();
+    let sources: BTreeMap<_, _> = input.sources.iter().map(|s| (s.id.as_str(), s)).collect();
+    let rejected: BTreeSet<_> = model
+        .decisions
+        .iter()
+        .flat_map(|d| d.candidates.iter().filter(|id| *id != &d.selected))
+        .collect();
     ordered.sort_by_key(|item| (item.section.as_deref().unwrap_or("other"), &item.subject));
     let mut previous_section = None;
     for item in ordered {
@@ -226,13 +229,9 @@ pub fn render(input: &Input, model: &Model, draft: bool) -> Result<String> {
             text.push_str(&format!("\n## {title}\n\n"));
             previous_section = Some(section);
         }
-        let rejected = model
-            .decisions
-            .iter()
-            .any(|d| d.candidates.contains(&item.id) && d.selected != item.id);
-        text.push_str(&format!("\n### {}{}\n\n種別: {:?}\n\n{}\n\n対象: {} / 属性: {} / 条件: {} / 値: {}\n\n検証: {}\n\n要件: {}\n\n", escaped(&item.id), if rejected { "（不採用・出典保持）" } else { "" }, item.kind, escaped(&item.statement), escaped(&item.subject), escaped(&item.property), escaped(item.condition.text()), escaped(&item.value.display()), escaped(item.verification.as_deref().unwrap_or("未記載（検証済みを意味しない）")), escaped(&item.requirements.join(", "))));
+        text.push_str(&format!("\n### {}{}\n\n種別: {:?}\n\n{}\n\n対象: {} / 属性: {} / 条件: {} / 値: {}\n\n検証: {}\n\n要件: {}\n\n", escaped(&item.id), if rejected.contains(&item.id) { "（不採用・出典保持）" } else { "" }, item.kind, escaped(&item.statement), escaped(&item.subject), escaped(&item.property), escaped(item.condition.text()), escaped(&item.value.display()), escaped(item.verification.as_deref().unwrap_or("未記載（検証済みを意味しない）")), escaped(&item.requirements.join(", "))));
         if matches!(&item.value, AtomicValue::Table { .. }) {
-            text.push_str(&render_table(&item.value, input.sources.iter())?);
+            text.push_str(&render_table(&item.value, |id| sources.get(id).copied())?);
         }
         if let Condition::Composed {
             operator,
@@ -259,7 +258,7 @@ pub fn render(input: &Input, model: &Model, draft: bool) -> Result<String> {
             text.push_str(&format!("名称: {}\n\n", escaped(name)));
         }
         for s in &item.evidence {
-            let source = input.sources.iter().find(|i| i.id == s.source).unwrap();
+            let source = sources[s.source.as_str()];
             text.push_str(&format!(
                 "- 出典 {} {} [{}..{}]: {}\n",
                 escaped(&source.document),

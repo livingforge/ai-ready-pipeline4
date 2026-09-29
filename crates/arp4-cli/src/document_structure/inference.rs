@@ -67,13 +67,21 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
         let mut groups = vec![];
         // Explicit table boundaries have precedence over layout heuristics.
         if let Some(tables) = sheet["tables"].as_array() {
+            let mut rows: BTreeMap<u32, Vec<(u32, usize)>> = BTreeMap::new();
+            if !tables.is_empty() {
+                for (i, cell) in cells.iter().enumerate() {
+                    rows.entry(cell.top).or_default().push((cell.left, i));
+                }
+            }
             for t in tables {
                 let bounds = range(string(&t["range"])?)?;
-                let indices: Vec<_> = cells
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| contains(bounds, (c.left, c.top)))
-                    .map(|(i, _)| i)
+                let indices: Vec<_> = rows
+                    .range(bounds.0.1..=bounds.1.1)
+                    .flat_map(|(_, row)| {
+                        let start = row.partition_point(|(column, _)| *column < bounds.0.0);
+                        let end = row.partition_point(|(column, _)| *column <= bounds.1.0);
+                        row[start..end].iter().map(|(_, i)| *i)
+                    })
                     .collect();
                 ensure!(
                     indices.iter().all(|i| assigned.insert(*i)),
@@ -333,6 +341,42 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual explicit table inference performance measurement"]
+    fn measure_explicit_tables() {
+        for count in [100, 400, 1_600] {
+            let cells: Vec<_> = (1..=count * 5)
+                .flat_map(|row| {
+                    [
+                        cell(&format!("A{row}"), "key"),
+                        cell(&format!("B{row}"), "value"),
+                    ]
+                })
+                .collect();
+            let tables: Vec<_> = (0..count)
+                .map(
+                    |index| json!({"range":format!("A{}:B{}",index*5+1,index*5+5),"header_rows":1}),
+                )
+                .collect();
+            let extraction =
+                json!({"sheets":[{"name":"S","cells":cells,"tables":tables,"merges":[]}]});
+            let mut times = vec![];
+            let mut digest = String::new();
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                let output = elements(&extraction).unwrap();
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(output.len(), count as usize);
+                digest = hash(&encoded(&json!(output)));
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "explicit_tables count={count} median_ms={:.3} sha256={digest}",
+                times[2]
+            );
+        }
+    }
     fn cell(address: &str, value: &str) -> Value {
         json!({"address":address,"value":value,"type":"string","formula":null,"style":{"bold":false,"fill":0,"border":0}})
     }
@@ -363,6 +407,30 @@ mod tests {
                 .iter()
                 .flat_map(|e| e["cells"].as_array().unwrap())
                 .all(|c| c["role"] != "column_header")
+        );
+    }
+    #[test]
+    fn explicit_tables_select_sparse_columns_and_reject_overlaps() {
+        let mut extraction = json!({"sheets":[{"name":"S","merges":[],
+            "tables":[{"range":"D2:E5","header_rows":0},{"range":"A2:B5","header_rows":0}],
+            "cells":[cell("E5","e"),cell("A2","a"),cell("D2","d"),cell("B5","b")]}]});
+        let result = elements(&extraction).unwrap();
+        let addresses = |table: &Value| {
+            table["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["address"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(addresses(&result[0]), ["A2", "B5"]);
+        assert_eq!(addresses(&result[1]), ["D2", "E5"]);
+        extraction["sheets"][0]["tables"][1]["range"] = json!("A2:E5");
+        assert!(
+            elements(&extraction)
+                .unwrap_err()
+                .to_string()
+                .contains("overlapping")
         );
     }
     #[test]

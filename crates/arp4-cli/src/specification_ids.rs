@@ -158,8 +158,9 @@ pub fn assign(
         *counter = (*counter).max(number);
     }
     // Sorted temporary keys make assignment independent of the JSON array order.
+    let items: BTreeMap<_, _> = model.items.iter().map(|item| (&item.id, item)).collect();
     for (key, action) in &plan.items {
-        let item = model.items.iter().find(|i| &i.id == key).unwrap();
+        let item = items[key];
         text(
             item.name
                 .as_deref()

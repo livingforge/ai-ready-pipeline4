@@ -87,10 +87,7 @@ impl Store {
                     SlideEditKind::Insert { .. } => "add-slide",
                     SlideEditKind::Delete { .. } => "del-slide",
                 };
-                (1..)
-                    .map(|n| format!("{prefix}-{n}"))
-                    .find(|id| !recorded.iter().any(|o| o["id"] == id.as_str()))
-                    .unwrap()
+                next_operation_id(&recorded, prefix)
             }
         };
         let operation = match &edit.kind {

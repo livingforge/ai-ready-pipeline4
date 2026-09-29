@@ -168,17 +168,28 @@ fn attach_entries(
     let document = string(&before["document_id"])?;
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut stale = BTreeSet::new();
+    // Each referenced snapshot is indexed once for this document. Many entries
+    // can cite different sources in the same snapshot.
+    let mut snapshots = BTreeMap::<&str, (bool, BTreeSet<&str>)>::new();
     for (id, entry) in &registry.entries {
         if matches!(entry.status, crate::registry::Status::Retired) {
             continue;
         }
         for evidence in &entry.evidence {
-            let input = &registry.inputs[&evidence.snapshot];
-            if array(&input["sources"])?
-                .iter()
-                .any(|s| s["id"] == evidence.span.source && s["document"] == document)
-            {
-                if input["revisions"][document] == revision {
+            let (current, sources) = match snapshots.entry(evidence.snapshot.as_str()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let input = &registry.inputs[&evidence.snapshot];
+                    let sources = array(&input["sources"])?
+                        .iter()
+                        .filter(|source| source["document"] == document)
+                        .filter_map(|source| source["id"].as_str())
+                        .collect();
+                    entry.insert((input["revisions"][document] == revision, sources))
+                }
+            };
+            if sources.contains(evidence.span.source.as_str()) {
+                if *current {
                     references
                         .entry(evidence.span.source.clone())
                         .or_default()

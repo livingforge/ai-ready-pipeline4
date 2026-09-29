@@ -9,7 +9,84 @@ pub(super) struct RowOutput {
 #[cfg(test)]
 mod efficiency_measurement {
     use super::*;
-    use std::time::Instant;
+    use std::{hint::black_box, time::Instant};
+
+    #[test]
+    #[ignore = "manual inserted format lookup performance measurement"]
+    fn inserted_format_lookup() {
+        let operation = StructuralOperation {
+            sheet: "Sheet1".to_owned(),
+            id: "insert".to_owned(),
+            kind: OperationKind::InsertRows,
+            at: 1,
+            count: 4_000,
+            style_from: None,
+        };
+        let operations = [&operation];
+        let start = Instant::now();
+        let inserted = InsertedIntervals::new(&operations, true);
+        for position in 1..=operation.count {
+            black_box(inserted.inherited_from(position));
+        }
+        eprintln!("inserted_format_lookup_us={}", start.elapsed().as_micros());
+    }
+
+    #[test]
+    fn inserted_intervals_match_original_coordinates() {
+        let mut seed = 17u32;
+        for _ in 0..200 {
+            let mut operations = Vec::new();
+            let mut length = 15u32;
+            for index in 0..12 {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let insertion = seed & 1 == 0 || length <= 1;
+                let count = 1 + (seed >> 8) % 3;
+                let at = if insertion {
+                    1 + (seed >> 16) % (length + 1)
+                } else {
+                    1 + (seed >> 16) % (length - count.min(length - 1) + 1)
+                };
+                let count = if insertion {
+                    count
+                } else {
+                    count.min(length - at + 1)
+                };
+                operations.push(StructuralOperation {
+                    sheet: "Sheet1".to_owned(),
+                    id: format!("op-{index}"),
+                    kind: if insertion {
+                        OperationKind::InsertRows
+                    } else {
+                        OperationKind::DeleteRows
+                    },
+                    at,
+                    count,
+                    style_from: None,
+                });
+                length = if insertion {
+                    length + count
+                } else {
+                    length - count
+                };
+            }
+            let refs: Vec<_> = operations.iter().collect();
+            let intervals = InsertedIntervals::new(&refs, true);
+            for position in 1..=length {
+                let expected = if original_position(position, &refs, true).is_none() {
+                    (1..position)
+                        .rev()
+                        .find(|candidate| original_position(*candidate, &refs, true).is_some())
+                } else {
+                    None
+                };
+                assert_eq!(
+                    intervals.inherited_from(position),
+                    expected,
+                    "position {position}, operations {operations:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     #[ignore]
@@ -977,7 +1054,7 @@ pub(super) fn rewrite_sheet_references(
 
 /// The pre-operation position of a final position, or `None` when it was
 /// inserted.
-pub(super) fn original_position(
+pub(crate) fn original_position(
     mut position: u32,
     operations: &[&StructuralOperation],
     row: bool,
@@ -998,20 +1075,63 @@ pub(super) fn original_position(
     Some(position)
 }
 
-/// For an inserted position, the final position it takes its formatting from:
-/// Excel formats inserted rows like the row above and inserted columns like
-/// the column to the left.
-pub(super) fn inherited_from(
-    position: u32,
-    operations: &[&StructuralOperation],
-    row: bool,
-) -> Option<u32> {
-    if original_position(position, operations, row).is_some() {
-        return None;
+/// Surviving inserted positions in final coordinates, as half-open intervals.
+/// Adjacent intervals are joined so the position immediately before an interval
+/// is always an original row or column.
+pub(super) struct InsertedIntervals(Vec<(u32, u32)>);
+
+impl InsertedIntervals {
+    pub(super) fn new(operations: &[&StructuralOperation], row: bool) -> Self {
+        let mut intervals = Vec::<(u32, u32)>::new();
+        for operation in operations.iter().filter(|o| o.row_operation() == row) {
+            let end = operation.at + operation.count;
+            let mut next = Vec::with_capacity(intervals.len() + 2);
+            for (start, stop) in intervals {
+                if start < operation.at {
+                    next.push((start, stop.min(operation.at)));
+                }
+                if stop > operation.at {
+                    if operation.insertion() {
+                        next.push((
+                            start.max(operation.at) + operation.count,
+                            stop + operation.count,
+                        ));
+                    } else if stop > end {
+                        next.push((start.max(end) - operation.count, stop - operation.count));
+                    }
+                }
+            }
+            if operation.insertion() {
+                next.push((operation.at, end));
+            }
+            next.sort_unstable();
+            let mut joined: Vec<(u32, u32)> = Vec::with_capacity(next.len());
+            for (start, stop) in next {
+                if let Some(last) = joined.last_mut()
+                    && start <= last.1
+                {
+                    last.1 = last.1.max(stop);
+                } else {
+                    joined.push((start, stop));
+                }
+            }
+            intervals = joined;
+        }
+        Self(intervals)
     }
-    (1..position)
-        .rev()
-        .find(|candidate| original_position(*candidate, operations, row).is_some())
+
+    /// Excel formats inserted rows like the row above, and columns like the
+    /// column to the left. None means the position was original or has no
+    /// original predecessor.
+    pub(super) fn inherited_from(&self, position: u32) -> Option<u32> {
+        let index = self.0.partition_point(|&(_, stop)| stop <= position);
+        let &(start, stop) = self.0.get(index)?;
+        if start > 1 && start <= position && position < stop {
+            Some(start - 1)
+        } else {
+            None
+        }
+    }
 }
 
 /// Adds sparklines to rows/columns inserted after a sparkline cell, copying
@@ -1022,6 +1142,8 @@ fn inherit_sparklines(text: String, operations: &[&StructuralOperation]) -> Resu
     }
     let doc = xml(text.as_bytes())?;
     let mut edits = vec![];
+    let inserted_rows = InsertedIntervals::new(operations, true);
+    let inserted_columns = InsertedIntervals::new(operations, false);
     for sparkline in doc
         .descendants()
         .filter(|n| n.has_tag_name((X14, "sparkline")))
@@ -1047,9 +1169,12 @@ fn inherit_sparklines(text: String, operations: &[&StructuralOperation]) -> Resu
         let start = sparkline.range().start;
         let raw = &text[sparkline.range()];
         let mut added = String::new();
-        for (is_row, origin) in [(true, row), (false, column)] {
+        for (is_row, origin, inserted) in [
+            (true, row, &inserted_rows),
+            (false, column, &inserted_columns),
+        ] {
             let mut position = origin + 1;
-            while inherited_from(position, operations, is_row) == Some(origin) {
+            while inserted.inherited_from(position) == Some(origin) {
                 let delta = i64::from(position - origin);
                 let (new_source, new_cell) = if is_row {
                     (

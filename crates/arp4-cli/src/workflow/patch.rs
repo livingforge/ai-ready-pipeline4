@@ -614,7 +614,7 @@ pub fn plan(
             }
             Ok(scope)
         };
-        let mut groups: Vec<(BTreeSet<String>, BTreeSet<String>)> = Vec::new();
+        let mut groups = RepairGroups::default();
         let mut assigned = BTreeSet::new();
         for key in keyed.keys() {
             if assigned.contains(key) {
@@ -623,23 +623,19 @@ pub fn plan(
             let mut keys = BTreeSet::from([key.clone()]);
             // A finding is atomic even when its items cite different sheets.
             // Merge overlapping findings before checking external dependencies.
-            loop {
-                let prior = keys.clone();
-                for key in &prior {
-                    for finding in &keyed[key] {
-                        for id in finding["finding"]["items"].as_array().into_iter().flatten() {
-                            if let Some(local) = id
-                                .as_str()
-                                .and_then(|id| id.strip_prefix(&format!("{doc}/")))
-                                && keyed.contains_key(local)
-                            {
-                                keys.insert(local.to_owned());
-                            }
+            let mut pending = vec![key.clone()];
+            while let Some(key) = pending.pop() {
+                for finding in &keyed[&key] {
+                    for id in finding["finding"]["items"].as_array().into_iter().flatten() {
+                        if let Some(local) = id
+                            .as_str()
+                            .and_then(|id| id.strip_prefix(&format!("{doc}/")))
+                            && keyed.contains_key(local)
+                            && keys.insert(local.to_owned())
+                        {
+                            pending.push(local.to_owned());
                         }
                     }
-                }
-                if keys == prior {
-                    break;
                 }
             }
             assigned.extend(keys.iter().cloned());
@@ -655,18 +651,13 @@ pub fn plan(
                     "message":"Existing evidence or relationship dependencies cross documents. These are not newly supplied external materials. Inspect dependency_edges and verify the links against original evidence; adding citations alone does not resolve this diagnostic."}));
                 continue;
             }
-            let mut refs: BTreeSet<String> = arr(&ctx["sources"]["rows"])?
+            let refs: BTreeSet<String> = arr(&ctx["sources"]["rows"])?
                 .iter()
                 .map(|r| s(&r[0]).map(str::to_owned))
                 .collect::<Result<_>>()?;
-            while let Some(i) = groups.iter().position(|(_, r)| !r.is_disjoint(&refs)) {
-                let (old_keys, old_refs) = groups.remove(i);
-                keys.extend(old_keys);
-                refs.extend(old_refs);
-            }
-            groups.push((keys, refs));
+            groups.add(keys, refs);
         }
-        for (keys, _) in groups {
+        for keys in groups.into_keys() {
             let scope = make_scope(&keys)?;
             let ctx = context(base, &scope, packet, &BTreeSet::new())?;
             tasks
@@ -676,9 +667,206 @@ pub fn plan(
     Ok((tasks, deferred))
 }
 
+#[derive(Default)]
+struct RepairGroups {
+    parents: Vec<usize>,
+    keys: Vec<BTreeSet<String>>,
+    latest: Vec<usize>,
+    owners: BTreeMap<String, usize>,
+}
+
+impl RepairGroups {
+    fn root(&mut self, mut i: usize) -> usize {
+        while self.parents[i] != i {
+            self.parents[i] = self.parents[self.parents[i]];
+            i = self.parents[i];
+        }
+        i
+    }
+
+    fn add(&mut self, keys: BTreeSet<String>, refs: BTreeSet<String>) {
+        let mut root = self.parents.len();
+        self.parents.push(root);
+        self.keys.push(keys);
+        self.latest.push(root);
+        for reference in refs {
+            if let Some(owner) = self.owners.get(&reference).copied() {
+                let mut other = self.root(owner);
+                if root != other {
+                    // Move only the smaller key set when joining components.
+                    if self.keys[root].len() < self.keys[other].len() {
+                        std::mem::swap(&mut root, &mut other);
+                    }
+                    self.parents[other] = root;
+                    let keys = std::mem::take(&mut self.keys[other]);
+                    self.keys[root].extend(keys);
+                    self.latest[root] = self.latest[root].max(self.latest[other]);
+                }
+            }
+            self.owners.insert(reference, root);
+        }
+    }
+
+    fn into_keys(self) -> Vec<BTreeSet<String>> {
+        // A merged group occupies the position of its latest contributor.
+        let mut groups: Vec<_> = self
+            .keys
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| self.parents[*i] == *i)
+            .map(|(i, keys)| (self.latest[i], keys))
+            .collect();
+        groups.sort_by_key(|(latest, _)| *latest);
+        groups.into_iter().map(|(_, keys)| keys).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repair_groups_merge_bridges_and_keep_latest_order() {
+        let mut groups = RepairGroups::default();
+        for (key, refs) in [
+            ("a", vec!["x"]),
+            ("b", vec!["y"]),
+            ("c", vec!["z"]),
+            ("d", vec!["x", "y"]),
+            ("e", vec!["y"]),
+        ] {
+            groups.add(
+                BTreeSet::from([key.to_owned()]),
+                refs.into_iter().map(str::to_owned).collect(),
+            );
+        }
+        assert_eq!(
+            groups.into_keys(),
+            vec![
+                BTreeSet::from(["c".to_owned()]),
+                ["a", "b", "d", "e"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            ]
+        );
+    }
+
+    #[test]
+    #[ignore = "manual disjoint repair group performance measurement"]
+    fn measure_disjoint_repair_groups() {
+        for count in [1_000, 4_000] {
+            let mut times = vec![];
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                let mut groups = RepairGroups::default();
+                for index in 0..count {
+                    groups.add(
+                        BTreeSet::from([format!("k{index}")]),
+                        BTreeSet::from([format!("s{index}")]),
+                    );
+                }
+                let keys = groups.into_keys();
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(keys.len(), count);
+                assert_eq!(keys[count - 1], BTreeSet::from([format!("k{}", count - 1)]));
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "disjoint_repair_groups count={count} median_ms={:.3}",
+                times[2]
+            );
+        }
+    }
+
+    #[test]
+    fn linked_findings_keep_cycles_and_disjoint_groups() {
+        let (mut base, mut packet) = fixture();
+        base["items"] = json!([
+            {"key":"a","evidence":["s2"],"classification":{"related":[]}},
+            {"key":"b","evidence":["s4"],"classification":{"related":[]}},
+            {"key":"c","evidence":["s4"],"classification":{"related":[]}},
+            {"key":"d","evidence":["s5"],"classification":{"related":[]}}
+        ]);
+        packet["sources"]["tables"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"document":"doc","sheet":"C"}));
+        packet["sources"]["rows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(["s5", 3, "A1", "value", "Separate", "General"]));
+        let findings = [
+            json!({"action":"field_repair","items":["doc/a","doc/b"],"message":"ab"}),
+            json!({"action":"field_repair","items":["doc/b","doc/c"],"message":"bc"}),
+            json!({"action":"field_repair","items":["doc/c","doc/a"],"message":"ca"}),
+            json!({"action":"field_repair","items":["doc/d"],"message":"d"}),
+        ];
+        let (tasks, deferred) = plan(
+            &BTreeMap::from([("doc".into(), base)]),
+            &BTreeMap::from([("doc".into(), packet)]),
+            &json!({}),
+            &[],
+            &findings,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert!(deferred.is_empty());
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["scope"]["allowed_keys"], json!(["a", "b", "c"]));
+        assert_eq!(tasks[1]["scope"]["allowed_keys"], json!(["d"]));
+        for finding in &findings[..3] {
+            assert_eq!(
+                tasks[0]["scope"]["findings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|value| value["finding"] == *finding)
+                    .count(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual linked findings performance measurement"]
+    fn measure_linked_findings() {
+        use std::time::Instant;
+        for count in [200, 800] {
+            let (mut base, packet) = fixture();
+            base["items"] = json!((0..count).map(|index| json!({
+                "key":format!("k{index:04}"),"evidence":["s2"],"classification":{"related":[]}
+            })).collect::<Vec<_>>());
+            let findings: Vec<_> = (1..count).map(|index| json!({
+                "action":"field_repair","items":[format!("doc/k{:04}", index-1),format!("doc/k{index:04}")],"message":"check"
+            })).collect();
+            let bases = BTreeMap::from([("doc".into(), base)]);
+            let packets = BTreeMap::from([("doc".into(), packet)]);
+            let mut durations = Vec::new();
+            let mut digest = String::new();
+            for _ in 0..5 {
+                let start = Instant::now();
+                let (tasks, deferred) = plan(
+                    &bases,
+                    &packets,
+                    &json!({}),
+                    &[],
+                    &findings,
+                    &BTreeSet::new(),
+                )
+                .unwrap();
+                durations.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert!(deferred.is_empty());
+                assert_eq!(tasks.len(), 1);
+                digest = crate::data::hash(&crate::data::encoded(&json!(tasks)));
+            }
+            durations.sort_by(f64::total_cmp);
+            eprintln!(
+                "linked_findings count={count} median_ms={:.3} sha256={digest}",
+                durations[2]
+            );
+        }
+    }
     fn fixture() -> (Value, Value) {
         (
             json!({"document":"doc","packet":"same","items":[

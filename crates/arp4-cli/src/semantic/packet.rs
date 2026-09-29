@@ -1,5 +1,56 @@
 use super::*;
 
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+
+    #[test]
+    fn document_tables_preserve_first_occurrence_order() {
+        let input: Input = serde_json::from_value(json!({
+            "schema_version":1,"revisions":{"a":"r","b":"r"},"structure_requirements":{},"warnings":[],
+            "structures":{"a":{"visuals":[]}},
+            "sources":[{"id":"s1","document":"b","location":"/one","text":"one"},
+                {"id":"s2","document":"a","location":"/two","text":"two"},
+                {"id":"s3","document":"b","location":"/three","text":"three"}]
+        })).unwrap();
+        let output = source_rows(&input, &input.sources.iter().collect::<Vec<_>>());
+        assert_eq!(
+            output["tables"],
+            json!([{"document":"b"}, {"document":"a","structure":{"visuals":[]}}])
+        );
+        assert_eq!(output["rows"][0][1], 0);
+        assert_eq!(output["rows"][1][1], 1);
+        assert_eq!(output["rows"][2][1], 0);
+    }
+
+    #[test]
+    #[ignore = "manual non-cell packet performance measurement"]
+    fn measure_noncell_packet() {
+        for count in [200, 800] {
+            let input: Input = serde_json::from_value(json!({
+                "schema_version":1,"revisions":{"doc":"revision"},"structure_requirements":{},"warnings":[],
+                "structures":{"doc":{"visuals":(0..200).map(|i|json!({"id":format!("v{i}"),"sources":[format!("/drawing/{i}")],"evidence":[]})).collect::<Vec<_>>() }},
+                "sources":(0..count).map(|i|json!({"id":format!("s{i}"),"document":"doc","location":format!("/drawing/{i}"),"text":"text"})).collect::<Vec<_>>()
+            })).unwrap();
+            let rows: Vec<_> = input.sources.iter().collect();
+            let mut times = vec![];
+            let mut digest = String::new();
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                let output = source_rows(&input, &rows);
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(output["tables"].as_array().unwrap().len(), 1);
+                digest = hash(&encoded(&output));
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "noncell_packet count={count} median_ms={:.3} sha256={digest}",
+                times[2]
+            );
+        }
+    }
+}
+
 /// Physical offsets are provenance, not semantic dependencies. All text, ordering,
 /// headings, cell coordinates, formats, merges and warnings remain significant.
 pub fn packet_fingerprint(packet: &Value) -> String {
@@ -126,6 +177,7 @@ pub(crate) fn sources<'a>(input: &'a Input, document: Option<&str>) -> Result<Ve
 pub(super) fn source_rows(input: &Input, rows: &[&Source]) -> Value {
     let mut tables = Vec::<Value>::new();
     let mut table_indices = BTreeMap::new();
+    let mut document_indices = BTreeMap::new();
     let has_positions = rows
         .iter()
         .any(|s| s.context.as_ref().is_some_and(|c| c.position.is_some()));
@@ -153,11 +205,11 @@ pub(super) fn source_rows(input: &Input, rows: &[&Source]) -> Value {
                     json!(c.number_format),
                 )
             } else {
-                let mut table = json!({"document":s.document});
-                if let Some(structure) = input.structures.get(&s.document) {
-                    table["structure"] = structure.clone();
-                }
-                let index = tables.iter().position(|t| *t == table).unwrap_or_else(|| {
+                let index = *document_indices.entry(&s.document).or_insert_with(|| {
+                    let mut table = json!({"document":s.document});
+                    if let Some(structure) = input.structures.get(&s.document) {
+                        table["structure"] = structure.clone();
+                    }
                     tables.push(table);
                     tables.len() - 1
                 });

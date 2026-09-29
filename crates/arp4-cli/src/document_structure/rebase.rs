@@ -262,30 +262,14 @@ pub(super) fn rebase(
     result["elements"] = json!(elements);
 
     let mut visuals = result["visuals"].as_array().unwrap().clone();
-    let mut carried_visuals = 0;
-    for correction in array(&journal["visuals"])? {
-        let visual = &correction["visual"];
-        let anchored = array(&correction["sources"])?.iter().all(|anchor| {
-            let Some(pointer) = anchor["pointer"].as_str() else {
-                return false;
-            };
-            current
-                .pointer(pointer)
-                .is_some_and(|source| anchor["sha256"] == hash(&encoded(source)))
-        });
-        if anchored
-            && (same_source || !uses_region(visual, &region_ids)?)
-            && let Some(index) = visuals.iter().position(|candidate| {
-                candidate["id"] == visual["id"] && candidate["sources"] == visual["sources"]
-            })
-        {
-            visuals[index] = visual.clone();
-            carried_visuals += 1;
-        } else {
-            conflicts.push(json!({"kind":"visual","id":visual["id"],
-                "reason":"source_or_image_evidence_changed"}));
-        }
-    }
+    let carried_visuals = rebase_visuals(
+        &mut visuals,
+        array(&journal["visuals"])?,
+        current,
+        same_source,
+        &region_ids,
+        &mut conflicts,
+    )?;
     result["visuals"] = json!(visuals);
     result["review"] = json!({"status":"pending"});
     if same_source && journal["baseline_extraction_hash"] == extraction_hash {
@@ -373,5 +357,117 @@ mod performance_tests {
             "holding_lookup_old_ms={:.2} indexed_ms={:.2}",
             old[2], new[2]
         );
+    }
+}
+
+fn rebase_visuals(
+    visuals: &mut [Value],
+    corrections: &[Value],
+    current: &Value,
+    same_source: bool,
+    region_ids: &BTreeSet<String>,
+    conflicts: &mut Vec<Value>,
+) -> Result<usize> {
+    if corrections.is_empty() {
+        return Ok(0);
+    }
+    // Serialized keys preserve exact JSON equality, including source order.
+    let key = |visual: &Value| {
+        serde_json::to_vec(&(&visual["id"], &visual["sources"]))
+            .expect("JSON values can be serialized")
+    };
+    let mut indices = BTreeMap::new();
+    for (i, visual) in visuals.iter().enumerate() {
+        indices.entry(key(visual)).or_insert(i);
+    }
+    let mut carried_visuals = 0;
+    for correction in corrections {
+        let visual = &correction["visual"];
+        let anchored = array(&correction["sources"])?.iter().all(|anchor| {
+            let Some(pointer) = anchor["pointer"].as_str() else {
+                return false;
+            };
+            current
+                .pointer(pointer)
+                .is_some_and(|source| anchor["sha256"] == hash(&encoded(source)))
+        });
+        if anchored
+            && (same_source || !uses_region(visual, region_ids)?)
+            && let Some(&index) = indices.get(&key(visual))
+        {
+            visuals[index] = visual.clone();
+            carried_visuals += 1;
+        } else {
+            conflicts.push(json!({"kind":"visual","id":visual["id"],
+                "reason":"source_or_image_evidence_changed"}));
+        }
+    }
+    Ok(carried_visuals)
+}
+
+#[cfg(test)]
+mod visual_measurement {
+    use super::*;
+
+    #[test]
+    fn visual_index_preserves_first_match_and_source_order() {
+        let first = json!({"id":"v","sources":["/a","/b"],"label":"first"});
+        let reversed = json!({"id":"v","sources":["/b","/a"],"label":"reversed"});
+        let mut visuals = vec![first.clone(), first.clone(), reversed.clone()];
+        let mut updated = first.clone();
+        updated["label"] = json!("updated");
+        let corrections = vec![
+            json!({"visual":updated,"sources":[]}),
+            json!({"visual":{"id":"missing","sources":[]},"sources":[]}),
+            json!({"visual":reversed,"sources":[{"pointer":"/absent","sha256":"stale"}]}),
+        ];
+        let mut conflicts = vec![];
+        assert_eq!(
+            rebase_visuals(
+                &mut visuals,
+                &corrections,
+                &json!({}),
+                true,
+                &BTreeSet::new(),
+                &mut conflicts
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(visuals, vec![updated, first, reversed]);
+        assert_eq!(conflicts.len(), 2);
+        assert_eq!(conflicts[0]["id"], "missing");
+        assert_eq!(conflicts[1]["id"], "v");
+    }
+
+    #[test]
+    #[ignore = "manual visual correction performance measurement"]
+    fn measure_visual_corrections() {
+        for count in [500, 2_000] {
+            let visuals: Vec<_> = (0..count).map(|i| json!({"id":format!("v{i}"),"sources":[format!("/drawing/{i}")],"evidence":[]})).collect();
+            let current = json!({"anchor":"original"});
+            let corrections: Vec<_> = visuals.iter().map(|visual| json!({"visual":visual,"sources":[{"pointer":"/anchor","sha256":hash(&encoded(&current["anchor"]))}]})).collect();
+            let mut times = vec![];
+            for _ in 0..5 {
+                let mut actual = visuals.clone();
+                let mut conflicts = vec![];
+                let start = std::time::Instant::now();
+                let carried = rebase_visuals(
+                    &mut actual,
+                    &corrections,
+                    &current,
+                    true,
+                    &BTreeSet::new(),
+                    &mut conflicts,
+                )
+                .unwrap();
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(carried, count);
+                assert_eq!(actual, visuals);
+                assert!(conflicts.is_empty());
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!("visual_corrections count={count} median_ms={:.3}", times[2]);
+        }
     }
 }
