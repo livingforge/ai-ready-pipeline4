@@ -58,6 +58,7 @@ const MS_REL: &str = "http://schemas.microsoft.com/office/2006/relationships";
 const PKG_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const XDR: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
 const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const DIAGRAM: &str = "http://schemas.openxmlformats.org/drawingml/2006/diagram";
 const MARKUP_COMPATIBILITY: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 const X14: &str = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
 const XM: &str = "http://schemas.microsoft.com/office/excel/2006/main";
@@ -92,6 +93,8 @@ pub struct Cell {
     pub formula: Option<String>,
     /// Index of the cell's format in `cellXfs` (its `s` attribute).
     pub format: usize,
+    /// Every run of the cell's text is bold, whatever the cell format says.
+    pub bold_text: bool,
 }
 struct CellFormat {
     number_format: String,
@@ -116,7 +119,11 @@ impl Workbook {
     }
     fn cell_value(&self, sheet_index: usize, cell: &Cell) -> Value {
         let format = &self.formats[cell.format];
-        json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind,"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":format.appearance})
+        let mut style = format.appearance.clone();
+        if cell.bold_text {
+            style["bold"] = json!(true);
+        }
+        json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind,"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":style})
     }
 }
 fn xml(bytes: &[u8]) -> Result<Document<'_>> {
@@ -128,6 +135,23 @@ fn child<'a, 'b>(node: Node<'a, 'b>, name: &str) -> Option<Node<'a, 'b>> {
 fn child_ns<'a, 'b>(node: Node<'a, 'b>, namespace: &str, name: &str) -> Option<Node<'a, 'b>> {
     node.children().find(|n| n.has_tag_name((namespace, name)))
 }
+/// Whether a font or run property such as `b` or `strike` is set.
+/// ST_OnOff: `false` and `off` turn it off as `0` does.
+fn on(properties: Node<'_, '_>, name: &str) -> bool {
+    child(properties, name)
+        .is_some_and(|n| !matches!(n.attribute("val"), Some("0" | "false" | "off")))
+}
+
+/// Whether the text is written in runs that are all bold. Authors set a
+/// header apart this way without changing the cell format.
+fn bold_runs(node: Node<'_, '_>) -> bool {
+    let mut runs = node
+        .children()
+        .filter(|n| n.has_tag_name((NS, "r")))
+        .peekable();
+    runs.peek().is_some() && runs.all(|r| child(r, "rPr").is_some_and(|p| on(p, "b")))
+}
+
 /// Cell text from its `t` runs. Phonetic guides (`rPh`, furigana Excel keeps
 /// from Japanese IME input) are readings, not part of the displayed value.
 fn texts(node: Node<'_, '_>) -> String {

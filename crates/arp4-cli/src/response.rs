@@ -53,6 +53,51 @@ fn bounded(mut value: Value, budget: usize) -> Value {
 }
 
 impl Output {
+    /// Keep every query visible when a search batch exceeds the response budget.
+    /// Drop trailing hits from the largest pages, preserving their pagination.
+    pub fn fit_search_batch(&self, mut value: Value) -> Result<Value, Value> {
+        if self.full {
+            return Ok(value);
+        }
+        let mut shortened = false;
+        while bytes(&value) + 16 > MAX_RESPONSE_BYTES {
+            if !shortened {
+                value["detail"] = json!(
+                    "Some hits were omitted to fit the response. Read affected queries separately when items are omitted."
+                );
+            }
+            let Some(queries) = value["queries"].as_array_mut() else {
+                break;
+            };
+            let candidate = queries
+                .iter()
+                .enumerate()
+                .filter(|(_, q)| q["items"].as_array().is_some_and(|items| !items.is_empty()))
+                .max_by_key(|(_, q)| bytes(&q["items"]))
+                .map(|(index, _)| index);
+            let Some(index) = candidate else {
+                return Err(json!({"error":{"code":"search_response_too_large",
+                    "message":"Use fewer or shorter queries to fit the search response."}}));
+            };
+            let query = &mut queries[index];
+            query["items"].as_array_mut().unwrap().pop();
+            let returned = query["items"].as_array().unwrap().len();
+            query["page"]["returned"] = json!(returned);
+            let offset = query["page"]["offset"].as_u64().unwrap();
+            let total = query["page"]["total"].as_u64().unwrap();
+            query["page"]["next_offset"] = if returned == 0 {
+                query["omitted_fields"] = json!(["items"]);
+                Value::Null
+            } else if offset + returned as u64 >= total {
+                Value::Null
+            } else {
+                json!(offset + returned as u64)
+            };
+            shortened = true;
+        }
+        Ok(value)
+    }
+
     pub fn page(&self, items: Vec<Value>) -> Value {
         let total = items.len();
         let offset = self.offset.unwrap_or(0).min(total);
@@ -251,5 +296,28 @@ mod tests {
         assert_eq!(value["state"], "recorded");
         assert_eq!(value["omitted_fields"], json!(["actor"]));
         assert_eq!(output.page(vec![])["page"]["next_offset"], Value::Null);
+    }
+
+    #[test]
+    fn search_batch_keeps_query_list_when_hits_exceed_budget() {
+        let queries: Vec<_> = (0..32)
+            .map(|i| {
+                json!({"query":format!("term{i}"),"ok":true,
+                "items":[{"text":"x".repeat(1200)}],
+                "page":{"total":2,"offset":0,"returned":1,"next_offset":1}})
+            })
+            .collect();
+        let output = Output::default();
+        let fitted = output
+            .fit_search_batch(json!({"queries":queries,"revision":"r"}))
+            .unwrap();
+        let rendered: Value = serde_json::from_str(&output.render(fitted, true)).unwrap();
+        let kept = rendered["queries"].as_array().unwrap();
+        assert_eq!(kept.len(), 32);
+        assert!(kept.iter().any(|q| q["omitted_fields"] == json!(["items"])));
+        assert!(kept.iter().all(|q| q["query"].is_string()));
+        assert!(kept.iter().all(|q| {
+            q["page"]["returned"].as_u64().unwrap() == q["items"].as_array().unwrap().len() as u64
+        }));
     }
 }

@@ -226,7 +226,7 @@ impl Workbook {
         if let Some(bytes) = parts.get("xl/sharedStrings.xml") {
             let doc = xml(bytes)?;
             for item in doc.root_element().children().filter(Node::is_element) {
-                shared.push(texts(item));
+                shared.push((texts(item), bold_runs(item)));
             }
         }
         let builtin: Value = serde_json::from_str(include_str!(
@@ -240,7 +240,7 @@ impl Workbook {
             .collect();
         let mut cell_formats = vec![CellFormat {
             number_format: "General".to_owned(),
-            appearance: json!({"bold":false,"fill":0,"border":0}),
+            appearance: json!({"bold":false,"fill":0,"border":0,"strike":false}),
         }];
         if let Some(bytes) = parts.get("xl/styles.xml") {
             let doc = xml(bytes)?;
@@ -259,12 +259,7 @@ impl Workbook {
                     .map(|n| {
                         n.children()
                             .filter(Node::is_element)
-                            .map(|f| {
-                                // ST_OnOff: `false` and `off` turn it off as `0` does.
-                                child(f, "b").is_some_and(|b| {
-                                    !matches!(b.attribute("val"), Some("0" | "false" | "off"))
-                                })
-                            })
+                            .map(|f| (on(f, "b"), on(f, "strike")))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -273,9 +268,11 @@ impl Workbook {
                     .filter(Node::is_element)
                     .map(|f| {
                         let font = f.attribute("fontId").unwrap_or("0").parse::<usize>()?;
-                        let appearance = json!({"bold":fonts.get(font).copied().unwrap_or(false),
+                        let (bold, strike) = fonts.get(font).copied().unwrap_or_default();
+                        let appearance = json!({"bold":bold,
                         "fill":f.attribute("fillId").unwrap_or("0").parse::<u32>()?,
-                        "border":f.attribute("borderId").unwrap_or("0").parse::<u32>()?});
+                        "border":f.attribute("borderId").unwrap_or("0").parse::<u32>()?,
+                        "strike":strike});
                         let number_format = formats
                             .get(&f.attribute("numFmtId").unwrap_or("0").parse()?)
                             .cloned()
@@ -305,9 +302,35 @@ impl Workbook {
             );
             let mut cells = vec![];
             let mut addresses = BTreeSet::new();
+            let hidden = |n: &Node<'_, '_>| matches!(n.attribute("hidden"), Some("1" | "true"));
+            let mut hidden_rows = vec![];
+            let mut hidden_columns = vec![];
+            for columns in doc
+                .root_element()
+                .children()
+                .filter(|n| n.has_tag_name((NS, "cols")))
+                .flat_map(|n| n.children())
+                .filter(|n| n.has_tag_name((NS, "col")) && hidden(n))
+            {
+                let bound = |name: &str| -> Result<u32> {
+                    Ok(columns
+                        .attribute(name)
+                        .context("missing column bound")?
+                        .parse()?)
+                };
+                // A width set for the rest of the sheet ends at the last column.
+                for column in bound("min")?..=bound("max")?.min(16_384) {
+                    hidden_columns.push(column_name(column)?);
+                }
+            }
             if let Some(data) = child(doc.root_element(), "sheetData") {
                 let masters = shared_formula_masters(data)?;
                 for row in data.children().filter(|n| n.has_tag_name((NS, "row"))) {
+                    if hidden(&row)
+                        && let Some(number) = row.attribute("r")
+                    {
+                        hidden_rows.push(number.parse::<u32>()?);
+                    }
                     for c in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
                         let address = c.attribute("r").context("missing cell address")?;
                         coordinate(address)?;
@@ -322,17 +345,20 @@ impl Workbook {
                         if c.attribute("vm").is_some() {
                             rich_values.push(format!("{name}!{address}"));
                         }
+                        let mut bold_text = false;
                         let (kind, value) = match c.attribute("t").unwrap_or("n") {
-                            "inlineStr" => ("string", json!(texts(c))),
+                            "inlineStr" => {
+                                bold_text = child(c, "is").is_some_and(bold_runs);
+                                ("string", json!(texts(c)))
+                            }
                             _ if raw_value.is_empty() => ("null", Value::Null),
-                            "s" => (
-                                "string",
-                                json!(
-                                    shared
-                                        .get(raw_value.parse::<usize>()?)
-                                        .context("invalid shared string index")?
-                                ),
-                            ),
+                            "s" => {
+                                let (text, bold) = shared
+                                    .get(raw_value.parse::<usize>()?)
+                                    .context("invalid shared string index")?;
+                                bold_text = *bold;
+                                ("string", json!(text))
+                            }
                             "b" => {
                                 ensure!(
                                     raw_value == "0" || raw_value == "1",
@@ -371,6 +397,7 @@ impl Workbook {
                             value,
                             formula: formula_text,
                             format,
+                            bold_text,
                         });
                     }
                 }
@@ -398,7 +425,7 @@ impl Workbook {
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
             let computed = computed_ranges(&parts, &part, doc.root_element())?;
-            sheets.push(json!({"name":name,"part":part,"state":state,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed}));
+            sheets.push(json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed}));
             sheet_cells.push(cells);
         }
         // Name unique images in first-use order across the workbook. Hashes remain

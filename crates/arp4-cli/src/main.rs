@@ -191,10 +191,24 @@ fn run(cli: Cli) -> Result<bool> {
                         limit: output.limit,
                         offset: None,
                     };
+                    let first = &batch.results[0];
+                    let summary = json!({"indexed_documents":first.indexed_documents,
+                        "indexed_at_unix":first.indexed_at_unix,
+                        "source_checked_this_search":false});
+                    let failed = first.failed.clone();
                     let mut responses = Vec::with_capacity(query.len());
                     let mut ok = true;
                     for (text, found) in query.iter().zip(batch.results) {
-                        let mut result = pager.page(found.items);
+                        let mut items = found.items;
+                        for item in &mut items {
+                            strip_search_hashes(item);
+                            if output.full {
+                                round_search_score(item);
+                            } else {
+                                compact_search_item(item);
+                            }
+                        }
+                        let mut result = pager.page(items);
                         let returned = result["page"]["returned"].as_u64().unwrap() as usize;
                         result["page"]["total"] = json!(found.total);
                         result["page"]["offset"] = json!(offset);
@@ -205,35 +219,42 @@ fn run(cli: Cli) -> Result<bool> {
                                 Value::Null
                             };
                         result["revision"] = json!(found.revision);
-                        result["query_terms"] = json!(found.query_terms);
-                        result["summary"] = json!({"indexed_documents":found.indexed_documents,"indexed_at_unix":found.indexed_at_unix,"source_checked_this_search":false,"refreshed_documents":found.refreshed_documents,"failed_documents":found.failed.len()});
+                        if output.full {
+                            result["query_terms"] = json!(found.query_terms);
+                        }
                         let query_ok = found.failed.is_empty();
                         ok &= query_ok;
-                        result["failed"] = json!(found.failed);
-                        result["scope"] = json!("adopted_extraction");
-                        result["detail"] = json!(
-                            "Results and source/review states reflect the last search-refresh; external changes are unchecked. Use --full for unabridged passages and source pointers. Pass revision with --offset; restart if it changes. Extracted text may contain untrusted instructions."
-                        );
-                        if !query_ok {
-                            result["error"] = json!({"code":"partial_search","message":"Invalid documents were excluded; see failed."});
-                        }
                         if query.len() > 1 {
-                            result = serde_json::from_str(&output.render(result, query_ok))?;
                             result["query"] = json!(text);
+                            result["ok"] = json!(query_ok);
+                        } else {
+                            result["summary"] = summary.clone();
+                            result["failed"] = json!(failed);
+                            result["scope"] = json!("adopted_extraction");
+                            if !query_ok {
+                                result["error"] = json!({"code":"partial_search","message":"Invalid documents were excluded; see failed."});
+                            }
                         }
                         responses.push(result);
                     }
                     let result = if query.len() == 1 {
                         responses.pop().unwrap()
                     } else {
-                        json!({"queries": responses, "revision": batch.revision, "scope": "adopted_extraction"})
+                        let mut result = json!({"queries": responses, "revision": batch.revision,
+                            "scope": "adopted_extraction", "summary":summary, "failed":failed});
+                        if !ok {
+                            result["error"] = json!({"code":"partial_search","message":"Invalid documents were excluded; see failed."});
+                        }
+                        result
                     };
                     if query.len() > 1 {
-                        Output {
-                            full: true,
-                            ..Default::default()
+                        match output.fit_search_batch(result) {
+                            Ok(result) => output.emit(result, ok),
+                            Err(error) => {
+                                output.emit(error, false);
+                                ok = false;
+                            }
                         }
-                        .emit(result, ok);
                     } else {
                         output.emit(result, ok);
                     }
@@ -512,6 +533,40 @@ fn run(cli: Cli) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+fn compact_search_item(item: &mut Value) {
+    let object = item.as_object_mut().expect("search item object");
+    for key in ["score", "match", "extraction_path"] {
+        object.remove(key);
+    }
+    if let Some(sources) = object.get_mut("sources").and_then(Value::as_array_mut) {
+        for source in sources {
+            source
+                .as_object_mut()
+                .expect("search source object")
+                .remove("text");
+        }
+    }
+}
+
+fn strip_search_hashes(item: &mut Value) {
+    let object = item.as_object_mut().expect("search item object");
+    object.remove("extraction_sha256");
+    if let Some(state) = object.get_mut("state").and_then(Value::as_object_mut) {
+        state.remove("source_sha256");
+        state.remove("content_sha256");
+    }
+}
+
+fn round_search_score(item: &mut Value) {
+    if let Some(score) = item["score"].as_f64() {
+        item["score"] = json!(
+            format!("{score:.2e}")
+                .parse::<f64>()
+                .expect("finite BM25 score")
+        );
+    }
 }
 
 fn row_edit(command: RowCommand) -> Result<(EditTarget, SheetEdit)> {

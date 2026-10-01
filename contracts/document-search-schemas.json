@@ -1,13 +1,17 @@
 {
   "search-batch": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "Multiple queries in input order against one saved search index snapshot. Common options apply to every query. The outer revision pins the ordered query list and index snapshot. Per-query revisions support individual searches. Normal presentation limits apply separately to each query.",
+    "description": "Multiple queries in input order against one saved search index snapshot. Shared index metadata and failures occur once at the outer level. The outer revision pins the ordered query list and index snapshot. Per-query revisions support individual searches. Normal presentation may omit trailing hits while retaining every query; omitted fields are explicit.",
     "type": "object", "additionalProperties": false,
-    "required": ["ok", "scope", "revision", "queries"],
+    "required": ["ok", "scope", "revision", "summary", "failed", "queries"],
     "properties": {
       "ok": {"type": "boolean"},
       "scope": {"const": "adopted_extraction"},
       "revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "summary": {"type": "object"},
+      "failed": {"type": "array"},
+      "error": {"type": "object"},
+      "detail": {"type": "string"},
       "queries": {
         "type": "array", "minItems": 2, "maxItems": 32,
         "items": {
@@ -52,6 +56,7 @@
   },
   "search-state": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State stored in the search index. CLI search responses omit verification hashes, including with --full.",
     "type": "object", "additionalProperties": false,
     "required": ["source_sha256", "source_current", "source_missing", "reviewed", "content_differs_from_extraction", "content_sha256"],
     "properties": {
@@ -65,7 +70,7 @@
   },
   "search-passage": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "Searchable extraction fragment. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.",
+    "description": "Fragment stored in the search index. CLI search responses omit extraction_sha256, including with --full. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.",
     "type": "object", "additionalProperties": false,
     "required": ["document_id", "source_path", "extraction_sha256", "kind", "title", "text", "sources", "context", "structure_reviewed"],
     "properties": {

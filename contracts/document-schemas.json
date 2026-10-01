@@ -5190,6 +5190,10 @@
                       "border": {
                         "type": "integer",
                         "minimum": 0
+                      },
+                      "strike": {
+                        "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -5228,6 +5232,22 @@
             },
             "state": {
               "type": "string"
+            },
+            "hidden_rows": {
+              "description": "Excel rows hidden on the sheet. Their cells are still extracted.",
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "hidden_columns": {
+              "description": "Excel columns hidden on the sheet, by letter. Their cells are still extracted.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Z]+$"
+              }
             },
             "tables": {
               "type": "array",
@@ -5572,12 +5592,20 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "checked": {
+                            "description": "Saved state of a check box or option button; null for other controls and for the mixed state.",
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
                           "kind",
                           "linked_cell",
-                          "list_range"
+                          "list_range",
+                          "checked"
                         ]
                       }
                     ]

@@ -940,6 +940,7 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/border</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
@@ -984,7 +985,8 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/target</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/0</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1</code> | <code>{"additionalProperties":false,"required":["kind","linked_cell","list_range"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1</code> | <code>{"additionalProperties":false,"required":["kind","linked_cell","list_range","checked"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/checked</code> | <code>{"description":"Saved state of a check box or option button; null for other controls and for the mixed state.","type":["boolean","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/kind</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/linked_cell</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/list_range</code> | <code>{"type":["string","null"]}</code> |
@@ -1011,6 +1013,10 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/0</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/hidden_columns</code> | <code>{"description":"Excel columns hidden on the sheet, by letter. Their cells are still extracted.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/merges</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1372,7 +1378,10 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Multiple queries in input order against one saved search index snapshot. Common options apply to every query. The outer revision pins the ordered query list and index snapshot. Per-query revisions support individual searches. Normal presentation limits apply separately to each query.","required":["ok","scope","revision","queries"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Multiple queries in input order against one saved search index snapshot. Shared index metadata and failures occur once at the outer level. The outer revision pins the ordered query list and index snapshot. Per-query revisions support individual searches. Normal presentation may omit trailing hits while retaining every query; omitted fields are explicit.","required":["ok","scope","revision","summary","failed","queries"],"type":"object"}</code> |
+| <code>/properties/detail</code> | <code>{"type":"string"}</code> |
+| <code>/properties/error</code> | <code>{"type":"object"}</code> |
+| <code>/properties/failed</code> | <code>{"type":"array"}</code> |
 | <code>/properties/ok</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/queries</code> | <code>{"maxItems":32,"minItems":2,"type":"array"}</code> |
 | <code>/properties/queries/items</code> | <code>{"required":["query","ok"],"type":"object"}</code> |
@@ -1380,12 +1389,13 @@
 | <code>/properties/queries/items/properties/query</code> | <code>{"type":"string"}</code> |
 | <code>/properties/revision</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/scope</code> | <code>{"const":"adopted_extraction"}</code> |
+| <code>/properties/summary</code> | <code>{"type":"object"}</code> |
 
 ## search-passage
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Searchable extraction fragment. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.","required":["document_id","source_path","extraction_sha256","kind","title","text","sources","context","structure_reviewed"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Fragment stored in the search index. CLI search responses omit extraction_sha256, including with --full. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.","required":["document_id","source_path","extraction_sha256","kind","title","text","sources","context","structure_reviewed"],"type":"object"}</code> |
 | <code>/properties/context</code> | <code>{"type":"array"}</code> |
 | <code>/properties/context/items</code> | <code>{"$ref":"#/$defs/source"}</code> |
 | <code>/properties/document_id</code> | <code>{"type":"string"}</code> |
@@ -1424,7 +1434,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["source_sha256","source_current","source_missing","reviewed","content_differs_from_extraction","content_sha256"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"State stored in the search index. CLI search responses omit verification hashes, including with --full.","required":["source_sha256","source_current","source_missing","reviewed","content_differs_from_extraction","content_sha256"],"type":"object"}</code> |
 | <code>/properties/content_differs_from_extraction</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/content_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/reviewed</code> | <code>{"type":"boolean"}</code> |

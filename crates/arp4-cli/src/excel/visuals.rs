@@ -71,7 +71,7 @@ impl<'a> Relationships<'a> {
 
 /// Controls on a sheet by shape ID, as (settings, assigned macro). Excel keeps
 /// these outside DrawingML: the macro on `controlPr`, and the object type,
-/// linked cell and list range of a form control in its `ctrlProp` part.
+/// linked cell, list range and saved state of a form control in its `ctrlProp` part.
 /// ActiveX settings live in binary parts and are not read.
 fn controls(
     parts: &BTreeMap<String, Vec<u8>>,
@@ -101,10 +101,19 @@ fn controls(
         let settings = if relationship.ends_with("/ctrlProp") {
             let doc = xml(&parts[&part])?;
             let root = doc.root_element();
-            json!({"kind":root.attribute("objectType").unwrap_or(""),
-                "linked_cell":root.attribute("fmlaLink"),"list_range":root.attribute("fmlaRange")})
+            let kind = root.attribute("objectType").unwrap_or("");
+            // ST_Checked: an absent attribute is unchecked; `Mixed` is neither.
+            let checked = matches!(kind, "CheckBox" | "Radio")
+                .then(|| match root.attribute("checked") {
+                    Some("Checked") => Some(true),
+                    Some("Mixed") => None,
+                    _ => Some(false),
+                })
+                .flatten();
+            json!({"kind":kind,"linked_cell":root.attribute("fmlaLink"),
+                "list_range":root.attribute("fmlaRange"),"checked":checked})
         } else {
-            json!({"kind":"ActiveX","linked_cell":null,"list_range":null})
+            json!({"kind":"ActiveX","linked_cell":null,"list_range":null,"checked":null})
         };
         let assigned = property
             .and_then(|p| p.attribute("macro"))
@@ -384,6 +393,39 @@ pub(super) fn extract_visuals(
                             .join("\n")
                     })
                     .unwrap_or_default();
+                // SmartArt keeps its text in a diagram data part, one point per node.
+                let diagram = node
+                    .descendants()
+                    .find(|n| n.has_tag_name((DIAGRAM, "relIds")))
+                    .and_then(|n| n.attribute((REL, "dm")));
+                let text = match diagram {
+                    Some(id) => {
+                        let data = relationships.target(&part, id, "/diagramData")?;
+                        let doc = xml(parts.get(&data).context("missing diagram data")?)?;
+                        doc.descendants()
+                            .filter(|n| {
+                                n.has_tag_name((DIAGRAM, "pt"))
+                                    && matches!(n.attribute("type"), None | Some("node" | "asst"))
+                            })
+                            .map(|point| {
+                                point
+                                    .descendants()
+                                    .filter(|n| n.has_tag_name((DRAWING, "p")))
+                                    .map(|p| {
+                                        p.descendants()
+                                            .filter(|n| n.has_tag_name((DRAWING, "t")))
+                                            .filter_map(|n| n.text())
+                                            .collect::<String>()
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .filter(|text| !text.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                    None => text,
+                };
                 let mut connections = vec![];
                 if kind == "connector" {
                     for c in node.descendants().filter(|n| {
