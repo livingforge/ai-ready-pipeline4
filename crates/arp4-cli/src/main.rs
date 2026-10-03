@@ -132,6 +132,8 @@ fn run(cli: Cli) -> Result<bool> {
                     | DocumentCommand::Review { .. }
                     | DocumentCommand::Export { out: Some(_), .. }
                     | DocumentCommand::Apply { .. }
+                    | DocumentCommand::ConfirmExport { .. }
+                    | DocumentCommand::Values { .. }
                     | DocumentCommand::StructureSave { .. }
                     | DocumentCommand::Rows { .. }
                     | DocumentCommand::Columns { .. }
@@ -288,6 +290,31 @@ fn run(cli: Cli) -> Result<bool> {
                             result["report"].as_object_mut().unwrap().remove(key);
                         }
                     }
+                    result
+                }
+                DocumentCommand::ConfirmExport {
+                    document,
+                    candidate,
+                    output_sha256,
+                    reviewer,
+                    reason,
+                    layout_reviewed,
+                } => store.confirm_export(
+                    &document,
+                    &candidate,
+                    &output_sha256,
+                    &reviewer,
+                    &reason,
+                    layout_reviewed,
+                )?,
+                DocumentCommand::Values {
+                    document,
+                    input,
+                    dry_run,
+                } => {
+                    let request = read(&input, Some("value-edits"))?;
+                    let mut result = store.edit_values(&document, &request, dry_run)?;
+                    omit_hashes(&mut result, &["content"], include_hashes);
                     result
                 }
                 DocumentCommand::Import { source, force } => {
@@ -593,6 +620,26 @@ fn row_edit(command: RowCommand) -> Result<(EditTarget, SheetEdit)> {
 
 fn column_edit(command: ColumnCommand) -> Result<(EditTarget, SheetEdit)> {
     let (target, kind) = match command {
+        ColumnCommand::Move {
+            target,
+            place,
+            from,
+            count,
+        } => {
+            let position = match (place.after, place.before) {
+                (Some(s), _) => Position::After(s),
+                (_, Some(s)) => Position::Before(s),
+                _ => unreachable!("clap requires position"),
+            };
+            (
+                target,
+                EditKind::Move {
+                    from,
+                    count,
+                    position,
+                },
+            )
+        }
         ColumnCommand::Insert {
             target,
             place,

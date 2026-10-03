@@ -313,13 +313,8 @@ impl Store {
             _ => None,
         };
         let before = fs::read(&source)?;
-        let stage = Stage::new_in(&under(&self.arp, "cache/export")?, &self.arp)?;
-        let output = stage
-            .path()
-            .join(source.file_name().context("source filename missing")?);
-        let report = self.export(id, Some(&output), "auto")?;
+        let (updated, report) = self.confirmed_export(id, &inspected)?;
         ensure!(fs::read(&source)? == before, "source changed during apply");
-        let updated = fs::read(&output)?;
         replace(&source, &updated)?;
         let proposal = match self.import_original(&source, id, carry.as_ref()) {
             Ok(proposal) => proposal,

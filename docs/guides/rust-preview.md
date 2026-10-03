@@ -34,8 +34,8 @@ arp4 documents diff $candidate.document_id --root C:/my-project
 ```
 
 `$candidate.proposal` の `content/<シート名>.yml` をAgentまたは人が原本と照合して成形します。
-本文の値は `blocks/table-1/rows/r<行番号>/<列名>` にあり、型・ID・セル対応を保って編集します。
-行・列を追加または削除する場合は、`documents rows` / `documents columns` を使います。`mappings.yml` の構造操作と本文の `<操作ID>-<番号>` キーを、1回の実行でまとめて書き込みます（仕様は [CLI応答仕様](../reference/cli.md) の「行・列の構造変更」）。
+本文の値は `elements` にあり、原本との対応は別の `layout.yml` に保存します。値の型と要素・表の形を保って編集します。
+行・列を追加または削除する場合は、`documents rows` / `documents columns` を使います。`mappings.yml` の構造操作、本文と `layout.yml` の位置対応を、1回の実行でまとめて書き込みます（仕様は [CLI応答仕様](../reference/cli.md) の「行・列の構造変更」）。
 
 ```powershell
 # 課題一覧の最終行の後に1行追加する（先に --dry-run で位置と値の変換を確認する）

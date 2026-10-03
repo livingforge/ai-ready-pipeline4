@@ -16,6 +16,29 @@
     ]}
   },
   "$defs": {
+    "edit": {
+      "description": "Batch interpretation edits. Upsert replaces the complete item by ID or adds a new one. Remove requires an existing ID. IDs must occur only once per collection across both operations. Revision is the complete interpretation hash returned by read/check. Source, extraction, regions and review are CLI-managed.",
+      "type": "object", "additionalProperties": false, "required": ["revision"],
+      "anyOf": [{"required": ["elements"]}, {"required": ["visuals"]}],
+      "properties": {
+        "revision": {"$ref": "#/$defs/hash"},
+        "elements": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "upsert": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/element"}},
+            "remove": {"$ref": "#/$defs/edit_ids"}
+          }
+        },
+        "visuals": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "upsert": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/visual"}},
+            "remove": {"$ref": "#/$defs/edit_ids"}
+          }
+        }
+      }
+    },
+    "edit_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
     "capture_structure_requirements": {
       "description": "Required Input.structure_requirements field. Exactly one entry per captured document; an empty list means structure is optional. Nonempty entries require a current accepted structure snapshot.",
       "type": "object",

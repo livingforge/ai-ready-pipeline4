@@ -35,6 +35,11 @@ pub enum EditKind {
         from: String,
         count: u32,
     },
+    Move {
+        from: String,
+        count: u32,
+        position: Position,
+    },
 }
 
 pub struct SheetEdit {
@@ -527,9 +532,22 @@ impl Store {
         };
         let prior_values = &recorded[..repeated.unwrap_or(recorded.len())];
         let prior = excel::parse_operations(prior_values, sheets)?;
+        let current_layout = identity::load(&dir, extraction, &Planned::new())?;
+        let mut reserved = recorded.clone();
+        {
+            let layout = &current_layout;
+            let history = array(&layout["history"])?;
+            if let Some(id) = &edit.id {
+                ensure!(
+                    repeated.is_some() || !history.iter().any(|o| o["id"] == *id),
+                    "operation ID was already applied; choose a fresh --id"
+                );
+            }
+            reserved.extend(history.iter().cloned());
+        }
         let op_id = match &edit.id {
             Some(op) => op.clone(),
-            None => generated_id(&recorded, edit),
+            None => generated_id(&reserved, edit),
         };
         let mut cells: BTreeMap<u32, BTreeMap<u32, &Value>> = BTreeMap::new();
         for cell in array(&sheets[index]["cells"])? {
@@ -559,7 +577,7 @@ impl Store {
             .context("the sheet has no content page")?;
         pages.insert(
             page_name.clone(),
-            read(&under(&dir, &page_name)?, Some("content"))?,
+            self.read_content(&dir, &page_name, extraction)?,
         );
         let mut new_values = prior_values.to_vec();
         new_values.push(plan.operation.clone());
@@ -588,7 +606,7 @@ impl Store {
                 .cloned()
                 .context("content page missing")?;
             if !pages.contains_key(&name) {
-                pages.insert(name.clone(), read(&under(&dir, &name)?, Some("content"))?);
+                pages.insert(name.clone(), self.read_content(&dir, &name, extraction)?);
             }
             let rows = pages.get_mut(&name).unwrap()["blocks"][&block]["rows"]
                 .as_object_mut()
@@ -661,16 +679,34 @@ impl Store {
         mappings["operations"] = Value::Array(new_values);
 
         let mut planned = BTreeMap::new();
+        let mut layout = identity::load(&dir, extraction, &Planned::new())?;
+        {
+            let layout = &mut layout;
+            identity::update(layout, &operations)?;
+            elements::geometry(
+                layout,
+                operated_extraction(extraction, &mappings["operations"])?.as_ref(),
+                &operations,
+            )?;
+        }
         planned.insert(
             "mappings.yml".to_owned(),
             Some(serialized(&mappings_path, &mappings)?),
         );
+        changed.insert(page_name.clone());
         for name in &changed {
             planned.insert(
                 name.clone(),
-                Some(serialized(Path::new(name), &pages[name])?),
+                Some(serialized(
+                    Path::new(name),
+                    &elements::encode(&pages[name], &mut layout)?,
+                )?),
             );
         }
+        planned.insert(
+            "layout.yml".into(),
+            Some(serialized(Path::new("layout.yml"), &layout)?),
+        );
         book.ensure_row_edits_supported(&operations, array(&mappings["operations"])?)
             .map_err(|error| rejection("structural_edit_unsupported", format!("{error:#}")))?;
         let result = self
@@ -756,6 +792,7 @@ fn generated_id(recorded: &[Value], edit: &SheetEdit) -> String {
         (EditKind::Delete { .. }, Axis::Rows) => "del-rows",
         (EditKind::Insert { .. }, Axis::Columns) => "add-cols",
         (EditKind::Delete { .. }, Axis::Columns) => "del-cols",
+        (EditKind::Move { .. }, _) => "move-cols",
     };
     next_operation_id(recorded, prefix)
 }
@@ -776,6 +813,8 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
         (EditKind::Delete { .. }, true) => "delete_rows",
         (EditKind::Insert { .. }, false) => "insert_columns",
         (EditKind::Delete { .. }, false) => "delete_columns",
+        (EditKind::Move { .. }, false) => "move_columns",
+        (EditKind::Move { .. }, true) => bail!("row moves are unsupported"),
     };
     let mut operation = json!({"id":id,"kind":kind,"sheet":sheet.name,"reason":edit.reason});
     let mut additions = vec![];
@@ -786,6 +825,42 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
         rejection("invalid_reason", "--reason must not be empty")
     );
     let span = match &edit.kind {
+        EditKind::Move {
+            from,
+            count,
+            position,
+        } => {
+            ensure!(!rows && *count > 0, "column move count must be positive");
+            let at = sheet.place(&sheet.parse(from, false)?, false)?;
+            let (anchor, after) = match position {
+                Position::After(s) => (s, true),
+                Position::Before(s) => (s, false),
+            };
+            let destination = sheet.place(&sheet.parse(anchor, false)?, false)? + u32::from(after);
+            let last = sheet.last(false)?;
+            let source_end = at
+                .checked_add(*count)
+                .filter(|end| *end <= last + 1)
+                .context("column move must stay within the occupied column span")?;
+            ensure!(
+                destination < at || destination > source_end,
+                "move destination overlaps source"
+            );
+            let to = if destination > at {
+                destination - count
+            } else {
+                destination
+            };
+            ensure!(
+                at.checked_add(count - 1).is_some_and(|end| end <= last)
+                    && to.checked_add(count - 1).is_some_and(|end| end <= last),
+                "column move must stay within the occupied column span"
+            );
+            operation["at"] = json!(at);
+            operation["count"] = json!(count);
+            operation["to"] = json!(to);
+            (to, to + count - 1)
+        }
         EditKind::Insert {
             position,
             count,

@@ -129,6 +129,7 @@ impl Store {
         };
         let file_of = |page: &str| inspected.page_files.get(page).cloned();
         let mut planned = Planned::new();
+        let mut layout = identity::load(&dir, &inspected.extraction, &planned)?;
         let mut added = vec![];
         let mut removed = vec![];
         let tables = mappings["tables"].as_array().cloned().unwrap_or_default();
@@ -182,6 +183,8 @@ impl Store {
                         .with_context(|| format!("{source} has no content page {source_page}"))?;
                     let page_id = page_of(&after, &name).context("inserted page missing")?;
                     let mut page = read(&under(&dir, &file)?, Some("content"))?;
+                    layout["sheets"][&page_id] = layout["sheets"][&source_page].clone();
+                    layout["sheets"][&page_id]["name"] = json!(name);
                     page["page_id"] = json!(page_id);
                     page["title"] = json!(name);
                     let target = format!("content/{name}.yml");
@@ -215,6 +218,7 @@ impl Store {
                     .filter_map(|name| page_of(&before, name))
                     .collect();
                 for page in &gone {
+                    layout["sheets"].as_object_mut().unwrap().remove(page);
                     if let Some(file) = file_of(page) {
                         planned.insert(file.clone(), None);
                         removed.push(file);
@@ -249,6 +253,10 @@ impl Store {
         planned.insert(
             "mappings.yml".to_owned(),
             Some(serialized(&mappings_path, &mappings)?),
+        );
+        planned.insert(
+            "layout.yml".into(),
+            Some(serialized(Path::new("layout.yml"), &layout)?),
         );
         Source::open(&under(&self.root, source_path)?)?
             .ensure_slide_edits_supported(&values)

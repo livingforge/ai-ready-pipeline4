@@ -528,18 +528,18 @@ pub(super) fn extract_field_codes(xml: &Document<'_>, part: &str) -> Vec<Value> 
                     }
                 }
                 Some("end") => {
-                    if let Some((instruction, _)) = open.pop() {
-                        if !instruction.trim().is_empty() {
-                            result.push(json!({"part":part,"instruction":instruction}));
-                        }
+                    if let Some((instruction, _)) = open.pop()
+                        && !instruction.trim().is_empty()
+                    {
+                        result.push(json!({"part":part,"instruction":instruction}));
                     }
                 }
                 _ => {}
             }
-        } else if word_element(node, "instrText") {
-            if let Some((instruction, false)) = open.last_mut() {
-                instruction.push_str(node.text().unwrap_or(""));
-            }
+        } else if word_element(node, "instrText")
+            && let Some((instruction, false)) = open.last_mut()
+        {
+            instruction.push_str(node.text().unwrap_or(""));
         }
     }
     result

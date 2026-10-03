@@ -8,6 +8,7 @@ pub(crate) use coordinates::axis_deleted;
 use coordinates::*;
 pub use operations::{parse_image_operations, parse_operations};
 mod operations;
+pub(crate) use drawings::project_anchor;
 pub use drawings::validate_image_asset;
 mod drawings;
 use drawings::*;
@@ -28,9 +29,11 @@ use package::*;
 pub(crate) use package::{write_archive, write_archive_without, write_unchanged, xml_attr};
 use relocation::*;
 use sheet_objects::*;
+mod column_move;
 mod render;
 #[cfg(windows)]
 mod render_native;
+mod text_edit;
 mod writeback;
 pub use render::render;
 #[cfg(windows)]
@@ -236,6 +239,10 @@ pub enum OperationKind {
     DeleteRows,
     InsertColumns,
     DeleteColumns,
+    /// First column of the moved block in the final order.
+    MoveColumns {
+        to: u32,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -299,6 +306,17 @@ pub fn filename(name: &str) -> String {
         out = format!("%{:02X}{out}", u32::from(first));
     }
     format!("{out}.yml")
+}
+
+/// Equivalence is established only by the same reference translator the writer
+/// uses. Errors and unproved transformations remain ordinary formula changes.
+pub(crate) fn formula_reference_equivalent(
+    before: &str,
+    after: &str,
+    sheet: &str,
+    operations: &[StructuralOperation],
+) -> bool {
+    references::reference_equivalence(before, after, sheet, operations)
 }
 
 #[cfg(test)]

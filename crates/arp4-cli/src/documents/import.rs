@@ -294,6 +294,22 @@ impl Store {
         // Moved in rather than serialized again: the sheets hold every cell.
         extraction["sheets"] = Value::Array(book.sheets().into_owned());
         validate("extraction", &extraction)?;
+        let mut layout = if identity::is_excel(&extraction) {
+            let identity_base = if carry.is_none()
+                && destination.join("document.yml").is_file()
+                && read(&destination.join("document.yml"), Some("document"))?["source"]["sha256"]
+                    == sha
+                && current.join("document.yml").is_file()
+                && read(&current.join("document.yml"), Some("document"))?["source"]["sha256"] != sha
+            {
+                &destination
+            } else {
+                &current
+            };
+            identity::reimport(identity_base, &extraction, carry.is_some())?
+        } else {
+            identity::initial(&extraction)?
+        };
         // Encoded once: the record is these bytes and its key is their hash.
         let extraction_bytes = encoded(&extraction);
         let extraction_hash = hash(&extraction_bytes);
@@ -340,6 +356,16 @@ impl Store {
             Some(Err(error)) => (interpretation, not_carried(Carrier::Alignment, error)),
             None => (interpretation, Value::Null),
         };
+        {
+            let (structure, _) = crate::document_structure::replay_verified_corrections(
+                &self.root,
+                &interpretation,
+                &extraction,
+                &extraction_hash,
+            )?;
+            elements::classify(&mut layout, array(&structure["elements"])?)?;
+            elements::geometry(&mut layout, &extraction, &[])?;
+        }
         let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
         let ready = stage.path().join("ready");
         fs::create_dir(&ready)?;
@@ -399,9 +425,13 @@ impl Store {
                 &ready
                     .join("content")
                     .join(excel::filename(string(&sheet["name"])?)),
-                &json!({"schema_version":"1","document_id":id,"page_id":page,"source_path":source_path,"title":sheet["name"],"blocks":blocks}),
+                &elements::encode(
+                    &json!({"schema_version":"4","document_id":id,"page_id":page,"source_path":source_path,"title":sheet["name"],"blocks":blocks}),
+                    &mut layout,
+                )?,
             )?;
         }
+        write(&ready.join("layout.yml"), &layout)?;
         // The per-cell entries follow from the extraction; inspection derives them.
         write(
             &ready.join("mappings.yml"),

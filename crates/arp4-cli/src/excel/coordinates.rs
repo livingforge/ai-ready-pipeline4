@@ -1,5 +1,18 @@
 use super::*;
 
+pub(super) fn moved_column(column: u32, from: u32, count: u32, to: u32) -> u32 {
+    if (from..from + count).contains(&column) {
+        return to + column - from;
+    }
+    if to < from && (to..from).contains(&column) {
+        return column + count;
+    }
+    if to > from && (from + count..to + count).contains(&column) {
+        return column - count;
+    }
+    column
+}
+
 pub fn coordinate(address: &str) -> Result<(u32, u32)> {
     let split = address
         .find(|c: char| c.is_ascii_digit())
@@ -246,6 +259,9 @@ pub(super) fn transform_index(
             continue;
         }
         match operation.kind {
+            OperationKind::MoveColumns { to } => {
+                position = moved_column(position, operation.at, operation.count, to);
+            }
             OperationKind::InsertRows | OperationKind::InsertColumns => {
                 if position >= operation.at {
                     position = position.checked_add(operation.count)?;
@@ -282,6 +298,9 @@ pub(super) fn map_anchor_index(
             continue;
         }
         match operation.kind {
+            OperationKind::MoveColumns { to } => {
+                position = moved_column(position, operation.at, operation.count, to);
+            }
             OperationKind::InsertRows | OperationKind::InsertColumns => {
                 let moves = if boundary {
                     position > operation.at
@@ -341,7 +360,7 @@ pub fn map_coordinate(
             };
         } else {
             mapped_column = match operation.kind {
-                OperationKind::InsertColumns => {
+                OperationKind::InsertColumns | OperationKind::MoveColumns { .. } => {
                     transform_index(mapped_column, std::slice::from_ref(operation), false)
                         .context("column coordinate overflow")?
                 }
@@ -372,6 +391,10 @@ pub(crate) fn axis_deleted(
 ) -> Result<bool> {
     for operation in operations {
         if operation.row_operation() != row {
+            continue;
+        }
+        if let OperationKind::MoveColumns { to } = operation.kind {
+            position = moved_column(position, operation.at, operation.count, to);
             continue;
         }
         let end = operation

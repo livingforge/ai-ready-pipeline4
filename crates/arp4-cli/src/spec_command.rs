@@ -5,6 +5,31 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
     match command {
         SpecCommand::Structure { root, command } => {
             let root = dunce::canonicalize(root)?;
+            use arp4_cli::document_structure::StructureCommand;
+            let _lock = if matches!(
+                &command,
+                StructureCommand::Init { .. }
+                    | StructureCommand::Render { .. }
+                    | StructureCommand::Region { .. }
+                    | StructureCommand::Review { .. }
+                    | StructureCommand::Edit { .. }
+            ) {
+                let path = under(&root, ".arp/rust-documents.lock")?;
+                fs::create_dir_all(path.parent().unwrap())?;
+                let file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .context(
+                        "another Rust document operation is running (or stale lock remains)",
+                    )?;
+                Some(Lock {
+                    path,
+                    file: Some(file),
+                })
+            } else {
+                None
+            };
             let mut result = arp4_cli::document_structure::execute(&root, command)?;
             result["ok"] = json!(true);
             // Read returns complete cell and image context; never truncate this protocol.

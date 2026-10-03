@@ -14,6 +14,12 @@ impl Workbook {
         if operations.is_empty() {
             return Ok(());
         }
+        if operations
+            .iter()
+            .any(|o| matches!(o.kind, OperationKind::MoveColumns { .. }))
+        {
+            return self.ensure_column_moves_supported(operations);
+        }
         let mut scratch = BTreeMap::new();
         let moves = Moves::new(
             operations,
@@ -34,7 +40,10 @@ impl Workbook {
 
     /// Package features unsupported by structural writeback. Table and pivot
     /// ranges are checked by relocation itself when the writeback runs.
-    fn ensure_structural_parts_supported(&self, operations: &[StructuralOperation]) -> Result<()> {
+    pub(super) fn ensure_structural_parts_supported(
+        &self,
+        operations: &[StructuralOperation],
+    ) -> Result<()> {
         if operations.is_empty() {
             return Ok(());
         }
@@ -98,7 +107,7 @@ impl Workbook {
 
     /// The formula edits (`sheet`, original `cell`, new formula `after` with
     /// its `=`) grouped by sheet, as address to formula text without `=`.
-    fn formula_edits(
+    pub(super) fn formula_edits(
         &self,
         formulas: &[Value],
     ) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
@@ -182,7 +191,6 @@ impl Workbook {
         }
         let recalc = (!changes.is_empty() || !formulas.is_empty()) && self.has_formulas();
         let mut patched = BTreeMap::new();
-        let type_attribute = attribute_pattern("t")?;
         for s in &self.sheets {
             let part = string(&s["part"])?;
             let name = string(&s["name"])?;
@@ -204,20 +212,10 @@ impl Workbook {
                 let address = cell.attribute("r").context("missing address")?;
                 if let Some(value) = updates.get(part).and_then(|u| u.get(address)) {
                     seen.insert(address.to_owned());
-                    let range = cell.range();
-                    let raw = &original[range.clone()];
-                    let end = raw.find('>').context("invalid cell")?;
-                    let tag = raw[1..]
-                        .split([' ', '\t', '\r', '\n', '/', '>'])
-                        .next()
-                        .unwrap();
-                    let prefix = tag.strip_suffix('c').unwrap();
-                    let opening = type_attribute
-                        .replace_all(&raw[..end], "")
-                        .trim_end_matches('/')
-                        .to_owned();
-                    let body = scalar_body(prefix, value)?;
-                    edits.push((range, format!("{opening}{body}</{tag}>")));
+                    edits.push((
+                        cell.range(),
+                        render_cell(original, cell, address, value, &self.parts)?,
+                    ));
                 } else if recalc
                     && child(cell, "f").is_some()
                     && let Some(cache) = child(cell, "v")
@@ -248,10 +246,73 @@ impl Workbook {
             );
         }
         apply_shape_texts(&self.parts, &mut patched, shapes)?;
+        for sheet in &self.sheets {
+            let part = string(&sheet["part"])?;
+            if let Some(after) = patched.get(part) {
+                let values: BTreeSet<_> = updates
+                    .get(part)
+                    .into_iter()
+                    .flat_map(|v| v.keys().map(String::as_str))
+                    .collect();
+                let formulas: BTreeSet<_> = formula_edits
+                    .get(string(&sheet["name"])?)
+                    .into_iter()
+                    .flat_map(|v| v.keys().map(String::as_str))
+                    .collect();
+                ensure!(
+                    worksheet_invariants(
+                        std::str::from_utf8(&self.parts[part])?,
+                        &values,
+                        &formulas,
+                        recalc
+                    )? == worksheet_invariants(
+                        std::str::from_utf8(after)?,
+                        &values,
+                        &formulas,
+                        recalc
+                    )?,
+                    "non-edited worksheet content changed: {part}"
+                );
+                let before_text = std::str::from_utf8(&self.parts[part])?;
+                let after_text = std::str::from_utf8(after)?;
+                let before_doc = xml(before_text.as_bytes())?;
+                let after_doc = xml(after_text.as_bytes())?;
+                let after_cells: BTreeMap<_, _> = after_doc
+                    .descendants()
+                    .filter(|node| node.has_tag_name((NS, "c")))
+                    .map(|cell| (cell.attribute("r").unwrap_or(""), cell))
+                    .collect();
+                for cell in before_doc.descendants().filter(|node| {
+                    node.has_tag_name((NS, "c"))
+                        && values.contains(node.attribute("r").unwrap_or(""))
+                }) {
+                    let address = cell.attribute("r").context("missing cell address")?;
+                    let written = *after_cells
+                        .get(address)
+                        .context("edited cell disappeared")?;
+                    ensure!(
+                        super::text_edit::run_properties(cell, before_text, &self.parts)?
+                            == super::text_edit::run_properties(written, after_text, &self.parts)?,
+                        "rich text run properties changed: {part}!{address}"
+                    );
+                }
+            }
+        }
         write_archive(&self.raw, destination, &patched)?;
+        let reread = Workbook::open(destination)?;
+        ensure!(
+            reread.parts.len() == self.parts.len(),
+            "Excel package parts changed unexpectedly"
+        );
+        for (part, before) in &self.parts {
+            ensure!(
+                reread.parts.get(part) == Some(patched.get(part).unwrap_or(before)),
+                "Excel package preservation failed: {part}"
+            );
+        }
         ensure_read_back(destination, changes, formulas, shapes, &[])?;
         Ok(
-            json!({"changed_parts":patched.keys().collect::<Vec<_>>(),"requires_excel_recalculation":recalc}),
+            json!({"changed_parts":patched.keys().collect::<Vec<_>>(),"requires_excel_recalculation":recalc,"non_edit_preservation_verified":true,"layout_review_required":true}),
         )
     }
 
@@ -294,6 +355,16 @@ impl Workbook {
             return self.patch_scalar(destination, changes, formulas, &shapes);
         }
         let operations = parse_operations(operation_values, &self.sheets)?;
+        if operations
+            .iter()
+            .any(|o| matches!(o.kind, OperationKind::MoveColumns { .. }))
+        {
+            ensure!(
+                assets.is_empty(),
+                "apply image operations before moving columns"
+            );
+            return self.patch_column_moves(destination, &operations, changes, formulas, &shapes);
+        }
         self.ensure_structural_parts_supported(&operations)?;
         let image_operations = parse_image_operations(operation_values, &self.sheets)?;
         ensure!(
@@ -459,6 +530,7 @@ impl Workbook {
                     row,
                     raw,
                     &RowTransform {
+                        parts: &self.parts,
                         original,
                         original_row,
                         final_row,
@@ -643,8 +715,51 @@ impl Workbook {
         Ok(json!({
             "changed_parts": patched.keys().collect::<Vec<_>>(),
             "requires_excel_recalculation": recalc,
+            "layout_review_required": true,
         }))
     }
+}
+
+/// Compare everything except explicitly edited values/formulas and stale caches.
+/// Cell attributes and non-value children, row heights, column widths, merges,
+/// print settings and all unedited cell markup remain part of the comparison.
+fn worksheet_invariants(
+    original: &str,
+    values: &BTreeSet<&str>,
+    formulas: &BTreeSet<&str>,
+    recalc: bool,
+) -> Result<String> {
+    let doc = xml(original.as_bytes())?;
+    let mut edits = vec![];
+    for cell in doc.descendants().filter(|n| n.has_tag_name((NS, "c"))) {
+        let address = cell.attribute("r").context("missing cell address")?;
+        if values.contains(address) || formulas.contains(address) {
+            let attributes: BTreeMap<_, _> = cell
+                .attributes()
+                .filter(|a| {
+                    !(values.contains(address) && a.namespace().is_none() && a.name() == "t")
+                })
+                .map(|a| ((a.namespace().unwrap_or(""), a.name()), a.value()))
+                .collect();
+            let retained: String = cell
+                .children()
+                .filter(Node::is_element)
+                .filter(|node| {
+                    !(node.has_tag_name((NS, "v"))
+                        || (values.contains(address) && node.has_tag_name((NS, "is")))
+                        || (formulas.contains(address) && node.has_tag_name((NS, "f"))))
+                })
+                .map(|node| &original[node.range()])
+                .collect();
+            edits.push((cell.range(), format!("{attributes:?}{retained}")));
+        } else if recalc
+            && child(cell, "f").is_some()
+            && let Some(cache) = child(cell, "v")
+        {
+            edits.push((cache.range(), String::new()));
+        }
+    }
+    splice(original, edits, "worksheet invariants")
 }
 
 /// Each cell of `book` by sheet name and address, so that checking many
@@ -830,7 +945,7 @@ fn ensure_read_back(
 /// removed or left behind are stale. The workbook's own calculation settings
 /// (iteration for intended circular references, precision as displayed, manual
 /// mode, R1C1 display) stay as they are.
-fn request_full_calculation(original: &str) -> Result<String> {
+pub(super) fn request_full_calculation(original: &str) -> Result<String> {
     let doc = xml(original.as_bytes())?;
     let root = doc.root_element();
     let mut result = original.to_owned();
@@ -980,5 +1095,40 @@ impl<'a> CellFormats<'a> {
             .iter()
             .find(|(min, max, _)| (*min..=*max).contains(&source_column))
             .map(|(_, _, style)| style.clone())
+    }
+}
+
+#[cfg(test)]
+mod preservation_tests {
+    use super::*;
+
+    #[test]
+    fn worksheet_projection_detects_layout_and_unedited_value_changes() {
+        let before = format!(
+            r#"<worksheet xmlns="{NS}"><cols><col min="1" max="1" width="20"/></cols><sheetData><row r="1" ht="30"><c r="A1" s="0" t="inlineStr"><is><t>old</t></is><extLst/></c><c r="B1"><v>5</v></c><c r="C1"><f>B1*2</f><v>10</v></c></row></sheetData><mergeCells><mergeCell ref="A2:B2"/></mergeCells></worksheet>"#
+        );
+        let values = BTreeSet::from(["A1"]);
+        let baseline = worksheet_invariants(&before, &values, &BTreeSet::new(), true).unwrap();
+        let permitted = before.replace("old", "new").replace("<v>10</v>", "");
+        assert_eq!(
+            baseline,
+            worksheet_invariants(&permitted, &values, &BTreeSet::new(), true).unwrap()
+        );
+        for (from, to) in [
+            ("width=\"20\"", "width=\"21\""),
+            ("ht=\"30\"", "ht=\"31\""),
+            ("s=\"0\"", "s=\"1\""),
+            ("<v>5</v>", "<v>6</v>"),
+            ("B1*2", "B1*3"),
+            ("A2:B2", "A2:C2"),
+            ("<extLst/>", ""),
+        ] {
+            assert_ne!(
+                baseline,
+                worksheet_invariants(&before.replace(from, to), &values, &BTreeSet::new(), true)
+                    .unwrap(),
+                "{from}"
+            );
+        }
     }
 }

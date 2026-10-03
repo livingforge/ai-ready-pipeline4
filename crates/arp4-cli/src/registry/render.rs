@@ -72,83 +72,6 @@ fn render_entry_table(e: &Entry, sources: &SourceIndex<'_>) -> Result<String> {
     spec::render_table(&e.value, |id| combined.get(id).copied())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn table_fixture(count: usize) -> (Entry, BTreeMap<String, spec::Input>) {
-        let sources: Vec<_> = (0..count).map(|index| json!({
-            "id":format!("s{index}"),"document":"doc","location":format!("/cell/{index}"),"text":"文😀",
-            "context":{"sheet":"S","cell":format!("A{}",index+1),"row":index+1,"column":1,"merges":[],"number_format":"General"}
-        })).collect();
-        let spans: Vec<_> = (0..count)
-            .map(|index| json!({"source":format!("s{index}"),"start":0,"end":2,"quote":"文😀"}))
-            .collect();
-        let entry = serde_json::from_value(json!({
-            "id":"SPEC-000001","name":"table","category":"specification","module":"test","status":"proposed",
-            "subject":"table","property":"grid","condition":{"basis":"unspecified"},
-            "value":{"kind":"table","title":[],"description":[],"cells":spans,"notes":[]},
-            "statement":"table","acceptance":[],"requirements":[],"related":[],"approval":null,
-            "evidence":spans.iter().map(|span|json!({"snapshot":"snapshot","span":span})).collect::<Vec<_>>()
-        })).unwrap();
-        let input = serde_json::from_value(json!({"schema_version":1,"structure_requirements":{},"revisions":{"doc":"revision"},"sources":sources,"warnings":[]})).unwrap();
-        (entry, BTreeMap::from([("snapshot".into(), input)]))
-    }
-
-    #[test]
-    fn table_sources_keep_snapshot_precedence_and_missing_source_errors() {
-        let (mut entry, mut inputs) = table_fixture(2);
-        let (_, mut additional) = table_fixture(1);
-        let mut alternate = additional.remove("snapshot").unwrap();
-        alternate.sources[0].context.as_mut().unwrap().row = 7;
-        inputs.insert("alternate".into(), alternate);
-        entry.evidence.push(
-            serde_json::from_value(json!({
-                "snapshot":"alternate","span":{"source":"s0","start":0,"end":2,"quote":"文😀"}
-            }))
-            .unwrap(),
-        );
-        let output = render_entry_table(&entry, &source_index(&inputs)).unwrap();
-        assert!(output.contains("| 7 | 文😀 |"));
-        assert!(output.contains("| 2 | 文😀 |"));
-        assert!(!output.contains("| 1 | 文😀 |"));
-        // The last occurrence of a repeated snapshot still determines precedence.
-        entry.evidence.swap(1, 2);
-        let output = render_entry_table(&entry, &source_index(&inputs)).unwrap();
-        assert!(output.contains("| 1 | 文😀 |"));
-        assert!(!output.contains("| 7 | 文😀 |"));
-        inputs.get_mut("snapshot").unwrap().sources.pop();
-        assert!(
-            render_entry_table(&entry, &source_index(&inputs))
-                .unwrap_err()
-                .to_string()
-                .contains("missing original table source")
-        );
-    }
-
-    #[test]
-    #[ignore = "manual registry table render performance measurement"]
-    fn measure_table_sources() {
-        use std::time::Instant;
-        for count in [500, 2_000] {
-            let (entry, inputs) = table_fixture(count);
-            let mut durations = Vec::new();
-            let mut digest = String::new();
-            for _ in 0..5 {
-                let start = Instant::now();
-                let sources = source_index(&inputs);
-                let output = render_entry_table(&entry, &sources).unwrap();
-                durations.push(start.elapsed().as_secs_f64() * 1000.0);
-                digest = hash(output.as_bytes());
-            }
-            durations.sort_by(f64::total_cmp);
-            eprintln!(
-                "table_sources count={count} median_ms={:.3} sha256={digest}",
-                durations[2]
-            );
-        }
-    }
-}
 pub fn render(r: &Registry, out: &Path) -> Result<()> {
     validate(r)?;
     let inputs = r
@@ -446,4 +369,82 @@ pub fn render(r: &Registry, out: &Path) -> Result<()> {
         return Err(error.into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table_fixture(count: usize) -> (Entry, BTreeMap<String, spec::Input>) {
+        let sources: Vec<_> = (0..count).map(|index| json!({
+            "id":format!("s{index}"),"document":"doc","location":format!("/cell/{index}"),"text":"文😀",
+            "context":{"sheet":"S","cell":format!("A{}",index+1),"row":index+1,"column":1,"merges":[],"number_format":"General"}
+        })).collect();
+        let spans: Vec<_> = (0..count)
+            .map(|index| json!({"source":format!("s{index}"),"start":0,"end":2,"quote":"文😀"}))
+            .collect();
+        let entry = serde_json::from_value(json!({
+            "id":"SPEC-000001","name":"table","category":"specification","module":"test","status":"proposed",
+            "subject":"table","property":"grid","condition":{"basis":"unspecified"},
+            "value":{"kind":"table","title":[],"description":[],"cells":spans,"notes":[]},
+            "statement":"table","acceptance":[],"requirements":[],"related":[],"approval":null,
+            "evidence":spans.iter().map(|span|json!({"snapshot":"snapshot","span":span})).collect::<Vec<_>>()
+        })).unwrap();
+        let input = serde_json::from_value(json!({"schema_version":1,"structure_requirements":{},"revisions":{"doc":"revision"},"sources":sources,"warnings":[]})).unwrap();
+        (entry, BTreeMap::from([("snapshot".into(), input)]))
+    }
+
+    #[test]
+    fn table_sources_keep_snapshot_precedence_and_missing_source_errors() {
+        let (mut entry, mut inputs) = table_fixture(2);
+        let (_, mut additional) = table_fixture(1);
+        let mut alternate = additional.remove("snapshot").unwrap();
+        alternate.sources[0].context.as_mut().unwrap().row = 7;
+        inputs.insert("alternate".into(), alternate);
+        entry.evidence.push(
+            serde_json::from_value(json!({
+                "snapshot":"alternate","span":{"source":"s0","start":0,"end":2,"quote":"文😀"}
+            }))
+            .unwrap(),
+        );
+        let output = render_entry_table(&entry, &source_index(&inputs)).unwrap();
+        assert!(output.contains("| 7 | 文😀 |"));
+        assert!(output.contains("| 2 | 文😀 |"));
+        assert!(!output.contains("| 1 | 文😀 |"));
+        // The last occurrence of a repeated snapshot still determines precedence.
+        entry.evidence.swap(1, 2);
+        let output = render_entry_table(&entry, &source_index(&inputs)).unwrap();
+        assert!(output.contains("| 1 | 文😀 |"));
+        assert!(!output.contains("| 7 | 文😀 |"));
+        inputs.get_mut("snapshot").unwrap().sources.pop();
+        assert!(
+            render_entry_table(&entry, &source_index(&inputs))
+                .unwrap_err()
+                .to_string()
+                .contains("missing original table source")
+        );
+    }
+
+    #[test]
+    #[ignore = "manual registry table render performance measurement"]
+    fn measure_table_sources() {
+        use std::time::Instant;
+        for count in [500, 2_000] {
+            let (entry, inputs) = table_fixture(count);
+            let mut durations = Vec::new();
+            let mut digest = String::new();
+            for _ in 0..5 {
+                let start = Instant::now();
+                let sources = source_index(&inputs);
+                let output = render_entry_table(&entry, &sources).unwrap();
+                durations.push(start.elapsed().as_secs_f64() * 1000.0);
+                digest = hash(output.as_bytes());
+            }
+            durations.sort_by(f64::total_cmp);
+            eprintln!(
+                "table_sources count={count} median_ms={:.3} sha256={digest}",
+                durations[2]
+            );
+        }
+    }
 }

@@ -1153,7 +1153,7 @@ fn branch_texts<'cache, 'a, 'input>(
         })
 }
 
-fn xml_text(value: &str) -> Result<String> {
+pub(crate) fn xml_text(value: &str) -> Result<String> {
     ensure!(value.chars().all(|c| matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')), "invalid XML character in replacement");
     Ok(value
         .replace('&', "&amp;")

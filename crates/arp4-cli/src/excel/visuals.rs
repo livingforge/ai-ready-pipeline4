@@ -237,6 +237,9 @@ fn attributes(node: Node<'_, '_>) -> Value {
 
 fn placement(node: Node<'_, '_>) -> Value {
     let mut result = json!({"kind":node.tag_name().name()});
+    if let Some(placement) = node.attribute("editAs") {
+        result["edit_as"] = json!(placement);
+    }
     for c in node.children().filter(Node::is_element) {
         match c.tag_name().name() {
             "from" | "to" => {
@@ -452,6 +455,23 @@ pub(super) fn extract_visuals(
                     }
                     linked_image = json!(blip.attribute((REL, "link")));
                 }
+                let chart_part = node
+                    .descendants()
+                    .find(|n| {
+                        n.has_tag_name((
+                            "http://schemas.openxmlformats.org/drawingml/2006/chart",
+                            "chart",
+                        ))
+                    })
+                    .map(|n| {
+                        relationships.target(
+                            &part,
+                            n.attribute((REL, "id"))
+                                .context("chart relationship missing")?,
+                            "/chart",
+                        )
+                    })
+                    .transpose()?;
                 let control = controls.get(raw_id);
                 let assigned = node
                     .attribute("macro")
@@ -464,6 +484,9 @@ pub(super) fn extract_visuals(
                     "text":text,"anchor":placement(anchor),"group":group.map(|v|format!("{part}#{v}")),"transform":transform,
                     "geometry":shape.and_then(|n|n.children().find(|n|n.has_tag_name((DRAWING,"prstGeom")))).and_then(|n|n.attribute("prst")),
                     "connections":connections,"image":image,"linked_image":linked_image}));
+                if let Some(chart_part) = chart_part {
+                    objects.last_mut().unwrap()["chart_part"] = json!(chart_part);
+                }
             }
         }
     }

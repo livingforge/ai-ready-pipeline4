@@ -361,16 +361,16 @@ fn join_columns(cells: &[Cell<'_>], remaining: &mut [Group]) {
             if remaining[a].iter().all(|i| cells[*i].left == left) {
                 continue;
             }
-            for b in 0..remaining.len() {
-                if b == a || remaining[b].is_empty() {
+            for (b, candidate) in remaining.iter().enumerate() {
+                if b == a || candidate.is_empty() {
                     continue;
                 }
-                let (l, t, _, bt) = bounds(cells, &remaining[b]);
-                let labelled = remaining[b]
+                let (l, t, _, bt) = bounds(cells, candidate);
+                let labelled = candidate
                     .iter()
                     .map(|i| &cells[*i])
                     .any(|c| c.left == l && c.top > t && c.string() && c.nonempty());
-                let single = remaining[b].iter().all(|i| cells[*i].left == l);
+                let single = candidate.iter().all(|i| cells[*i].left == l);
                 if right.checked_add(2) == Some(l)
                     && (t, bt) == (top, bottom)
                     && (single || !labelled)
@@ -558,17 +558,19 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
     let mut bold_end = None;
     if (first.len() >= 2 && mostly_bold) || group_header || (single && first[0].bold()) {
         let mut end = last(&first);
-        while !single {
-            let next_all = row(group, end + 1);
-            let next = valued(next_all.clone());
-            // A bold row in the records' fill under shaded headers is a record, such as a total.
-            if next.len() < 2
-                || !all_bold(&next)
-                || (shaded && next_all.iter().any(|c| c.fill() == 0))
-            {
-                break;
+        if !single {
+            loop {
+                let next_all = row(group, end + 1);
+                let next = valued(next_all.clone());
+                // A bold row in the records' fill under shaded headers is a record, such as a total.
+                if next.len() < 2
+                    || !all_bold(&next)
+                    || (shaded && next_all.iter().any(|c| c.fill() == 0))
+                {
+                    break;
+                }
+                end = last(&next);
             }
-            end = last(&next);
         }
         bold_end = Some(end);
         // Bold text tells nothing when every row is bold.
@@ -1448,12 +1450,13 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
             }
         }
         attach_stepped_labels(&cells, &mut groups)?;
-        let mut preceding: Option<(
+        type PrecedingTable = (
             (u32, u32, u32, u32),
             Vec<((u32, u32), String)>,
             String,
             bool,
-        )> = None;
+        );
+        let mut preceding: Option<PrecedingTable> = None;
         for (indices, explicit) in groups {
             let Some((interpreted, range)) = interpret(&cells, &indices, explicit, sheet_index)?
             else {

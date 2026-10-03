@@ -22,37 +22,38 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","document_id","page_id","title","blocks"],"type":"object"}</code> |
-| <code>/properties/blocks</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$</code> | <code>{"additionalProperties":false,"minProperties":1,"required":[],"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/fields</code> | <code>{"additionalProperties":false,"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/fields/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/links</code> | <code>{"type":"array"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/links/items</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows</code> | <code>{"additionalProperties":false,"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$</code> | <code>{"additionalProperties":false,"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$</code> | <code>{}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/anyOf/1</code> | <code>{"additionalProperties":false,"required":["ref"],"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/anyOf/1/properties/ref</code> | <code>{"additionalProperties":false,"required":["block","field"],"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/anyOf/1/properties/ref/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/rows/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/anyOf/1/properties/ref/properties/field</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source</code> | <code>{"additionalProperties":false,"required":["id","at","heading","rows","cells","text"],"type":"object"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/at</code> | <code>{"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/cells</code> | <code>{"type":"array"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/cells/items</code> | <code>{"maxItems":2,"minItems":2,"type":"array"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/cells/items/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/heading</code> | <code>{"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/rows</code> | <code>{"type":"array"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/rows/items</code> | <code>{"type":"array"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/rows/items/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/source/properties/text</code> | <code>{"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/text</code> | <code>{"type":"string"}</code> |
-| <code>/properties/blocks/patternProperties/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/properties/title</code> | <code>{"type":"string"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use value arrays (version 4); identities, table topology and source bindings live only in document-layout.","required":["schema_version","document_id","page_id","title","elements"],"type":"object"}</code> |
 | <code>/properties/document_id</code> | <code>{"pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
+| <code>/properties/elements</code> | <code>{"type":"array"}</code> |
+| <code>/properties/elements/items</code> | <code>{}</code> |
+| <code>/properties/elements/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["text"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text</code> | <code>{}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1</code> | <code>{"additionalProperties":false,"required":["ref"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1/properties/ref</code> | <code>{"additionalProperties":false,"required":["block","field"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1/properties/ref/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1/properties/ref/properties/field</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["formula"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/1/properties/formula</code> | <code>{"type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["table"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table</code> | <code>{"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items</code> | <code>{"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items</code> | <code>{}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1</code> | <code>{"additionalProperties":false,"required":["ref"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1/properties/ref</code> | <code>{"additionalProperties":false,"required":["block","field"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1/properties/ref/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1/properties/ref/properties/field</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["blank"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/3/properties/blank</code> | <code>{"type":"null"}</code> |
+| <code>/properties/elements/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["image"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/4/properties/image</code> | <code>{"type":"null"}</code> |
+| <code>/properties/elements/items/oneOf/5</code> | <code>{"additionalProperties":false,"required":["chart"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/5/properties/chart</code> | <code>{"type":"null"}</code> |
+| <code>/properties/elements/items/oneOf/6</code> | <code>{"additionalProperties":false,"required":["drawing"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/6/properties/drawing</code> | <code>{"type":"null"}</code> |
 | <code>/properties/page_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
 | <code>/properties/source_path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 
@@ -67,6 +68,140 @@
 | <code>/properties/source</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
 | <code>/properties/source/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/source/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+
+## document-layout
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Document positions, identities and value-free element_metadata indexed in the same order as body elements. Only ARP structural operations update both files. Same-shape manual reordering is a value edit, not an identity move.","required":["schema_version","document_id","source_sha256","sheets","history"],"type":"object"}</code> |
+| <code>/properties/document_id</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history</code> | <code>{"type":"array"}</code> |
+| <code>/properties/history/items</code> | <code>{}</code> |
+| <code>/properties/history/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count"],"type":"object"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/history/items/oneOf/0/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history/items/oneOf/1/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
+| <code>/properties/sheets</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","rows","columns","formulas","row_order","column_order","bindings","groups","metadata_sha256","blanks","notes","merges","block_titles","visuals","element_metadata"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/bindings</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties</code> | <code>{"additionalProperties":false,"required":["block","row","column"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties/properties/column</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties/properties/row</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/blanks</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/blanks/additionalProperties</code> | <code>{"additionalProperties":false,"required":["first_row","last_row"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/blanks/additionalProperties/properties/first_row</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/blanks/additionalProperties/properties/last_row</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/block_titles</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/block_titles/additionalProperties</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/column_order</code> | <code>{"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/additionalProperties/properties/column_order/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/columns</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/columns/additionalProperties</code> | <code>{"additionalProperties":false,"required":["key","position"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/columns/additionalProperties/properties/key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/columns/additionalProperties/properties/position</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata</code> | <code>{"description":"Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions.","type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items</code> | <code>{}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","type","text"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/text</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/type</code> | <code>{"const":"text"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/visual</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","type","formula"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/formula</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/type</code> | <code>{"const":"formula"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2/properties/type</code> | <code>{"const":"blank"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["id","type","columns","rows"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items</code> | <code>{"additionalProperties":false,"required":["id"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"additionalProperties":false,"required":["id","cells"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","column","role","headers"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column_span</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/formula</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/role</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/row_span</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/value</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/oneOf/0</code> | <code>{"not":{"required":["formula"]},"required":["value"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/oneOf/1</code> | <code>{"not":{"required":["value"]},"required":["formula"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["id","type","ref"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/ref</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/type</code> | <code>{"enum":["image","chart","drawing"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/formulas</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties</code> | <code>{"additionalProperties":false,"required":["row","column"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/column</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/row</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/groups</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties</code> | <code>{"additionalProperties":false,"required":["table","role","headers"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/headers</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/role</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/table</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/merges</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/merges/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/metadata_sha256</code> | <code>{"description":"Digest of the value-free element_metadata; array slots are bound by this metadata.","pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/notes</code> | <code>{"type":["object","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/row_order</code> | <code>{"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/additionalProperties/properties/row_order/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/rows</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/rows/additionalProperties</code> | <code>{"additionalProperties":false,"required":["key","position"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/rows/additionalProperties/properties/key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/rows/additionalProperties/properties/position</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties</code> | <code>{"additionalProperties":false,"required":["kind","source","drawing_id","anchor","order_basis"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/edit_as</code> | <code>{"enum":["absolute","oneCell","twoCell"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/col</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/row</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/kind</code> | <code>{"enum":["twoCellAnchor","oneCellAnchor","absoluteAnchor"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/pos</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/pos/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/col</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/asset</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/chart_part</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/drawing_id</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/kind</code> | <code>{"enum":["image","chart","drawing"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/order_basis</code> | <code>{"enum":["cell_anchor","unpositioned"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/parent</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/source</code> | <code>{"pattern":"^/sheets/[0-9]+/drawings/[0-9]+$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/text_key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/source_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 
 ## edit-decisions
 
@@ -327,6 +462,14 @@
 | <code>/properties/excel_operations/items/oneOf/6/properties/properties/properties/width/properties/page</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/6/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/6/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/move</code> | <code>{"type":"object"}</code> |
 | <code>/properties/move/additionalProperties</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/remove</code> | <code>{"type":"object"}</code> |
@@ -587,6 +730,14 @@
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/6/properties/properties/properties/width/properties/page</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/6/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/6/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/7/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/decisions/properties/move</code> | <code>{"type":"object"}</code> |
 | <code>/properties/decisions/properties/move/additionalProperties</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/decisions/properties/remove</code> | <code>{"type":"object"}</code> |
@@ -857,6 +1008,14 @@
 | <code>/properties/mappings/properties/operations/items/oneOf/7/properties/kind</code> | <code>{"const":"delete_slide"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/7/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/7/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/mappings/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/mappings/properties/tables</code> | <code>{"type":"array"}</code> |
 | <code>/properties/mappings/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["page","block","columns","references"],"type":"object"}</code> |
@@ -873,6 +1032,22 @@
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/unresolved</code> | <code>{"type":"array"}</code> |
 | <code>/properties/unresolved/items</code> | <code>{"type":"object"}</code> |
+
+## export-confirmation
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"描画の自動安全判定ではなく、出力を開いてレイアウトを確認した記録。applyはこの候補の同一バイトだけを適用する。","required":["schema_version","document_id","content","source_sha256","candidate","output_sha256","report_sha256","reviewer","reason","layout_status"],"type":"object"}</code> |
+| <code>/properties/candidate</code> | <code>{"pattern":"^\\.arp/cache/export/","type":"string"}</code> |
+| <code>/properties/content</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/document_id</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/layout_status</code> | <code>{"const":"human_confirmed"}</code> |
+| <code>/properties/output_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/reason</code> | <code>{"pattern":"\\S","type":"string"}</code> |
+| <code>/properties/report_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/reviewer</code> | <code>{"pattern":"\\S","type":"string"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/properties/source_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 
 ## extraction
 
@@ -962,6 +1137,7 @@
 | <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","part","kind","name","description","text","anchor","group","transform","geometry","connections","image","linked_image","macro","control"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/edit_as</code> | <code>{"enum":["absolute","oneCell","twoCell"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
@@ -977,6 +1153,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/chart_part</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections/items</code> | <code>{"additionalProperties":false,"required":["end","target","site","basis"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/basis</code> | <code>{"const":"explicit"}</code> |
@@ -1332,6 +1509,14 @@
 | <code>/properties/operations/items/oneOf/8/properties/kind</code> | <code>{"const":"delete_slide"}</code> |
 | <code>/properties/operations/items/oneOf/8/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/8/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/9</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/tables</code> | <code>{"type":"array"}</code> |
 | <code>/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["page","block","columns","references"],"type":"object"}</code> |
@@ -1451,3 +1636,20 @@
 | <code>/properties/groups/items</code> | <code>{"maxItems":16,"minItems":2,"type":"array","uniqueItems":true}</code> |
 | <code>/properties/groups/items/items</code> | <code>{"maxLength":128,"minLength":1,"pattern":"^\\S+$","type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+
+## value-edits
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Office・PDFの既存セルや本文文字列を、原本・本文の版と期待する旧値を照合して一括編集する。Excelは値・既存数式・テーブル列見出し・集計ラベルに対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。Word・PowerPoint・PDFは文字列のみ。構造操作中の文書・読み取り専用のフィールド・native textは対象外。","required":["schema_version","base","source_sha256","actor","reason","edits"],"type":"object"}</code> |
+| <code>/properties/actor</code> | <code>{"pattern":"\\S","type":"string"}</code> |
+| <code>/properties/base</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/edits</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/edits/items</code> | <code>{"additionalProperties":false,"required":["sheet","cell","before","after"],"type":"object"}</code> |
+| <code>/properties/edits/items/properties/after</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/edits/items/properties/before</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/edits/items/properties/cell</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/edits/items/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/reason</code> | <code>{"pattern":"\\S","type":"string"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/properties/source_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |

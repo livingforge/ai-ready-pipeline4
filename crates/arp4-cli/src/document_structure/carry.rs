@@ -287,9 +287,11 @@ fn sheet_cells(extraction: &Value) -> Result<BTreeMap<(String, String), &Value>>
 
 /// A numeric index for checking image regions without parsing and scanning all
 /// extraction cells for each region.
+type CoordinateCells<'a> = BTreeMap<String, BTreeMap<(u32, u32), &'a Value>>;
+
 fn coordinate_cells<'a>(
     cells: &BTreeMap<(String, String), &'a Value>,
-) -> Result<BTreeMap<String, BTreeMap<(u32, u32), &'a Value>>> {
+) -> Result<CoordinateCells<'a>> {
     let mut indexed: BTreeMap<String, BTreeMap<(u32, u32), &Value>> = BTreeMap::new();
     for ((sheet, address), cell) in cells {
         let (column, row) = crate::excel::coordinate(address)?;
@@ -1151,10 +1153,10 @@ fn moved_range(
             .get(sheet)
             .into_iter()
             .flat_map(|sheet_cells| sheet_cells.range((top, 0)..=(bottom, u32::MAX)))
-            .filter_map(|(&(row, column), cell)| {
-                ((left..=right).contains(&column) && (top..=bottom).contains(&row))
-                    .then(|| ((column - left, row - top), content(cell)))
+            .filter(|&(&(row, column), _)| {
+                (left..=right).contains(&column) && (top..=bottom).contains(&row)
             })
+            .map(|(&(row, column), cell)| ((column - left, row - top), content(cell)))
             .collect::<BTreeMap<_, _>>()
     };
     if shown_cells(before_cells, left, top, right, bottom)

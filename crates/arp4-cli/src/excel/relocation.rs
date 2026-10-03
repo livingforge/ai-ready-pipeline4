@@ -53,61 +53,6 @@ fn table_source<'a>(
     }
 }
 
-#[cfg(test)]
-mod overlay_tests {
-    use super::*;
-
-    #[test]
-    fn table_source_prefers_label_edit() {
-        let parts = BTreeMap::from([
-            ("xl/tables/table1.xml".to_owned(), b"original".to_vec()),
-            ("xl/tables/table2.xml".to_owned(), b"untouched".to_vec()),
-        ]);
-        let labeled = BTreeMap::from([("xl/tables/table1.xml".to_owned(), "edited".to_owned())]);
-        assert_eq!(
-            table_source(&parts, &labeled, "xl/tables/table1.xml").unwrap(),
-            "edited"
-        );
-        assert_eq!(
-            table_source(&parts, &labeled, "xl/tables/table2.xml").unwrap(),
-            "untouched"
-        );
-    }
-
-    #[test]
-    #[ignore = "manual workbook part copy performance measurement"]
-    fn measure_workbook_part_copy() {
-        use std::{hint::black_box, time::Instant};
-
-        let mut parts = BTreeMap::new();
-        for index in 0..64 {
-            parts.insert(
-                format!("xl/media/image{index}.bin"),
-                vec![index as u8; 1_048_576],
-            );
-        }
-        parts.insert("xl/tables/table1.xml".to_owned(), b"original".to_vec());
-        let labeled = BTreeMap::from([("xl/tables/table1.xml".to_owned(), "edited".to_owned())]);
-        let start = Instant::now();
-        for _ in 0..3 {
-            let mut copied = black_box(parts.clone());
-            for (part, text) in &labeled {
-                copied.insert(part.clone(), text.clone().into_bytes());
-            }
-            black_box(copied);
-        }
-        let copy_us = start.elapsed().as_micros();
-        let start = Instant::now();
-        for _ in 0..3 {
-            black_box(table_source(&parts, &labeled, "xl/tables/table1.xml").unwrap());
-        }
-        eprintln!(
-            "workbook_part_copy_3x_us={copy_us} overlay_3x_us={}",
-            start.elapsed().as_micros()
-        );
-    }
-}
-
 /// Rewrites a table column's formulas, returning its XML and the rewritten
 /// calculated-column formula. `data_shift` re-bases that formula (written for
 /// the first data row) when the first data rows are deleted.
@@ -638,4 +583,59 @@ pub(super) fn drop_calc_chain(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    #[test]
+    fn table_source_prefers_label_edit() {
+        let parts = BTreeMap::from([
+            ("xl/tables/table1.xml".to_owned(), b"original".to_vec()),
+            ("xl/tables/table2.xml".to_owned(), b"untouched".to_vec()),
+        ]);
+        let labeled = BTreeMap::from([("xl/tables/table1.xml".to_owned(), "edited".to_owned())]);
+        assert_eq!(
+            table_source(&parts, &labeled, "xl/tables/table1.xml").unwrap(),
+            "edited"
+        );
+        assert_eq!(
+            table_source(&parts, &labeled, "xl/tables/table2.xml").unwrap(),
+            "untouched"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual workbook part copy performance measurement"]
+    fn measure_workbook_part_copy() {
+        use std::{hint::black_box, time::Instant};
+
+        let mut parts = BTreeMap::new();
+        for index in 0..64 {
+            parts.insert(
+                format!("xl/media/image{index}.bin"),
+                vec![index as u8; 1_048_576],
+            );
+        }
+        parts.insert("xl/tables/table1.xml".to_owned(), b"original".to_vec());
+        let labeled = BTreeMap::from([("xl/tables/table1.xml".to_owned(), "edited".to_owned())]);
+        let start = Instant::now();
+        for _ in 0..3 {
+            let mut copied = black_box(parts.clone());
+            for (part, text) in &labeled {
+                copied.insert(part.clone(), text.clone().into_bytes());
+            }
+            black_box(copied);
+        }
+        let copy_us = start.elapsed().as_micros();
+        let start = Instant::now();
+        for _ in 0..3 {
+            black_box(table_source(&parts, &labeled, "xl/tables/table1.xml").unwrap());
+        }
+        eprintln!(
+            "workbook_part_copy_3x_us={copy_us} overlay_3x_us={}",
+            start.elapsed().as_micros()
+        );
+    }
 }

@@ -38,6 +38,7 @@ impl Store {
             "extraction integrity failure"
         );
         let extraction = read(&metadata.join("extraction.json"), Some("extraction"))?;
+        let layout = identity::load(dir, &extraction, planned)?;
         ensure!(
             meta["source"] == extraction["source"]
                 && meta["document_id"] == extraction["document_id"],
@@ -66,6 +67,7 @@ impl Store {
                 "unmanaged document file: {name}"
             );
             let page = read_planned(&name, &path, planned, "content")?;
+            let page = identity::runtime(&page, &layout, &extraction)?;
             page_files.insert(string(&page["page_id"])?.to_owned(), name);
             content_pages.push(page);
         }

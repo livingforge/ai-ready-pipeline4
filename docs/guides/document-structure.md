@@ -6,6 +6,19 @@
 
 `.arp/work/structure/<ID>.yml` を入力に指定した場合は、`documents structure-save` の保存成功後にその作業ファイルを自動削除します。保存に失敗した場合と、それ以外の場所にある入力ファイルは削除しません。取込候補の採用だけでは作業ファイルは削除されません。
 
+## CLI経由の編集
+
+Agentは整理YAMLと正規の修正記録、抽出JSONを直接編集せず、編集要求をCLIへ渡します。`spec structure read` または `check` の応答にある `revision` はレビューも含む現在のビューの版です。編集要求の契約は `spec structure schema --edit --out structure-edit-schema.json` で取得します。形式の完全な一覧は生成された構造契約リファレンスを参照してください。
+
+readで取得したelementの完全な項目を修正し、編集要求のelements.upsertへ入れます。upsertはIDが存在すればその項目全体を置き換え、存在しなければ追加します。表の分割・統合は、元のIDをremoveへ、置き換えるelementをupsertへまとめます。図形関係とOCR補正はvisualsのupsertで記録します。変更しない項目は要求へ含める必要がありません。画像領域はrender・region、レビューはreviewで記録します。
+
+```powershell
+arp4 spec structure edit --extraction extraction.json --structure interpretations/document.yml --input edits.json --dry-run
+arp4 spec structure edit --extraction extraction.json --structure interpretations/document.yml --input edits.json
+```
+
+CLIは原本・抽出の版、画像証拠、セルの所属、見出し・説明・グラフの参照を変更後の全体で検証します。失敗時はビューを変更せず、成功時はbefore/afterの差分と新しいrevisionを返します。dry-runは保存しません。内容が変わればレビューをpendingへ戻し、同じ内容の再設定なら既存レビューを保持します。版が変わった要求は拒否するので再readして組み立て直します。CLIの構造更新は文書更新と同じ排他ロックを使います。ビューを編集・レビューした後は、既存のdocuments structure-saveで本文・位置対応・修正記録へまとめて反映します。
+
 ## 必須となる資料
 
 Word（.docx/.docm/.dotx/.dotm）、PPTX、PDFは構造解釈・読取完了・現在の内容に対するacceptedレビューを必須とします。Excel（.xlsx/.xlsm/.xltx/.xltm）は、Excelテーブル定義またはセル配置から推定された表、画像、3個以上の図形からなる図表候補のいずれかがある場合に必須です。画像はOCR不可でも対象で、OCR可能な場合は実施結果を記録します。実行結果が空でも有効です。拡張子・図形数の閾値の正本は `contracts/structure-policy.json`、生成された一覧は機能リファレンスを参照してください。
@@ -112,6 +125,8 @@ arp4 spec capture --root C:/project --extraction C:/project/.arp/documents/order
 ```
 
 現在の原本・抽出結果・画像のハッシュと、文書モデル内のacceptedレビューを検証します。原文の文字列・出典ID・セル位置を変更せず、派生した整理結果を入力に保存し、抽出・独立レビューpacketの `sources.tables[].structure` にシートごとに渡します。構造変更でもpacketが変わるため、workflowへ新しいinputをupdateすると再抽出・再レビュー対象になります。構造の承認と、要件・仕様の意味レビューは別です。
+
+構造解釈に対応する文書で `documents structure-save` を実行すると、本文YAMLの表・文章の区分と別管理の位置対応も一括更新します。編集中の本文値は保持します。未適用の行列操作がある場合は先に適用してください。
 
 整理を変更しても、すでに保存したinputや進行中workflowは自動更新されません。再captureし、既存のworkflow update手順で渡します。原本そのものが変わった場合は再importし、旧・新の抽出結果を照合してからレビューし直します。ハッシュだけを新しい値に書き換えて古い判断を承認済みにしません。
 

@@ -22,6 +22,7 @@ crates/arp4-cli/src/agent_format/toon.rs
 crates/arp4-cli/src/cli.rs
 crates/arp4-cli/src/data.rs
 crates/arp4-cli/src/data/yaml.rs
+crates/arp4-cli/src/document_body.rs
 crates/arp4-cli/src/document_source.rs
 crates/arp4-cli/src/document_source/slide_text.rs
 crates/arp4-cli/src/document_source/slides.rs
@@ -31,13 +32,17 @@ crates/arp4-cli/src/document_structure/align.rs
 crates/arp4-cli/src/document_structure/carry.rs
 crates/arp4-cli/src/document_structure/context.rs
 crates/arp4-cli/src/document_structure/corrections.rs
+crates/arp4-cli/src/document_structure/edit.rs
 crates/arp4-cli/src/document_structure/inference.rs
 crates/arp4-cli/src/document_structure/policy.rs
 crates/arp4-cli/src/document_structure/rebase.rs
 crates/arp4-cli/src/document_structure/relations.rs
 crates/arp4-cli/src/documents/adoption.rs
 crates/arp4-cli/src/documents/diff.rs
+crates/arp4-cli/src/documents/elements.rs
 crates/arp4-cli/src/documents/export.rs
+crates/arp4-cli/src/documents/export_confirmation.rs
+crates/arp4-cli/src/documents/identity.rs
 crates/arp4-cli/src/documents/import.rs
 crates/arp4-cli/src/documents/inspection.rs
 crates/arp4-cli/src/documents/mapping.rs
@@ -49,6 +54,9 @@ crates/arp4-cli/src/documents/search/stamp.rs
 crates/arp4-cli/src/documents/search/timing.rs
 crates/arp4-cli/src/documents/sheet_edit.rs
 crates/arp4-cli/src/documents/slide_edit.rs
+crates/arp4-cli/src/documents/value_edit.rs
+crates/arp4-cli/src/documents/visual_elements.rs
+crates/arp4-cli/src/excel/column_move.rs
 crates/arp4-cli/src/excel/coordinates.rs
 crates/arp4-cli/src/excel/drawings.rs
 crates/arp4-cli/src/excel/formula_edit.rs
@@ -62,6 +70,7 @@ crates/arp4-cli/src/excel/render.rs
 crates/arp4-cli/src/excel/render_native.rs
 crates/arp4-cli/src/excel/sheet_objects.rs
 crates/arp4-cli/src/excel/table_labels.rs
+crates/arp4-cli/src/excel/text_edit.rs
 crates/arp4-cli/src/excel/visuals.rs
 crates/arp4-cli/src/excel/worksheet.rs
 crates/arp4-cli/src/excel/writeback.rs

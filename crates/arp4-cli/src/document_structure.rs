@@ -12,6 +12,7 @@ mod align;
 mod carry;
 mod context;
 mod corrections;
+mod edit;
 mod inference;
 mod policy;
 mod rebase;
@@ -162,6 +163,20 @@ pub enum StructureCommand {
         #[arg(long)]
         structure: PathBuf,
     },
+    /// Batch upsert/remove elements and visuals against the revision returned by read.
+    /// Validate the whole interpretation and reset review only when content changes.
+    Edit {
+        #[arg(long)]
+        extraction: PathBuf,
+        #[arg(long)]
+        structure: PathBuf,
+        /// JSON or YAML request matching structure schema --edit.
+        #[arg(long)]
+        input: PathBuf,
+        /// Return validated before/after differences without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Register an existing PNG region on an element or visual; does not render Excel.
     Region {
         #[arg(long)]
@@ -198,6 +213,9 @@ pub enum StructureCommand {
     Schema {
         #[arg(long)]
         out: PathBuf,
+        /// Save the batch editing request schema instead of the interpretation schema.
+        #[arg(long)]
+        edit: bool,
     },
 }
 
@@ -487,6 +505,12 @@ fn validate_hashed(
 pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
     let include_context = matches!(&command, StructureCommand::Read { .. });
     match command {
+        StructureCommand::Edit {
+            extraction,
+            structure,
+            input,
+            dry_run,
+        } => edit::execute(root, &extraction, &structure, &input, dry_run),
         StructureCommand::Render {
             extraction: path,
             structure,
@@ -572,8 +596,9 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
             result["image_sha256"] = json!(hash(&bytes));
             Ok(result)
         }
-        StructureCommand::Schema { out } => {
-            immutable(&out, &encoded(&schema()))?;
+        StructureCommand::Schema { out, edit } => {
+            let schema = if edit { edit::schema() } else { schema() };
+            immutable(&out, &encoded(&schema))?;
             Ok(json!({"schema":out}))
         }
         StructureCommand::Init {
@@ -596,6 +621,7 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
             let ext = extraction(&path)?;
             let value = read(&structure, None)?;
             let mut report = validate(root, &ext, &value)?;
+            report["revision"] = json!(hash(&encoded(&value)));
             if !include_context {
                 return Ok(report);
             }

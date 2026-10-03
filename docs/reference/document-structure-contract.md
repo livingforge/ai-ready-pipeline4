@@ -99,6 +99,20 @@
 | <code>/$defs/correction_journal/properties/visuals/items/properties/sources/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items/properties/visual</code> | <code>{"$ref":"#/$defs/visual"}</code> |
 | <code>/$defs/document_id</code> | <code>{"description":"The original's path below the sources folder, including leading spaces in path segments.","pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
+| <code>/$defs/edit</code> | <code>{"additionalProperties":false,"description":"Batch interpretation edits. Upsert replaces the complete item by ID or adds a new one. Remove requires an existing ID. IDs must occur only once per collection across both operations. Revision is the complete interpretation hash returned by read/check. Source, extraction, regions and review are CLI-managed.","required":["revision"],"type":"object"}</code> |
+| <code>/$defs/edit/properties/elements</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
+| <code>/$defs/edit/properties/elements/properties/remove</code> | <code>{"$ref":"#/$defs/edit_ids"}</code> |
+| <code>/$defs/edit/properties/elements/properties/upsert</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/$defs/edit/properties/elements/properties/upsert/items</code> | <code>{"$ref":"#/$defs/element"}</code> |
+| <code>/$defs/edit/properties/revision</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/edit/properties/visuals</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
+| <code>/$defs/edit/properties/visuals/properties/remove</code> | <code>{"$ref":"#/$defs/edit_ids"}</code> |
+| <code>/$defs/edit/properties/visuals/properties/upsert</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/$defs/edit/properties/visuals/properties/upsert/items</code> | <code>{"$ref":"#/$defs/visual"}</code> |
+| <code>/$defs/edit/anyOf/0</code> | <code>{"required":["elements"]}</code> |
+| <code>/$defs/edit/anyOf/1</code> | <code>{"required":["visuals"]}</code> |
+| <code>/$defs/edit_ids</code> | <code>{"minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/$defs/edit_ids/items</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/element</code> | <code>{"additionalProperties":false,"required":["id","kind","sheet","cells","evidence","reading"],"type":"object"}</code> |
 | <code>/$defs/element/properties/cells</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/$defs/element/properties/cells/items</code> | <code>{"$ref":"#/$defs/cell"}</code> |

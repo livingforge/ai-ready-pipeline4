@@ -100,6 +100,48 @@ pub(super) fn move_corners(
     Ok((moved_from, Some(moved_to)))
 }
 
+/// Project captured DrawingML anchors with exactly the same placement rules as
+/// native writeback. Coordinates and offsets remain in their original units.
+pub(crate) fn project_anchor(anchor: &Value, operations: &[StructuralOperation]) -> Result<Value> {
+    let mut result = anchor.clone();
+    if anchor["kind"] == "absoluteAnchor" {
+        return Ok(result);
+    }
+    let corner = |key: &str| -> Result<Corner> {
+        let mut out = [(0, false); 2];
+        for (axis, name) in ["col", "row"].iter().enumerate() {
+            out[axis] = (
+                u32::try_from(
+                    anchor[key][name]
+                        .as_u64()
+                        .context("invalid drawing marker")?,
+                )?,
+                anchor[key][format!("{name}Off")].as_i64().unwrap_or(0) == 0,
+            );
+        }
+        Ok(out)
+    };
+    let placement = if anchor["kind"] == "oneCellAnchor" {
+        "oneCell"
+    } else {
+        anchor["edit_as"].as_str().unwrap_or("twoCell")
+    };
+    let from = corner("from")?;
+    let to = anchor.get("to").map(|_| corner("to")).transpose()?;
+    let (from, to) = move_corners(placement, from, to, operations)?;
+    for (key, point) in [("from", Some(from)), ("to", to)] {
+        if let Some(point) = point {
+            for (axis, name) in ["col", "row"].iter().enumerate() {
+                result[key][name] = json!(point[axis].0);
+                if point[axis].1 {
+                    result[key][format!("{name}Off")] = json!(0);
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
 /// Moves an anchor whose `from` and `to` markers hold XDR `col`, `colOff`,
 /// `row` and `rowOff` (drawings, form controls and embedded objects), adding
 /// the edits of their text.

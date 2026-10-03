@@ -10,7 +10,12 @@ mod inspection;
 pub mod search;
 mod sheet_edit;
 pub use sheet_edit::{Axis, EditKind, Position, SheetEdit};
+mod elements;
+mod export_confirmation;
+mod identity;
 mod slide_edit;
+mod value_edit;
+mod visual_elements;
 pub use slide_edit::{SlideEdit, SlideEditKind};
 
 use crate::{
@@ -27,13 +32,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const RECORDS: [&str; 6] = [
+const RECORDS: [&str; 7] = [
     "document.yml",
     "mappings.yml",
     "formation.json",
     "review.json",
     "extraction.json",
     "prompt.txt",
+    "layout.yml",
 ];
 
 /// The first positive suffix not already used by this operation prefix.
@@ -45,41 +51,6 @@ fn next_operation_id(recorded: &[Value], prefix: &str) -> String {
         .unwrap()
 }
 
-#[cfg(test)]
-mod operation_id_tests {
-    use super::*;
-
-    #[test]
-    fn operation_id_uses_first_gap_and_exact_prefix() {
-        let recorded = vec![
-            json!({"id":"add-rows-1"}),
-            json!({"id":"add-rows-3"}),
-            json!({"id":"add-rows-02"}),
-            json!({"id":"add-columns-2"}),
-        ];
-        assert_eq!(next_operation_id(&recorded, "add-rows"), "add-rows-2");
-        assert_eq!(next_operation_id(&[], "add-slides"), "add-slides-1");
-    }
-
-    #[test]
-    #[ignore = "manual operation ID performance measurement"]
-    fn measure_operation_ids() {
-        for count in [1_000, 4_000] {
-            let recorded: Vec<_> = (1..=count)
-                .map(|n| json!({"id":format!("add-rows-{n}")}))
-                .collect();
-            let mut times = vec![];
-            for _ in 0..5 {
-                let start = std::time::Instant::now();
-                let id = next_operation_id(&recorded, "add-rows");
-                times.push(start.elapsed().as_secs_f64() * 1000.0);
-                assert_eq!(id, format!("add-rows-{}", count + 1));
-            }
-            times.sort_by(f64::total_cmp);
-            eprintln!("operation_ids count={count} median_ms={:.3}", times[2]);
-        }
-    }
-}
 pub struct Store {
     pub root: PathBuf,
     pub arp: PathBuf,
@@ -150,7 +121,27 @@ impl Store {
             self.fingerprint(&dir)?.as_deref() == Some(&inspected.fingerprint),
             "document changed while saving structure"
         );
-        write(&path, &mappings)?;
+        let mut planned = Planned::new();
+        {
+            let mut layout = identity::load(&dir, &inspected.extraction, &Planned::new())?;
+            ensure!(
+                array(&mappings["operations"])?.is_empty(),
+                "apply row/column operations before changing element structure"
+            );
+            elements::classify(&mut layout, array(&structure["elements"])?)?;
+            for name in inspected.page_files.values() {
+                let page = self.read_content(&dir, name, &inspected.extraction)?;
+                let body = elements::encode(&page, &mut layout)?;
+                planned.insert(name.clone(), Some(serialized(Path::new(name), &body)?));
+            }
+            planned.insert(
+                "layout.yml".into(),
+                Some(serialized(Path::new("layout.yml"), &layout)?),
+            );
+        }
+        planned.insert("mappings.yml".into(), Some(serialized(&path, &mappings)?));
+        self.inspect_with(&dir, false, &planned)?;
+        self.commit(&dir, &planned, &inspected.fingerprint)?;
         Ok(report)
     }
 
@@ -363,4 +354,40 @@ fn read_planned(name: &str, path: &Path, planned: &Planned, schema: &str) -> Res
 
 fn fingerprint_of(files: &serde_json::Map<String, Value>) -> String {
     hash(&encoded(&Value::Object(files.clone())))
+}
+
+#[cfg(test)]
+mod operation_id_tests {
+    use super::*;
+
+    #[test]
+    fn operation_id_uses_first_gap_and_exact_prefix() {
+        let recorded = vec![
+            json!({"id":"add-rows-1"}),
+            json!({"id":"add-rows-3"}),
+            json!({"id":"add-rows-02"}),
+            json!({"id":"add-columns-2"}),
+        ];
+        assert_eq!(next_operation_id(&recorded, "add-rows"), "add-rows-2");
+        assert_eq!(next_operation_id(&[], "add-slides"), "add-slides-1");
+    }
+
+    #[test]
+    #[ignore = "manual operation ID performance measurement"]
+    fn measure_operation_ids() {
+        for count in [1_000, 4_000] {
+            let recorded: Vec<_> = (1..=count)
+                .map(|n| json!({"id":format!("add-rows-{n}")}))
+                .collect();
+            let mut times = vec![];
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                let id = next_operation_id(&recorded, "add-rows");
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(id, format!("add-rows-{}", count + 1));
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!("operation_ids count={count} median_ms={:.3}", times[2]);
+        }
+    }
 }

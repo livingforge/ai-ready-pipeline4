@@ -72,6 +72,20 @@ fn map_span_with(
     let (mut start, mut end) = (start.min(end), start.max(end));
     for operation in operations.iter().filter(|o| o.row_operation() == row) {
         let (at, count) = (operation.at, operation.count);
+        if let OperationKind::MoveColumns { to } = operation.kind {
+            let mapped: Vec<_> = (start..=end)
+                .map(|column| moved_column(column, at, count, to))
+                .collect();
+            let first = *mapped.first().context("empty moved range")?;
+            let last = *mapped.last().context("empty moved range")?;
+            ensure!(
+                mapped.windows(2).all(|pair| pair[1] == pair[0] + 1)
+                    && last.checked_sub(first) == Some(end - start),
+                "column move makes a reference non-contiguous or changes its element order; edit in Excel"
+            );
+            (start, end) = (first, last);
+            continue;
+        }
         if operation.insertion() {
             if at <= start {
                 start = start.saturating_add(count);
@@ -525,6 +539,50 @@ pub(super) fn rewrite_references(
             None => Replacement::Deleted,
         })
     })
+}
+
+/// Prove that each translated reference keeps its ordered members. Merely
+/// reproducing Excel's range expansion is not proof of equivalent contents.
+pub(super) fn reference_equivalence(
+    before: &str,
+    after: &str,
+    sheet: &str,
+    operations: &[StructuralOperation],
+) -> bool {
+    let upper = before.to_ascii_uppercase();
+    if upper.contains("INDIRECT(") || upper.contains("OFFSET(") {
+        return false;
+    }
+    let checked = transform(before, |target, reference| {
+        let name = match target {
+            Target::Local => sheet,
+            Target::Sheet(name) => name,
+            Target::Opaque => return Ok(Replacement::Keep),
+        };
+        let own = sheet_operations(name, operations);
+        if own.is_empty() {
+            return Ok(Replacement::Keep);
+        }
+        let old = reference.area();
+        let new = map_area(old, &own)?.context("reference deleted")?;
+        for (a, b, rows) in [
+            (old.rows, new.rows, true),
+            (old.columns, new.columns, false),
+        ] {
+            match (a, b) {
+                (Some((a1, a2)), Some((b1, b2))) => {
+                    ensure!(a2 - a1 == b2 - b1, "reference member count changed")
+                }
+                (None, None) => ensure!(
+                    !own.iter().any(|o| o.row_operation() == rows),
+                    "whole-axis reference membership changed"
+                ),
+                _ => bail!("reference shape changed"),
+            }
+        }
+        Ok(Replacement::Text(reference.with_area(new).render()?))
+    });
+    !operations.is_empty() && checked.is_ok_and(|rewritten| rewritten == after)
 }
 
 /// Row/column operations together with the table columns they delete and the

@@ -1,7 +1,8 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 pub mod agent_format;
 pub mod data;
+pub mod document_body;
 pub mod document_source;
 pub mod document_structure;
 pub mod documents;
@@ -43,6 +44,7 @@ pub fn capabilities() -> serde_json::Value {
             "skills_install": true,
             "documents_schema": true,
             "document_structure": true,
+            "document_structure_batch_edits": true,
             "document_structure_formats": document_source::structure_formats(),
             "document_structure_requirement_policy": document_structure::requirement_policy(),
             "document_structure_external_ocr_records": true,
@@ -57,6 +59,10 @@ pub fn capabilities() -> serde_json::Value {
             "excel_screenshot_rendering": true,
             "excel_screenshot_engine": "excel-com (Windows with desktop Microsoft Excel)",
             "documents_workflow": true,
+            "documents_typed_value_edits": "Office/PDF existing cells and text; Excel scalar values, existing formulas and table labels; exact base and old value; before structural operations",
+            "documents_apply_export_confirmation": "human layout review bound to exact candidate and report hashes",
+            "excel_rich_text_writeback": "unambiguous edits within one run; cross-run edits refused",
+            "excel_value_writeback_preservation_check": true,
             "document_ids": "source path below the sources folder",
             "documents_folder_import": true,
             "documents_batch_steps": ["record", "adopt", "review"],
@@ -90,7 +96,11 @@ pub fn capabilities() -> serde_json::Value {
             "excel_table_structure_inference": true,
             "excel_writeback": true,
             "excel_structural_writeback": true,
-            "excel_row_column_commands": ["rows insert", "rows delete", "columns insert", "columns delete"],
+            "excel_element_body_version": "4",
+            "excel_body_model": "reading-order value arrays; identities, topology, formula kinds and physical bindings in layout.yml",
+            "excel_external_reimport": "unchanged grid with at most one changed cell; ambiguous structural or multi-cell correspondence is refused",
+            "excel_column_move_scope": "plain worksheets and ordinary contiguous A1 formulas; positional objects, defined names and mixed structural operations are refused",
+            "excel_row_column_commands": ["rows insert", "rows delete", "columns insert", "columns delete", "columns move"],
             "excel_image_writeback": true,
             "word_import": true,
             "word_embedded_image_extraction": true,

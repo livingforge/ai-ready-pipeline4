@@ -279,7 +279,14 @@ pub(super) fn scalar_body(prefix: &str, value: &Value) -> Result<String> {
     })
 }
 
-pub(super) fn render_cell(raw: &str, address: &str, value: &Value) -> Result<String> {
+pub(super) fn render_cell(
+    original: &str,
+    cell: Node<'_, '_>,
+    address: &str,
+    value: &Value,
+    parts: &BTreeMap<String, Vec<u8>>,
+) -> Result<String> {
+    let raw = &original[cell.range()];
     let (opening, _) = xml_opening(raw)?;
     let tag = opening[1..]
         .split([' ', '\t', '\r', '\n', '/', '>'])
@@ -293,7 +300,14 @@ pub(super) fn render_cell(raw: &str, address: &str, value: &Value) -> Result<Str
         .to_owned();
     opening = replace_xml_attribute(&format!("{opening}>"), "r", address)?;
     opening = opening.trim_end_matches('>').to_owned();
-    Ok(format!("{opening}{}</{tag}>", scalar_body(prefix, value)?))
+    let body = super::text_edit::edited_body(cell, original, parts, value, prefix)?;
+    let retained: String = cell
+        .children()
+        .filter(Node::is_element)
+        .filter(|node| !node.has_tag_name((NS, "v")) && !node.has_tag_name((NS, "is")))
+        .map(|node| &original[node.range()])
+        .collect();
+    Ok(format!("{opening}{body}{retained}</{tag}>"))
 }
 
 /// A cell ARP creates, in the sheet's namespace `prefix`, with `style` (`s`).
@@ -313,6 +327,7 @@ pub(super) fn render_new_cell(
 }
 
 pub(super) struct RowTransform<'a, 'b> {
+    pub(super) parts: &'a BTreeMap<String, Vec<u8>>,
     pub(super) original: &'a str,
     pub(super) original_row: u32,
     pub(super) final_row: u32,
@@ -358,7 +373,7 @@ pub(super) fn transform_row(
         if let Some(value) = context.changes.get(&(context.final_row, final_column)) {
             edits.push((
                 local_range,
-                render_cell(&context.original[cell_range], &final_address, value)?,
+                render_cell(context.original, cell, &final_address, value, context.parts)?,
             ));
         } else {
             if final_address != address {

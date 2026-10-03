@@ -104,6 +104,9 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
             "delete_rows" => OperationKind::DeleteRows,
             "insert_columns" => OperationKind::InsertColumns,
             "delete_columns" => OperationKind::DeleteColumns,
+            "move_columns" => OperationKind::MoveColumns {
+                to: u32::try_from(value["to"].as_u64().context("move to must be integer")?)?,
+            },
             "add_image" => continue,
             other => bail!("unsupported Excel operation: {other}"),
         };
@@ -119,7 +122,9 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
         )?;
         let limit = if matches!(
             kind,
-            OperationKind::InsertColumns | OperationKind::DeleteColumns
+            OperationKind::InsertColumns
+                | OperationKind::DeleteColumns
+                | OperationKind::MoveColumns { .. }
         ) {
             16384
         } else {
@@ -135,6 +140,12 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
             .as_u64()
             .map(u32::try_from)
             .transpose()?;
+        if let OperationKind::MoveColumns { to } = kind {
+            ensure!(
+                to >= 1 && to.checked_add(count - 1).is_some_and(|last| last <= 16384) && to != at,
+                "invalid move_columns destination"
+            );
+        }
         if let Some(style_from) = style_from {
             ensure!(
                 kind == OperationKind::InsertRows,

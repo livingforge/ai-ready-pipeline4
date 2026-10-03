@@ -82,6 +82,7 @@ Commands:
   init    Create a read-only interpretation YAML from Excel, DOCX, PPTX or PDF extraction
   check   Validate source/image versions, cell references and review freshness
   read    Read the interpretation, original cells, compact drawings and verified image paths
+  edit    Batch upsert/remove elements and visuals against the revision returned by read. Validate the whole interpretation and reset review only when content changes
   region  Register an existing PNG region on an element or visual; does not render Excel
   review  Record an actual review of this exact interpretation, including image hashes
   schema  Save the authoritative interpretation schema
@@ -249,6 +250,44 @@ Options:
           Print help
 ```
 
+## `arp4 spec structure edit`
+
+```text
+Batch upsert/remove elements and visuals against the revision returned by read. Validate the whole interpretation and reset review only when content changes
+
+Usage: arp4 spec structure edit [OPTIONS] --extraction <EXTRACTION> --structure <STRUCTURE> --input <INPUT>
+
+Options:
+      --extraction <EXTRACTION>
+
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+          Repository root used to verify original and image paths
+
+          [default: .]
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --structure <STRUCTURE>
+
+
+      --input <INPUT>
+          JSON or YAML request matching structure schema --edit
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --dry-run
+          Return validated before/after differences without writing
+
+  -h, --help
+          Print help
+```
+
 ## `arp4 spec structure region`
 
 ```text
@@ -357,6 +396,9 @@ Options:
           Repository root used to verify original and image paths
 
           [default: .]
+
+      --edit
+          Save the batch editing request schema instead of the interpretation schema
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1716,7 +1758,9 @@ Commands:
   adopt           Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
   review          Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
   diff
-  apply           Apply reviewed edits to the original and re-extract for verification
+  apply           Apply the exact export candidate whose layout was confirmed, then re-extract
+  confirm-export  Record a human layout review of an exported candidate and its exact hash
+  values          Edit existing Office/PDF text or Excel values, formulas and table labels using the value-edits contract, before structural operations
   export
   check
   status
@@ -2206,6 +2250,7 @@ Insert or delete Excel worksheet columns, like rows
 Usage: arp4 documents columns [OPTIONS] <COMMAND>
 
 Commands:
+  move    Move a contiguous column block. Apply insertion/deletion operations first
   insert  Insert columns and write their values under the keys <operation ID>-<n>
   delete  Delete columns of the original sheet together with their content values
   help    Print this message or the help of the given subcommand(s)
@@ -2225,6 +2270,67 @@ Options:
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents columns move`
+
+```text
+Move a contiguous column block. Apply insertion/deletion operations first
+
+Usage: arp4 documents columns move [OPTIONS] --sheet <SHEET> --reason <REASON> --from <FROM> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet name; for Word the part (document, header-N, ...), for PowerPoint the page (slide-N, notes-N, or the operation ID of an inserted slide)
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the rows or columns change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --after <AFTER>
+          Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
+
+      --before <BEFORE>
+          Insert before this row or column, given like --after
+
+      --from <FROM>
+
+
+      --count <COUNT>
+          [default: 1]
 
   -h, --help
           Print help
@@ -2667,7 +2773,7 @@ Options:
 ## `arp4 documents apply`
 
 ```text
-Apply reviewed edits to the original and re-extract for verification
+Apply the exact export candidate whose layout was confirmed, then re-extract
 
 Usage: arp4 documents apply [OPTIONS] <DOCUMENT>
 
@@ -2680,6 +2786,89 @@ Options:
           Return all details (not supported by spec workflow; use read pagination there)
 
       --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents confirm-export`
+
+```text
+Record a human layout review of an exported candidate and its exact hash
+
+Usage: arp4 documents confirm-export [OPTIONS] --candidate <CANDIDATE> --output-sha256 <OUTPUT_SHA256> --reviewer <REVIEWER> --reason <REASON> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --candidate <CANDIDATE>
+
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --output-sha256 <OUTPUT_SHA256>
+
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reviewer <REVIEWER>
+
+
+      --reason <REASON>
+
+
+      --layout-reviewed
+          Open the candidate and check changed cells and surrounding layout first
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents values`
+
+```text
+Edit existing Office/PDF text or Excel values, formulas and table labels using the value-edits contract, before structural operations
+
+Usage: arp4 documents values [OPTIONS] --input <INPUT> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --input <INPUT>
+
+
+      --root <ROOT>
+
+
+      --dry-run
 
 
       --include-hashes

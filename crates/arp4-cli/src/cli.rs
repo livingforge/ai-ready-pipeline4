@@ -350,6 +350,17 @@ pub(crate) enum RowCommand {
 }
 #[derive(Subcommand)]
 pub(crate) enum ColumnCommand {
+    /// Move a contiguous column block. Apply insertion/deletion operations first.
+    Move {
+        #[command(flatten)]
+        target: EditTarget,
+        #[command(flatten)]
+        place: InsertPlace,
+        #[arg(long)]
+        from: String,
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+    },
     /// Insert columns and write their values under the keys <operation ID>-<n>.
     Insert {
         #[command(flatten)]
@@ -584,8 +595,32 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Apply reviewed edits to the original and re-extract for verification.
+    /// Apply the exact export candidate whose layout was confirmed, then re-extract.
     Apply { document: String },
+    /// Record a human layout review of an exported candidate and its exact hash.
+    ConfirmExport {
+        document: String,
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        output_sha256: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+        /// Open the candidate and check changed cells and surrounding layout first.
+        #[arg(long)]
+        layout_reviewed: bool,
+    },
+    /// Edit existing Office/PDF text or Excel values, formulas and table labels
+    /// using the value-edits contract, before structural operations.
+    Values {
+        document: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Export {
         document: String,
         #[arg(long)]
