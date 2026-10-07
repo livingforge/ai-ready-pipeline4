@@ -18,14 +18,27 @@ use std::{
     path::Path,
 };
 
+mod slide_drawings;
+mod slide_fonts;
+mod slide_shapes;
 mod slide_text;
 mod slides;
 mod word;
+mod word_fonts;
 
+pub use slide_shapes::{
+    ConnectorEnd, ShapeEdit, ShapeOperation, ShapeProperties, is_shape_operation,
+    parse_shape_operations,
+};
 pub use slides::{
     SlideOperation, SlidePosition, is_slide_operation, parse_slide_operations, slide_order,
     slide_view,
 };
+
+/// Whether `value` is an operation on PowerPoint slides or their shapes.
+pub fn is_presentation_operation(value: &Value) -> bool {
+    is_slide_operation(value) || is_shape_operation(value)
+}
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const MATH: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
@@ -99,6 +112,10 @@ pub struct TextSource {
     sheets: Vec<Value>,
     format: String,
     backend: TextBackend,
+    /// The slide layouts of a presentation (see [`slides::layouts`]).
+    layouts: Vec<Value>,
+    /// The pictures of a presentation's slides by asset name.
+    images: BTreeMap<String, Vec<u8>>,
 }
 
 enum TextBackend {
@@ -119,6 +136,9 @@ impl Source {
         let Self::Text(doc) = self else {
             return Ok(BTreeMap::new());
         };
+        if doc.format == "pptx" {
+            return Ok(doc.images.clone());
+        }
         if !word(&doc.format) {
             return Ok(BTreeMap::new());
         }
@@ -314,7 +334,13 @@ impl Source {
                 "text document exceeds 32 MiB size budget"
             );
         }
-        let (backend, sheets) = if native {
+        // A presentation's pictures, which the XML parts leave out.
+        let media = if format == "pptx" {
+            slide_drawings::media(&raw)?
+        } else {
+            BTreeMap::new()
+        };
+        let (backend, mut sheets) = if native {
             let text = std::str::from_utf8(&raw)
                 .context("text documents require UTF-8 (optional BOM); convert the original explicitly before import")?;
             ensure!(
@@ -351,7 +377,10 @@ impl Source {
                         Content::decode(&raw_content)?
                     }
                 };
-                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None)?;
+                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None)?
+                    .into_iter()
+                    .map(|(text, font)| (text, Some(font)))
+                    .collect();
                 sheets.push(text_sheet(
                     &format!("page-{page}"),
                     &format!("pdf:{page}"),
@@ -368,14 +397,23 @@ impl Source {
         } else {
             let parts = office_parts(&raw, false)?;
             let containers = office_containers(&parts, &format)?;
+            let styles = word(&format)
+                .then(|| word_fonts::WordStyles::new(&parts))
+                .transpose()?;
             let mut sheets = vec![];
             for (name, part) in containers {
                 let (text, _) = part_text(parts.get(&part).context("missing document part")?)?;
                 let xml = Document::parse(&text)?;
-                if word(&format) {
-                    sheets.push(word::layout(&xml)?.sheet(&name, &part));
+                if let Some(styles) = &styles {
+                    sheets.push(word::layout(&xml)?.sheet(&name, &part, styles));
                 } else {
-                    let mut sheet = slide_text::layout(&xml)?.sheet(&name, &part);
+                    let fonts = slide_fonts::SlideFonts::new(&parts, &part, &xml)?;
+                    let mut sheet = slide_text::layout(&xml)?.sheet(&name, &part, &fonts);
+                    if xml.root_element().has_tag_name((PRESENTATION, "sld")) {
+                        sheet["drawings"] = json!(slide_drawings::drawings(
+                            &parts, &media, &part, &xml, &fonts
+                        )?);
+                    }
                     // A slide hidden from the show is marked like a hidden sheet.
                     if xml.root_element().attribute("show") == Some("0") {
                         sheet["state"] = json!("hidden");
@@ -389,12 +427,61 @@ impl Source {
             !sheets.is_empty(),
             "document has no pages or text containers"
         );
+        let layouts = match &backend {
+            TextBackend::Office(parts) if format == "pptx" => slides::layouts(parts)?,
+            _ => vec![],
+        };
+        // Pictures are named in first-use order across the slides, as Excel's are.
+        let mut images = BTreeMap::new();
+        let mut names: BTreeMap<String, String> = BTreeMap::new();
+        if format == "pptx" {
+            for sheet in &mut sheets {
+                for drawing in sheet
+                    .get_mut("drawings")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    let (Some(sha), Some(part)) = (
+                        drawing["image"]["sha256"].as_str().map(str::to_owned),
+                        drawing["image"]["part"].as_str().map(str::to_owned),
+                    ) else {
+                        continue;
+                    };
+                    let next = names.len() + 1;
+                    let extension = Path::new(&part)
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()))
+                        .unwrap_or("bin")
+                        .to_owned();
+                    let name = names
+                        .entry(sha)
+                        .or_insert_with(|| format!("image-{next:03}.{extension}"))
+                        .clone();
+                    if let Some(bytes) = media.get(&part) {
+                        images.insert(name.clone(), bytes.clone());
+                    }
+                    drawing["image"]["asset"] = json!(name);
+                }
+            }
+        }
         Ok(Self::Text(TextSource {
             raw,
             sheets,
             format,
             backend,
+            layouts,
+            images,
         }))
+    }
+
+    /// The slide layouts a new slide can be made from; none outside PowerPoint.
+    pub fn slide_layouts(&self) -> &[Value] {
+        match self {
+            Self::Text(doc) => &doc.layouts,
+            Self::Excel(_) => &[],
+        }
     }
 
     pub fn raw(&self) -> &[u8] {
@@ -594,40 +681,82 @@ impl Source {
         Ok(())
     }
 
-    /// Writes the edited document to `output`; `formulas` are Excel formula
-    /// edits (see [`Workbook::patch_with_operations_and_assets`]).
-    pub fn patch(
-        &self,
-        output: &Path,
-        operations: &[Value],
-        changes: &[Value],
-        formulas: &[Value],
-        assets: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<Value> {
+    /// Writes the edited document to `output`.
+    pub fn patch(&self, output: &Path, edits: &Edits<'_>) -> Result<Value> {
         match self {
-            Self::Excel(book) => {
-                book.patch_with_operations_and_assets(output, operations, changes, formulas, assets)
-            }
+            Self::Excel(book) => book.patch_with_fonts(
+                output,
+                edits.operations,
+                edits.changes,
+                edits.formulas,
+                edits.fonts,
+                edits.assets,
+            ),
             Self::Text(doc) => {
                 ensure!(
-                    assets.is_empty() && formulas.is_empty(),
-                    "text formats support text edits only; images and formulas are Excel-only"
+                    edits.formulas.is_empty(),
+                    "text formats support text edits only; formulas are Excel-only"
                 );
-                doc.patch(output, operations, changes)
+                ensure!(
+                    edits.assets.is_empty() || doc.format == "pptx",
+                    "images are added to Excel workbooks and PowerPoint slides only"
+                );
+                // Fonts are written to the original text first, so that copied
+                // slides and moved rows take them as they take the text's runs.
+                let edited = doc.with_fonts(edits.fonts)?;
+                let mut report = edited.as_ref().unwrap_or(doc).patch_with(
+                    output,
+                    edits.operations,
+                    edits.changes,
+                    edits.assets,
+                )?;
+                if edited.is_some() {
+                    report["font_changes_verified"] = json!(true);
+                }
+                Ok(report)
             }
+        }
+    }
+
+    /// Whether `documents values` can edit fonts of this document.
+    pub fn font_edits_supported(&self) -> bool {
+        match self {
+            Self::Excel(_) => true,
+            Self::Text(doc) => word(&doc.format) || doc.format == "pptx",
         }
     }
 }
 
-fn text_sheet(name: &str, part: &str, texts: Vec<String>) -> Value {
+/// The edits a document writer applies.
+pub struct Edits<'a> {
+    /// Row, column, slide and image operations (`mappings.operations`).
+    pub operations: &'a [Value],
+    /// New values of cells and text, and with `shape` of shape text.
+    pub changes: &'a [Value],
+    /// Excel formula edits (see [`Workbook::patch_with_operations_and_assets`]).
+    pub formulas: &'a [Value],
+    /// Font edits of original cells and shapes: `sheet`, `cell` or `shape`,
+    /// and the font properties `after` sets.
+    pub fonts: &'a [Value],
+    /// Image assets of image operations by path.
+    pub assets: &'a BTreeMap<String, Vec<u8>>,
+}
+
+/// The sheet of a page's text strings, each with the font it is drawn in
+/// when the format records one.
+fn text_sheet(name: &str, part: &str, texts: Vec<(String, Option<Value>)>) -> Value {
     let cells: Vec<_> = texts
         .into_iter()
         .enumerate()
-        .map(|(i, value)| {
-            json!({
+        .map(|(i, (value, font))| {
+            let mut cell = json!({
                 "id":format!("text-{}",i+1), "address":format!("A{}",i+1),
                 "type":"string", "value":value, "formula":null, "cached":null, "number_format":""
-            })
+            });
+            if let Some(font) = font {
+                cell["font"] = font;
+            }
+            cell
         })
         .collect();
     json!({"name":name,"part":part,"state":"visible","merges":[],"cells":cells})
@@ -1495,6 +1624,97 @@ pub fn edit_shape_texts(
     Ok(result)
 }
 
+/// `drawing`, an Excel drawing part, with the runs of the shapes of `edits`
+/// (by `cNvPr` id) given the edited font. A run without properties gets them;
+/// a copy for older readers (`mc:Fallback`) is edited too.
+pub fn edit_shape_fonts(
+    drawing: &str,
+    edits: &BTreeMap<String, crate::fonts::FontEdit>,
+) -> Result<String> {
+    const SPREADSHEET_DRAWING: &str =
+        "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
+    let doc = Document::parse(drawing)?;
+    let mut splices = vec![];
+    let mut found = BTreeSet::new();
+    for body in doc
+        .descendants()
+        .filter(|n| n.has_tag_name((SPREADSHEET_DRAWING, "txBody")))
+    {
+        let Some(id) = body
+            .parent_element()
+            .into_iter()
+            .flat_map(|shape| shape.children())
+            .filter(Node::is_element)
+            .flat_map(|properties| properties.children())
+            .find(|n| n.is_element() && n.tag_name().name() == "cNvPr")
+            .and_then(|n| n.attribute("id"))
+        else {
+            continue;
+        };
+        let Some(edit) = edits.get(id) else {
+            continue;
+        };
+        found.insert(id.to_owned());
+        drawing_run_edits(drawing, body, edit, &mut splices)?;
+    }
+    if let Some(missing) = edits.keys().find(|id| !found.contains(*id)) {
+        bail!("shape {missing} has no text in the drawing; re-import the workbook");
+    }
+    let result = splice(drawing, splices, "shape font")?;
+    Document::parse(&result)?;
+    Ok(result)
+}
+
+/// The edits giving every run of the DrawingML text `body` the font of `edit`,
+/// with the paragraph ends that set their own properties.
+fn drawing_run_edits(
+    source: &str,
+    body: Node<'_, '_>,
+    edit: &crate::fonts::FontEdit,
+    splices: &mut Vec<(std::ops::Range<usize>, String)>,
+) -> Result<()> {
+    for paragraph in body.children().filter(|n| n.has_tag_name((DRAWING, "p"))) {
+        for run in paragraph
+            .children()
+            .filter(|n| n.has_tag_name((DRAWING, "r")) || n.has_tag_name((DRAWING, "fld")))
+        {
+            let prefix = crate::fonts::prefix_of(crate::fonts::qualified_name(source, run));
+            match run.children().find(|n| n.has_tag_name((DRAWING, "rPr"))) {
+                Some(properties) => splices.push((
+                    properties.range(),
+                    crate::fonts::edited_drawing_run(
+                        source,
+                        Some(properties),
+                        "rPr",
+                        prefix,
+                        edit,
+                    )?,
+                )),
+                None => {
+                    // Run properties come first in a run.
+                    let raw = &source[run.range()];
+                    let at = run.range().start + raw.find('>').context("invalid run")? + 1;
+                    splices.push((
+                        at..at,
+                        crate::fonts::edited_drawing_run(source, None, "rPr", prefix, edit)?,
+                    ));
+                }
+            }
+        }
+        if let Some(end) = paragraph
+            .children()
+            .find(|n| n.has_tag_name((DRAWING, "endParaRPr")))
+        {
+            let prefix = crate::fonts::prefix_of(crate::fonts::qualified_name(source, end));
+            splices.push((
+                end.range(),
+                crate::fonts::edited_drawing_run(source, Some(end), "endParaRPr", prefix, edit)?,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The namespace prefix of a qualified element name with its colon, such as `w:`.
 fn element_prefix(name: &str) -> String {
     name.rsplit_once(':')
@@ -1521,12 +1741,121 @@ fn word_run_content(text: &str, opening: &str, name: &str, prefix: &str) -> Resu
 }
 
 impl TextSource {
+    /// The document with `fonts` (each a `sheet` and `cell` of the original
+    /// and the font properties `after` sets) written to the runs of the text,
+    /// checked by reading it back; None without font edits.
+    fn with_fonts(&self, fonts: &[Value]) -> Result<Option<TextSource>> {
+        if fonts.is_empty() {
+            return Ok(None);
+        }
+        let TextBackend::Office(parts) = &self.backend else {
+            bail!("font edits are written back to Excel, Word and PowerPoint documents only");
+        };
+        let mut by_part: BTreeMap<&str, BTreeMap<usize, crate::fonts::FontEdit>> = BTreeMap::new();
+        let mut expected: BTreeMap<(&str, &str), crate::fonts::FontEdit> = BTreeMap::new();
+        for change in fonts {
+            let name = string(&change["sheet"])?;
+            let address = string(&change["cell"])?;
+            let sheet = self
+                .sheets
+                .iter()
+                .find(|s| s["name"] == name)
+                .with_context(|| format!("font edit page {name} is missing"))?;
+            let index = array(&sheet["cells"])?
+                .iter()
+                .position(|cell| cell["address"] == address)
+                .with_context(|| format!("font edit target {name}!{address} is missing"))?;
+            let edit = crate::fonts::FontEdit::parse(&change["after"])?;
+            if word(&self.format) {
+                word_fonts::ensure_word_edit(&edit)?;
+            }
+            ensure!(
+                by_part
+                    .entry(string(&sheet["part"])?)
+                    .or_default()
+                    .insert(index, edit.clone())
+                    .is_none(),
+                "duplicate font edit of {name}!{address}"
+            );
+            expected.insert((name, address), edit);
+        }
+        let mut patched = BTreeMap::new();
+        for (part, edits) in by_part {
+            let (text, encoding) = part_text(parts.get(part).context("missing document part")?)?;
+            let xml = Document::parse(&text)?;
+            let blocks = if word(&self.format) {
+                word::layout(&xml)?.blocks
+            } else {
+                slide_text::layout(&xml)?.blocks
+            };
+            let mut cache = BTreeMap::new();
+            let mut splices = vec![];
+            for (index, edit) in edits {
+                let block = blocks.get(index).context("text block disappeared")?;
+                splices.extend(if word(&self.format) {
+                    word_fonts::run_edits(&text, block, &edit, &self.format, &mut cache)?
+                } else {
+                    slide_fonts::run_edits(&text, block, &edit, &mut cache)?
+                });
+            }
+            let result = splice(&text, splices, "font")?;
+            Document::parse(&result)?;
+            patched.insert(part.to_owned(), encode_part(&result, encoding));
+        }
+        let raw = crate::excel::archive_bytes(&self.raw, &patched)?;
+        let Source::Text(written) =
+            Source::from_bytes(Path::new(&format!("document.{}", self.format)), raw)?
+        else {
+            bail!("font edit changed the document format");
+        };
+        ensure!(
+            written.sheets.len() == self.sheets.len(),
+            "font edit changed the pages of the document"
+        );
+        for (old, new) in self.sheets.iter().zip(&written.sheets) {
+            let name = string(&old["name"])?;
+            let (old_cells, new_cells) = (array(&old["cells"])?, array(&new["cells"])?);
+            ensure!(
+                old_cells.len() == new_cells.len(),
+                "font edit changed the text of {name}"
+            );
+            for (before, after) in old_cells.iter().zip(new_cells) {
+                let address = string(&before["address"])?;
+                let wanted = match expected.get(&(name, address)) {
+                    Some(edit) => edit.applied(&before["font"]),
+                    None => before["font"].clone(),
+                };
+                ensure!(
+                    after["value"] == before["value"]
+                        && after["address"] == before["address"]
+                        && crate::fonts::same_font(&after["font"], &wanted),
+                    "font read-back failed for {name}!{address}: expected {wanted}, found {}",
+                    after["font"]
+                );
+            }
+        }
+        Ok(Some(written))
+    }
+
     /// Writes the document with `changes` to its text and its `operations`:
     /// for Word, paragraphs and table rows inserted or deleted, and for
     /// PowerPoint, slides copied or deleted. A change names its original cell
     /// (`source_cell`, else `cell`), or for an inserted row its `insertion`,
     /// `offset` and `column`; a change to an inserted slide names the slide.
+    #[cfg(test)]
     fn patch(&self, output: &Path, operations: &[Value], changes: &[Value]) -> Result<Value> {
+        self.patch_with(output, operations, changes, &BTreeMap::new())
+    }
+
+    /// [`TextSource::patch`] with the image `assets` (by asset path) of the
+    /// pictures shape operations add.
+    fn patch_with(
+        &self,
+        output: &Path,
+        operations: &[Value],
+        changes: &[Value],
+        assets: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Value> {
         ensure!(
             !matches!(self.backend, TextBackend::Native),
             "text documents use direct editing; edit the original and re-import with the same document ID (export/apply is not supported)"
@@ -1535,14 +1864,22 @@ impl TextSource {
         ensure!(
             operations
                 .iter()
-                .all(|operation| if is_slide_operation(operation) {
+                .all(|operation| if is_presentation_operation(operation) {
                     self.format == "pptx"
                 } else {
                     word(&self.format) || self.format == "pptx"
                 }),
-            "row operations apply to Excel, Word and PowerPoint documents, slide operations to PowerPoint"
+            "row operations apply to Excel, Word and PowerPoint documents, slide and shape operations to PowerPoint"
         );
         let slide_operations = parse_slide_operations(operations, &self.sheets)?;
+        let shape_operations = parse_shape_operations(operations)?;
+        let mut shapes_by_sheet: BTreeMap<&str, Vec<&ShapeOperation>> = BTreeMap::new();
+        for operation in &shape_operations {
+            shapes_by_sheet
+                .entry(operation.slide.as_str())
+                .or_default()
+                .push(operation);
+        }
         let restructured = match &self.backend {
             TextBackend::Office(_) if !slide_operations.is_empty() => {
                 let complete = office_parts(&self.raw, true)?;
@@ -1558,7 +1895,7 @@ impl TextSource {
         let view = if slide_operations.is_empty() {
             Cow::Borrowed(&self.sheets)
         } else {
-            Cow::Owned(slide_view(&self.sheets, &slide_operations)?)
+            Cow::Owned(slide_view(&self.sheets, &self.layouts, &slide_operations)?)
         };
         let mut pages = vec![];
         for sheet in view.iter() {
@@ -1661,6 +1998,19 @@ impl TextSource {
                     }
                     None => (BTreeMap::new(), BTreeSet::new()),
                 };
+                // The image of each picture a shape operation adds, as a media
+                // part related from its slide.
+                let page_parts: BTreeMap<&str, &str> = pages
+                    .iter()
+                    .map(|(name, part)| (name.as_str(), part.as_str()))
+                    .collect();
+                let pictures = self.add_pictures(
+                    &shape_operations,
+                    &page_parts,
+                    restructured.as_ref(),
+                    assets,
+                    &mut patched,
+                )?;
                 // Every Word part is read, since a content control bound to
                 // edited document data shows it wherever it is; PowerPoint reads
                 // the pages whose text or rows change.
@@ -1670,6 +2020,7 @@ impl TextSource {
                         word(&self.format)
                             || replacements.contains_key(part)
                             || operations_by_sheet.contains_key(name.as_str())
+                            || shapes_by_sheet.contains_key(name.as_str())
                     })
                     .collect();
                 let read: Vec<String> = pages.iter().map(|(_, part)| part.clone()).collect();
@@ -1688,8 +2039,15 @@ impl TextSource {
                     .map(|(text, _)| Document::parse(text))
                     .collect::<Result<Vec<_>, _>>()?;
                 let mut edits: Vec<Vec<(Node<'_, '_>, String)>> = vec![vec![]; read.len()];
+                // Text written into empty slide placeholders, by part.
+                let mut fills: Vec<Vec<(std::ops::Range<usize>, String)>> =
+                    vec![vec![]; read.len()];
                 // Paragraphs and table rows inserted or deleted, by part.
                 let mut structural = vec![vec![]; read.len()];
+                // Shapes changed, added or deleted, by part, and the IDs of the added.
+                let mut shaped: Vec<Vec<(std::ops::Range<usize>, String)>> =
+                    vec![vec![]; read.len()];
+                let mut added_shapes: BTreeMap<String, (String, u64)> = BTreeMap::new();
                 let no_values = word::InsertedText::new();
                 for (index, part) in read.iter().enumerate() {
                     let sheet_name = pages[index].0.as_str();
@@ -1698,7 +2056,9 @@ impl TextSource {
                         .cloned()
                         .unwrap_or_default();
                     let changes = replacements.get(part);
-                    if changes.is_none() && part_operations.is_empty() {
+                    let shape_operations = shapes_by_sheet.get(sheet_name);
+                    if changes.is_none() && part_operations.is_empty() && shape_operations.is_none()
+                    {
                         continue;
                     }
                     let xml = &docs[index];
@@ -1734,6 +2094,16 @@ impl TextSource {
                             .with_context(|| format!("{sheet_name} ({part})"))?;
                         for (i, text) in changes.into_iter().flatten() {
                             let block = layout.blocks.get(*i).context("text block disappeared")?;
+                            if let Some(paragraph) = block.empty {
+                                if !text.is_empty() {
+                                    fills[index].push(slide_text::fill_empty(
+                                        &texts[index].0,
+                                        paragraph,
+                                        text,
+                                    )?);
+                                }
+                                continue;
+                            }
                             for (node, new) in word::edit(block, text)? {
                                 // Slide numbers and dates are fields PowerPoint fills in again.
                                 ensure!(
@@ -1744,6 +2114,30 @@ impl TextSource {
                                 edits[index].push((node, new));
                             }
                         }
+                        if let Some(shape_operations) = shape_operations {
+                            // A copied slide's shapes keep the IDs of the slide it copies.
+                            let origin = view
+                                .iter()
+                                .find(|sheet| sheet["name"] == sheet_name)
+                                .and_then(|sheet| sheet["copy_of"].as_str())
+                                .and_then(|origin| self.sheets.iter().find(|s| s["name"] == origin))
+                                .and_then(|sheet| sheet["part"].as_str())
+                                .unwrap_or(part);
+                            let (edits, added) = slide_shapes::slide_edits(
+                                &texts[index].0,
+                                xml,
+                                part,
+                                origin,
+                                shape_operations,
+                                &layout.blocks,
+                                pictures.get(part.as_str()).unwrap_or(&BTreeMap::new()),
+                            )
+                            .with_context(|| sheet_name.to_owned())?;
+                            shaped[index] = edits;
+                            for (operation, id) in added {
+                                added_shapes.insert(operation, (sheet_name.to_owned(), id));
+                            }
+                        }
                     }
                 }
                 let bound = if word(&self.format) {
@@ -1752,7 +2146,11 @@ impl TextSource {
                     BTreeMap::new()
                 };
                 for ((index, edits), part) in edits.into_iter().enumerate().zip(&read) {
-                    if edits.is_empty() && structural[index].is_empty() {
+                    if edits.is_empty()
+                        && structural[index].is_empty()
+                        && fills[index].is_empty()
+                        && shaped[index].is_empty()
+                    {
                         continue;
                     }
                     let (original, encoding) = &texts[index];
@@ -1768,7 +2166,9 @@ impl TextSource {
                         targets.push((node, text));
                     }
                     // Insertions sort ahead of an element removed at the same place.
-                    let mut text_edits = std::mem::take(&mut structural[index]);
+                    let mut text_edits = std::mem::take(&mut fills[index]);
+                    text_edits.extend(std::mem::take(&mut structural[index]));
+                    text_edits.extend(std::mem::take(&mut shaped[index]));
                     for (node, text) in targets {
                         if !word(&self.format) {
                             text_edits.push(slide_text::replacement(original, node, &text)?);
@@ -1845,6 +2245,20 @@ impl TextSource {
                     validate_office_binary(&self.raw)?;
                 }
                 crate::excel::write_archive_without(&self.raw, output, &patched, &removed)?;
+                // The text of an added shape follows the slide's other text.
+                let mut appended: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for operation in &shape_operations {
+                    if let ShapeEdit::Add {
+                        text: Some(text), ..
+                    } = &operation.edit
+                    {
+                        appended.entry(operation.slide.clone()).or_default().extend(
+                            text.split('\n')
+                                .filter(|l| !l.is_empty())
+                                .map(str::to_owned),
+                        );
+                    }
+                }
                 if let Some(restructured) = &restructured {
                     let rows_changed: BTreeSet<&str> =
                         operations.iter().map(|o| o.sheet.as_str()).collect();
@@ -1854,6 +2268,33 @@ impl TextSource {
                         &slide_operations,
                         &by_page,
                         &rows_changed,
+                        &appended,
+                    )
+                    .inspect_err(|_| {
+                        let _ = fs::remove_file(output);
+                    })?;
+                }
+                if !shape_operations.is_empty() {
+                    let order = match &restructured {
+                        Some(restructured) => restructured
+                            .order
+                            .iter()
+                            .map(|(slide, _)| slide.clone())
+                            .collect(),
+                        None => self
+                            .sheets
+                            .iter()
+                            .filter_map(|s| s["name"].as_str())
+                            .filter(|name| name.starts_with("slide-"))
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>(),
+                    };
+                    slide_shapes::ensure_read_back(
+                        output,
+                        &order,
+                        &shape_operations,
+                        &added_shapes,
+                        assets,
                     )
                     .inspect_err(|_| {
                         let _ = fs::remove_file(output);
@@ -1928,6 +2369,120 @@ impl TextSource {
         Ok(report)
     }
 
+    /// The relationship ID of each picture asset in the slide parts of the
+    /// pictures `operations` add or replace: a new media part related from the
+    /// slide, written into `patched`.
+    fn add_pictures(
+        &self,
+        operations: &[ShapeOperation],
+        pages: &BTreeMap<&str, &str>,
+        restructured: Option<&slides::Restructured>,
+        assets: &BTreeMap<String, Vec<u8>>,
+        patched: &mut BTreeMap<String, Vec<u8>>,
+    ) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+        let mut pictures: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        if !operations.iter().any(|o| o.asset().is_some()) {
+            return Ok(pictures);
+        }
+        let TextBackend::Office(parts) = &self.backend else {
+            bail!("pictures are added to PowerPoint slides only");
+        };
+        let complete = office_parts(&self.raw, true)?;
+        let mut taken: BTreeSet<String> = complete
+            .keys()
+            .chain(patched.keys())
+            .map(|name| name.to_lowercase())
+            .collect();
+        let mut media: BTreeMap<String, String> = BTreeMap::new();
+        for operation in operations {
+            let Some(asset) = operation.asset() else {
+                continue;
+            };
+            let bytes = assets
+                .get(asset)
+                .with_context(|| format!("image asset missing: {asset}"))?;
+            let slide = *pages
+                .get(operation.slide.as_str())
+                .with_context(|| format!("{} is not a slide here", operation.slide))?;
+            let part = match media.get(asset) {
+                Some(part) => part.clone(),
+                None => {
+                    let part = (1..)
+                        .map(|n| format!("ppt/media/arp-image{n}.png"))
+                        .find(|name| !taken.contains(&name.to_lowercase()))
+                        .unwrap();
+                    taken.insert(part.to_lowercase());
+                    patched.insert(part.clone(), bytes.clone());
+                    media.insert(asset.to_owned(), part.clone());
+                    part
+                }
+            };
+            if pictures.get(slide).is_some_and(|p| p.contains_key(asset)) {
+                continue;
+            }
+            let (directory, file) = slide
+                .rsplit_once('/')
+                .context("slide part without folder")?;
+            let rels = format!("{directory}/_rels/{file}.rels");
+            let text = match patched.get(&rels) {
+                Some(bytes) => part_text(bytes)?.0.into_owned(),
+                None => match restructured
+                    .and_then(|r| r.part(parts, &rels))
+                    .or_else(|| parts.get(&rels).map(Vec::as_slice))
+                {
+                    Some(bytes) => part_text(bytes)?.0.into_owned(),
+                    None => format!(r#"<Relationships xmlns="{PACKAGE_REL}"></Relationships>"#),
+                },
+            };
+            let xml = Document::parse(&text)?;
+            let used: BTreeSet<&str> = xml
+                .descendants()
+                .filter_map(|n| n.attribute("Id"))
+                .collect();
+            let id = (1..)
+                .map(|n| format!("rIdArp{n}"))
+                .find(|id| !used.contains(id.as_str()))
+                .unwrap();
+            let target = format!("../media/{}", part.rsplit('/').next().unwrap_or(&part));
+            let end = text
+                .rfind("</")
+                .context("relationships part without closing tag")?;
+            let mut updated = text.clone();
+            updated.insert_str(
+                end,
+                &format!(
+                    r#"<Relationship Id="{id}" Type="{}" Target="{target}"/>"#,
+                    slide_shapes::IMAGE
+                ),
+            );
+            patched.insert(rels, updated.into_bytes());
+            pictures
+                .entry(slide.to_owned())
+                .or_default()
+                .insert(asset.to_owned(), id);
+        }
+        // PNG parts need their content type.
+        let types = "[Content_Types].xml";
+        let text = match patched.get(types).or_else(|| parts.get(types)) {
+            Some(bytes) => part_text(bytes)?.0.into_owned(),
+            None => bail!("the presentation has no content types"),
+        };
+        let xml = Document::parse(&text)?;
+        if !xml.descendants().any(|n| {
+            n.tag_name().name() == "Default"
+                && n.attribute("Extension")
+                    .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        }) {
+            let end = text
+                .rfind("</")
+                .context("content types without closing tag")?;
+            let mut updated = text.clone();
+            updated.insert_str(end, r#"<Default Extension="png" ContentType="image/png"/>"#);
+            patched.insert(types.to_owned(), updated.into_bytes());
+        }
+        Ok(pictures)
+    }
+
     /// Reads the written presentation back and compares its slides and notes
     /// pages, in order, with the pages the operations and `edits` should make.
     /// A page whose rows change (`rows_changed`) is compared by its place only.
@@ -1938,10 +2493,11 @@ impl TextSource {
         operations: &[SlideOperation],
         edits: &BTreeMap<String, BTreeMap<usize, String>>,
         rows_changed: &BTreeSet<&str>,
+        appended: &BTreeMap<String, Vec<String>>,
     ) -> Result<()> {
-        let origins = slides::origins(operations, &self.sheets)?;
-        let sheets: BTreeMap<&str, &Value> = self
-            .sheets
+        // Every page as the operations leave it: kept, copied or made from a layout.
+        let view = slide_view(&self.sheets, &self.layouts, operations)?;
+        let sheets: BTreeMap<&str, &Value> = view
             .iter()
             .map(|sheet| Ok((string(&sheet["name"])?, sheet)))
             .collect::<Result<_>>()?;
@@ -1949,9 +2505,7 @@ impl TextSource {
             if rows_changed.contains(name) {
                 return Ok(None);
             }
-            let sheet = sheets
-                .get(origins.get(name).map(String::as_str).unwrap_or(name))
-                .context("missing text container")?;
+            let sheet = sheets.get(name).context("missing text container")?;
             let mut values = array(&sheet["cells"])?
                 .iter()
                 .map(|cell| cell["value"].as_str().unwrap_or("").to_owned())
@@ -1959,6 +2513,7 @@ impl TextSource {
             for (index, text) in edits.get(name).into_iter().flatten() {
                 values[*index] = text.clone();
             }
+            values.extend(appended.get(name).into_iter().flatten().cloned());
             Ok(Some(values))
         };
         let mut expected = vec![];
@@ -1991,6 +2546,17 @@ impl TextSource {
                     .all(|(actual, expected)| expected.as_ref().is_none_or(|e| e == actual)),
             "the written presentation does not read back as the slide operations and edits make it; nothing is written"
         );
+        for ((slide, _), (sheet, hidden)) in restructured
+            .order
+            .iter()
+            .zip(written.sheets.iter().zip(&restructured.hidden))
+        {
+            ensure!(
+                (sheet["state"] == "hidden") == *hidden,
+                "{slide} does not read back {} in the slide show; nothing is written",
+                if *hidden { "hidden" } else { "shown" }
+            );
+        }
         Ok(())
     }
 }
@@ -2321,16 +2887,91 @@ fn subset_glyphs(doc: &Pdf) -> Result<BTreeMap<usize, BTreeSet<Vec<u8>>>> {
     Ok(used)
 }
 
-/// Decodes the page's text strings, and with `changes` replaces the strings at
-/// those indexes. `glyphs` (from [`subset_glyphs`]) limits a replacement drawn
-/// with an embedded subset font to the codes that subset is known to hold.
+/// The graphics state of a PDF page that decides how text looks: the
+/// transformation (`cm`), fill and stroke colours and the text font and size.
+#[derive(Clone)]
+struct PdfLook {
+    matrix: [f64; 6],
+    fill: Option<String>,
+    stroke: Option<String>,
+    fill_space: Vec<u8>,
+    stroke_space: Vec<u8>,
+    size: f64,
+}
+
+impl Default for PdfLook {
+    fn default() -> Self {
+        // Colours start black in DeviceGray.
+        Self {
+            matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill: Some("000000".into()),
+            stroke: Some("000000".into()),
+            fill_space: b"DeviceGray".to_vec(),
+            stroke_space: b"DeviceGray".to_vec(),
+            size: 0.0,
+        }
+    }
+}
+
+/// `a` then `b`, as PDF multiplies matrices.
+fn pdf_multiply(a: [f64; 6], b: [f64; 6]) -> [f64; 6] {
+    [
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+        a[4] * b[0] + a[5] * b[2] + b[4],
+        a[4] * b[1] + a[5] * b[3] + b[5],
+    ]
+}
+
+fn pdf_numbers(operands: &[Object]) -> Vec<f64> {
+    operands
+        .iter()
+        .filter_map(|o| o.as_float().ok().map(f64::from))
+        .collect()
+}
+
+/// A colour of a device colour space (Gray, RGB or CMYK components) as
+/// `RRGGBB`; colours of other spaces are not resolved.
+fn pdf_color(space: &[u8], components: &[f64]) -> Option<String> {
+    let channel = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let hex =
+        |r: f64, g: f64, b: f64| format!("{:02X}{:02X}{:02X}", channel(r), channel(g), channel(b));
+    match (space, components) {
+        (b"DeviceGray" | b"G" | b"CalGray", [gray]) => Some(hex(*gray, *gray, *gray)),
+        (b"DeviceRGB" | b"RGB" | b"CalRGB", [r, g, b]) => Some(hex(*r, *g, *b)),
+        (b"DeviceCMYK" | b"CMYK", [c, m, y, k]) => Some(hex(
+            (1.0 - c) * (1.0 - k),
+            (1.0 - m) * (1.0 - k),
+            (1.0 - y) * (1.0 - k),
+        )),
+        _ => None,
+    }
+}
+
+/// The name of a PDF font (`BaseFont`) without the prefix of an embedded
+/// subset (`ABCDEF+`); a name that is not UTF-8 is not given.
+fn pdf_font_name(font: &lopdf::Dictionary) -> Option<String> {
+    let name = font.get(b"BaseFont").and_then(Object::as_name).ok()?;
+    let name = if subset_font(font) { &name[7..] } else { name };
+    std::str::from_utf8(name)
+        .ok()
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+}
+
+/// Decodes the page's text strings with the font each is drawn in, and with
+/// `changes` replaces the strings at those indexes. `glyphs` (from
+/// [`subset_glyphs`]) limits a replacement drawn with an embedded subset font
+/// to the codes that subset is known to hold.
 fn pdf_text(
     doc: &Pdf,
     page: lopdf::ObjectId,
     content: &mut Content<Vec<lopdf::content::Operation>>,
     changes: &BTreeMap<usize, String>,
     glyphs: Option<&BTreeMap<usize, BTreeSet<Vec<u8>>>>,
-) -> Result<Vec<String>> {
+) -> Result<Vec<(String, Value)>> {
     let fonts = doc.get_page_fonts(page)?;
     // A ToUnicode map says what a simple font's codes mean even when the font
     // also names an /Encoding, which lopdf would otherwise use alone (and replace
@@ -2351,10 +2992,65 @@ fn pdf_text(
     // Text render mode (Tr): 3 draws nothing and 7 only clips, as in the OCR
     // layer of a scanned page.
     let mut render = 0;
+    let mut look = PdfLook::default();
+    let mut text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut stack = vec![];
     let mut values = vec![];
     for operation in &mut content.operations {
+        let numbers = pdf_numbers(&operation.operands);
         match operation.operator.as_str() {
+            "cm" if numbers.len() == 6 => {
+                let m = [
+                    numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
+                ];
+                look.matrix = pdf_multiply(m, look.matrix);
+            }
+            "BT" => text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "Tm" if numbers.len() == 6 => {
+                text_matrix = [
+                    numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
+                ];
+            }
+            "g" | "rg" | "k" => {
+                look.fill_space = match operation.operator.as_str() {
+                    "g" => b"DeviceGray".to_vec(),
+                    "rg" => b"DeviceRGB".to_vec(),
+                    _ => b"DeviceCMYK".to_vec(),
+                };
+                look.fill = pdf_color(&look.fill_space, &numbers);
+            }
+            "G" | "RG" | "K" => {
+                look.stroke_space = match operation.operator.as_str() {
+                    "G" => b"DeviceGray".to_vec(),
+                    "RG" => b"DeviceRGB".to_vec(),
+                    _ => b"DeviceCMYK".to_vec(),
+                };
+                look.stroke = pdf_color(&look.stroke_space, &numbers);
+            }
+            "cs" | "CS" => {
+                let space = operation
+                    .operands
+                    .first()
+                    .and_then(|o| o.as_name().ok())
+                    .unwrap_or(b"")
+                    .to_vec();
+                // A new colour space starts at its initial colour; device spaces start black.
+                let black = match space.as_slice() {
+                    b"DeviceGray" | b"G" | b"CalGray" => pdf_color(&space, &[0.0]),
+                    b"DeviceRGB" | b"RGB" | b"CalRGB" => pdf_color(&space, &[0.0, 0.0, 0.0]),
+                    b"DeviceCMYK" | b"CMYK" => pdf_color(&space, &[0.0, 0.0, 0.0, 1.0]),
+                    _ => None,
+                };
+                if operation.operator == "cs" {
+                    look.fill_space = space;
+                    look.fill = black;
+                } else {
+                    look.stroke_space = space;
+                    look.stroke = black;
+                }
+            }
+            "sc" | "scn" => look.fill = pdf_color(&look.fill_space, &numbers),
+            "SC" | "SCN" => look.stroke = pdf_color(&look.stroke_space, &numbers),
             "Tf" => {
                 font = operation
                     .operands
@@ -2362,6 +3058,7 @@ fn pdf_text(
                     .context("missing PDF font")?
                     .as_name()?
                     .to_vec();
+                look.size = numbers.last().copied().unwrap_or(0.0);
             }
             "Tr" => {
                 render = operation
@@ -2370,9 +3067,9 @@ fn pdf_text(
                     .and_then(|mode| mode.as_i64().ok())
                     .unwrap_or(0);
             }
-            "q" => stack.push((font.clone(), render)),
+            "q" => stack.push((font.clone(), render, look.clone())),
             "Q" => {
-                (font, render) = stack.pop().context("unbalanced PDF graphics state")?;
+                (font, render, look) = stack.pop().context("unbalanced PDF graphics state")?;
             }
             "Tj" | "TJ" | "'" | "\"" => {
                 let operand = operation
@@ -2399,6 +3096,25 @@ fn pdf_text(
                 }
                 let (font_dictionary, encoding) = &encodings[&font];
                 let font_dictionary = *font_dictionary;
+                // The size on the page: the font size scaled by the text and
+                // transformation matrices; the colour of what the render mode draws.
+                let shown = pdf_multiply(text_matrix, look.matrix);
+                let size = look.size.abs() * (shown[2] * shown[2] + shown[3] * shown[3]).sqrt();
+                let name = pdf_font_name(font_dictionary);
+                let color = match render {
+                    1 | 5 => look.stroke.clone(),
+                    3 | 7 => None,
+                    _ => look.fill.clone(),
+                };
+                let look_of = crate::fonts::element_font(
+                    &[crate::fonts::RunFont {
+                        latin: name.clone(),
+                        east_asian: name,
+                        size: (size > 0.0).then_some(size),
+                        color: color.map(crate::fonts::Color::rgb),
+                    }],
+                    &crate::fonts::RunFont::default(),
+                );
                 for object in strings {
                     let Object::String(bytes, _) = object else {
                         unreachable!()
@@ -2441,7 +3157,7 @@ fn pdf_text(
                         }
                         *bytes = encoded;
                     }
-                    values.push(value);
+                    values.push((value, look_of.clone()));
                 }
             }
             _ => {}
@@ -3520,6 +4236,90 @@ mod tests {
     }
 
     #[test]
+    fn powerpoint_slides_are_moved_with_their_sections_and_hidden_or_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("deck.pptx");
+        deck_package(&source, false, &[&[1, 2]]);
+        let doc = open_text(&source);
+        let operations = [
+            json!({"id":"copy","kind":"insert_slide","from":"slide-1","after":"slide-2","reason":"copy"}),
+            json!({"id":"first","kind":"move_slide","slide":"slide-2","before":"slide-1","reason":"order"}),
+            json!({"id":"last","kind":"move_slide","slide":"slide-1","after":"copy","reason":"order"}),
+            json!({"id":"hide","kind":"set_slide_visibility","slide":"copy","hidden":true,"reason":"draft"}),
+        ];
+        let written = dir.path().join("written.pptx");
+        let report = doc.patch(&written, &operations, &[]).unwrap();
+        assert_eq!(report["slide_order"], json!(["slide-2", "copy", "slide-1"]));
+        let result = open_text(&written);
+        assert_eq!(result.sheets.len(), 5, "three slides and two notes pages");
+        let states: Vec<_> = result.sheets[..3]
+            .iter()
+            .map(|s| s["state"].clone())
+            .collect();
+        assert_eq!(
+            states,
+            [json!("visible"), json!("hidden"), json!("visible")]
+        );
+        let texts: Vec<_> = (0..3).map(|i| values(&result, i)).collect();
+        assert_eq!(texts, [vec!["二枚目"], vec!["表題"], vec!["表題"]]);
+        // The section lists the slides in their new order, as the show does.
+        let mut zip = zip::ZipArchive::new(fs::File::open(&written).unwrap()).unwrap();
+        let mut presentation = String::new();
+        zip.by_name("ppt/presentation.xml")
+            .unwrap()
+            .read_to_string(&mut presentation)
+            .unwrap();
+        let ids = |list: &str| -> Vec<String> {
+            let start = presentation.find(list).unwrap();
+            let end = start
+                + presentation[start..]
+                    .find(&list.replace('<', "</"))
+                    .unwrap();
+            regex::Regex::new(r#"id="(\d+)""#)
+                .unwrap()
+                .captures_iter(&presentation[start..end])
+                .map(|c| c[1].to_owned())
+                .collect()
+        };
+        assert_eq!(ids("<p:sldIdLst>"), ids("<p14:sldIdLst>"));
+        assert_eq!(ids("<p:sldIdLst>")[0], "257");
+        // Showing the hidden slide again removes the mark.
+        let shown = dir.path().join("shown.pptx");
+        let hidden = open_text(&written);
+        hidden
+            .patch(
+                &shown,
+                &[json!({"id":"show","kind":"set_slide_visibility","slide":"slide-2","hidden":false,"reason":"final"})],
+                &[],
+            )
+            .unwrap();
+        assert!(
+            open_text(&shown)
+                .sheets
+                .iter()
+                .all(|s| s["state"] == "visible")
+        );
+        let error = |operations: &[Value]| {
+            format!(
+                "{:#}",
+                parse_slide_operations(operations, &doc.sheets).unwrap_err()
+            )
+        };
+        assert!(
+            error(&[json!({"id":"m","kind":"move_slide","slide":"slide-1","after":"slide-1","reason":"r"})])
+                .contains("next to itself")
+        );
+        assert!(
+            error(&[json!({"id":"m","kind":"move_slide","slide":"slide-9","after":"slide-1","reason":"r"})])
+                .contains("slide-9 is not a slide here")
+        );
+        assert!(
+            error(&[json!({"id":"m","kind":"move_slide","slide":"slide-1","reason":"r"})])
+                .contains("one of after and before")
+        );
+    }
+
+    #[test]
     fn slide_operations_name_existing_slides_and_new_pages() {
         let sheets = [
             json!({"name":"slide-1","part":"a"}),
@@ -3547,7 +4347,7 @@ mod tests {
         let operations =
             parse_slide_operations(&[insert("x", "slide-1"), delete("d", "slide-1")], &sheets)
                 .unwrap();
-        let view = slide_view(&sheets, &operations).unwrap();
+        let view = slide_view(&sheets, &[], &operations).unwrap();
         let pages: Vec<_> = view
             .iter()
             .map(|s| (s["name"].as_str().unwrap(), s["page"].as_str().unwrap()))

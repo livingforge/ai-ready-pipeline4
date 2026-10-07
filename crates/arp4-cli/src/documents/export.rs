@@ -47,7 +47,18 @@ impl Store {
             array(&result.mappings["operations"])?,
             array(&operated["sheets"])?,
         )?;
-        let image_assets = self.image_assets(&dir, &image_operations)?;
+        let shape_operations =
+            crate::document_source::parse_shape_operations(array(&result.mappings["operations"])?)?;
+        let assets: Vec<String> = image_operations
+            .iter()
+            .map(|o| o.asset.clone())
+            .chain(
+                shape_operations
+                    .iter()
+                    .filter_map(|o| o.asset().map(str::to_owned)),
+            )
+            .collect();
+        let image_assets = self.image_assets(&dir, &assets)?;
         let mut changes = vec![];
         let mut formulas = vec![];
         let mut excluded = vec![];
@@ -193,7 +204,20 @@ impl Store {
                 other => bail!("unsupported writeback: {other}"),
             }
         }
-        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":changes,"formula_changes":formulas,"unreflected":pending,"excluded":excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"deleted_cells":deleted_cells,"engine":book.engine(),"complete":pending.is_empty(),"written":false});
+        // Fonts are written to the original cells; a cell an operation deletes keeps none.
+        let mut fonts =
+            super::value_edit::font_changes(&result.extraction, &result.mappings, &result.fonts)?;
+        for change in &fonts {
+            if let Some(cell) = change["cell"].as_str() {
+                let sheet = string(&change["sheet"])?;
+                ensure!(
+                    excel::map_coordinate(sheet, cell, sheet_operations(sheet))?.is_some(),
+                    "the font of {sheet}!{cell} is edited, but an operation deletes the cell"
+                );
+            }
+        }
+        fonts.sort_by(|a, b| a["field"].as_str().cmp(&b["field"].as_str()));
+        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":changes,"formula_changes":formulas,"font_changes":fonts,"unreflected":pending,"excluded":excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"deleted_cells":deleted_cells,"engine":book.engine(),"complete":pending.is_empty(),"written":false});
         let Some(output) = output else {
             return Ok(report);
         };
@@ -229,10 +253,13 @@ impl Store {
         ));
         let info = book.patch(
             &staged,
-            array(&result.mappings["operations"])?,
-            &changes,
-            &formulas,
-            &image_assets,
+            &crate::document_source::Edits {
+                operations: array(&result.mappings["operations"])?,
+                changes: &changes,
+                formulas: &formulas,
+                fonts: &fonts,
+                assets: &image_assets,
+            },
         )?;
         for (k, v) in info.as_object().unwrap() {
             report[k] = v.clone()

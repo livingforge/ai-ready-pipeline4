@@ -316,6 +316,7 @@ pub(super) fn extract_visuals(
     parts: &BTreeMap<String, Vec<u8>>,
     sheet_part: &str,
     sheet: Node<'_, '_>,
+    theme: Option<&crate::fonts::Theme>,
 ) -> Result<Vec<Value>> {
     let mut objects = vec![];
     let mut relationships = Relationships::new(parts);
@@ -487,6 +488,12 @@ pub(super) fn extract_visuals(
                 if let Some(chart_part) = chart_part {
                     objects.last_mut().unwrap()["chart_part"] = json!(chart_part);
                 }
+                // Shape text is edited with its font; SmartArt text is not edited.
+                let object = objects.last_mut().unwrap();
+                if diagram.is_none() && object["text"].as_str().is_some_and(|t| !t.is_empty()) {
+                    let (runs, empty) = super::fonts::shape_runs(node, theme);
+                    object["font"] = crate::fonts::element_font(&runs, &empty);
+                }
             }
         }
     }
@@ -531,7 +538,7 @@ mod tests {
         let sheet =
             format!(r#"<worksheet xmlns="{NS}" xmlns:r="{REL}"><drawing r:id="d"/></worksheet>"#);
         let doc = xml(sheet.as_bytes())?;
-        extract_visuals(parts, "xl/worksheets/sheet1.xml", doc.root_element())
+        extract_visuals(parts, "xl/worksheets/sheet1.xml", doc.root_element(), None)
     }
     #[test]
     fn groups_preserve_local_transforms_paragraphs_and_explicit_connections() {

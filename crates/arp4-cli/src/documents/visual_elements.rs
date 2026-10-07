@@ -29,7 +29,13 @@ pub(super) fn refresh(
             } else {
                 "drawing"
             };
-            let anchor = excel::project_anchor(&drawing["anchor"], &operations)?;
+            // A slide object sits at a place on the slide, which no row operation moves.
+            let slide = drawing["anchor"]["kind"] == "slide";
+            let anchor = if slide {
+                drawing["anchor"].clone()
+            } else {
+                excel::project_anchor(&drawing["anchor"], &operations)?
+            };
             let order_basis = if anchor["from"]["row"].is_u64() && anchor["from"]["col"].is_u64() {
                 "cell_anchor"
             } else {
@@ -56,7 +62,8 @@ pub(super) fn refresh(
                 );
                 reference["chart_part"] = json!(part);
             }
-            if drawing["text"].as_str().is_some_and(|s| !s.is_empty()) {
+            // Slide text is laid out with the slide's paragraphs, not as shape text.
+            if !slide && drawing["text"].as_str().is_some_and(|s| !s.is_empty()) {
                 let (_, raw) = drawing_id
                     .rsplit_once('#')
                     .context("drawing ID without part")?;

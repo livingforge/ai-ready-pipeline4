@@ -361,6 +361,12 @@ pub(super) struct Block<'a, 'input> {
     bold: bool,
     fill: bool,
     in_table: bool,
+    /// The runs that show the text, whose fonts are the block's font.
+    pub runs: Vec<Node<'a, 'input>>,
+    /// Where a table cell sits in its table, for the table style's formats.
+    pub place: Option<super::word_fonts::TablePlace>,
+    /// The paragraph of an empty slide placeholder, which text is written into.
+    pub empty: Option<Node<'a, 'input>>,
 }
 
 impl<'a, 'input> Block<'a, 'input> {
@@ -382,6 +388,9 @@ impl<'a, 'input> Block<'a, 'input> {
             bold: false,
             fill: false,
             in_table: false,
+            runs: vec![],
+            place: None,
+            empty: None,
         }
     }
 
@@ -392,7 +401,8 @@ impl<'a, 'input> Block<'a, 'input> {
         text: String,
         segments: Vec<Segment<'a, 'input>>,
         bold: bool,
-        in_table: bool,
+        runs: Vec<Node<'a, 'input>>,
+        place: Option<super::word_fonts::TablePlace>,
     ) -> Self {
         Self {
             address,
@@ -402,26 +412,35 @@ impl<'a, 'input> Block<'a, 'input> {
             breaks: true,
             bold,
             fill: false,
-            in_table,
+            in_table: place.is_some(),
+            runs,
+            place,
+            empty: None,
         }
     }
 }
 
-/// The extraction sheet of text laid out as `blocks`.
+/// The extraction sheet of text laid out as `blocks`, each with its font
+/// from `font` when the format records fonts.
 pub(super) fn blocks_sheet(
     name: &str,
     part: &str,
     blocks: &[Block<'_, '_>],
     merges: &[String],
     tables: &[Value],
+    font: Option<&dyn Fn(&Block<'_, '_>) -> Value>,
 ) -> Value {
     let cells: Vec<_> = blocks
         .iter()
         .enumerate()
         .map(|(i, b)| {
-            json!({"id":format!("text-{}",i+1),"address":b.address,"type":"string","value":b.text,
+            let mut cell = json!({"id":format!("text-{}",i+1),"address":b.address,"type":"string","value":b.text,
                 "formula":null,"cached":null,"number_format":"",
-                "style":{"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)}})
+                "style":{"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)}});
+            if let Some(font) = font {
+                cell["font"] = font(b);
+            }
+            cell
         })
         .collect();
     json!({"name":name,"part":part,"state":"visible","merges":merges,"cells":cells,"tables":tables})
@@ -436,8 +455,15 @@ pub(super) struct Layout<'a, 'input> {
 }
 
 impl Layout<'_, '_> {
-    pub fn sheet(&self, name: &str, part: &str) -> Value {
-        blocks_sheet(name, part, &self.blocks, &self.merges, &self.tables)
+    pub fn sheet(&self, name: &str, part: &str, styles: &super::word_fonts::WordStyles) -> Value {
+        blocks_sheet(
+            name,
+            part,
+            &self.blocks,
+            &self.merges,
+            &self.tables,
+            Some(&|block| styles.block_font(block)),
+        )
     }
 }
 
@@ -690,6 +716,8 @@ struct Text<'a, 'input, 'f> {
     segments: Vec<Segment<'a, 'input>>,
     runs: usize,
     bold_runs: usize,
+    /// The runs whose text or characters the text shows.
+    run_nodes: Vec<Node<'a, 'input>>,
     /// See [`field_instructions`].
     instructions: &'f BTreeSet<usize>,
     hidden: &'f HiddenBranches,
@@ -702,6 +730,7 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
             segments: vec![],
             runs: 0,
             bold_runs: 0,
+            run_nodes: vec![],
             instructions,
             hidden,
         }
@@ -731,6 +760,17 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
                 && !self.instructions.contains(&n.range().start)
         }) {
             let in_run = node.parent().is_some_and(|p| word_element(p, "r"));
+            let shows_text = word_element(node, "t") && node.text().is_some_and(|t| !t.is_empty())
+                || word_element(node, "noBreakHyphen")
+                || word_element(node, "sym")
+                || word_element(node, "ptab");
+            if in_run
+                && shows_text
+                && let Some(run) = node.parent()
+                && self.run_nodes.last() != Some(&run)
+            {
+                self.run_nodes.push(run);
+            }
             // Characters Word draws itself are shown but cannot be edited as text.
             if in_run && word_element(node, "noBreakHyphen") {
                 self.push(None, "\u{2011}");
@@ -773,7 +813,12 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
         }
     }
 
-    fn block(self, address: String, fill: bool, in_table: bool) -> Block<'a, 'input> {
+    fn block(
+        self,
+        address: String,
+        fill: bool,
+        place: Option<super::word_fonts::TablePlace>,
+    ) -> Block<'a, 'input> {
         Block {
             address,
             application: "Word",
@@ -782,7 +827,10 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
             text: self.text,
             segments: self.segments,
             fill,
-            in_table,
+            in_table: place.is_some(),
+            runs: self.run_nodes,
+            place,
+            empty: None,
         }
     }
 }
@@ -815,7 +863,7 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a,
             if !text.text.is_empty() {
                 output
                     .blocks
-                    .push(text.block(format!("A{row}"), false, false));
+                    .push(text.block(format!("A{row}"), false, None));
                 output.rows.insert(row, node);
                 row += 1;
             }
@@ -902,7 +950,13 @@ fn table<'a, 'input>(
             .and_then(|s| s.attribute((WORD, "fill")))
             .is_some_and(|f| !f.eq_ignore_ascii_case("auto") && !f.eq_ignore_ascii_case("FFFFFF"));
         if !text.text.is_empty() {
-            let block = text.block(address(cell.row, cell.column)?, fill, true);
+            let place = super::word_fonts::TablePlace {
+                first_row: cell.row == 0,
+                last_row: bottom + 1 == rows.len(),
+                first_column: cell.column == 0,
+                last_column: cell.column + cell.span == width,
+            };
+            let block = text.block(address(cell.row, cell.column)?, fill, Some(place));
             emphasis.push((cell.row, block.bold || fill));
             output.blocks.push(block);
         } else if fill {
@@ -1266,7 +1320,11 @@ mod tests {
             layout.tables,
             [json!({"name":"table-1","range":"A2:D5","header_rows":1,"totals_rows":0})]
         );
-        let sheet = layout.sheet("document", "word/document.xml");
+        let sheet = layout.sheet(
+            "document",
+            "word/document.xml",
+            &super::super::word_fonts::WordStyles::new(&BTreeMap::new()).unwrap(),
+        );
         assert_eq!(
             sheet["cells"][4]["style"],
             json!({"bold":false,"fill":0,"border":1})

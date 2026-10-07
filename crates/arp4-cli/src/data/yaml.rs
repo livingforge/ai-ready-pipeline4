@@ -142,7 +142,9 @@ fn scalar(value: Cow<'_, str>, style: ScalarStyle, span: Span) -> Result<Value> 
         !matches!(value.as_ref(), "" | "~" | "Null" | "NULL"),
         "YAML line {line}: write null to clear a value, or quote the text"
     );
-    let text = value.trim();
+    // The scanner already strips YAML's own blanks (space, tab). Other Unicode
+    // spaces belong to the text: `　1` is the string serde-saphyr wrote, not 1.
+    let text = value.as_ref();
     if text.eq_ignore_ascii_case("null") {
         return Ok(Value::Null);
     }

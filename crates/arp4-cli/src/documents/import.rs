@@ -287,6 +287,10 @@ impl Store {
         if !chart_parts.is_empty() {
             extraction["chart_parts"] = json!(chart_parts);
         }
+        let layouts = book.slide_layouts();
+        if !layouts.is_empty() {
+            extraction["slide_layouts"] = json!(layouts);
+        }
         let opaque_parts = book.opaque_parts();
         if !opaque_parts.is_empty() {
             extraction["opaque_parts"] = json!(opaque_parts);
@@ -389,6 +393,7 @@ impl Store {
             let page = format!("sheet-{}", i + 1);
             let mut rows = json!({});
             let mut formulas = json!({});
+            let mut fonts = json!({});
             let mut columns = BTreeSet::new();
             for c in array(&sheet["cells"])? {
                 let address = string(&c["address"])?;
@@ -399,11 +404,19 @@ impl Store {
                 if c["type"] == "formula" {
                     let f = string(&c["id"])?;
                     formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));
+                    if let Some(font) = c.get("font") {
+                        fonts["formulas"][f]["formula"] = font.clone();
+                    }
+                } else if let Some(font) = c.get("font") {
+                    fonts["table-1"][&format!("r{row}")][column] = font.clone();
                 }
             }
             let mut shapes = json!({});
             for (key, drawing) in shape_texts(sheet)? {
-                shapes[key]["text"] = drawing["text"].clone();
+                shapes[&key]["text"] = drawing["text"].clone();
+                if let Some(font) = drawing.get("font") {
+                    fonts["shapes"][&key]["text"] = font.clone();
+                }
             }
             let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":&note}});
             for (block, title, body, cols) in [
@@ -426,7 +439,7 @@ impl Store {
                     .join("content")
                     .join(excel::filename(string(&sheet["name"])?)),
                 &elements::encode(
-                    &json!({"schema_version":"4","document_id":id,"page_id":page,"source_path":source_path,"title":sheet["name"],"blocks":blocks}),
+                    &json!({"schema_version":"4","document_id":id,"page_id":page,"source_path":source_path,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
                     &mut layout,
                 )?,
             )?;

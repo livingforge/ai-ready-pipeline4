@@ -1,13 +1,21 @@
 //! PowerPoint slide operations: a slide inserted as a copy of another, as
-//! PowerPoint's Duplicate Slide makes it, and a slide deleted together with
-//! the parts only it used. Slides keep the names the extraction gave them
+//! PowerPoint's Duplicate Slide makes it, a new slide made from a layout, as
+//! New Slide makes it, a slide deleted together with the
+//! parts only it used, a slide moved in the show order, and a slide hidden
+//! from or shown in the slide show. Slides keep the names the extraction gave them
 //! (`slide-N` by original position); an inserted slide is named by its
 //! operation ID and its notes page `notes-<ID>`.
 use super::*;
 use crate::excel::xml_attr;
 use std::ops::Range;
 
-const SLIDE_KINDS: &[&str] = &["insert_slide", "delete_slide"];
+const SLIDE_KINDS: &[&str] = &[
+    "insert_slide",
+    "add_slide",
+    "delete_slide",
+    "move_slide",
+    "set_slide_visibility",
+];
 const P14: &str = "http://schemas.microsoft.com/office/powerpoint/2010/main";
 const EXTENDED_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties";
@@ -30,7 +38,8 @@ const SHARED: &[&str] = &[
     "http://schemas.microsoft.com/office/2007/relationships/hdphoto",
 ];
 
-/// Whether `value` is an `insert_slide` or `delete_slide` operation.
+/// Whether `value` is a slide operation (`insert_slide`, `add_slide`,
+/// `delete_slide`, `move_slide` or `set_slide_visibility`).
 pub fn is_slide_operation(value: &Value) -> bool {
     value["kind"]
         .as_str()
@@ -51,9 +60,27 @@ pub enum SlideOperation {
         from: String,
         position: SlidePosition,
     },
+    /// A new slide with the placeholders of the layout in part `layout`.
+    Add {
+        id: String,
+        layout: String,
+        position: SlidePosition,
+    },
     Delete {
         id: String,
         slide: String,
+    },
+    /// Slide `slide` placed next to another slide.
+    Move {
+        id: String,
+        slide: String,
+        position: SlidePosition,
+    },
+    /// Slide `slide` hidden from the slide show, or shown again.
+    Visibility {
+        id: String,
+        slide: String,
+        hidden: bool,
     },
 }
 
@@ -66,6 +93,10 @@ struct Deck {
     names: BTreeSet<String>,
     /// The original page each inserted slide or notes page copies.
     origins: BTreeMap<String, String>,
+    /// Whether a slide an operation hid or showed is hidden.
+    hidden: BTreeMap<String, bool>,
+    /// Slides made from a layout.
+    added: BTreeSet<String>,
 }
 
 impl Deck {
@@ -87,6 +118,8 @@ impl Deck {
             slides,
             names,
             origins: BTreeMap::new(),
+            hidden: BTreeMap::new(),
+            added: BTreeSet::new(),
         })
     }
 
@@ -135,18 +168,55 @@ impl Deck {
                 });
                 self.slides.insert(at, (id.clone(), notes));
             }
+            SlideOperation::Add { id, position, .. } => {
+                ensure!(
+                    !id.bytes().all(|b| b.is_ascii_digit()) && !self.names.contains(id),
+                    "operation ID {id} would name the new slide {id}, but a page already has that name or it is a number; choose another ID"
+                );
+                let (anchor, after) = match position {
+                    SlidePosition::After(anchor) => (anchor, true),
+                    SlidePosition::Before(anchor) => (anchor, false),
+                };
+                let at = self.index(anchor)? + usize::from(after);
+                self.names.insert(id.clone());
+                self.added.insert(id.clone());
+                self.slides.insert(at, (id.clone(), None));
+            }
             SlideOperation::Delete { id, slide } => {
                 if let Some(origin) = self.origins.get(slide) {
                     bail!(
                         "{slide} is a copy of {origin} added by operation {slide}; remove that operation instead of deleting the slide"
                     );
                 }
+                ensure!(
+                    !self.added.contains(slide),
+                    "{slide} is a new slide added by operation {slide}; remove that operation instead of deleting the slide"
+                );
                 let index = self.index(slide)?;
                 ensure!(
                     self.slides.len() > 1,
                     "operation {id} would delete the last slide; a presentation keeps at least one"
                 );
                 self.slides.remove(index);
+            }
+            SlideOperation::Move {
+                slide, position, ..
+            } => {
+                let (anchor, after) = match position {
+                    SlidePosition::After(anchor) => (anchor, true),
+                    SlidePosition::Before(anchor) => (anchor, false),
+                };
+                ensure!(
+                    slide != anchor,
+                    "{slide} cannot be placed next to itself; name another slide"
+                );
+                let moved = self.slides.remove(self.index(slide)?);
+                let at = self.index(anchor)? + usize::from(after);
+                self.slides.insert(at, moved);
+            }
+            SlideOperation::Visibility { slide, hidden, .. } => {
+                self.index(slide)?;
+                self.hidden.insert(slide.clone(), *hidden);
             }
         }
         Ok(())
@@ -171,22 +241,38 @@ pub fn parse_slide_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<
             !string(&value["reason"])?.trim().is_empty(),
             "operation reason required"
         );
-        let operation = if value["kind"] == "insert_slide" {
-            let position = match (value["after"].as_str(), value["before"].as_str()) {
-                (Some(after), None) => SlidePosition::After(after.to_owned()),
-                (None, Some(before)) => SlidePosition::Before(before.to_owned()),
-                _ => bail!("insert_slide {id} takes one of after and before"),
-            };
-            SlideOperation::Insert {
+        let position = || match (value["after"].as_str(), value["before"].as_str()) {
+            (Some(after), None) => Ok(SlidePosition::After(after.to_owned())),
+            (None, Some(before)) => Ok(SlidePosition::Before(before.to_owned())),
+            _ => bail!("{} {id} takes one of after and before", value["kind"]),
+        };
+        let operation = match string(&value["kind"])? {
+            "insert_slide" => SlideOperation::Insert {
                 id: id.to_owned(),
                 from: string(&value["from"])?.to_owned(),
-                position,
-            }
-        } else {
-            SlideOperation::Delete {
+                position: position()?,
+            },
+            "add_slide" => SlideOperation::Add {
+                id: id.to_owned(),
+                layout: string(&value["layout"])?.to_owned(),
+                position: position()?,
+            },
+            "move_slide" => SlideOperation::Move {
                 id: id.to_owned(),
                 slide: string(&value["slide"])?.to_owned(),
-            }
+                position: position()?,
+            },
+            "set_slide_visibility" => SlideOperation::Visibility {
+                id: id.to_owned(),
+                slide: string(&value["slide"])?.to_owned(),
+                hidden: value["hidden"]
+                    .as_bool()
+                    .context("set_slide_visibility takes hidden: true or false")?,
+            },
+            _ => SlideOperation::Delete {
+                id: id.to_owned(),
+                slide: string(&value["slide"])?.to_owned(),
+            },
         };
         deck.apply(&operation)
             .with_context(|| format!("slide operation {id}"))?;
@@ -198,8 +284,14 @@ pub fn parse_slide_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<
 /// The pages as the operations leave them, each with its content page ID
 /// (`page`): deleted slides and their notes pages are left out, and each
 /// inserted slide and notes page follows as a copy of the original page it
-/// copies (`copy_of`), named and keyed by its own name (`sheet-<name>`).
-pub fn slide_view(sheets: &[Value], operations: &[SlideOperation]) -> Result<Vec<Value>> {
+/// copies (`copy_of`), named and keyed by its own name (`sheet-<name>`). A
+/// slide made from a layout follows with the text of the layout's empty
+/// placeholders (`from_layout`), as the extraction's `layouts` list them.
+pub fn slide_view(
+    sheets: &[Value],
+    layouts: &[Value],
+    operations: &[SlideOperation],
+) -> Result<Vec<Value>> {
     let mut deck = Deck::new(sheets)?;
     for operation in operations {
         deck.apply(operation)?;
@@ -211,14 +303,37 @@ pub fn slide_view(sheets: &[Value], operations: &[SlideOperation]) -> Result<Vec
         .map(String::as_str)
         .collect();
     let mut view = vec![];
+    let state = |sheet: &mut Value| {
+        if let Some(hidden) = sheet["name"]
+            .as_str()
+            .and_then(|name| deck.hidden.get(name))
+        {
+            sheet["state"] = json!(if *hidden { "hidden" } else { "visible" });
+        }
+    };
     for (index, sheet) in sheets.iter().enumerate() {
         if kept.contains(string(&sheet["name"])?) {
             let mut sheet = sheet.clone();
             sheet["page"] = json!(format!("sheet-{}", index + 1));
+            state(&mut sheet);
             view.push(sheet);
         }
     }
     for operation in operations {
+        if let SlideOperation::Add { id, layout, .. } = operation
+            && deck.added.contains(id)
+        {
+            let source = layouts
+                .iter()
+                .find(|l| l["part"] == layout.as_str())
+                .with_context(|| format!("{layout} is not a slide layout of the presentation"))?;
+            let mut sheet = json!({"name":id,"part":layout,"state":"visible","merges":[],"cells":source["cells"],"tables":[]});
+            sheet["page"] = json!(format!("sheet-{id}"));
+            sheet["from_layout"] = json!(layout);
+            state(&mut sheet);
+            view.push(sheet);
+            continue;
+        }
         let SlideOperation::Insert { id, .. } = operation else {
             continue;
         };
@@ -234,6 +349,7 @@ pub fn slide_view(sheets: &[Value], operations: &[SlideOperation]) -> Result<Vec
             sheet["name"] = json!(name);
             sheet["page"] = json!(format!("sheet-{name}"));
             sheet["copy_of"] = json!(origin);
+            state(&mut sheet);
             view.push(sheet);
         }
     }
@@ -275,6 +391,8 @@ pub struct Restructured {
     pub inserted: BTreeMap<String, String>,
     /// The slides in show order, each with its notes page.
     pub order: Vec<(String, Option<String>)>,
+    /// Whether each slide of `order` is hidden from the slide show.
+    pub hidden: Vec<bool>,
 }
 
 impl Restructured {
@@ -334,6 +452,22 @@ pub fn restructure(
                     inserted.insert(format!("notes-{id}"), notes);
                 }
             }
+            SlideOperation::Add {
+                id,
+                layout,
+                position,
+            } => {
+                let (anchor, after) = match position {
+                    SlidePosition::After(anchor) => (anchor, true),
+                    SlidePosition::Before(anchor) => (anchor, false),
+                };
+                let slide = package
+                    .new_slide(layout)
+                    .with_context(|| format!("a slide cannot be made from {layout}"))?;
+                package.add_slide(&presentation, &slide, &pages[anchor], after)?;
+                pages.insert(id.clone(), slide.clone());
+                inserted.insert(id.clone(), slide);
+            }
             SlideOperation::Delete { slide, .. } => {
                 let names: BTreeMap<&str, &str> = pages
                     .iter()
@@ -343,8 +477,38 @@ pub fn restructure(
                     .delete_slide(&presentation, &pages[slide], &names)
                     .with_context(|| format!("{slide} cannot be deleted"))?;
             }
+            SlideOperation::Move {
+                slide, position, ..
+            } => {
+                let (anchor, after) = match position {
+                    SlidePosition::After(anchor) => (anchor, true),
+                    SlidePosition::Before(anchor) => (anchor, false),
+                };
+                package
+                    .move_slide(&presentation, &pages[slide], &pages[anchor], after)
+                    .with_context(|| format!("{slide} cannot be moved"))?;
+            }
+            SlideOperation::Visibility { slide, hidden, .. } => {
+                package.set_visibility(&pages[slide], *hidden)?;
+            }
         }
         deck.apply(operation)?;
+    }
+    // Whether each slide is hidden: as an operation set it, else as the
+    // original (or the slide a copy was made of) is.
+    let mut hidden = vec![];
+    for (slide, _) in &deck.slides {
+        hidden.push(match deck.hidden.get(slide) {
+            Some(hidden) => *hidden,
+            None if deck.added.contains(slide) => false,
+            None => {
+                let origin = deck.origin(slide);
+                sheets
+                    .iter()
+                    .find(|sheet| sheet["name"] == origin.as_str())
+                    .is_some_and(|sheet| sheet["state"] == "hidden")
+            }
+        });
     }
     if !operations.is_empty() {
         package.update_counts(&deck)?;
@@ -368,7 +532,112 @@ pub fn restructure(
         removed,
         inserted,
         order: deck.slides,
+        hidden,
     })
+}
+
+/// A slide made from a layout (`p:sldLayout`) as PowerPoint's New Slide makes
+/// it: an empty shape for each placeholder of the layout but the date, footer
+/// and slide number, which PowerPoint leaves off new slides.
+pub(super) fn slide_from_layout(layout: &str) -> Result<String> {
+    let xml = Document::parse(layout)?;
+    ensure!(
+        xml.root_element().has_tag_name((PRESENTATION, "sldLayout")),
+        "not a slide layout"
+    );
+    let mut shapes = String::new();
+    let mut next = 2;
+    for shape in xml
+        .descendants()
+        .filter(|n| n.has_tag_name((PRESENTATION, "sp")))
+    {
+        let Some(properties) = shape
+            .children()
+            .find(|n| n.has_tag_name((PRESENTATION, "nvSpPr")))
+        else {
+            continue;
+        };
+        let Some(placeholder) = properties
+            .children()
+            .find(|n| n.has_tag_name((PRESENTATION, "nvPr")))
+            .and_then(|n| n.children().find(|n| n.has_tag_name((PRESENTATION, "ph"))))
+        else {
+            continue;
+        };
+        if matches!(
+            placeholder.attribute("type"),
+            Some("dt" | "ftr" | "sldNum" | "hdr")
+        ) {
+            continue;
+        }
+        let name = properties
+            .children()
+            .find(|n| n.has_tag_name((PRESENTATION, "cNvPr")))
+            .and_then(|n| n.attribute("name"))
+            .unwrap_or("Placeholder");
+        let attributes: String = ["type", "orient", "sz", "idx"]
+            .iter()
+            .filter_map(|key| {
+                placeholder
+                    .attribute(*key)
+                    .map(|value| format!(r#" {key}="{}""#, xml_attr(value)))
+            })
+            .collect();
+        shapes.push_str(&format!(
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="{next}" name="{}"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph{attributes}/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="ja-JP"/></a:p></p:txBody></p:sp>"#,
+            xml_attr(name)
+        ));
+        next += 1;
+    }
+    Ok(format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="{DRAWING}" xmlns:r="{REL}" xmlns:p="{PRESENTATION}"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>{shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"#
+    ))
+}
+
+/// The slide layouts of a presentation (`parts`) a new slide can be made
+/// from: each with its name, its placeholders and the text of the slide made
+/// from it (`cells`, with their fonts), in part order.
+pub(super) fn layouts(parts: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
+    let mut layouts = vec![];
+    for (part, bytes) in parts {
+        if !(part.starts_with("ppt/slideLayouts/")
+            && part.ends_with(".xml")
+            && !part.contains("/_rels/"))
+        {
+            continue;
+        }
+        let (text, _) = part_text(bytes)?;
+        let xml = Document::parse(&text)?;
+        if !xml.root_element().has_tag_name((PRESENTATION, "sldLayout")) {
+            continue;
+        }
+        let name = xml
+            .root_element()
+            .children()
+            .find(|n| n.has_tag_name((PRESENTATION, "cSld")))
+            .and_then(|n| n.attribute("name"))
+            .unwrap_or("");
+        let placeholders: Vec<Value> = xml
+            .descendants()
+            .filter(|n| n.has_tag_name((PRESENTATION, "ph")))
+            .map(|ph| {
+                let shape_name = ph
+                    .ancestors()
+                    .find(|n| n.tag_name().name().starts_with("nv"))
+                    .and_then(|n| n.children().find(|c| c.tag_name().name() == "cNvPr"))
+                    .and_then(|n| n.attribute("name"));
+                json!({"type":ph.attribute("type").unwrap_or("obj"),"index":ph.attribute("idx"),"name":shape_name})
+            })
+            .collect();
+        let slide = slide_from_layout(&text)?;
+        let slide_xml = Document::parse(&slide)?;
+        let fonts = super::slide_fonts::SlideFonts::for_layout(parts, part, &slide_xml)?;
+        let sheet = super::slide_text::layout(&slide_xml)?.sheet("layout", part, &fonts);
+        layouts.push(
+            json!({"name":name,"part":part,"placeholders":placeholders,"cells":sheet["cells"]}),
+        );
+    }
+    Ok(layouts)
 }
 
 /// The relationships part of `part`; `""` is the package itself.
@@ -838,6 +1107,125 @@ impl Package<'_> {
             edits.push((at..at, format!(r#"<{name} id="{next}"/>"#)));
         }
         self.edit(presentation, edits)
+    }
+
+    /// A new slide part made from the layout in part `layout`, with its
+    /// relationship to the layout and its content type.
+    fn new_slide(&mut self, layout: &str) -> Result<String> {
+        ensure!(
+            layout.starts_with("ppt/slideLayouts/") && self.exists(layout),
+            "{layout} is not a slide layout of the presentation"
+        );
+        let (text, _) = self.text(layout)?;
+        let slide = slide_from_layout(&text)?;
+        let part = self.fresh_name("ppt/slides/slide1.xml");
+        self.changed.insert(part.clone(), Some(slide.into_bytes()));
+        let target = format!(
+            "../slideLayouts/{}",
+            layout.rsplit('/').next().unwrap_or(layout)
+        );
+        self.changed.insert(
+            relationships_part(&part),
+            Some(
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PACKAGE_REL}"><Relationship Id="rId1" Type="{REL}/slideLayout" Target="{}"/></Relationships>"#,
+                    xml_attr(&target)
+                )
+                .into_bytes(),
+            ),
+        );
+        self.override_type("")?;
+        self.add_override(
+            &part,
+            "application/vnd.openxmlformats-officedocument.presentationml.slide+xml",
+        );
+        Ok(part)
+    }
+
+    /// Moves the slide in `part` next to the slide in `anchor` in the show
+    /// order, and in a sectioned presentation into the anchor's section.
+    fn move_slide(
+        &mut self,
+        presentation: &str,
+        part: &str,
+        anchor: &str,
+        after: bool,
+    ) -> Result<()> {
+        let relationships = self.relationships(presentation)?;
+        let relationship = |target: &str| {
+            relationships
+                .iter()
+                .find(|r| {
+                    relationship_kind(&r.kind, "slide")
+                        && self.target(presentation, r).as_deref() == Some(target)
+                })
+                .map(|r| r.id.clone())
+                .context("the slide is not listed in the presentation")
+        };
+        let (moved_id, anchor_id) = (relationship(part)?, relationship(anchor)?);
+        let (text, _) = self.text(presentation)?;
+        let xml = Document::parse(&text)?;
+        let listed = |id: &str| {
+            xml.descendants()
+                .find(|n| {
+                    n.has_tag_name((PRESENTATION, "sldId")) && n.attribute((REL, "id")) == Some(id)
+                })
+                .context("the slide is not listed in the presentation")
+        };
+        let (moved, anchor_node) = (listed(&moved_id)?, listed(&anchor_id)?);
+        let place = |node: Node<'_, '_>| {
+            if after {
+                node.range().end
+            } else {
+                node.range().start
+            }
+        };
+        // The new place is inserted before the old one is removed, so that a
+        // slide placed where it already is stays there.
+        let mut edits = vec![
+            (
+                place(anchor_node)..place(anchor_node),
+                text[moved.range()].to_owned(),
+            ),
+            (moved.range(), String::new()),
+        ];
+        let section = |number: Option<&str>| {
+            xml.descendants().find(|n| {
+                n.has_tag_name((P14, "sldId"))
+                    && n.attribute("id") == number
+                    && n.ancestors().any(|a| a.has_tag_name((P14, "section")))
+            })
+        };
+        if let (Some(entry), Some(target)) = (
+            section(moved.attribute("id")),
+            section(anchor_node.attribute("id")),
+        ) {
+            edits.push((place(target)..place(target), text[entry.range()].to_owned()));
+            edits.push((entry.range(), String::new()));
+        }
+        edits.sort_by_key(|(range, replacement)| (range.start, replacement.is_empty()));
+        self.edit(presentation, edits)
+    }
+
+    /// Hides the slide in `part` from the slide show (`show="0"`), or shows it.
+    fn set_visibility(&mut self, part: &str, hidden: bool) -> Result<()> {
+        let (text, _) = self.text(part)?;
+        let xml = Document::parse(&text)?;
+        let root = xml.root_element();
+        ensure!(
+            root.has_tag_name((PRESENTATION, "sld")),
+            "{part} is not a slide"
+        );
+        let raw = &text[root.range()];
+        let end = raw.find('>').context("invalid slide")?;
+        let opening = raw[..end].trim_end_matches('/');
+        let pattern = regex::Regex::new(r#"\s+show\s*=\s*(?:"[^"]*"|'[^']*')"#)?;
+        let mut replaced = pattern.replace(opening, "").into_owned();
+        if hidden {
+            replaced.push_str(r#" show="0""#);
+        }
+        let start = root.range().start;
+        self.edit(part, vec![(start..start + opening.len(), replaced)])
     }
 
     /// Removes the slide in `part` from the presentation and the parts only it

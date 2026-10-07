@@ -1,7 +1,7 @@
-//! Slide insertion and deletion on a PowerPoint document. Like a row edit, the
-//! operation in mappings.yml and the content pages it adds or removes change
-//! together, are validated like `check` before anything is written, and
-//! replace the document's directory in one rename.
+//! Slide insertion, deletion, moving and hiding on a PowerPoint document. Like
+//! a row edit, the operation in mappings.yml and the content pages it adds or
+//! removes change together, are validated like `check` before anything is
+//! written, and replace the document's directory in one rename.
 use super::sheet_edit::rejection;
 use super::*;
 use crate::document_source::{SlidePosition, slide_order};
@@ -12,8 +12,23 @@ pub enum SlideEditKind {
         from: String,
         position: SlidePosition,
     },
+    /// A new slide made from a layout (its name or part), placed next to a slide.
+    Add {
+        layout: String,
+        position: SlidePosition,
+    },
     Delete {
         slide: String,
+    },
+    /// Slide `slide` placed next to another slide in the show order.
+    Move {
+        slide: String,
+        position: SlidePosition,
+    },
+    /// Slide `slide` hidden from the slide show, or shown again.
+    Visibility {
+        slide: String,
+        hidden: bool,
     },
 }
 
@@ -85,7 +100,11 @@ impl Store {
             None => {
                 let prefix = match edit.kind {
                     SlideEditKind::Insert { .. } => "add-slide",
+                    SlideEditKind::Add { .. } => "new-slide",
                     SlideEditKind::Delete { .. } => "del-slide",
+                    SlideEditKind::Move { .. } => "move-slide",
+                    SlideEditKind::Visibility { hidden: true, .. } => "hide-slide",
+                    SlideEditKind::Visibility { hidden: false, .. } => "show-slide",
                 };
                 next_operation_id(&recorded, prefix)
             }
@@ -100,8 +119,68 @@ impl Store {
                 }
                 operation
             }
+            SlideEditKind::Add { layout, position } => {
+                // A layout is named by its part or by its name, if no other has it.
+                let layouts = inspected.extraction["slide_layouts"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let matches: Vec<&Value> = layouts
+                    .iter()
+                    .filter(|l| l["part"] == layout.as_str() || l["name"] == layout.as_str())
+                    .collect();
+                let names = || {
+                    layouts
+                        .iter()
+                        .filter_map(|l| {
+                            Some(format!("{} ({})", l["name"].as_str()?, l["part"].as_str()?))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let part = match matches.as_slice() {
+                    [one] => string(&one["part"])?.to_owned(),
+                    [] => {
+                        return Err(rejection(
+                            "invalid_layout",
+                            format!(
+                                "{layout} is not a slide layout of the presentation; the layouts are: {}",
+                                names()
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(rejection(
+                            "invalid_layout",
+                            format!(
+                                "more than one layout is named {layout}; name it by its part: {}",
+                                names()
+                            ),
+                        ));
+                    }
+                };
+                let mut operation =
+                    json!({"id":op_id,"kind":"add_slide","layout":part,"reason":edit.reason});
+                match position {
+                    SlidePosition::After(slide) => operation["after"] = json!(slide),
+                    SlidePosition::Before(slide) => operation["before"] = json!(slide),
+                }
+                operation
+            }
             SlideEditKind::Delete { slide } => {
                 json!({"id":op_id,"kind":"delete_slide","slide":slide,"reason":edit.reason})
+            }
+            SlideEditKind::Move { slide, position } => {
+                let mut operation =
+                    json!({"id":op_id,"kind":"move_slide","slide":slide,"reason":edit.reason});
+                match position {
+                    SlidePosition::After(anchor) => operation["after"] = json!(anchor),
+                    SlidePosition::Before(anchor) => operation["before"] = json!(anchor),
+                }
+                operation
+            }
+            SlideEditKind::Visibility { slide, hidden } => {
+                json!({"id":op_id,"kind":"set_slide_visibility","slide":slide,"hidden":hidden,"reason":edit.reason})
             }
         };
         if let Some(existing) = recorded.iter().find(|o| o["id"] == op_id.as_str()) {
@@ -119,8 +198,12 @@ impl Store {
         values.push(operation.clone());
         let operations = parse_slide_operations(&values, sheets)
             .map_err(|error| rejection("invalid_slide", format!("{error:#}")))?;
-        let before = slide_view(sheets, &prior)?;
-        let after = slide_view(sheets, &operations)?;
+        let layouts = inspected.extraction["slide_layouts"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let before = slide_view(sheets, layouts, &prior)?;
+        let after = slide_view(sheets, layouts, &operations)?;
         let page_of = |view: &[Value], name: &str| {
             view.iter()
                 .find(|sheet| sheet["name"] == name)
@@ -248,6 +331,55 @@ impl Store {
                     .collect::<Vec<_>>();
                 mappings["omissions"] = json!(omissions);
             }
+            SlideEditKind::Add { .. } => {
+                // The new slide's page holds the text of its empty placeholders.
+                let page_id = page_of(&after, &op_id).context("added page missing")?;
+                let sheet = after
+                    .iter()
+                    .find(|sheet| sheet["name"] == op_id.as_str())
+                    .context("added page missing")?;
+                let target = format!("content/{op_id}.yml");
+                if under(&dir, &target)?.exists() {
+                    return Err(rejection(
+                        "page_exists",
+                        format!("{target} already exists; choose another --id"),
+                    ));
+                }
+                let note = array(&inspected.extraction["findings"])?
+                    .iter()
+                    .find(|f| f["code"] == "R001")
+                    .map(|f| f["message"].clone())
+                    .unwrap_or(json!(""));
+                let mut rows = json!({});
+                let mut fonts = json!({});
+                for cell in array(&sheet["cells"])? {
+                    let (_, row) = crate::excel::coordinate(string(&cell["address"])?)?;
+                    rows[format!("r{row}")]["A"] = cell["value"].clone();
+                    if let Some(font) = cell.get("font") {
+                        fonts["table-1"][format!("r{row}")]["A"] = font.clone();
+                    }
+                }
+                let mut blocks =
+                    json!({"extraction-notes":{"title":"未抽出・注意事項","text":note}});
+                let mut new_tables = tables.clone();
+                if rows.as_object().is_some_and(|rows| !rows.is_empty()) {
+                    blocks["table-1"] = json!({"title":"本文","rows":rows});
+                    new_tables.push(
+                        json!({"page":page_id,"block":"table-1","columns":["A"],"references":[]}),
+                    );
+                }
+                mappings["tables"] = json!(new_tables);
+                layout["sheets"][&page_id] = identity::initial_sheet(sheet)?;
+                identity::reorder(&mut layout)?;
+                let page = elements::encode(
+                    &json!({"schema_version":"4","document_id":inspected.meta["document_id"],"page_id":page_id,"source_path":source_path,"title":op_id,"blocks":blocks,"fonts":fonts}),
+                    &mut layout,
+                )?;
+                planned.insert(target.clone(), Some(serialized(Path::new(&target), &page)?));
+                added.push(target);
+            }
+            // The slide keeps its pages; only the presentation changes.
+            SlideEditKind::Move { .. } | SlideEditKind::Visibility { .. } => {}
         }
         mappings["operations"] = Value::Array(values.clone());
         planned.insert(

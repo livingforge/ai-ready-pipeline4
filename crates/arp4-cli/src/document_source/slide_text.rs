@@ -127,6 +127,8 @@ struct Text<'a, 'input> {
     segments: Vec<Segment<'a, 'input>>,
     runs: usize,
     bold_runs: usize,
+    /// The runs (`a:r`, and `a:fld` for fields) whose text the text shows.
+    run_nodes: Vec<Node<'a, 'input>>,
 }
 
 impl<'a, 'input> Text<'a, 'input> {
@@ -154,6 +156,13 @@ impl<'a, 'input> Text<'a, 'input> {
                 let text = node.text().unwrap_or("");
                 if !text.is_empty() {
                     self.runs += 1;
+                    if let Some(run) = node
+                        .parent()
+                        .filter(|p| drawing(*p, "r") || drawing(*p, "fld"))
+                        && self.run_nodes.last() != Some(&run)
+                    {
+                        self.run_nodes.push(run);
+                    }
                     if node
                         .parent()
                         .and_then(|run| run.children().find(|n| drawing(*n, "rPr")))
@@ -173,9 +182,20 @@ impl<'a, 'input> Text<'a, 'input> {
         }
     }
 
-    fn block(self, address: String, in_table: bool) -> Block<'a, 'input> {
+    fn block(
+        self,
+        address: String,
+        place: Option<super::word_fonts::TablePlace>,
+    ) -> Block<'a, 'input> {
         let bold = self.runs > 0 && self.runs == self.bold_runs;
-        Block::slide(address, self.text, self.segments, bold, in_table)
+        Block::slide(
+            address,
+            self.text,
+            self.segments,
+            bold,
+            self.run_nodes,
+            place,
+        )
     }
 }
 
@@ -202,13 +222,101 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<SlideLayou
             let mut text = Text::default();
             text.paragraph(node);
             if !text.text.is_empty() {
-                output.blocks.push(text.block(format!("A{row}"), false));
+                output.blocks.push(text.block(format!("A{row}"), None));
+                output.rows.insert(row, node);
+                row += 1;
+            } else if empty_placeholder(node) {
+                // An empty placeholder holds the text to write, as one empty line.
+                let mut block = text.block(format!("A{row}"), None);
+                block.empty = Some(node);
+                output.blocks.push(block);
                 output.rows.insert(row, node);
                 row += 1;
             }
         }
     }
     Ok(output)
+}
+
+/// Whether `paragraph` is the first of a text placeholder that holds no text,
+/// as one is on a slide made from a layout: its text is written there. The
+/// date, footer, slide number and header placeholders show fields instead,
+/// and picture, chart, table and media placeholders hold objects.
+fn empty_placeholder(paragraph: Node<'_, '_>) -> bool {
+    let Some(body) = paragraph
+        .parent()
+        .filter(|b| b.has_tag_name((PRESENTATION, "txBody")))
+    else {
+        return false;
+    };
+    let Some(shape) = body
+        .parent()
+        .filter(|s| s.has_tag_name((PRESENTATION, "sp")))
+    else {
+        return false;
+    };
+    let placeholder = shape
+        .children()
+        .find(|n| n.has_tag_name((PRESENTATION, "nvSpPr")))
+        .and_then(|n| {
+            n.children()
+                .find(|n| n.has_tag_name((PRESENTATION, "nvPr")))
+        })
+        .and_then(|n| n.children().find(|n| n.has_tag_name((PRESENTATION, "ph"))));
+    placeholder.is_some_and(|ph| {
+        !matches!(
+            ph.attribute("type"),
+            Some(
+                "dt" | "ftr"
+                    | "sldNum"
+                    | "hdr"
+                    | "sldImg"
+                    | "pic"
+                    | "chart"
+                    | "tbl"
+                    | "media"
+                    | "clipArt"
+                    | "dgm"
+            )
+        )
+    }) && body.children().find(|n| drawing(*n, "p")) == Some(paragraph)
+        && !body
+            .descendants()
+            .any(|n| drawing(n, "t") && n.text().is_some_and(|t| !t.is_empty()))
+}
+
+/// The edit writing `text` into the empty placeholder paragraph `paragraph`:
+/// runs in the format its end mark (`a:endParaRPr`) sets, as PowerPoint makes
+/// them when text is typed into the placeholder.
+pub(super) fn fill_empty(
+    original: &str,
+    paragraph: Node<'_, '_>,
+    text: &str,
+) -> Result<(Range<usize>, String)> {
+    let raw = &original[paragraph.range()];
+    let (name, prefix) = names(raw);
+    let end = paragraph.children().find(|n| drawing(*n, "endParaRPr"));
+    let format = match end {
+        Some(end) => {
+            let raw = &original[end.range()];
+            let (end_name, _) = names(raw);
+            raw.replacen(end_name, &format!("{prefix}rPr"), 1)
+                .replace(&format!("</{end_name}>"), &format!("</{prefix}rPr>"))
+        }
+        None => String::new(),
+    };
+    let content = runs(text, &prefix, &format)?;
+    Ok(match end {
+        Some(end) => (end.range().start..end.range().start, content),
+        None if raw.ends_with("/>") => (
+            paragraph.range(),
+            format!("{}>{content}</{name}>", raw[..raw.len() - 2].trim_end()),
+        ),
+        None => {
+            let at = paragraph.range().start + raw.rfind("</").context("invalid paragraph")?;
+            (at..at, content)
+        }
+    })
 }
 
 /// Lays out one table from row `top`; returns the rows it occupies. A cell
@@ -226,11 +334,15 @@ fn table<'a, 'input>(
     let address = |row: usize, column: usize| -> Result<String> {
         Ok(format!("{}{}", column_name(column as u32 + 1)?, top + row))
     };
-    let mut width = 1;
+    let width = rows
+        .iter()
+        .map(|tr| tr.children().filter(|n| drawing(*n, "tc")).count())
+        .max()
+        .unwrap_or(1)
+        .max(1);
     for (r, tr) in rows.iter().enumerate() {
         output.rows.insert(top + r, *tr);
         for (c, tc) in tr.children().filter(|n| drawing(*n, "tc")).enumerate() {
-            width = width.max(c + 1);
             if on(tc, "hMerge") || on(tc, "vMerge") {
                 continue;
             }
@@ -247,7 +359,13 @@ fn table<'a, 'input>(
                 text.paragraph(paragraph);
             }
             if !text.text.is_empty() {
-                output.blocks.push(text.block(address(r, c)?, true));
+                let place = super::word_fonts::TablePlace {
+                    first_row: r == 0,
+                    last_row: r + down == rows.len(),
+                    first_column: c == 0,
+                    last_column: c + columns == width,
+                };
+                output.blocks.push(text.block(address(r, c)?, Some(place)));
             }
         }
     }
@@ -392,8 +510,15 @@ fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
 }
 
 impl SlideLayout<'_, '_> {
-    pub fn sheet(&self, name: &str, part: &str) -> Value {
-        blocks_sheet(name, part, &self.blocks, &self.merges, &self.tables)
+    pub fn sheet(&self, name: &str, part: &str, fonts: &super::slide_fonts::SlideFonts) -> Value {
+        blocks_sheet(
+            name,
+            part,
+            &self.blocks,
+            &self.merges,
+            &self.tables,
+            Some(&|block| fonts.block_font(block)),
+        )
     }
 
     /// Edits that insert and delete paragraphs and table rows as `operations`
@@ -672,7 +797,13 @@ mod tests {
             ]
             .map(|(a, t)| (a.to_owned(), t.to_owned()))
         );
-        let sheet = layout.sheet("slide-1", "ppt/slides/slide1.xml");
+        let fonts = super::super::slide_fonts::SlideFonts::new(
+            &BTreeMap::new(),
+            "ppt/slides/slide1.xml",
+            &document,
+        )
+        .unwrap();
+        let sheet = layout.sheet("slide-1", "ppt/slides/slide1.xml", &fonts);
         assert_eq!(sheet["merges"], json!(["A5:B5"]));
         assert_eq!(
             sheet["tables"],

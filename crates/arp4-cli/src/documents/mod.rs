@@ -13,9 +13,11 @@ pub use sheet_edit::{Axis, EditKind, Position, SheetEdit};
 mod elements;
 mod export_confirmation;
 mod identity;
+mod shape_edit;
 mod slide_edit;
 mod value_edit;
 mod visual_elements;
+pub use shape_edit::ShapeRequest;
 pub use slide_edit::{SlideEdit, SlideEditKind};
 
 use crate::{
@@ -61,6 +63,8 @@ pub struct Inspection {
     pub mappings: Value,
     /// Content values by page, block and field.
     pub values: HashMap<(String, String, String), Value>,
+    /// The fonts of content values by page, block and field (see `crate::fonts`).
+    pub fonts: HashMap<(String, String, String), Value>,
     /// Content file name by validated page ID.
     pub page_files: BTreeMap<String, String>,
     pub fingerprint: String,
@@ -261,22 +265,19 @@ impl Store {
     fn logical(&self, dir: &Path) -> Result<BTreeMap<String, PathBuf>> {
         files(dir)
     }
-    fn image_assets(
-        &self,
-        dir: &Path,
-        operations: &[excel::ImageOperation],
-    ) -> Result<BTreeMap<String, Vec<u8>>> {
+    /// The bytes of the image assets (`assets/…` paths) operations add.
+    fn image_assets(&self, dir: &Path, assets: &[String]) -> Result<BTreeMap<String, Vec<u8>>> {
         let logical = self.logical(dir)?;
-        let mut assets = BTreeMap::new();
-        for operation in operations {
+        let mut images = BTreeMap::new();
+        for asset in assets {
             let path = logical
-                .get(&operation.asset)
-                .with_context(|| format!("image asset missing: {}", operation.asset))?;
+                .get(asset)
+                .with_context(|| format!("image asset missing: {asset}"))?;
             let bytes = fs::read(path)?;
-            excel::validate_image_asset(&operation.asset, &bytes)?;
-            assets.insert(operation.asset.clone(), bytes);
+            excel::validate_image_asset(asset, &bytes)?;
+            images.insert(asset.clone(), bytes);
         }
-        Ok(assets)
+        Ok(images)
     }
     pub fn fingerprint(&self, dir: &Path) -> Result<Option<String>> {
         Ok(self.file_hashes(dir)?.map(|files| fingerprint_of(&files)))

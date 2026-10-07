@@ -13,6 +13,7 @@
       "json"
     ],
     "csv_import": true,
+    "document_fonts": "effective latin and East Asian font names, size in points and RRGGBB color per cell, paragraph and shape text, resolved through styles and themes; mixed when runs differ; PDF strings read-only (font name without subset prefix, size on the page, device colors)",
     "document_ids": "source path below the sources folder",
     "document_input_formats": [
       "xlsx",
@@ -78,6 +79,7 @@
       "review"
     ],
     "documents_folder_import": true,
+    "documents_font_edits": "Excel cells (one font name for latin and East Asian text) and shape text, Word paragraphs and table cells (sizes in half points), PowerPoint paragraphs and table cells (RRGGBB colors) through documents values; exact base and old font properties",
     "documents_remove": true,
     "documents_schema": true,
     "documents_search": true,
@@ -86,7 +88,7 @@
     "documents_search_freshness": "saved index snapshot; external changes remain unchecked until search-refresh",
     "documents_search_refresh": "explicit documents search-refresh command",
     "documents_search_scope": "adopted extraction with structure context; proposals and unexported content edits are not indexed",
-    "documents_typed_value_edits": "Office/PDF existing cells and text; Excel scalar values, existing formulas and table labels; exact base and old value; before structural operations",
+    "documents_typed_value_edits": "Office/PDF existing cells and text; Excel scalar values, existing formulas, table labels and shape text; exact base and old value; before structural operations",
     "documents_workflow": true,
     "excel_body_model": "reading-order value arrays; identities, topology, formula kinds and physical bindings in layout.yml",
     "excel_chart_xml_extraction": true,
@@ -121,11 +123,28 @@
     "native_text_writeback": false,
     "noncell_extraction": true,
     "ocr": true,
-    "ocr_engine": "Windows.Media.Ocr (imported Excel and Word images on Windows)",
+    "ocr_engine": "Windows.Media.Ocr (imported Excel, Word and PowerPoint images on Windows)",
     "office_unchanged_part_verification": true,
     "pdf_import": true,
     "pdf_writeback": true,
+    "pptx_drawing_extraction": "shapes, pictures (saved as assets), connectors, groups and graphic frames with places on the slide in points, fill, line and placeholder",
     "pptx_import": true,
+    "pptx_shape_commands": [
+      "shapes update",
+      "shapes add",
+      "shapes delete",
+      "shapes add-picture",
+      "shapes replace-picture",
+      "shapes add-connector"
+    ],
+    "pptx_slide_commands": [
+      "slides insert",
+      "slides add",
+      "slides delete",
+      "slides move",
+      "slides hide",
+      "slides show"
+    ],
     "pptx_writeback": true,
     "print_settings_extraction": true,
     "semantic_workflow": true,
@@ -154,7 +173,7 @@
   },
   "implementation": "rust",
   "limitations": [
-    "Excel supports scalar/structural writeback, renaming table columns and totals labels from their cells (structured references follow), replacing existing formulas (file notation with _xlfn. prefixes; spilling functions, LET/LAMBDA, # and @ are refused) and PNG insertion. Windows OCR runs automatically on imported Excel and Word image assets; unsupported images retain an unavailable reason. Word (DOCX/DOCM/DOTX/DOTM) and PPTX lay paragraphs and table cells out as rows and edit the runs a change touches; Word field codes are extracted read-only and field results are read-only because Word recalculates them; plain text content controls bound to document data write the data and the controls sharing it. Encrypted (password, IRM, sensitivity label), binary (.xls/.xlsb/.doc/.ppt) and Strict Open XML files are rejected with resave guidance. Excel chart, dialog and macro sheets are not extracted and are preserved unchanged; print settings and chart XML are extracted read-only, while ActiveX binary parts are inventoried by hash; row/column edits move notes, threaded comments, form controls and embedded objects, and are rejected for workbooks with a VBA project, macro or dialog sheets or ActiveX controls, and where Excel itself refuses them (table header/totals rows, cutting through pivot tables or array formulas); PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, PDF page insertion/deletion (Word and PowerPoint paragraphs and table rows take row operations; PowerPoint slides are copied, with their notes but not their comments, and deleted with slide operations, refused while another slide links to a deleted slide or a custom show would be left empty), OCR for PPTX/PDF images, PDF Form XObject text, annotations, slide masters and shape editing other than Excel shape text are not supported (slide notes are extracted and written back as notes-N). Text edits require visual layout review; Word and PowerPoint edits may add, remove or replace line breaks and tabs within a paragraph but cannot split or join paragraphs, and PDF rejects line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Structural edits move references like Excel does: formulas on every sheet, defined names, conditional formats, validations, tables, pivot sources, chart series, sparklines, merges, column widths and drawing anchors; Excel performs recalculation. Content rows and columns an operation adds are keyed <operation ID>-<n>; values a grown merge would hide are rejected. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
+    "Excel supports scalar/structural writeback, renaming table columns and totals labels from their cells (structured references follow), replacing existing formulas (file notation with _xlfn. prefixes; spilling functions, LET/LAMBDA, # and @ are refused) and PNG insertion. Windows OCR runs automatically on imported Excel, Word and PowerPoint image assets; unsupported images retain an unavailable reason. Word (DOCX/DOCM/DOTX/DOTM) and PPTX lay paragraphs and table cells out as rows and edit the runs a change touches; Word field codes are extracted read-only and field results are read-only because Word recalculates them; plain text content controls bound to document data write the data and the controls sharing it. Encrypted (password, IRM, sensitivity label), binary (.xls/.xlsb/.doc/.ppt) and Strict Open XML files are rejected with resave guidance. Excel chart, dialog and macro sheets are not extracted and are preserved unchanged; print settings and chart XML are extracted read-only, while ActiveX binary parts are inventoried by hash; row/column edits move notes, threaded comments, form controls and embedded objects, and are rejected for workbooks with a VBA project, macro or dialog sheets or ActiveX controls, and where Excel itself refuses them (table header/totals rows, cutting through pivot tables or array formulas); PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, PDF page insertion/deletion (Word and PowerPoint paragraphs and table rows take row operations; PowerPoint slides are copied, with their notes but not their comments, added from a slide layout with empty placeholders, deleted, moved in the show order (custom shows keep their order) and hidden or shown with slide operations; deletion is refused while another slide links to a deleted slide or a custom show would be left empty), OCR for PDF images, PDF Form XObject text, annotations, slide masters are not supported, Excel shapes are edited in their text and fonts only, and PowerPoint shapes holding the slide's text are not deleted (PowerPoint shapes, PNG pictures and connectors between rectangles, rounded rectangles and ellipses are changed, added and deleted with shape operations) (slide notes are extracted and written back as notes-N). Text edits require visual layout review; Word and PowerPoint edits may add, remove or replace line breaks and tabs within a paragraph but cannot split or join paragraphs, and PDF rejects line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Structural edits move references like Excel does: formulas on every sheet, defined names, conditional formats, validations, tables, pivot sources, chart series, sparklines, merges, column widths and drawing anchors; Excel performs recalculation. Content rows and columns an operation adds are keyed <operation ID>-<n>; values a grown merge would hide are rejected. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."
   ],
   "release_ready": false,
   "version": "1.0.0-alpha.1"

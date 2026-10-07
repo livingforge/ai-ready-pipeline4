@@ -5,7 +5,9 @@ use anyhow::{Context, Result, ensure};
 use arp4_cli::{
     data::*,
     document_source::SlidePosition,
-    documents::{Axis, Batch, EditKind, Position, SheetEdit, SlideEdit, SlideEditKind, Store},
+    documents::{
+        Axis, Batch, EditKind, Position, ShapeRequest, SheetEdit, SlideEdit, SlideEditKind, Store,
+    },
 };
 use clap::Parser;
 mod cli;
@@ -138,6 +140,7 @@ fn run(cli: Cli) -> Result<bool> {
                     | DocumentCommand::Rows { .. }
                     | DocumentCommand::Columns { .. }
                     | DocumentCommand::Slides { .. }
+                    | DocumentCommand::Shapes { .. }
                     | DocumentCommand::SearchRefresh { .. }
             );
             let _lock = if mutate {
@@ -542,6 +545,9 @@ fn run(cli: Cli) -> Result<bool> {
                 DocumentCommand::Slides { command } => {
                     edit_slides(&store, command, include_hashes)?
                 }
+                DocumentCommand::Shapes { command } => {
+                    edit_shapes(&store, command, include_hashes)?
+                }
                 DocumentCommand::Check {
                     document,
                     proposal,
@@ -735,7 +741,45 @@ fn edit_slides(store: &Store, command: SlideCommand, include_hashes: bool) -> Re
             };
             (target, SlideEditKind::Insert { from, position })
         }
+        SlideCommand::Add {
+            target,
+            layout,
+            place,
+        } => {
+            let position = match (place.after, place.before) {
+                (Some(after), _) => SlidePosition::After(after),
+                (None, Some(before)) => SlidePosition::Before(before),
+                (None, None) => unreachable!("clap requires --after or --before"),
+            };
+            (target, SlideEditKind::Add { layout, position })
+        }
         SlideCommand::Delete { target, slide } => (target, SlideEditKind::Delete { slide }),
+        SlideCommand::Move {
+            target,
+            slide,
+            place,
+        } => {
+            let position = match (place.after, place.before) {
+                (Some(after), _) => SlidePosition::After(after),
+                (None, Some(before)) => SlidePosition::Before(before),
+                (None, None) => unreachable!("clap requires --after or --before"),
+            };
+            (target, SlideEditKind::Move { slide, position })
+        }
+        SlideCommand::Hide { target, slide } => (
+            target,
+            SlideEditKind::Visibility {
+                slide,
+                hidden: true,
+            },
+        ),
+        SlideCommand::Show { target, slide } => (
+            target,
+            SlideEditKind::Visibility {
+                slide,
+                hidden: false,
+            },
+        ),
     };
     let edit = SlideEdit {
         kind,
@@ -746,6 +790,122 @@ fn edit_slides(store: &Store, command: SlideCommand, include_hashes: bool) -> Re
     };
     let (id, proposal) = edited_document(&target.document, &target.proposal);
     let result = store.edit_slides(id, proposal, &edit)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+/// Runs a shape edit and reports it with the check state it leaves.
+fn edit_shapes(store: &Store, command: ShapeCommand, include_hashes: bool) -> Result<Value> {
+    let properties =
+        |place: Option<&ShapePlace>, look: Option<&ShapeLook>, name: Option<&String>| {
+            let mut properties = serde_json::Map::new();
+            if let Some(place) = place {
+                for (key, value) in [
+                    ("left", place.left),
+                    ("top", place.top),
+                    ("width", place.width),
+                    ("height", place.height),
+                    ("rotation", place.rotation),
+                ] {
+                    if let Some(value) = value {
+                        properties.insert(key.into(), json!(value));
+                    }
+                }
+            }
+            if let Some(look) = look {
+                if let Some(fill) = &look.fill {
+                    properties.insert("fill".into(), json!(fill));
+                }
+                if let Some(line) = &look.line {
+                    properties.insert("line".into(), json!(line));
+                }
+                if let Some(weight) = look.line_weight {
+                    properties.insert("line_weight".into(), json!(weight));
+                }
+            }
+            if let Some(name) = name {
+                properties.insert("name".into(), json!(name));
+            }
+            Value::Object(properties)
+        };
+    let (target, operation) = match command {
+        ShapeCommand::Update {
+            target,
+            shape,
+            place,
+            look,
+            name,
+        } => {
+            let properties = properties(Some(&place), Some(&look), name.as_ref());
+            (
+                target,
+                json!({"kind":"update_shape","shape":shape,"properties":properties}),
+            )
+        }
+        ShapeCommand::Add {
+            target,
+            shape_type,
+            name,
+            place,
+            look,
+            text,
+        } => {
+            let mut operation = json!({"kind":"add_shape","shape_type":shape_type,"name":name,"properties":properties(Some(&place), Some(&look), None)});
+            if let Some(text) = text {
+                operation["text"] = json!(text);
+            }
+            (target, operation)
+        }
+        ShapeCommand::Delete { target, shape } => {
+            (target, json!({"kind":"delete_shape","shape":shape}))
+        }
+        ShapeCommand::AddPicture {
+            target,
+            asset,
+            name,
+            description,
+            place,
+        } => {
+            let mut operation = json!({"kind":"add_picture","asset":asset,"name":name,"properties":properties(Some(&place), None, None)});
+            if let Some(description) = description {
+                operation["description"] = json!(description);
+            }
+            (target, operation)
+        }
+        ShapeCommand::ReplacePicture {
+            target,
+            shape,
+            asset,
+        } => (
+            target,
+            json!({"kind":"replace_picture","shape":shape,"asset":asset}),
+        ),
+        ShapeCommand::AddConnector {
+            target,
+            connector_type,
+            name,
+            from,
+            from_site,
+            to,
+            to_site,
+            look,
+        } => (
+            target,
+            json!({"kind":"add_connector","connector_type":connector_type,"name":name,
+                "begin":{"shape":from,"site":from_site},"end":{"shape":to,"site":to_site},
+                "properties":properties(None, Some(&look), None)}),
+        ),
+    };
+    let mut operation = operation;
+    operation["slide"] = json!(target.slide);
+    let request = ShapeRequest {
+        operation,
+        id: target.id.clone(),
+        reason: target.reason.clone(),
+        base: target.base.clone(),
+        dry_run: target.dry_run,
+    };
+    let (id, proposal) = edited_document(&target.document, &target.proposal);
+    let result = store.edit_shapes(id, proposal, &request)?;
     edit_report(store, id, proposal, result, include_hashes)
 }
 

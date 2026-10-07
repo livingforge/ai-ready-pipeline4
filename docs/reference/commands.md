@@ -1754,6 +1754,7 @@ Commands:
   rows            Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
   columns         Insert or delete Excel worksheet columns, like rows
   slides          Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+  shapes          Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
   record          Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
   adopt           Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
   review          Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
@@ -2463,7 +2464,11 @@ Usage: arp4 documents slides [OPTIONS] <COMMAND>
 
 Commands:
   insert  Insert a copy of a slide and its notes page, as PowerPoint's Duplicate Slide does, with their text in new content pages named by the operation ID (content/<ID>.yml, content/notes-<ID>.yml). Comments are not copied
+  add     Add a new slide made from a slide layout, as PowerPoint's New Slide does: one empty placeholder for each of the layout's placeholders (but date, footer and slide number), whose text is written in the new content page named by the operation ID (content/<ID>.yml)
   delete  Delete a slide of the original with its notes page and their content pages. Refused while another slide links to it
+  move    Move a slide, with its notes page, next to another slide in the show order. In a presentation with sections it joins the other slide's section. Custom shows keep their own order
+  hide    Hide a slide from the slide show; it stays in the presentation
+  show    Show a hidden slide in the slide show again
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2541,6 +2546,61 @@ Options:
           Print help
 ```
 
+## `arp4 documents slides add`
+
+```text
+Add a new slide made from a slide layout, as PowerPoint's New Slide does: one empty placeholder for each of the layout's placeholders (but date, footer and slide number), whose text is written in the new content page named by the operation ID (content/<ID>.yml)
+
+Usage: arp4 documents slides add [OPTIONS] --reason <REASON> --layout <LAYOUT> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the slide is added or removed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --layout <LAYOUT>
+          Layout to make the slide from: its name or part, as the extraction's slide_layouts list them
+
+      --after <AFTER>
+          Insert after this slide: slide-N of the original, or the operation ID of a slide an earlier operation inserted
+
+      --before <BEFORE>
+          Insert before this slide, given like --after
+
+  -h, --help
+          Print help
+```
+
 ## `arp4 documents slides delete`
 
 ```text
@@ -2585,6 +2645,612 @@ Options:
 
       --slide <SLIDE>
           Slide to delete: slide-N of the original
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents slides move`
+
+```text
+Move a slide, with its notes page, next to another slide in the show order. In a presentation with sections it joins the other slide's section. Custom shows keep their own order
+
+Usage: arp4 documents slides move [OPTIONS] --reason <REASON> --slide <SLIDE> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the slide is added or removed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --slide <SLIDE>
+          Slide to move: slide-N of the original, or the operation ID of a slide an earlier operation inserted
+
+      --after <AFTER>
+          Insert after this slide: slide-N of the original, or the operation ID of a slide an earlier operation inserted
+
+      --before <BEFORE>
+          Insert before this slide, given like --after
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents slides hide`
+
+```text
+Hide a slide from the slide show; it stays in the presentation
+
+Usage: arp4 documents slides hide [OPTIONS] --reason <REASON> --slide <SLIDE> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the slide is added or removed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --slide <SLIDE>
+          Slide to hide, given like move's --slide
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents slides show`
+
+```text
+Show a hidden slide in the slide show again
+
+Usage: arp4 documents slides show [OPTIONS] --reason <REASON> --slide <SLIDE> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the slide is added or removed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --slide <SLIDE>
+          Slide to show, given like move's --slide
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes`
+
+```text
+Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
+
+Usage: arp4 documents shapes [OPTIONS] <COMMAND>
+
+Commands:
+  update           Change the place, size, rotation, fill, line or name of a shape, picture, connector, group or table frame. Unset properties stay as they are
+  add              Add a rectangle, rounded rectangle, ellipse, text box or line, with PowerPoint's default shape style unless --fill and --line are given
+  delete           Delete a shape, picture, connector or group without text. A shape showing the slide's text or joined by a connector is refused
+  add-picture      Add a PNG picture from the document's assets folder
+  replace-picture  Show another PNG picture in a picture, keeping its place and size
+  add-connector    Add a connector joining two shapes at connection sites: a rectangle's are 0 top, 1 left, 2 bottom and 3 right; an ellipse's 0 top to 7, counterclockwise every 45 degrees
+  help             Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes update`
+
+```text
+Change the place, size, rotation, fill, line or name of a shape, picture, connector, group or table frame. Unset properties stay as they are
+
+Usage: arp4 documents shapes update [OPTIONS] --slide <SLIDE> --reason <REASON> --shape <SHAPE> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --slide <SLIDE>
+          Slide: slide-N of the original, or the operation ID of a slide a slide operation inserted
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name an added shape by it in later shape edits
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the shape changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --shape <SHAPE>
+          Shape to change: its drawing ID
+
+      --left <LEFT>
+
+
+      --top <TOP>
+
+
+      --width <WIDTH>
+
+
+      --height <HEIGHT>
+
+
+      --rotation <ROTATION>
+          Rotation in degrees, clockwise
+
+      --fill <FILL>
+          Fill color as RRGGBB, or none
+
+      --line <LINE>
+          Line color as RRGGBB, or none
+
+      --line-weight <LINE_WEIGHT>
+          Line weight in points
+
+      --name <NAME>
+          New name of the shape
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes add`
+
+```text
+Add a rectangle, rounded rectangle, ellipse, text box or line, with PowerPoint's default shape style unless --fill and --line are given
+
+Usage: arp4 documents shapes add [OPTIONS] --slide <SLIDE> --reason <REASON> --type <SHAPE_TYPE> --name <NAME> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --slide <SLIDE>
+          Slide: slide-N of the original, or the operation ID of a slide a slide operation inserted
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name an added shape by it in later shape edits
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the shape changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --type <SHAPE_TYPE>
+          [possible values: rectangle, rounded_rectangle, ellipse, textbox, line]
+
+      --name <NAME>
+
+
+      --left <LEFT>
+
+
+      --top <TOP>
+
+
+      --width <WIDTH>
+
+
+      --height <HEIGHT>
+
+
+      --rotation <ROTATION>
+          Rotation in degrees, clockwise
+
+      --fill <FILL>
+          Fill color as RRGGBB, or none
+
+      --line <LINE>
+          Line color as RRGGBB, or none
+
+      --line-weight <LINE_WEIGHT>
+          Line weight in points
+
+      --text <TEXT>
+          Text of the shape; a line break starts a paragraph. After apply it is edited in the slide's content page like other text
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes delete`
+
+```text
+Delete a shape, picture, connector or group without text. A shape showing the slide's text or joined by a connector is refused
+
+Usage: arp4 documents shapes delete [OPTIONS] --slide <SLIDE> --reason <REASON> --shape <SHAPE> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --slide <SLIDE>
+          Slide: slide-N of the original, or the operation ID of a slide a slide operation inserted
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name an added shape by it in later shape edits
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the shape changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --shape <SHAPE>
+
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes add-picture`
+
+```text
+Add a PNG picture from the document's assets folder
+
+Usage: arp4 documents shapes add-picture [OPTIONS] --slide <SLIDE> --reason <REASON> --asset <ASSET> --name <NAME> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --slide <SLIDE>
+          Slide: slide-N of the original, or the operation ID of a slide a slide operation inserted
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name an added shape by it in later shape edits
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the shape changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --asset <ASSET>
+          The picture: assets/<file>.png in the document folder
+
+      --name <NAME>
+
+
+      --description <DESCRIPTION>
+          Alternative text of the picture
+
+      --left <LEFT>
+
+
+      --top <TOP>
+
+
+      --width <WIDTH>
+
+
+      --height <HEIGHT>
+
+
+      --rotation <ROTATION>
+          Rotation in degrees, clockwise
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes replace-picture`
+
+```text
+Show another PNG picture in a picture, keeping its place and size
+
+Usage: arp4 documents shapes replace-picture [OPTIONS] --slide <SLIDE> --reason <REASON> --shape <SHAPE> --asset <ASSET> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --slide <SLIDE>
+          Slide: slide-N of the original, or the operation ID of a slide a slide operation inserted
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name an added shape by it in later shape edits
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the shape changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --shape <SHAPE>
+
+
+      --asset <ASSET>
+
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents shapes add-connector`
+
+```text
+Add a connector joining two shapes at connection sites: a rectangle's are 0 top, 1 left, 2 bottom and 3 right; an ellipse's 0 top to 7, counterclockwise every 45 degrees
+
+Usage: arp4 documents shapes add-connector [OPTIONS] --slide <SLIDE> --reason <REASON> --type <CONNECTOR_TYPE> --name <NAME> --from <FROM> --from-site <FROM_SITE> --to <TO> --to-site <TO_SITE> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of a PowerPoint presentation
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --slide <SLIDE>
+          Slide: slide-N of the original, or the operation ID of a slide a slide operation inserted
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name an added shape by it in later shape edits
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the shape changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --type <CONNECTOR_TYPE>
+          [possible values: straight, elbow, curve]
+
+      --name <NAME>
+
+
+      --from <FROM>
+          Shape the connector starts at
+
+      --from-site <FROM_SITE>
+
+
+      --to <TO>
+          Shape the connector ends at
+
+      --to-site <TO_SITE>
+
+
+      --fill <FILL>
+          Fill color as RRGGBB, or none
+
+      --line <LINE>
+          Line color as RRGGBB, or none
+
+      --line-weight <LINE_WEIGHT>
+          Line weight in points
 
   -h, --help
           Print help

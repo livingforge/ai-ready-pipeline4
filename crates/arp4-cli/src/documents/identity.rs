@@ -18,6 +18,17 @@ pub(super) fn page_id(sheet: &Value, index: usize) -> String {
 pub(super) fn initial(extraction: &Value) -> Result<Value> {
     let mut sheets = json!({});
     for (index, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+        sheets[page_id(sheet, index)] = initial_sheet(sheet)?;
+    }
+    let mut layout = json!({"schema_version":"4","document_id":extraction["document_id"],"source_sha256":extraction["source"]["sha256"],"sheets":sheets,"history":[]});
+    reorder(&mut layout)?;
+    Ok(layout)
+}
+
+/// The layout of a page before its content is encoded: its rows, columns and
+/// formulas by their positions in the extraction `sheet`.
+pub(super) fn initial_sheet(sheet: &Value) -> Result<Value> {
+    {
         let mut rows = json!({});
         let mut columns = json!({});
         let mut formulas = json!({});
@@ -35,14 +46,13 @@ pub(super) fn initial(extraction: &Value) -> Result<Value> {
             let key = excel::column_name(column)?;
             columns[&key] = json!({"key":key,"position":column});
         }
-        sheets[page_id(sheet, index)] = json!({"name":sheet["name"],"rows":rows,"columns":columns,"formulas":formulas,"row_order":[],"column_order":[],"element_metadata":[],"bindings":{},"groups":{},"notes":{},"metadata_sha256":hash(&encoded(&json!([]))),"blanks":{},"merges":sheet["merges"],"block_titles":{},"visuals":{}});
+        Ok(
+            json!({"name":sheet["name"],"rows":rows,"columns":columns,"formulas":formulas,"row_order":[],"column_order":[],"element_metadata":[],"bindings":{},"groups":{},"notes":{},"metadata_sha256":hash(&encoded(&json!([]))),"blanks":{},"merges":sheet["merges"],"block_titles":{},"visuals":{}}),
+        )
     }
-    let mut layout = json!({"schema_version":"4","document_id":extraction["document_id"],"source_sha256":extraction["source"]["sha256"],"sheets":sheets,"history":[]});
-    reorder(&mut layout)?;
-    Ok(layout)
 }
 
-fn reorder(layout: &mut Value) -> Result<()> {
+pub(super) fn reorder(layout: &mut Value) -> Result<()> {
     for sheet in layout["sheets"]
         .as_object_mut()
         .context("layout sheets missing")?
@@ -187,6 +197,37 @@ pub(super) fn grid(page: &Value, layout: &Value, to_runtime: bool) -> Result<Val
             })?] = value.clone();
         }
         out["blocks"]["formulas"]["rows"] = converted;
+    }
+    // Fonts follow the values they belong to; one whose row, column or formula
+    // an operation removed is dropped with its value.
+    if let Some(fonts) = page["fonts"].as_object() {
+        let mut converted = json!({});
+        for (block, body) in fonts {
+            let body = body.as_object().context("invalid font block")?;
+            match block.as_str() {
+                "table-1" => {
+                    for (row, values) in body {
+                        let Some(target_row) = rows.get(row) else {
+                            continue;
+                        };
+                        for (column, font) in values.as_object().context("invalid font row")? {
+                            if let Some(target_column) = columns.get(column) {
+                                converted["table-1"][target_row][target_column] = font.clone();
+                            }
+                        }
+                    }
+                }
+                "formulas" => {
+                    for (field, font) in body {
+                        if let Some(target) = formulas.get(field) {
+                            converted["formulas"][target] = font.clone();
+                        }
+                    }
+                }
+                _ => converted[block] = Value::Object(body.clone()),
+            }
+        }
+        out["fonts"] = converted;
     }
     if !to_runtime {
         // Formula caches are extraction metadata, not editable body values.
@@ -464,18 +505,52 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
                 });
             }
         }
+        let identities = |axis: &str| -> Result<BTreeMap<u64, String>> {
+            sheet[axis]
+                .as_object()
+                .context("layout axis missing")?
+                .iter()
+                .map(|(id, e)| {
+                    Ok((
+                        e["position"].as_u64().context("layout position missing")?,
+                        id.clone(),
+                    ))
+                })
+                .collect()
+        };
+        let rows = identities("rows")?;
+        let columns = identities("columns")?;
+        let mut formula_cells = BTreeSet::new();
         for cell in array(&source["cells"])? {
             let (column, row) = excel::coordinate(string(&cell["address"])?)?;
-            for (axis, coordinate) in [("rows", row), ("columns", column)] {
-                ensure!(
-                    sheet[axis]
-                        .as_object()
-                        .context("layout axis missing")?
-                        .values()
-                        .any(|e| e["position"] == coordinate),
-                    "layout does not cover imported cell; correspondence not proven"
-                );
+            let (Some(row), Some(column)) =
+                (rows.get(&u64::from(row)), columns.get(&u64::from(column)))
+            else {
+                bail!("layout does not cover imported cell; correspondence not proven");
+            };
+            if cell["type"] == "formula" {
+                formula_cells.insert((row.clone(), column.clone()));
             }
+        }
+        // The formulas of this version: a cell keeps its formula identity, one
+        // that holds a value now loses it, and a formula the writer added, such
+        // as a table's calculated column in an inserted row, takes a new one.
+        let formulas = sheet["formulas"]
+            .as_object_mut()
+            .context("layout formulas missing")?;
+        formulas.retain(|_, target| {
+            formula_cells.remove(&(
+                target["row"].as_str().unwrap_or("").to_owned(),
+                target["column"].as_str().unwrap_or("").to_owned(),
+            ))
+        });
+        for (row, column) in formula_cells {
+            let id = elements::token("formula", &[&row, &column]);
+            ensure!(
+                !formulas.contains_key(&id),
+                "formula identity {id} already used"
+            );
+            formulas.insert(id, json!({"row":row,"column":column}));
         }
     }
     layout["source_sha256"] = extraction["source"]["sha256"].clone();

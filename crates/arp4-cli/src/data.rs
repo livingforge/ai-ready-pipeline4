@@ -208,7 +208,7 @@ fn validator(name: &str) -> Result<std::sync::Arc<jsonschema::Validator>> {
 }
 pub fn validate(name: &str, value: &Value) -> Result<()> {
     if let Err(error) = validator(name)?.validate(value) {
-        bail!("{name}: {error}")
+        bail!("{name}: {error} at {}", error.instance_path())
     };
     if name == "mappings" {
         crate::document_structure::validate_corrections(&value["interpretation"])?;
@@ -627,9 +627,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("values.yml");
         let value = json!({"null":null,"empty":"","tilde":"~","upper":"NULL","hash":"a #b",
-            "lines":"a\nb ","long":"x ".repeat(80),"octal":"010","bool":"yes","N":"N","n":1.5});
+            "lines":"a\nb ","long":"x ".repeat(80),"octal":"010","bool":"yes","N":"N","n":1.5,
+            "ideographic":"\u{3000}1","trailing":"1\u{3000}","nbsp":"\u{a0}1","em":"1\u{2003}",
+            "spaced_bool":"\u{3000}true","spaced_null":"null\u{3000}"});
         write(&path, &value).unwrap();
         assert_eq!(read(&path, None).unwrap(), value);
+    }
+
+    #[test]
+    fn hand_typed_yaml_keeps_unicode_spaces_around_numbers_as_text() {
+        assert_eq!(
+            parse("a: \u{3000}1\nb: 2\u{a0}\nc: true\u{3000}\n", false).unwrap(),
+            json!({"a":"\u{3000}1","b":"2\u{a0}","c":"true\u{3000}"})
+        );
     }
 
     #[test]

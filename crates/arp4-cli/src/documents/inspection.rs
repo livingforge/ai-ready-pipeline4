@@ -114,7 +114,7 @@ impl Store {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pptx"));
         ensure!(
             array(&mappings["operations"])?.iter().all(|o| {
-                if is_slide_operation(o) {
+                if crate::document_source::is_presentation_operation(o) {
                     presentation
                 } else {
                     !text_format
@@ -122,7 +122,7 @@ impl Store {
                             && matches!(o["kind"].as_str(), Some("insert_rows" | "delete_rows"))
                 }
             }),
-            "row operations apply to Excel, Word and PowerPoint documents, column and image operations to Excel only, and slide operations to PowerPoint only"
+            "row operations apply to Excel, Word and PowerPoint documents, column and image operations to Excel only, and slide and shape operations to PowerPoint only"
         );
         if let Cow::Owned(operated) = &operated {
             ensure_slide_pages(&extraction, operated, &content_pages)?;
@@ -133,7 +133,18 @@ impl Store {
             array(&mappings["operations"])?,
             array(&operated["sheets"])?,
         )?;
-        self.image_assets(dir, &image_operations)?;
+        let shape_operations =
+            crate::document_source::parse_shape_operations(array(&mappings["operations"])?)?;
+        let assets: Vec<String> = image_operations
+            .iter()
+            .map(|o| o.asset.clone())
+            .chain(
+                shape_operations
+                    .iter()
+                    .filter_map(|o| o.asset().map(str::to_owned)),
+            )
+            .collect();
+        self.image_assets(dir, &assets)?;
         mappings = regenerate_mappings(mappings, &operated, &content_pages, &operations)?;
         let content = Self::validate_content(&meta, &mappings, &content_pages)?;
         validate_coverage(
@@ -145,6 +156,7 @@ impl Store {
             text_format,
         )?;
         let values = content.values;
+        let fonts = content.fonts;
         for asset in array(&extraction["assets"])? {
             ensure!(
                 hash(&fs::read(under(
@@ -177,6 +189,7 @@ impl Store {
             extraction,
             mappings,
             values,
+            fonts,
             page_files,
             fingerprint: fp,
             reviewed,
@@ -231,6 +244,7 @@ impl Store {
             }
         }
         let mut values = HashMap::new();
+        let mut fonts = HashMap::new();
         let mut expected = BTreeSet::new();
         let mut page_ids = BTreeSet::new();
         let mut references = vec![];
@@ -294,6 +308,12 @@ impl Store {
                         );
                         ensure!(known(col), "unknown column");
                         ensure!(!e["field"].is_null(), "table field required");
+                        if let Some(font) = page["fonts"][block.as_str()][row]
+                            .get(col)
+                            .filter(|font| !font.is_null())
+                        {
+                            fonts.insert(key(e)?, font.clone());
+                        }
                         ensure!(
                             values.insert(key(e)?, value.clone()).is_none(),
                             "duplicate table field"
@@ -339,7 +359,11 @@ impl Store {
                 "orphaned table definition"
             );
         }
-        Ok(ValidatedContent { values, expected })
+        Ok(ValidatedContent {
+            values,
+            fonts,
+            expected,
+        })
     }
     pub fn status(
         &self,
@@ -453,6 +477,7 @@ impl Store {
 
 struct ValidatedContent {
     values: HashMap<(String, String, String), Value>,
+    fonts: HashMap<(String, String, String), Value>,
     /// The page blocks, keyed with an empty field. Every value is expected too.
     expected: BTreeSet<(String, String, String)>,
 }

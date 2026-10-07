@@ -15,6 +15,7 @@ use drawings::*;
 pub use formula_edit::check_formula;
 mod formula_edit;
 use formula_edit::*;
+mod fonts;
 mod import;
 mod visuals;
 mod worksheet;
@@ -26,7 +27,9 @@ use references::*;
 mod relocation;
 mod sheet_objects;
 use package::*;
-pub(crate) use package::{write_archive, write_archive_without, write_unchanged, xml_attr};
+pub(crate) use package::{
+    archive_bytes, write_archive, write_archive_without, write_unchanged, xml_attr,
+};
 use relocation::*;
 use sheet_objects::*;
 mod column_move;
@@ -98,10 +101,13 @@ pub struct Cell {
     pub format: usize,
     /// Every run of the cell's text is bold, whatever the cell format says.
     pub bold_text: bool,
+    /// The fonts the runs of rich text set; empty for text in the cell's font.
+    pub runs: Vec<crate::fonts::RunFont>,
 }
 struct CellFormat {
     number_format: String,
     appearance: Value,
+    font: crate::fonts::RunFont,
 }
 impl Workbook {
     /// The worksheets as the extraction records them, each with its cells.
@@ -126,7 +132,13 @@ impl Workbook {
         if cell.bold_text {
             style["bold"] = json!(true);
         }
-        json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind,"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":style})
+        let runs: Vec<_> = cell
+            .runs
+            .iter()
+            .map(|run| run.clone().or(&format.font))
+            .collect();
+        let font = crate::fonts::element_font(&runs, &format.font);
+        json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind,"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":style,"font":font})
     }
 }
 fn xml(bytes: &[u8]) -> Result<Document<'_>> {

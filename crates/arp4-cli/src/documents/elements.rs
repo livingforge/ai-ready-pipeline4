@@ -204,6 +204,7 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
                     x = position.1;
                 }
                 let group = &sheet["groups"][&id];
+                let font = grid["fonts"][block.as_str()][row.as_str()][column.as_str()].clone();
                 let mut cell = json!({"id":id});
                 let field = if block == "formulas" {
                     "formula"
@@ -211,6 +212,9 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
                     "value"
                 };
                 cell[field] = value.clone();
+                if !font.is_null() {
+                    cell["font"] = font.clone();
+                }
                 if let Some(table) = group["table"].as_str() {
                     cell["role"] = group["role"].clone();
                     cell["headers"] = group["headers"].clone();
@@ -229,6 +233,9 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
                     };
                     if let Some((reference, _)) = visual {
                         element["visual"] = json!(reference);
+                    }
+                    if !font.is_null() {
+                        element["font"] = font;
                     }
                     placed.push(((y, x), spans.get(&(y, x)).map_or(y, |s| s.0), element));
                 }
@@ -313,6 +320,7 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
     }
     let mut out = page.clone();
     out.as_object_mut().unwrap().remove("blocks");
+    out.as_object_mut().unwrap().remove("fonts");
     out["schema_version"] = json!("4");
     let (body, metadata) = crate::document_body::split(&json!(elements))?;
     out["elements"] = body;
@@ -360,7 +368,7 @@ pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
         out["blocks"][block] = json!({"title":title,"rows":{}});
     }
     let mut used = BTreeSet::new();
-    let mut put = |id: &str, value: &Value| -> Result<()> {
+    let mut put = |id: &str, value: &Value, font: &Value| -> Result<()> {
         ensure!(used.insert(id.to_owned()), "duplicate element cell ID");
         let binding = &sheet["bindings"][id];
         let block = string(&binding["block"])?;
@@ -370,18 +378,26 @@ pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
             out["blocks"][block] = json!({"title":match block {"table-1"=>"本文","formulas"=>"数式原文",_=>"図形の文字"},"rows":{}});
         }
         out["blocks"][block]["rows"][row][column] = value.clone();
+        if !font.is_null() {
+            out["fonts"][block][row][column] = font.clone();
+        }
         Ok(())
     };
     for element in array(&expanded["elements"])? {
         match string(&element["type"])? {
-            "text" => put(string(&element["id"])?, &element["text"])?,
-            "formula" => put(string(&element["id"])?, &element["formula"])?,
+            "text" => put(string(&element["id"])?, &element["text"], &element["font"])?,
+            "formula" => put(
+                string(&element["id"])?,
+                &element["formula"],
+                &element["font"],
+            )?,
             "table" => {
                 for row in array(&element["rows"])? {
                     for cell in array(&row["cells"])? {
                         put(
                             string(&cell["id"])?,
                             cell.get("formula").unwrap_or(&cell["value"]),
+                            &cell["font"],
                         )?;
                     }
                 }

@@ -222,11 +222,16 @@ impl Workbook {
                 "duplicate Excel ZIP members"
             );
         }
+        let styles = parts
+            .get("xl/styles.xml")
+            .map(|bytes| xml(bytes))
+            .transpose()?;
+        let palette = fonts::Palette::new(fonts::workbook_theme(&parts)?, styles.as_ref());
         let mut shared = vec![];
         if let Some(bytes) = parts.get("xl/sharedStrings.xml") {
             let doc = xml(bytes)?;
             for item in doc.root_element().children().filter(Node::is_element) {
-                shared.push((texts(item), bold_runs(item)));
+                shared.push((texts(item), bold_runs(item), palette.runs(item)));
             }
         }
         let builtin: Value = serde_json::from_str(include_str!(
@@ -241,9 +246,9 @@ impl Workbook {
         let mut cell_formats = vec![CellFormat {
             number_format: "General".to_owned(),
             appearance: json!({"bold":false,"fill":0,"border":0,"strike":false}),
+            font: crate::fonts::RunFont::default(),
         }];
-        if let Some(bytes) = parts.get("xl/styles.xml") {
-            let doc = xml(bytes)?;
+        if let Some(doc) = &styles {
             if let Some(n) = child(doc.root_element(), "numFmts") {
                 for f in n.children().filter(Node::is_element) {
                     formats.insert(
@@ -255,20 +260,49 @@ impl Workbook {
                 }
             }
             if let Some(n) = child(doc.root_element(), "cellXfs") {
-                let fonts: Vec<_> = child(doc.root_element(), "fonts")
+                let font_list: Vec<_> = child(doc.root_element(), "fonts")
                     .map(|n| {
                         n.children()
                             .filter(Node::is_element)
-                            .map(|f| (on(f, "b"), on(f, "strike")))
+                            .map(|f| (on(f, "b"), on(f, "strike"), palette.font(f, false)))
                             .collect()
                     })
                     .unwrap_or_default();
+                let style_fonts: Vec<usize> = child(doc.root_element(), "cellStyleXfs")
+                    .map(|n| {
+                        n.children()
+                            .filter(Node::is_element)
+                            .map(|xf| {
+                                xf.attribute("fontId")
+                                    .and_then(|id| id.parse().ok())
+                                    .unwrap_or(0)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // A font without a name or size, as some writers save one, shows
+                // those of its cell style's font, then of the workbook's default font.
+                let inherited = |xf: Node<'_, '_>| {
+                    let style = xf
+                        .attribute("xfId")
+                        .and_then(|id| id.parse::<usize>().ok())
+                        .and_then(|id| style_fonts.get(id).copied())
+                        .unwrap_or(0);
+                    let font = |index: usize| {
+                        font_list
+                            .get(index)
+                            .map(|(_, _, font)| font.clone())
+                            .unwrap_or_default()
+                    };
+                    font(style).or(&font(0))
+                };
                 cell_formats = n
                     .children()
                     .filter(Node::is_element)
                     .map(|f| {
                         let font = f.attribute("fontId").unwrap_or("0").parse::<usize>()?;
-                        let (bold, strike) = fonts.get(font).copied().unwrap_or_default();
+                        let (bold, strike, font) = font_list.get(font).cloned().unwrap_or_default();
+                        let font = font.or(&inherited(f));
                         let appearance = json!({"bold":bold,
                         "fill":f.attribute("fillId").unwrap_or("0").parse::<u32>()?,
                         "border":f.attribute("borderId").unwrap_or("0").parse::<u32>()?,
@@ -280,6 +314,7 @@ impl Workbook {
                         Ok(CellFormat {
                             number_format,
                             appearance,
+                            font,
                         })
                     })
                     .collect::<Result<_>>()?;
@@ -346,17 +381,22 @@ impl Workbook {
                             rich_values.push(format!("{name}!{address}"));
                         }
                         let mut bold_text = false;
+                        let mut runs = vec![];
                         let (kind, value) = match c.attribute("t").unwrap_or("n") {
                             "inlineStr" => {
                                 bold_text = child(c, "is").is_some_and(bold_runs);
+                                runs = child(c, "is")
+                                    .map(|is| palette.runs(is))
+                                    .unwrap_or_default();
                                 ("string", json!(texts(c)))
                             }
                             _ if raw_value.is_empty() => ("null", Value::Null),
                             "s" => {
-                                let (text, bold) = shared
+                                let (text, bold, shared_runs) = shared
                                     .get(raw_value.parse::<usize>()?)
                                     .context("invalid shared string index")?;
                                 bold_text = *bold;
+                                runs = shared_runs.clone();
                                 ("string", json!(text))
                             }
                             "b" => {
@@ -398,6 +438,7 @@ impl Workbook {
                             formula: formula_text,
                             format,
                             bold_text,
+                            runs,
                         });
                     }
                 }
@@ -421,7 +462,12 @@ impl Workbook {
                 let (c2, r2) = coordinate(b)?;
                 ensure!(c1 <= c2 && r1 <= r2, "reversed merge range");
             }
-            let drawings = visuals::extract_visuals(&parts, &part, doc.root_element())?;
+            let drawings = visuals::extract_visuals(
+                &parts,
+                &part,
+                doc.root_element(),
+                palette.theme.as_ref(),
+            )?;
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
             let computed = computed_ranges(&parts, &part, doc.root_element())?;

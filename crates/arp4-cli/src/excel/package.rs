@@ -240,25 +240,26 @@ pub(crate) fn write_unchanged(raw: &[u8], destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes the package with `patched` parts replaced or added and `removed`
-/// parts left out; all other entries are copied unchanged.
-pub(crate) fn write_archive_without(
-    raw: &[u8],
-    destination: &Path,
-    patched: &BTreeMap<String, Vec<u8>>,
-    removed: &BTreeSet<String>,
-) -> Result<()> {
-    // Rebuilding the archive rewrites ZIP headers (the zip crate adds S_IFREG
-    // to external attributes) even when every part is copied as-is.
-    if patched.is_empty() && removed.is_empty() {
-        return write_unchanged(raw, destination);
+/// The package bytes with `patched` parts replaced, for a writer that edits
+/// the result again before anything is written.
+pub(crate) fn archive_bytes(raw: &[u8], patched: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
+    if patched.is_empty() {
+        return Ok(raw.to_vec());
     }
     let mut source = ZipArchive::new(Cursor::new(raw))?;
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    let mut output = ZipWriter::new(file);
+    let output = copy_archive(&mut source, Cursor::new(vec![]), patched, &BTreeSet::new())?;
+    Ok(output.into_inner())
+}
+
+/// Copies the entries of `source` into `writer`, with `patched` parts
+/// replaced or added and `removed` parts left out.
+fn copy_archive<W: Write + std::io::Seek>(
+    source: &mut ZipArchive<Cursor<&[u8]>>,
+    writer: W,
+    patched: &BTreeMap<String, Vec<u8>>,
+    removed: &BTreeSet<String>,
+) -> Result<W> {
+    let mut output = ZipWriter::new(writer);
     output.set_raw_comment(source.comment().to_vec().into())?;
     let mut copied = BTreeSet::new();
     for i in 0..source.len() {
@@ -288,7 +289,28 @@ pub(crate) fn write_archive_without(
         output.start_file(name, SimpleFileOptions::default())?;
         output.write_all(bytes)?;
     }
-    output.finish()?.sync_all()?;
+    Ok(output.finish()?)
+}
+
+/// Writes the package with `patched` parts replaced or added and `removed`
+/// parts left out; all other entries are copied unchanged.
+pub(crate) fn write_archive_without(
+    raw: &[u8],
+    destination: &Path,
+    patched: &BTreeMap<String, Vec<u8>>,
+    removed: &BTreeSet<String>,
+) -> Result<()> {
+    // Rebuilding the archive rewrites ZIP headers (the zip crate adds S_IFREG
+    // to external attributes) even when every part is copied as-is.
+    if patched.is_empty() && removed.is_empty() {
+        return write_unchanged(raw, destination);
+    }
+    let mut source = ZipArchive::new(Cursor::new(raw))?;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    copy_archive(&mut source, file, patched, removed)?.sync_all()?;
     // Every untouched member, including print settings, ActiveX binaries,
     // charts and media, must survive the package rewrite unchanged.
     let mut written = ZipArchive::new(fs::File::open(destination)?)?;

@@ -425,6 +425,154 @@ pub(crate) struct SlidePlace {
     #[arg(long)]
     pub(crate) before: Option<String>,
 }
+/// The document, slide and record of a shape edit.
+#[derive(clap::Args)]
+pub(crate) struct ShapeTarget {
+    /// Adopted document ID of a PowerPoint presentation.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Slide: slide-N of the original, or the operation ID of a slide a slide
+    /// operation inserted.
+    #[arg(long)]
+    pub(crate) slide: String,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Name
+    /// an added shape by it in later shape edits.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the shape changes; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+/// Where a shape goes on the slide, in points from its top left corner.
+#[derive(clap::Args)]
+pub(crate) struct ShapePlace {
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) left: Option<f64>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) top: Option<f64>,
+    #[arg(long)]
+    pub(crate) width: Option<f64>,
+    #[arg(long)]
+    pub(crate) height: Option<f64>,
+    /// Rotation in degrees, clockwise.
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) rotation: Option<f64>,
+}
+/// How a shape is drawn.
+#[derive(clap::Args)]
+pub(crate) struct ShapeLook {
+    /// Fill color as RRGGBB, or none.
+    #[arg(long)]
+    pub(crate) fill: Option<String>,
+    /// Line color as RRGGBB, or none.
+    #[arg(long)]
+    pub(crate) line: Option<String>,
+    /// Line weight in points.
+    #[arg(long)]
+    pub(crate) line_weight: Option<f64>,
+}
+#[derive(Subcommand)]
+pub(crate) enum ShapeCommand {
+    /// Change the place, size, rotation, fill, line or name of a shape, picture,
+    /// connector, group or table frame. Unset properties stay as they are.
+    Update {
+        #[command(flatten)]
+        target: ShapeTarget,
+        /// Shape to change: its drawing ID.
+        #[arg(long)]
+        shape: String,
+        #[command(flatten)]
+        place: ShapePlace,
+        #[command(flatten)]
+        look: ShapeLook,
+        /// New name of the shape.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Add a rectangle, rounded rectangle, ellipse, text box or line, with
+    /// PowerPoint's default shape style unless --fill and --line are given.
+    Add {
+        #[command(flatten)]
+        target: ShapeTarget,
+        #[arg(long = "type", value_parser = ["rectangle", "rounded_rectangle", "ellipse", "textbox", "line"])]
+        shape_type: String,
+        #[arg(long)]
+        name: String,
+        #[command(flatten)]
+        place: ShapePlace,
+        #[command(flatten)]
+        look: ShapeLook,
+        /// Text of the shape; a line break starts a paragraph. After apply it is
+        /// edited in the slide's content page like other text.
+        #[arg(long)]
+        text: Option<String>,
+    },
+    /// Delete a shape, picture, connector or group without text. A shape
+    /// showing the slide's text or joined by a connector is refused.
+    Delete {
+        #[command(flatten)]
+        target: ShapeTarget,
+        #[arg(long)]
+        shape: String,
+    },
+    /// Add a PNG picture from the document's assets folder.
+    AddPicture {
+        #[command(flatten)]
+        target: ShapeTarget,
+        /// The picture: assets/<file>.png in the document folder.
+        #[arg(long)]
+        asset: String,
+        #[arg(long)]
+        name: String,
+        /// Alternative text of the picture.
+        #[arg(long)]
+        description: Option<String>,
+        #[command(flatten)]
+        place: ShapePlace,
+    },
+    /// Show another PNG picture in a picture, keeping its place and size.
+    ReplacePicture {
+        #[command(flatten)]
+        target: ShapeTarget,
+        #[arg(long)]
+        shape: String,
+        #[arg(long)]
+        asset: String,
+    },
+    /// Add a connector joining two shapes at connection sites: a rectangle's
+    /// are 0 top, 1 left, 2 bottom and 3 right; an ellipse's 0 top to 7,
+    /// counterclockwise every 45 degrees.
+    AddConnector {
+        #[command(flatten)]
+        target: ShapeTarget,
+        #[arg(long = "type", value_parser = ["straight", "elbow", "curve"])]
+        connector_type: String,
+        #[arg(long)]
+        name: String,
+        /// Shape the connector starts at.
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        from_site: u32,
+        /// Shape the connector ends at.
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        to_site: u32,
+        #[command(flatten)]
+        look: ShapeLook,
+    },
+}
 #[derive(Subcommand)]
 pub(crate) enum SlideCommand {
     /// Insert a copy of a slide and its notes page, as PowerPoint's Duplicate
@@ -440,12 +588,55 @@ pub(crate) enum SlideCommand {
         #[command(flatten)]
         place: SlidePlace,
     },
+    /// Add a new slide made from a slide layout, as PowerPoint's New Slide
+    /// does: one empty placeholder for each of the layout's placeholders (but
+    /// date, footer and slide number), whose text is written in the new
+    /// content page named by the operation ID (content/<ID>.yml).
+    Add {
+        #[command(flatten)]
+        target: SlideTarget,
+        /// Layout to make the slide from: its name or part, as the extraction's
+        /// slide_layouts list them.
+        #[arg(long)]
+        layout: String,
+        #[command(flatten)]
+        place: SlidePlace,
+    },
     /// Delete a slide of the original with its notes page and their content
     /// pages. Refused while another slide links to it.
     Delete {
         #[command(flatten)]
         target: SlideTarget,
         /// Slide to delete: slide-N of the original.
+        #[arg(long)]
+        slide: String,
+    },
+    /// Move a slide, with its notes page, next to another slide in the show
+    /// order. In a presentation with sections it joins the other slide's
+    /// section. Custom shows keep their own order.
+    Move {
+        #[command(flatten)]
+        target: SlideTarget,
+        /// Slide to move: slide-N of the original, or the operation ID of a slide
+        /// an earlier operation inserted.
+        #[arg(long)]
+        slide: String,
+        #[command(flatten)]
+        place: SlidePlace,
+    },
+    /// Hide a slide from the slide show; it stays in the presentation.
+    Hide {
+        #[command(flatten)]
+        target: SlideTarget,
+        /// Slide to hide, given like move's --slide.
+        #[arg(long)]
+        slide: String,
+    },
+    /// Show a hidden slide in the slide show again.
+    Show {
+        #[command(flatten)]
+        target: SlideTarget,
+        /// Slide to show, given like move's --slide.
         #[arg(long)]
         slide: String,
     },
@@ -558,6 +749,14 @@ pub(crate) enum DocumentCommand {
     Slides {
         #[command(subcommand)]
         command: SlideCommand,
+    },
+    /// Change, add or delete shapes, pictures and connectors of a PowerPoint
+    /// slide. Places and sizes are points on the slide, as the extraction's
+    /// drawings give them; a shape is named by its drawing ID
+    /// (<slide part>#<id>) or by the operation ID of the operation adding it.
+    Shapes {
+        #[command(subcommand)]
+        command: ShapeCommand,
     },
     /// Record who formed a proposal, with which model and prompt. A folder ID or
     /// --all records every proposal below it that needs a record.

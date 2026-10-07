@@ -3,7 +3,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": false,
-    "description": "Office・PDFの既存セルや本文文字列を、原本・本文の版と期待する旧値を照合して一括編集する。Excelは値・既存数式・テーブル列見出し・集計ラベルに対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。Word・PowerPoint・PDFは文字列のみ。構造操作中の文書・読み取り専用のフィールド・native textは対象外。",
+    "description": "Office・PDFの既存セルや本文文字列とフォントを、原本・本文の版と期待する旧値を照合して一括編集する。Excelは値・既存数式・テーブル列見出し・集計ラベルに対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。Word・PowerPoint・PDFは文字列のみ。fontはフォント名・サイズ・色を要素（セル・段落・図形の文字）ごとに変え、ExcelのセルとshapeでIDを指定した図形の文字、Word・PowerPointの段落・表のセルに対応。構造操作中の文書・読み取り専用のフィールド・native textは対象外。",
     "required": [
       "schema_version",
       "base",
@@ -39,10 +39,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "sheet",
-            "cell",
-            "before",
-            "after"
+            "sheet"
           ],
           "properties": {
             "sheet": {
@@ -52,6 +49,11 @@
             "cell": {
               "type": "string",
               "pattern": "^[A-Z]+[1-9][0-9]*$"
+            },
+            "shape": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Excel図形の抽出ID（<図形部品>#<cNvPr id>）。図形の文字とフォントを編集する"
             },
             "before": {
               "type": [
@@ -68,7 +70,131 @@
                 "boolean",
                 "null"
               ]
+            },
+            "font": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "before",
+                "after"
+              ],
+              "properties": {
+                "before": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "description": "afterで変える項目の現在値。抽出・layoutのfontと同じ表記（\"mixed\"・nullを含む）",
+                  "properties": {
+                    "latin": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "east_asian": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "size": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "const": "mixed"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "color": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "after": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "description": "変える項目だけを1つの値で指定する。色を指定するとテーマ色の参照は外れる",
+                  "properties": {
+                    "latin": {
+                      "type": "string",
+                      "minLength": 1,
+                      "not": {
+                        "const": "mixed"
+                      }
+                    },
+                    "east_asian": {
+                      "type": "string",
+                      "minLength": 1,
+                      "not": {
+                        "const": "mixed"
+                      }
+                    },
+                    "size": {
+                      "type": "number",
+                      "minimum": 1,
+                      "maximum": 4000
+                    },
+                    "color": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|auto)$"
+                    }
+                  }
+                }
+              }
             }
+          },
+          "allOf": [
+            {
+              "oneOf": [
+                {
+                  "required": [
+                    "cell"
+                  ]
+                },
+                {
+                  "required": [
+                    "shape"
+                  ]
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "before",
+                    "after"
+                  ]
+                },
+                {
+                  "required": [
+                    "font"
+                  ]
+                }
+              ]
+            }
+          ],
+          "dependentRequired": {
+            "before": [
+              "after"
+            ],
+            "after": [
+              "before"
+            ]
           }
         }
       }
@@ -5564,6 +5690,67 @@
                       "fill",
                       "border"
                     ]
+                  },
+                  "font": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "required": [
+                      "latin",
+                      "east_asian",
+                      "size",
+                      "color"
+                    ],
+                    "properties": {
+                      "latin": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                      },
+                      "east_asian": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                      },
+                      "size": {
+                        "description": "ポイント",
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "const": "mixed"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color": {
+                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
                   }
                 },
                 "required": [
@@ -5738,7 +5925,8 @@
                         "enum": [
                           "twoCellAnchor",
                           "oneCellAnchor",
-                          "absoluteAnchor"
+                          "absoluteAnchor",
+                          "slide"
                         ]
                       },
                       "from": {
@@ -5821,6 +6009,41 @@
                           "oneCell",
                           "twoCell"
                         ]
+                      },
+                      "left": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "スライド左端からの位置（ポイント）"
+                      },
+                      "top": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "スライド上端からの位置（ポイント）"
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "幅（ポイント）"
+                      },
+                      "height": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "高さ（ポイント）"
+                      },
+                      "rotation": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "回転（度）"
                       }
                     },
                     "required": [
@@ -5983,6 +6206,128 @@
                   "chart_part": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "font": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "required": [
+                      "latin",
+                      "east_asian",
+                      "size",
+                      "color"
+                    ],
+                    "properties": {
+                      "latin": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                      },
+                      "east_asian": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                      },
+                      "size": {
+                        "description": "ポイント",
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "const": "mixed"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color": {
+                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "placeholder": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "index"
+                    ],
+                    "description": "PowerPointのプレースホルダーの種類と番号",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "index": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "fill": {
+                    "description": "図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^([0-9A-F]{6}|none)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "line": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "color",
+                      "width"
+                    ],
+                    "description": "図形の線の色（RRGGBB・none・null）と太さ（ポイント）",
+                    "properties": {
+                      "color": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|none)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    }
                   }
                 },
                 "required": [
@@ -6033,6 +6378,370 @@
           "sha256"
         ],
         "type": "object"
+      },
+      "slide_layouts": {
+        "type": "array",
+        "description": "PowerPointのスライドレイアウト。add_slideで新しいスライドを作る元になる。cellsはそのレイアウトから作るスライドの空のプレースホルダーの文字とフォント",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "part",
+            "placeholders",
+            "cells"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "placeholders": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "index",
+                  "name"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "index": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
+            "cells": {
+              "items": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "string"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "error"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "number"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "boolean"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "null"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "else": {
+                      "properties": {
+                        "cached": {
+                          "type": "null"
+                        },
+                        "formula": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "formula"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "formula": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "properties": {
+                  "address": {
+                    "pattern": "^[A-Z]+[1-9][0-9]*$",
+                    "type": "string"
+                  },
+                  "cached": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "formula": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "type": "string"
+                  },
+                  "number_format": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null",
+                      "formula",
+                      "error"
+                    ]
+                  },
+                  "value": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "position": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "headings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "line_start": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "line_end": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "byte_start": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "byte_end": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "record": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "column": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "headings",
+                      "line_start",
+                      "line_end",
+                      "byte_start",
+                      "byte_end",
+                      "columns"
+                    ]
+                  },
+                  "style": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "bold": {
+                        "type": "boolean"
+                      },
+                      "fill": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "border": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "strike": {
+                        "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "bold",
+                      "fill",
+                      "border"
+                    ]
+                  },
+                  "font": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "required": [
+                      "latin",
+                      "east_asian",
+                      "size",
+                      "color"
+                    ],
+                    "properties": {
+                      "latin": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                      },
+                      "east_asian": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                      },
+                      "size": {
+                        "description": "ポイント",
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "const": "mixed"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color": {
+                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "address",
+                  "type",
+                  "value",
+                  "formula",
+                  "cached",
+                  "number_format"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          }
+        }
       }
     },
     "required": [
@@ -6447,1204 +7156,6 @@
             },
             {
               "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "update_shape"
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "properties": {
-                  "additionalProperties": false,
-                  "minProperties": 1,
-                  "properties": {
-                    "fill": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "font_size": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "height": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "left": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line_weight": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "rotation": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "text": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "top": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "width": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [],
-                  "type": "object"
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "name",
-                "properties"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "delete_shape"
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "name"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "add_shape"
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "properties": {
-                  "additionalProperties": false,
-                  "minProperties": 1,
-                  "properties": {
-                    "fill": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "font_size": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "height": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "left": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line_weight": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "rotation": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "text": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "top": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "width": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [],
-                  "type": "object"
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "shape_type": {
-                  "enum": [
-                    "rectangle",
-                    "rounded_rectangle",
-                    "ellipse",
-                    "textbox",
-                    "line"
-                  ]
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "name",
-                "shape_type",
-                "properties"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "asset": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "block": {
-                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                      "type": "string"
-                    },
-                    "field": {
-                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                      "type": "string"
-                    },
-                    "page": {
-                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "page",
-                    "block",
-                    "field"
-                  ],
-                  "type": "object"
-                },
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "enum": [
-                    "add_picture",
-                    "replace_picture"
-                  ]
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "properties": {
-                  "additionalProperties": false,
-                  "minProperties": 0,
-                  "properties": {
-                    "fill": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "font_size": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "height": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "left": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line_weight": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "rotation": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "text": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "top": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "width": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [],
-                  "type": "object"
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "name",
-                "asset",
-                "properties"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "begin": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "name": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "site": {
-                      "minimum": 1,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "site"
-                  ],
-                  "type": "object"
-                },
-                "connector_type": {
-                  "enum": [
-                    "straight",
-                    "elbow",
-                    "curve"
-                  ]
-                },
-                "end": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "name": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "site": {
-                      "minimum": 1,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "site"
-                  ],
-                  "type": "object"
-                },
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "add_connector"
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "properties": {
-                  "additionalProperties": false,
-                  "minProperties": 1,
-                  "properties": {
-                    "fill": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "font_size": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "height": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "left": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "line_weight": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "rotation": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "text": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "top": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    },
-                    "width": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "block": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "field": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        },
-                        "page": {
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "page",
-                        "block",
-                        "field"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [],
-                  "type": "object"
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "name",
-                "begin",
-                "end",
-                "connector_type"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
               "oneOf": [
                 {
                   "required": [
@@ -7692,6 +7203,55 @@
             },
             {
               "additionalProperties": false,
+              "oneOf": [
+                {
+                  "required": [
+                    "after"
+                  ]
+                },
+                {
+                  "required": [
+                    "before"
+                  ]
+                }
+              ],
+              "properties": {
+                "after": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "before": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "add_slide"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "layout": {
+                  "type": "string",
+                  "pattern": "^ppt/slideLayouts/[^/]+\\.xml$",
+                  "description": "新しいスライドの元にするスライドレイアウトの部品（抽出のslide_layoutsのpart）"
+                }
+              },
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "layout"
+              ],
+              "type": "object",
+              "description": "スライドレイアウトから新しいスライドを作り、別のスライドの前後へ置く。日付・フッター・スライド番号以外のプレースホルダーを空で持ち、その文字は操作IDの本文ページに書く"
+            },
+            {
+              "additionalProperties": false,
               "properties": {
                 "id": {
                   "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
@@ -7716,6 +7276,553 @@
                 "slide"
               ],
               "type": "object"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "スライドとそのノートを、別のスライドの前後へ移動する。セクションのある文書では移動先のスライドのセクションに入る。目的別スライドショーの順序は変えない",
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "slide"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "move_slide"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "after": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "before": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "oneOf": [
+                {
+                  "required": [
+                    "after"
+                  ],
+                  "not": {
+                    "required": [
+                      "before"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "before"
+                  ],
+                  "not": {
+                    "required": [
+                      "after"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "スライドショーでスライドを非表示にする（hidden: true）、または表示に戻す（hidden: false）",
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "slide",
+                "hidden"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "set_slide_visibility"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "hidden": {
+                  "type": "boolean"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "スライドの図形・画像・コネクター・グループ・表の枠の位置・大きさ・回転・塗り・線・名前を変える",
+              "required": [
+                "id",
+                "kind",
+                "slide",
+                "reason",
+                "shape",
+                "properties"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "update_shape"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "slide-N、またはスライド操作が追加したスライドの操作ID"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "shape": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "図形の抽出ID（<スライド部品>#<cNvPr id>）、または図形を追加した操作のID"
+                },
+                "properties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前",
+                  "properties": {
+                    "left": {
+                      "type": "number"
+                    },
+                    "top": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "height": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "rotation": {
+                      "type": "number"
+                    },
+                    "fill": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line_weight": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "minProperties": 1
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "四角形・角丸四角形・楕円・テキストボックス・線を追加する。文字は適用後に本文で編集できる",
+              "required": [
+                "id",
+                "kind",
+                "slide",
+                "reason",
+                "name",
+                "shape_type",
+                "properties"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "add_shape"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "slide-N、またはスライド操作が追加したスライドの操作ID"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "shape_type": {
+                  "enum": [
+                    "rectangle",
+                    "rounded_rectangle",
+                    "ellipse",
+                    "textbox",
+                    "line"
+                  ]
+                },
+                "properties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前",
+                  "properties": {
+                    "left": {
+                      "type": "number"
+                    },
+                    "top": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "height": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "rotation": {
+                      "type": "number"
+                    },
+                    "fill": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line_weight": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "left",
+                    "top",
+                    "width",
+                    "height"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "スライドの本文の文字を持たない図形・画像・コネクター・グループを削除する",
+              "required": [
+                "id",
+                "kind",
+                "slide",
+                "reason",
+                "shape"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "delete_shape"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "slide-N、またはスライド操作が追加したスライドの操作ID"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "shape": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "図形の抽出ID（<スライド部品>#<cNvPr id>）、または図形を追加した操作のID"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "文書フォルダのassetsのPNG画像を追加する",
+              "required": [
+                "id",
+                "kind",
+                "slide",
+                "reason",
+                "name",
+                "asset",
+                "properties"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "add_picture"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "slide-N、またはスライド操作が追加したスライドの操作ID"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "asset": {
+                  "type": "string",
+                  "pattern": "^assets/[A-Za-z0-9._/-]+\\.[Pp][Nn][Gg]$"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前",
+                  "properties": {
+                    "left": {
+                      "type": "number"
+                    },
+                    "top": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "height": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "rotation": {
+                      "type": "number"
+                    },
+                    "fill": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line_weight": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "left",
+                    "top",
+                    "width",
+                    "height"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "画像の位置・大きさを保ったまま別のPNG画像にする",
+              "required": [
+                "id",
+                "kind",
+                "slide",
+                "reason",
+                "shape",
+                "asset"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "replace_picture"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "slide-N、またはスライド操作が追加したスライドの操作ID"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "shape": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "図形の抽出ID（<スライド部品>#<cNvPr id>）、または図形を追加した操作のID"
+                },
+                "asset": {
+                  "type": "string",
+                  "pattern": "^assets/[A-Za-z0-9._/-]+\\.[Pp][Nn][Gg]$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "2つの図形の接続点を結ぶコネクターを追加する",
+              "required": [
+                "id",
+                "kind",
+                "slide",
+                "reason",
+                "name",
+                "connector_type",
+                "begin",
+                "end"
+              ],
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "add_connector"
+                },
+                "slide": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "slide-N、またはスライド操作が追加したスライドの操作ID"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "connector_type": {
+                  "enum": [
+                    "straight",
+                    "elbow",
+                    "curve"
+                  ]
+                },
+                "begin": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "shape",
+                    "site"
+                  ],
+                  "properties": {
+                    "shape": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "図形の抽出ID（<スライド部品>#<cNvPr id>）、または図形を追加した操作のID"
+                    },
+                    "site": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "end": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "shape",
+                    "site"
+                  ],
+                  "properties": {
+                    "shape": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "図形の抽出ID（<スライド部品>#<cNvPr id>）、または図形を追加した操作のID"
+                    },
+                    "site": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "properties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前",
+                  "properties": {
+                    "left": {
+                      "type": "number"
+                    },
+                    "top": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "height": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "rotation": {
+                      "type": "number"
+                    },
+                    "fill": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line": {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|none)$"
+                    },
+                    "line_weight": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
             },
             {
               "additionalProperties": false,
@@ -8186,7 +8293,8 @@
                         "enum": [
                           "twoCellAnchor",
                           "oneCellAnchor",
-                          "absoluteAnchor"
+                          "absoluteAnchor",
+                          "slide"
                         ]
                       },
                       "from": {
@@ -8269,6 +8377,41 @@
                           "oneCell",
                           "twoCell"
                         ]
+                      },
+                      "left": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "スライド左端からの位置（ポイント）"
+                      },
+                      "top": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "スライド上端からの位置（ポイント）"
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "幅（ポイント）"
+                      },
+                      "height": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "高さ（ポイント）"
+                      },
+                      "rotation": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "回転（度）"
                       }
                     },
                     "required": [
@@ -8319,6 +8462,67 @@
                       "visual": {
                         "type": "string",
                         "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "font": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                        "required": [
+                          "latin",
+                          "east_asian",
+                          "size",
+                          "color"
+                        ],
+                        "properties": {
+                          "latin": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                          },
+                          "east_asian": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                          },
+                          "size": {
+                            "description": "ポイント",
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "const": "mixed"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color": {
+                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
                       }
                     },
                     "required": [
@@ -8340,6 +8544,67 @@
                       },
                       "formula": {
                         "type": "null"
+                      },
+                      "font": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                        "required": [
+                          "latin",
+                          "east_asian",
+                          "size",
+                          "color"
+                        ],
+                        "properties": {
+                          "latin": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                          },
+                          "east_asian": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                          },
+                          "size": {
+                            "description": "ポイント",
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "const": "mixed"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color": {
+                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
                       }
                     },
                     "required": [
@@ -8439,6 +8704,67 @@
                                   "column_span": {
                                     "type": "integer",
                                     "minimum": 1
+                                  },
+                                  "font": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                                    "required": [
+                                      "latin",
+                                      "east_asian",
+                                      "size",
+                                      "color"
+                                    ],
+                                    "properties": {
+                                      "latin": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ],
+                                        "minLength": 1,
+                                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                                      },
+                                      "east_asian": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ],
+                                        "minLength": 1,
+                                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                                      },
+                                      "size": {
+                                        "description": "ポイント",
+                                        "anyOf": [
+                                          {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0
+                                          },
+                                          {
+                                            "const": "mixed"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "color": {
+                                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "color_theme": {
+                                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    }
                                   }
                                 },
                                 "required": [

@@ -211,13 +211,15 @@ pub(super) fn default_entries(extraction: &Value) -> Result<Vec<Value>> {
 }
 
 /// The shapes of an Excel sheet that hold text, by their content key
-/// (`shape-<drawing ID>`).
+/// (`shape-<drawing ID>`). A slide's shape text is laid out with the slide's
+/// paragraphs instead.
 pub(super) fn shape_texts(sheet: &Value) -> Result<Vec<(String, &Value)>> {
     let mut shapes = vec![];
     for drawing in sheet["drawings"].as_array().into_iter().flatten() {
-        if drawing["text"]
-            .as_str()
-            .is_some_and(|text| !text.is_empty())
+        if drawing["anchor"]["kind"] != "slide"
+            && drawing["text"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
         {
             let id = string(&drawing["id"])?;
             let (_, raw) = id
@@ -455,7 +457,11 @@ pub(super) fn operated_extraction<'a>(
     let sheets = array(&extraction["sheets"])?;
     let parsed = parse_slide_operations(operations, sheets)?;
     let mut view = extraction.clone();
-    view["sheets"] = Value::Array(slide_view(sheets, &parsed)?);
+    let layouts = extraction["slide_layouts"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    view["sheets"] = Value::Array(slide_view(sheets, layouts, &parsed)?);
     Ok(Cow::Owned(view))
 }
 
