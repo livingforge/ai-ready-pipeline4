@@ -24,6 +24,7 @@ crates/arp4-cli/src/data.rs
 crates/arp4-cli/src/data/yaml.rs
 crates/arp4-cli/src/document_body.rs
 crates/arp4-cli/src/document_source.rs
+crates/arp4-cli/src/document_source/package.rs
 crates/arp4-cli/src/document_source/slide_drawings.rs
 crates/arp4-cli/src/document_source/slide_fonts.rs
 crates/arp4-cli/src/document_source/slide_shapes.rs

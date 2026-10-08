@@ -105,7 +105,7 @@ pub fn render(
 
 pub(super) fn validate_source(source: &Path) -> Result<Vec<u8>> {
     let original = fs::read(source)?;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&original))?;
+    let mut archive = crate::document_source::office_archive(&original)?;
     // These can execute or refresh on open independently of VBA event suppression.
     for index in 0..archive.len() {
         let entry = archive.by_index(index)?;

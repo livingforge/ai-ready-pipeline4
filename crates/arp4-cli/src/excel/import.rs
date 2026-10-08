@@ -175,26 +175,26 @@ impl Workbook {
         Self::from_bytes(fs::read(path)?)
     }
     pub fn from_bytes(raw: Vec<u8>) -> Result<Self> {
-        crate::document_source::ensure_zip_package(&raw)?;
-        let mut archive = ZipArchive::new(Cursor::new(&raw))?;
+        let package = crate::document_source::office_package(&raw)?;
+        let mut archive = ZipArchive::new(Cursor::new(&*package))?;
         ensure!(
             archive.len() <= 10000
-                && archive.decompressed_size().unwrap_or(u128::MAX) <= 512 * 1024 * 1024,
+                && crate::document_source::uncompressed_size(&mut archive)? <= 512 * 1024 * 1024,
             "Excel archive exceeds size budget"
         );
         // ZipArchive indexes by name; inspect the directory before duplicate entries can be hidden.
         let mut offset = usize::try_from(archive.central_directory_start())?;
         let mut central_names = BTreeSet::new();
-        while raw.get(offset..offset + 4) == Some(b"PK\x01\x02") {
-            let header = raw
+        while package.get(offset..offset + 4) == Some(b"PK\x01\x02") {
+            let header = package
                 .get(offset..offset + 46)
                 .context("truncated ZIP directory")?;
             let length = |i| usize::from(u16::from_le_bytes([header[i], header[i + 1]]));
             let name_length = length(28);
             let next = offset + 46 + name_length + length(30) + length(32);
-            ensure!(next <= raw.len(), "truncated ZIP directory");
+            ensure!(next <= package.len(), "truncated ZIP directory");
             ensure!(
-                central_names.insert(raw[offset + 46..offset + 46 + name_length].to_vec()),
+                central_names.insert(package[offset + 46..offset + 46 + name_length].to_vec()),
                 "duplicate Excel ZIP members"
             );
             offset = next;
@@ -215,8 +215,7 @@ impl Workbook {
                 !name.contains('\\') && !name.split('/').any(|s| s == ".."),
                 "invalid ZIP path"
             );
-            let mut data = vec![];
-            entry.read_to_end(&mut data)?;
+            let data = crate::document_source::read_entry(&mut entry)?;
             ensure!(
                 parts.insert(name, data).is_none(),
                 "duplicate Excel ZIP members"

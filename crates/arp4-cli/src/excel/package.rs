@@ -246,15 +246,15 @@ pub(crate) fn archive_bytes(raw: &[u8], patched: &BTreeMap<String, Vec<u8>>) -> 
     if patched.is_empty() {
         return Ok(raw.to_vec());
     }
-    let mut source = ZipArchive::new(Cursor::new(raw))?;
+    let mut source = crate::document_source::office_archive(raw)?;
     let output = copy_archive(&mut source, Cursor::new(vec![]), patched, &BTreeSet::new())?;
     Ok(output.into_inner())
 }
 
 /// Copies the entries of `source` into `writer`, with `patched` parts
 /// replaced or added and `removed` parts left out.
-fn copy_archive<W: Write + std::io::Seek>(
-    source: &mut ZipArchive<Cursor<&[u8]>>,
+fn copy_archive<R: Read + std::io::Seek, W: Write + std::io::Seek>(
+    source: &mut ZipArchive<R>,
     writer: W,
     patched: &BTreeMap<String, Vec<u8>>,
     removed: &BTreeSet<String>,
@@ -305,7 +305,7 @@ pub(crate) fn write_archive_without(
     if patched.is_empty() && removed.is_empty() {
         return write_unchanged(raw, destination);
     }
-    let mut source = ZipArchive::new(Cursor::new(raw))?;
+    let mut source = crate::document_source::office_archive(raw)?;
     let file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

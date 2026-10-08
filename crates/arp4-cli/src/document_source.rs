@@ -14,10 +14,10 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Cursor, Read},
     path::Path,
 };
 
+mod package;
 mod slide_drawings;
 mod slide_fonts;
 mod slide_shapes;
@@ -26,6 +26,7 @@ mod slides;
 mod word;
 mod word_fonts;
 
+pub(crate) use package::{office_archive, office_package, read_entry, uncompressed_size};
 pub use slide_shapes::{
     ConnectorEnd, ShapeEdit, ShapeOperation, ShapeProperties, is_shape_operation,
     parse_shape_operations,
@@ -81,27 +82,6 @@ pub fn binary_office_replacement(format: &str) -> Option<&'static str> {
     }
 }
 
-/// Office writes encrypted packages (password, IRM, sensitivity labels) and the
-/// binary formats as OLE compound files rather than ZIP packages.
-pub(crate) fn ensure_zip_package(raw: &[u8]) -> Result<()> {
-    const OLE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-    if !raw.starts_with(&OLE) {
-        return Ok(());
-    }
-    let encrypted: Vec<u8> = "EncryptedPackage"
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
-    if raw.windows(encrypted.len()).any(|w| w == encrypted) {
-        bail!(
-            "the file is encrypted (password, IRM or sensitivity label); remove the protection in Office, save it again and import that copy"
-        );
-    }
-    bail!(
-        "the file is a binary Office document with an Open XML extension; save it in Office as an Open XML file and import that copy"
-    )
-}
-
 pub enum Source {
     Excel(Workbook),
     Text(TextSource),
@@ -142,7 +122,7 @@ impl Source {
         if !word(&doc.format) {
             return Ok(BTreeMap::new());
         }
-        let mut archive = zip::ZipArchive::new(Cursor::new(&doc.raw))?;
+        let mut archive = office_archive(&doc.raw)?;
         let mut images = BTreeMap::new();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
@@ -153,8 +133,7 @@ impl Source {
                 entry.size() <= 256 * 1024 * 1024,
                 "Word image exceeds size budget"
             );
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes)?;
+            let bytes = read_entry(&mut entry)?;
             images.insert(entry.name().to_owned(), bytes);
         }
         let mut named = BTreeMap::new();
@@ -763,10 +742,9 @@ fn text_sheet(name: &str, part: &str, texts: Vec<(String, Option<Value>)>) -> Va
 }
 
 fn office_parts(raw: &[u8], include_binary: bool) -> Result<BTreeMap<String, Vec<u8>>> {
-    ensure_zip_package(raw)?;
-    let mut zip = zip::ZipArchive::new(Cursor::new(raw))?;
+    let mut zip = office_archive(raw)?;
     ensure!(
-        zip.len() <= 10000 && zip.decompressed_size().unwrap_or(u128::MAX) <= MAX_BYTES as u128,
+        zip.len() <= 10000 && uncompressed_size(&mut zip)? <= MAX_BYTES as u128,
         "Office archive exceeds size budget"
     );
     let mut parts = BTreeMap::new();
@@ -779,10 +757,11 @@ fn office_parts(raw: &[u8], include_binary: bool) -> Result<BTreeMap<String, Vec
         );
         // Keep the name for relationship checks, but do not retain media and
         // embedded packages until a slide operation actually needs to copy them.
-        let mut bytes = vec![];
-        if include_binary || !office_binary(&name) {
-            entry.read_to_end(&mut bytes)?;
-        }
+        let bytes = if include_binary || !office_binary(&name) {
+            read_entry(&mut entry)?
+        } else {
+            vec![]
+        };
         ensure!(parts.insert(name, bytes).is_none(), "duplicate Office part");
     }
     Ok(parts)
@@ -818,7 +797,7 @@ fn office_binary(name: &str) -> bool {
 }
 
 fn validate_office_binary(raw: &[u8]) -> Result<()> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(raw))?;
+    let mut zip = office_archive(raw)?;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index)?;
         if office_binary(entry.name()) {
@@ -3173,7 +3152,7 @@ fn pdf_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Cursor, Read, Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     #[test]
@@ -3490,13 +3469,13 @@ mod tests {
         let mut encrypted = ole.to_vec();
         encrypted.extend([0; 64]);
         encrypted.extend("EncryptedPackage".encode_utf16().flat_map(u16::to_le_bytes));
-        let error = ensure_zip_package(&encrypted).unwrap_err().to_string();
+        let error = office_package(&encrypted).unwrap_err().to_string();
         assert!(error.contains("encrypted"), "{error}");
         let mut binary = ole.to_vec();
         binary.extend("WordDocument".encode_utf16().flat_map(u16::to_le_bytes));
-        let error = ensure_zip_package(&binary).unwrap_err().to_string();
+        let error = office_package(&binary).unwrap_err().to_string();
         assert!(error.contains("binary Office document"), "{error}");
-        ensure_zip_package(b"PK\x03\x04").unwrap();
+        office_package(b"PK\x03\x04").unwrap();
         let dir = tempfile::tempdir().unwrap();
         for extension in ["docx", "xlsm"] {
             let source = dir.path().join(format!("protected.{extension}"));

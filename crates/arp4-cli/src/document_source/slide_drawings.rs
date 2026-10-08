@@ -343,7 +343,7 @@ fn relation_target_with(
 
 /// The media parts of a presentation (`ppt/media/`), which the XML parts leave out.
 pub(super) fn media(raw: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(raw))?;
+    let mut archive = super::office_archive(raw)?;
     let mut media = BTreeMap::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
@@ -354,8 +354,7 @@ pub(super) fn media(raw: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
             entry.size() <= 256 * 1024 * 1024,
             "PowerPoint image exceeds size budget"
         );
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes)?;
+        let bytes = super::read_entry(&mut entry)?;
         media.insert(entry.name().to_owned(), bytes);
     }
     Ok(media)
