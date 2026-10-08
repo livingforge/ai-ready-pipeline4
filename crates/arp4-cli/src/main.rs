@@ -320,10 +320,19 @@ fn run(cli: Cli) -> Result<bool> {
                     omit_hashes(&mut result, &["content"], include_hashes);
                     result
                 }
-                DocumentCommand::Import { source, force } => {
+                DocumentCommand::Import {
+                    source,
+                    force,
+                    password_stdin,
+                } => {
+                    let unprotection = arp4_cli::documents::Unprotection::new(if password_stdin {
+                        passwords(std::io::stdin().lock())?
+                    } else {
+                        vec![]
+                    });
                     let (path, _) = store.resolve(&source)?;
                     if path.is_dir() {
-                        let mut result = store.import_folder(&source, force)?;
+                        let mut result = store.import_folder(&source, force, &unprotection)?;
                         let imported = !array(&result["imported"])?.is_empty();
                         result["state"] = json!(if imported {
                             "needs_record"
@@ -337,7 +346,7 @@ fn run(cli: Cli) -> Result<bool> {
                         }
                         result
                     } else {
-                        let mut result = store.import_with_force(&source, force)?;
+                        let mut result = store.import_with(&source, force, &unprotection)?;
                         if result["state"] != "unchanged" {
                             result["proposal"] = relative(&root, &result["proposal"])?;
                             result["state"] = json!("needs_record");
@@ -1172,6 +1181,21 @@ fn emit_status(
     Ok(ok)
 }
 
+/// The passwords read with --password-stdin: one per line, without the line
+/// ending, skipping empty lines.
+fn passwords(mut input: impl std::io::Read) -> Result<Vec<String>> {
+    let mut text = String::new();
+    input.read_to_string(&mut text)?;
+    let passwords: Vec<String> = text
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect();
+    ensure!(!passwords.is_empty(), "--password-stdin read no password");
+    Ok(passwords)
+}
+
 fn main() -> std::process::ExitCode {
     #[cfg(windows)]
     if std::env::args_os()
@@ -1186,6 +1210,23 @@ fn main() -> std::process::ExitCode {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("Excel render failed: {error:#}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
+    #[cfg(windows)]
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--internal-office-unprotect")
+    {
+        let outcome = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("Office unprotect request path missing"))
+            .and_then(|path| arp4_cli::rights_management::worker(std::path::Path::new(&path)));
+        return match outcome {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error:#}");
                 std::process::ExitCode::from(2)
             }
         };

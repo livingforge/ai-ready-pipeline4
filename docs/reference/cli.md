@@ -14,8 +14,8 @@
 | --- | --- | --- |
 | doctor | 実装・機能・応答仕様 | 同じ応答 |
 | skills install / documents init | state・件数またはroot | 保存先を確認 |
-| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無） | 再抽出が必要なら `--force`。既存候補があれば保持する |
-| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み） | 各候補のcontentと対応表。再抽出が必要なら `--force` |
+| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無） | 再抽出が必要なら `--force`。既存候補があれば保持する |
+| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected` | 各候補のcontentと対応表。再抽出が必要なら `--force` |
 | remove | 削除した文書ID | 残りの文書をstatusで確認 |
 | discard | 破棄した候補の文書ID | 原本と採用済み文書は保持する |
 | record / review | 対象ID・実行した状態 | 保存されたformation.json / review.json |

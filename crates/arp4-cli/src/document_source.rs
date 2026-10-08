@@ -17,6 +17,7 @@ use std::{
     path::Path,
 };
 
+pub mod encryption;
 mod package;
 mod slide_drawings;
 mod slide_fonts;
@@ -3463,23 +3464,35 @@ mod tests {
         assert!(error.contains("Strict Open XML"), "{error}");
     }
 
+    fn compound_file(streams: &[&str]) -> Vec<u8> {
+        use std::io::Write;
+        let mut file = cfb::CompoundFile::create(std::io::Cursor::new(vec![])).unwrap();
+        for name in streams {
+            file.create_stream(name)
+                .unwrap()
+                .write_all(b"data")
+                .unwrap();
+        }
+        file.flush().unwrap();
+        file.into_inner().into_inner()
+    }
+
     #[test]
     fn ole_compound_files_are_reported_as_encrypted_or_binary() {
-        let ole = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-        let mut encrypted = ole.to_vec();
-        encrypted.extend([0; 64]);
-        encrypted.extend("EncryptedPackage".encode_utf16().flat_map(u16::to_le_bytes));
-        let error = office_package(&encrypted).unwrap_err().to_string();
-        assert!(error.contains("encrypted"), "{error}");
-        let mut binary = ole.to_vec();
-        binary.extend("WordDocument".encode_utf16().flat_map(u16::to_le_bytes));
+        let password = compound_file(&["/EncryptionInfo", "/EncryptedPackage"]);
+        let error = office_package(&password).unwrap_err().to_string();
+        assert!(error.contains("--password-stdin"), "{error}");
+        let rights = compound_file(&["/EncryptedPackage"]);
+        let error = office_package(&rights).unwrap_err().to_string();
+        assert!(error.contains("sensitivity label"), "{error}");
+        let binary = compound_file(&["/WordDocument"]);
         let error = office_package(&binary).unwrap_err().to_string();
         assert!(error.contains("binary Office document"), "{error}");
-        office_package(b"PK\x03\x04").unwrap();
+        office_package(b"PK").unwrap();
         let dir = tempfile::tempdir().unwrap();
         for extension in ["docx", "xlsm"] {
             let source = dir.path().join(format!("protected.{extension}"));
-            fs::write(&source, &encrypted).unwrap();
+            fs::write(&source, &password).unwrap();
             let error = Source::open(&source).err().unwrap().to_string();
             assert!(error.contains("encrypted"), "{extension}: {error}");
         }

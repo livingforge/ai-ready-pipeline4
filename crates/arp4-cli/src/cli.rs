@@ -676,11 +676,18 @@ pub(crate) enum DocumentCommand {
     },
     /// Import an original, or every original below a folder, as proposals. The document
     /// ID is the original's path below the sources folder. Unchanged originals are skipped.
+    /// An encrypted Office original is decrypted and saved over without its encryption
+    /// first: a password with --password-stdin, IRM and sensitivity labels by desktop
+    /// Office on Windows with the signed-in account's rights.
     Import {
         source: PathBuf,
         /// Re-extract even when the original's SHA-256 matches a proposal or adopted document.
         #[arg(long)]
         force: bool,
+        /// Read passwords of encrypted originals from standard input, one per line;
+        /// each encrypted original is opened with the first that fits.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Remove the documents at or below an ID whose originals were moved, renamed or deleted.
     Remove { document: String },

@@ -1,5 +1,7 @@
 use super::*;
+use crate::document_source::encryption::{self, Protection};
 use crate::document_structure::Carrier;
+use crate::rights_management::Unprotected;
 
 /// The longest project-relative path of a document record. Windows limits a full path
 /// to 259 characters unless Git and every application enable long paths, so this
@@ -7,6 +9,39 @@ use crate::document_structure::Carrier;
 const MAX_RECORD_PATH: usize = 200;
 /// Records written after import, which the proposal does not contain yet.
 const LATER_RECORDS: [&str; 3] = ["formation.json", "review.json", "prompt.txt"];
+
+/// How import removes the encryption of an Office original, which a project
+/// keeps unencrypted: a password-encrypted original is decrypted with the
+/// first of `passwords` that opens it, and rights management protection (IRM
+/// and sensitivity labels) is removed by desktop Office.
+pub struct Unprotection {
+    passwords: Vec<String>,
+    rights_management: fn(&Path, &Path) -> Result<Unprotected>,
+}
+
+impl Default for Unprotection {
+    fn default() -> Self {
+        Self::new(vec![])
+    }
+}
+
+impl Unprotection {
+    pub fn new(passwords: Vec<String>) -> Self {
+        Self::with_rights_management(passwords, crate::rights_management::remove)
+    }
+
+    /// Removes rights management protection with `remove`, which is given the
+    /// original and a folder for its files, in place of desktop Office.
+    pub fn with_rights_management(
+        passwords: Vec<String>,
+        remove: fn(&Path, &Path) -> Result<Unprotected>,
+    ) -> Self {
+        Self {
+            passwords,
+            rights_management: remove,
+        }
+    }
+}
 
 impl Store {
     /// The original named on the command line and its document ID: an absolute path,
@@ -51,7 +86,12 @@ impl Store {
     /// adopted document already has their hash are left alone, and documents whose
     /// original is gone are listed for `documents remove`. An original that cannot be
     /// imported is listed under `failed` and the others are still imported.
-    pub fn import_folder(&self, source: &Path, force: bool) -> Result<Value> {
+    pub fn import_folder(
+        &self,
+        source: &Path,
+        force: bool,
+        unprotection: &Unprotection,
+    ) -> Result<Value> {
         let (dir, scope) = self.resolve(source)?;
         ensure!(dir.is_dir(), "import a folder or use a file: {scope}");
         let dir = dir.as_path();
@@ -61,6 +101,7 @@ impl Store {
         let mut pending_proposals = vec![];
         let mut skipped = vec![];
         let mut failed = vec![];
+        let mut unprotected = vec![];
         let mut pending = vec![dir.to_owned()];
         let mut originals = vec![];
         while let Some(dir) = pending.pop() {
@@ -92,8 +133,15 @@ impl Store {
                 skipped.push(json!({"document_id":id,"reason":"unsupported format"}));
                 continue;
             }
-            match self.import_changed(&path, &id, force) {
-                Ok(Some(_)) => imported.push(json!(id)),
+            match self.import_changed(&path, &id, force, unprotection) {
+                Ok(Some(result)) => {
+                    if let Some(record) = result.get("unprotected") {
+                        let mut record = record.clone();
+                        record["document_id"] = json!(id);
+                        unprotected.push(record);
+                    }
+                    imported.push(json!(id));
+                }
                 Ok(None) => {
                     if self.proposal_path(&id)?.exists() {
                         pending_proposals.push(json!(id));
@@ -106,7 +154,7 @@ impl Store {
             }
         }
         Ok(
-            json!({"imported":imported,"unchanged":unchanged,"pending_proposals":pending_proposals,"skipped":skipped,"failed":failed,"missing":self.missing(Some(scope.as_str()).filter(|s| !s.is_empty()))?}),
+            json!({"imported":imported,"unchanged":unchanged,"pending_proposals":pending_proposals,"skipped":skipped,"failed":failed,"unprotected":unprotected,"missing":self.missing(Some(scope.as_str()).filter(|s| !s.is_empty()))?}),
         )
     }
 
@@ -116,8 +164,23 @@ impl Store {
         self.entry("changes", id)
     }
 
-    fn import_changed(&self, path: &Path, id: &str, force: bool) -> Result<Option<Value>> {
+    /// An encrypted original is saved over without its encryption first; the
+    /// result then records the protection removed under `unprotected`.
+    fn import_changed(
+        &self,
+        path: &Path,
+        id: &str,
+        force: bool,
+        unprotection: &Unprotection,
+    ) -> Result<Option<Value>> {
         let raw = fs::read(path)?;
+        let (raw, unprotected) = match encryption::protection(&raw) {
+            Some(protection) => {
+                let (plain, record) = self.unprotect(path, &raw, protection, unprotection)?;
+                (plain, Some(record))
+            }
+            None => (raw, None),
+        };
         let sha = hash(&raw);
         let proposal = self.proposal_path(id)?.join("document.yml");
         let adopted = self.document(id)?.join("document.yml");
@@ -127,13 +190,55 @@ impl Store {
             adopted
         };
         if !force
+            && unprotected.is_none()
             && recorded.is_file()
             && read(&recorded, Some("document"))?["source"]["sha256"] == sha
         {
             return Ok(None);
         }
-        self.import_original_with_bytes(path, id, None, Some(raw))
-            .map(Some)
+        let Some(record) = unprotected else {
+            return self
+                .import_original_with_bytes(path, id, None, Some(raw))
+                .map(Some);
+        };
+        let mut result = self
+            .import_original_with_bytes(path, id, None, Some(raw))
+            .context("the encryption was removed from the original, but its import failed")?;
+        result["unprotected"] = record;
+        Ok(Some(result))
+    }
+
+    /// Removes the encryption of the original at `path`, whose bytes are `raw`,
+    /// and saves the decrypted package over it. Returns the package and the
+    /// record of the protection removed.
+    fn unprotect(
+        &self,
+        path: &Path,
+        raw: &[u8],
+        protection: Protection,
+        unprotection: &Unprotection,
+    ) -> Result<(Vec<u8>, Value)> {
+        let (plain, mut record) = match protection {
+            Protection::Password => (
+                encryption::decrypt(raw, &unprotection.passwords)?,
+                json!({}),
+            ),
+            Protection::RightsManagement => {
+                let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
+                let unprotected = (unprotection.rights_management)(path, stage.path())?;
+                (unprotected.bytes, json!({"removed":unprotected.removed}))
+            }
+        };
+        record["protection"] = json!(protection.name());
+        // Only a package ARP opens replaces the original.
+        crate::document_source::office_package(&plain)
+            .context("the decrypted original is not an Open XML package")?;
+        ensure!(
+            fs::read(path)? == raw,
+            "source changed while its encryption was removed"
+        );
+        replace(path, &plain)?;
+        Ok((plain, record))
     }
 
     /// Documents and proposals at or below `scope` whose original no longer exists.
@@ -195,9 +300,20 @@ impl Store {
     }
 
     pub fn import_with_force(&self, source: &Path, force: bool) -> Result<Value> {
+        self.import_with(source, force, &Unprotection::default())
+    }
+
+    /// Imports one original as `import_with_force` does, removing its
+    /// encryption with `unprotection`.
+    pub fn import_with(
+        &self,
+        source: &Path,
+        force: bool,
+        unprotection: &Unprotection,
+    ) -> Result<Value> {
         let (source, id) = self.resolve(source)?;
         ensure!(source.is_file(), "import a file or use a folder: {id}");
-        match self.import_changed(&source, &id, force)? {
+        match self.import_changed(&source, &id, force, unprotection)? {
             Some(result) => Ok(result),
             None => Ok(
                 json!({"document_id":id,"state":"unchanged","pending_proposal":self.proposal_path(&id)?.exists()}),

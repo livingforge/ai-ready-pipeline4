@@ -6,6 +6,7 @@ mod diff;
 mod export;
 mod import;
 use import::Carry;
+pub use import::Unprotection;
 mod inspection;
 pub mod search;
 mod sheet_edit;

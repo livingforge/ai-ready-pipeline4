@@ -1744,7 +1744,7 @@ Usage: arp4 documents [OPTIONS] <COMMAND>
 Commands:
   schema
   init
-  import          Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped
+  import          Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
   remove          Remove the documents at or below an ID whose originals were moved, renamed or deleted
   discard         Discard one proposal, leaving the original and adopted document untouched
   search          Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
@@ -1850,7 +1850,7 @@ Options:
 ## `arp4 documents import`
 
 ```text
-Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped
+Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
 
 Usage: arp4 documents import [OPTIONS] <SOURCE>
 
@@ -1873,6 +1873,9 @@ Options:
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
+
+      --password-stdin
+          Read passwords of encrypted originals from standard input, one per line; each encrypted original is opened with the first that fits
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page

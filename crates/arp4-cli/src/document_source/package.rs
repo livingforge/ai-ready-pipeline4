@@ -23,24 +23,24 @@ const AES_METHOD: u16 = 99;
 const UTF8_NAME_FLAG: u16 = 0x0800;
 
 /// Office writes encrypted packages (password, IRM, sensitivity labels) and the
-/// binary formats as OLE compound files rather than ZIP packages.
+/// binary formats as OLE compound files rather than ZIP packages. Import
+/// removes the encryption from the original; elsewhere it is refused.
 fn ensure_zip_package(raw: &[u8]) -> Result<()> {
     const OLE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
     if !raw.starts_with(&OLE) {
         return Ok(());
     }
-    let encrypted: Vec<u8> = "EncryptedPackage"
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
-    if raw.windows(encrypted.len()).any(|w| w == encrypted) {
-        bail!(
-            "the file is encrypted (password, IRM or sensitivity label); remove the protection in Office, save it again and import that copy"
-        );
+    match super::encryption::protection(raw) {
+        Some(super::encryption::Protection::Password) => bail!(
+            "the file is encrypted with a password; import it with documents import --password-stdin to remove the encryption from the original"
+        ),
+        Some(super::encryption::Protection::RightsManagement) => bail!(
+            "the file is encrypted by IRM or a sensitivity label; import it with documents import to remove the protection from the original in Office"
+        ),
+        None => bail!(
+            "the file is a binary Office document with an Open XML extension; save it in Office as an Open XML file and import that copy"
+        ),
     }
-    bail!(
-        "the file is a binary Office document with an Open XML extension; save it in Office as an Open XML file and import that copy"
-    )
 }
 
 /// The package bytes with the central directory as Office reads it: extra

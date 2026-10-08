@@ -1,6 +1,6 @@
 //! Native Excel rendering, isolated from the scalar/structural writeback engine.
 use crate::data::{encoded, hash, read};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
@@ -30,49 +30,10 @@ pub fn render(
         ),
     )?;
     let log = stage.path().join("stderr.txt");
-    let current = std::env::current_exe()?;
-    let executable = if current.parent().and_then(|path| path.file_name()) == Some("deps".as_ref())
-    {
-        current
-            .parent()
-            .context("renderer executable directory")?
-            .parent()
-            .context("renderer build directory")?
-            .join("arp4.exe")
-    } else {
-        current
-    };
-    ensure!(
-        executable.is_file(),
-        "Rust Excel renderer executable was not found: {}",
-        executable.display()
-    );
-    let mut command = std::process::Command::new(&executable);
-    command
-        .arg("--internal-excel-render")
-        .arg(&request_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(fs::File::create(&log)?));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = command
-        .spawn()
-        .context("cannot start Rust Excel renderer")?;
-    let started = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() >= std::time::Duration::from_secs(timeout) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("Excel render timed out; no image or region was adopted");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    let Some(status) =
+        crate::office_worker::run("--internal-excel-render", &request_path, &log, timeout)?
+    else {
+        anyhow::bail!("Excel render timed out; no image or region was adopted");
     };
     ensure!(
         hash(&fs::read(source)?) == hash(&original),
