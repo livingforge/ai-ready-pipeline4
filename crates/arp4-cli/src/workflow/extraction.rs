@@ -235,8 +235,8 @@ fn shown_tables(tables: &[Value], rows: &[&Value]) -> Result<Vec<Value>> {
     Ok(result.into_iter().map(Value::Object).collect())
 }
 
-/// `structure` reduced to the cells at `shown` and the headers they name; the
-/// kept cells are added to `covered`.
+/// `structure` reduced to the cells at `shown`, the headers they name and the
+/// context cells of the tables they are nested in; the kept cells are added to `covered`.
 fn shown_structure(
     structure: &Value,
     shown: &SheetCells,
@@ -244,12 +244,17 @@ fn shown_structure(
 ) -> Result<Value> {
     let elements = arr(&structure["elements"])?;
     let mut headers: BTreeMap<&str, &Value> = BTreeMap::new();
+    // The cells a nested table's context names in its parent, by cell.
+    let mut contexts: BTreeMap<&str, &Value> = BTreeMap::new();
     let mut kept: BTreeSet<&str> = BTreeSet::new();
     for element in elements {
         let cells = shown.get(s(&element["sheet"])?);
         for cell in arr(&element["cells"])? {
             let id = s(&cell["id"])?;
             headers.insert(id, &cell["headers"]);
+            if let Some(context) = element.get("parent").map(|p| &p["context"]) {
+                contexts.insert(id, context);
+            }
             let address = s(&cell["address"])?;
             if cells.is_some_and(|cells| cells.contains(address)) {
                 kept.insert(id);
@@ -258,10 +263,10 @@ fn shown_structure(
     }
     let mut pending: Vec<&str> = kept.iter().copied().collect();
     while let Some(id) = pending.pop() {
-        for header in headers
-            .get(id)
-            .and_then(|h| h.as_array())
+        for header in [headers.get(id), contexts.get(id)]
             .into_iter()
+            .flatten()
+            .filter_map(|h| h.as_array())
             .flatten()
         {
             let header = s(header)?;
@@ -303,6 +308,13 @@ fn shown_structure(
     for element in &mut shown_elements {
         if let Some(descriptions) = element["descriptions"].as_array_mut() {
             descriptions.retain(|id| id.as_str().is_some_and(|id| retained.contains(id)));
+        }
+        // A context naming no shown cell leaves its parent out of the scope.
+        if element["parent"]["element"]
+            .as_str()
+            .is_some_and(|parent| !retained.contains(parent))
+        {
+            element.as_object_mut().unwrap().remove("parent");
         }
     }
     let mut result: Map<String, Value> = obj(structure)?

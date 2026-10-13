@@ -115,7 +115,9 @@ impl Store {
                 );
             }
         }
-        for e in array(&result.mappings["entries"])? {
+        for e in &result.entries {
+            let e = e.json();
+            let e = &*e;
             match string(&e["writeback"])? {
                 "excluded" => excluded.push(e.clone()),
                 "pending" => pending.push(e.clone()),
@@ -206,7 +208,7 @@ impl Store {
         }
         // Fonts are written to the original cells; a cell an operation deletes keeps none.
         let mut fonts =
-            super::value_edit::font_changes(&result.extraction, &result.mappings, &result.fonts)?;
+            super::value_edit::font_changes(&result.extraction, &result.entries, &result.fonts)?;
         for change in &fonts {
             if let Some(cell) = change["cell"].as_str() {
                 let sheet = string(&change["sheet"])?;

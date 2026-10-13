@@ -164,7 +164,7 @@ fn attach_entries(
     before: &Value,
     registry: &Registry,
 ) -> Result<()> {
-    let revision = hash(&encoded(before));
+    let revision = crate::extraction::hash(before)?;
     let document = string(&before["document_id"])?;
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut stale = BTreeSet::new();

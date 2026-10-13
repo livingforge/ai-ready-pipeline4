@@ -21,9 +21,38 @@ fn encoded(prefix: char, text: &str) -> String {
     out
 }
 
+/// Split text where it changes between ASCII letters and digits and the rest.
+fn runs(text: &str) -> Vec<(bool, &str)> {
+    let mut runs = vec![];
+    let mut start = 0;
+    let mut current = None;
+    for (i, c) in text.char_indices() {
+        let ascii = c.is_ascii_alphanumeric();
+        if let Some(kind) = current.filter(|kind| *kind != ascii) {
+            runs.push((kind, &text[start..i]));
+            start = i;
+        }
+        current = Some(ascii);
+    }
+    if let Some(kind) = current {
+        runs.push((kind, &text[start..]));
+    }
+    runs
+}
+
 pub(super) fn words(text: &str) -> String {
-    tiniestsegmenter::tokenize(&normalize(text))
+    // The segmenter cuts digits apart one by one, so an ID such as E01234
+    // would match any text holding an e and those digits anywhere. A run of
+    // ASCII letters and digits stays one word; only the rest is segmented.
+    runs(&normalize(text))
         .into_iter()
+        .flat_map(|(ascii, run)| {
+            if ascii {
+                vec![run]
+            } else {
+                tiniestsegmenter::tokenize(run)
+            }
+        })
         .flat_map(|s| {
             s.split(|c: char| !c.is_alphanumeric())
                 .filter(|s| !s.is_empty())
@@ -35,17 +64,32 @@ pub(super) fn words(text: &str) -> String {
 }
 
 pub(super) fn grams(text: &str) -> String {
-    let chars: Vec<_> = text.chars().collect();
-    let pairs = chars
-        .windows(2)
-        .map(|p| encoded('g', &p.iter().collect::<String>()));
+    // Query terms hold no whitespace, so a pair across whitespace is never
+    // searched; in a table row half the pairs are. Whitespace becomes one
+    // break token instead, so pairs on either side never read as adjacent.
+    let mut pairs = vec![];
+    for chunk in text.split_whitespace() {
+        let chars: Vec<_> = chunk.chars().collect();
+        if chars.len() < 2 {
+            continue;
+        }
+        if !pairs.is_empty() {
+            pairs.push("b".to_owned());
+        }
+        pairs.extend(
+            chars
+                .windows(2)
+                .map(|p| encoded('g', &p.iter().collect::<String>())),
+        );
+    }
     // Unigrams support two-kanji and single-character queries without a scan.
-    let singles: BTreeSet<_> = chars
-        .iter()
+    let singles: BTreeSet<_> = text
+        .chars()
         .filter(|c| !c.is_whitespace())
         .map(|c| encoded('u', &c.to_string()))
         .collect();
-    pairs.chain(singles).collect::<Vec<_>>().join(" ")
+    pairs.extend(singles);
+    pairs.join(" ")
 }
 
 pub(super) fn identifiers(text: &str) -> String {

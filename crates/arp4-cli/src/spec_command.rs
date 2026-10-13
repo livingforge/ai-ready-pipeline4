@@ -378,7 +378,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
                         .context("document has no structure interpretation")?;
                     let mut matching = Vec::new();
                     for path in &extraction {
-                        let value = read(path, Some("extraction"))?;
+                        let value = arp4_cli::extraction::read(path)?;
                         if value["document_id"] == id {
                             matching.push(value);
                         }

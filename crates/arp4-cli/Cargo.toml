@@ -5,10 +5,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
+autotests = false
 
 [[bin]]
 name = "arp4"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
 
 [dependencies]
 aes = "0.9"
@@ -18,8 +23,10 @@ cfb = "0.15.0"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 dunce = "1.0.5"
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 jsonschema = { version = "0.56.0", default-features = false }
 lopdf = { version = "0.45.0", default-features = false }
+mimalloc = "0.1.52"
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1.13.1"
 roxmltree = "0.21.1"

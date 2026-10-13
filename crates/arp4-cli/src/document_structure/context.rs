@@ -155,7 +155,13 @@ pub(super) fn read(
     }
     report["drawings"] = json!(drawings);
     report["image_paths"] = json!(images);
-    report["original_cells"] = ext["sheets"].clone();
+    // Each cell with its font and style in place, as agents read it.
+    report["original_cells"] = Value::Array(
+        array(&ext["sheets"])?
+            .iter()
+            .map(crate::extraction::sheet_view)
+            .collect::<Result<_>>()?,
+    );
     for sheet in report["original_cells"].as_array_mut().unwrap() {
         sheet.as_object_mut().unwrap().remove("drawings");
     }

@@ -127,18 +127,25 @@
         "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["text", "table"]}, "sheet": {"$ref": "#/$defs/sheet_name"},
         "cells": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cell"}},
         "descriptions": {"$ref": "#/$defs/ids", "description": "Ordered references from a table to separate text elements on the same sheet. Cells remain owned by exactly one element; a description may explain several tables."},
+        "parent": {"type": "object", "additionalProperties": false, "required": ["element", "context"],
+          "description": "The table this table is nested in, on the same sheet: a table inside a cell of a Word table, or a table written in the detail columns of an Excel table. Its cells stay owned by this table and link only to its own headers. Context lists the parent's cells that qualify this table as a whole: the parent's headers above it and the parent's cells of the records it belongs to.",
+          "properties": {
+            "element": {"$ref": "#/$defs/text"},
+            "context": {"$ref": "#/$defs/ids"}
+          }},
         "evidence": {"$ref": "#/$defs/ids"},
         "reading": {"$ref": "#/$defs/reading"}
       },
-      "allOf": [{"if": {"required": ["descriptions"]}, "then": {"properties": {"kind": {"const": "table"}}}}]
+      "allOf": [
+        {"if": {"required": ["descriptions"]}, "then": {"properties": {"kind": {"const": "table"}}}},
+        {"if": {"required": ["parent"]}, "then": {"properties": {"kind": {"const": "table"}}}}
+      ]
     },
     "correction_journal": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema_version", "document", "source_path", "source_sha256", "baseline_extraction_hash", "elements", "readings", "cell_states", "element_order", "visuals", "regions", "review"],
+      "required": ["schema_version", "source_sha256", "baseline_extraction_hash", "elements", "readings", "cell_states", "element_order", "visuals", "regions", "review"],
       "properties": {
-        "schema_version": {"const": 1},
-        "document": {"$ref": "#/$defs/document_id"},
-        "source_path": {"$ref": "#/$defs/source_path"},
+        "schema_version": {"const": 2},
         "source_sha256": {"$ref": "#/$defs/hash"},
         "baseline_extraction_hash": {"$ref": "#/$defs/hash"},
         "element_order": {"$ref": "#/$defs/ids"},
@@ -147,34 +154,37 @@
           {"type": "object", "additionalProperties": false, "required": ["status", "content_hash", "actor", "reason"], "properties": {"status": {"enum": ["accepted", "rejected"]}, "content_hash": {"$ref": "#/$defs/hash"}, "actor": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}}}
         ]},
         "elements": {"type": "array",
-          "description": "Elements whose structure differs from the parser's hypothesis: kind, cells, roles, headers, descriptions or evidence. Each cell's text_state is as the parser reads it; a reader's other states are in cell_states.",
+          "description": "Elements whose structure differs from the parser's hypothesis: kind, cells, roles, headers, descriptions or evidence. cells lists ranges whose cells of the extraction, row by row and range after range, are the element's cells; changes gives each cell whose ID, role or headers differ from those the parser gives the cell, and only the fields that differ. A cell the parser gives no element has the ID s<sheet number>-<address>, the role unassigned and no headers. Each cell's text_state is the one the parser reads from its value; a reader's other states are in cell_states. sha256 binds the element to its cells and to what the parser gives them; replayed on an extraction where they differ, every cell of the element is examined again.",
           "items": {"type": "object", "additionalProperties": false,
-          "required": ["element", "sources"], "properties": {
-            "element": {"$ref": "#/$defs/element"},
-            "sources": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false,
-              "required": ["address", "sha256"], "properties": {
-                "address": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}
-              }}
-            }
+          "required": ["element", "cells", "sha256"], "properties": {
+            "element": {"$ref": "#/$defs/corrected_element"},
+            "cells": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cell_range"}},
+            "changes": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false,
+              "required": ["cell"], "minProperties": 2, "properties": {
+                "cell": {"$ref": "#/$defs/cell_name"},
+                "id": {"$ref": "#/$defs/text"},
+                "role": {"enum": ["unassigned", "text", "data", "row_header", "column_header", "note"]},
+                "headers": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/cell_name"}}
+              }}},
+            "sha256": {"$ref": "#/$defs/hash"}
           }
         }},
         "readings": {"type": "array",
-          "description": "Readings of elements whose structure the parser inferred as the reader left it, each bound to a cell of the element; replay gives the reading to the parser's element holding that cell.",
+          "description": "Readings of elements whose structure the parser inferred as the reader left it, each bound to a cell of the element and the hash of that cell; replay gives the reading to the parser's element holding that cell.",
           "items": {"type": "object", "additionalProperties": false,
-            "required": ["element", "sheet", "anchor", "reading"], "properties": {
+            "required": ["element", "sheet", "anchor", "sha256", "reading"], "properties": {
               "element": {"$ref": "#/$defs/text"},
               "sheet": {"$ref": "#/$defs/sheet_name"},
-              "anchor": {"type": "object", "additionalProperties": false, "required": ["address", "sha256"], "properties": {
-                "address": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/hash"}
-              }},
+              "anchor": {"$ref": "#/$defs/cell_name"},
+              "sha256": {"$ref": "#/$defs/hash"},
               "reading": {"$ref": "#/$defs/reading"}
             }}},
         "cell_states": {"type": "array",
           "description": "Cells whose text_state is not the one the parser reads from their value (read when it holds text, empty otherwise), with the hash of the cell they were given for.",
           "items": {"type": "object", "additionalProperties": false,
-            "required": ["sheet", "address", "sha256", "text_state"], "properties": {
+            "required": ["sheet", "cell", "sha256", "text_state"], "properties": {
               "sheet": {"$ref": "#/$defs/sheet_name"},
-              "address": {"$ref": "#/$defs/text"},
+              "cell": {"$ref": "#/$defs/cell_name"},
               "sha256": {"$ref": "#/$defs/hash"},
               "text_state": {"enum": ["read", "empty", "unreadable", "not_examined"]}
             }}},
@@ -190,7 +200,7 @@
         }},
         "regions": {"type": "array", "items": {"$ref": "#/$defs/region"}},
         "carried": {"type": "object", "additionalProperties": false,
-          "description": "How the import of this version carried the interpretation of the version before: by the row/column operations documents apply wrote, or by those found aligning the rows and columns of an original edited outside ARP. moved counts the cells that moved with the operations. affected lists each element, visual and image region the carrying touched, once for each reason, with the cells of an element: added to tables by insertions or, when new, to the element around them; removed with deleted rows/columns; or changed in value (read again from the new value unless a reader had left them unreadable or unexamined). An element left without cells is removed with every cell it lost. review says whether the review was kept.",
+          "description": "How the import of this version carried the interpretation of the version before: by the row/column operations documents apply wrote, or by those found aligning the rows and columns of an original edited outside ARP. moved counts the cells that moved with the operations. affected lists each element, visual and image region the carrying touched, once for each reason, with the cells of an element: added to tables by insertions or, when new, to the element around them; removed with deleted rows/columns; or changed in value (read again from the new value unless a reader had left them unreadable or unexamined). An element left without cells is removed with every cell it lost; a table whose parent table was removed loses its parent (parent_removed). review says whether the review was kept.",
           "required": ["by", "operations", "moved", "review", "reasons", "affected"], "properties": {
             "by": {"enum": ["apply", "alignment"]},
             "operations": {"$ref": "#/$defs/ids"},
@@ -201,11 +211,34 @@
               "required": ["kind", "id", "reason"], "properties": {
                 "kind": {"enum": ["element", "visual", "region"]},
                 "id": {"$ref": "#/$defs/text"},
-                "reason": {"enum": ["moved", "added", "removed", "changed", "inferred"]},
+                "reason": {"enum": ["moved", "added", "removed", "changed", "inferred", "parent_removed"]},
                 "cells": {"$ref": "#/$defs/ids"}
               }}}
           }}
       }
+    },
+    "cell_name": {"type": "string", "pattern": "^([A-Z]+|\\[[^\\]]+\\])([0-9]+|\\[[^\\]]+\\])$",
+      "description": "A cell of a correction journal, by the identities of its column and row in the document's layout: J13 is the cell of the column identity J and the row identity r13, which stay with the column and row when others are inserted or deleted before them; any other identity is written in brackets, as in J[ins-1]. Without a layout the name is the address."},
+    "cell_range": {"type": "string", "pattern": "^([A-Z]+|\\[[^\\]]+\\])([0-9]+|\\[[^\\]]+\\])(:([A-Z]+|\\[[^\\]]+\\])([0-9]+|\\[[^\\]]+\\]))?$",
+      "description": "The cells of the extraction from the first named cell to the last, or one cell."},
+    "corrected_element": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "sheet", "reading"],
+      "description": "An element of a correction without its cells, which the correction lists apart; evidence is left out when there is none. The context of a parent names the parent's cells.",
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "kind": {"enum": ["text", "table"]}, "sheet": {"$ref": "#/$defs/sheet_name"},
+        "descriptions": {"$ref": "#/$defs/ids"},
+        "parent": {"type": "object", "additionalProperties": false, "required": ["element", "context"], "properties": {
+          "element": {"$ref": "#/$defs/text"},
+          "context": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/cell_name"}}
+        }},
+        "evidence": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+        "reading": {"$ref": "#/$defs/reading"}
+      },
+      "allOf": [
+        {"if": {"required": ["descriptions"]}, "then": {"properties": {"kind": {"const": "table"}}}},
+        {"if": {"required": ["parent"]}, "then": {"properties": {"kind": {"const": "table"}}}}
+      ]
     },
     "cell": {
       "type": "object", "additionalProperties": false,

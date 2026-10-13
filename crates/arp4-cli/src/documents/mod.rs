@@ -62,6 +62,8 @@ pub struct Inspection {
     pub meta: Value,
     pub extraction: Value,
     pub mappings: Value,
+    /// The complete mapping entries; `mappings` keeps none.
+    entries: Vec<Entry>,
     /// Content values by page, block and field.
     pub values: HashMap<(String, String, String), Value>,
     /// The fonts of content values by page, block and field (see `crate::fonts`).
@@ -72,6 +74,27 @@ pub struct Inspection {
     pub reviewed: bool,
     pub source_current: bool,
     pub source_missing: bool,
+    /// The identities of the rows and columns of the extraction, which the
+    /// correction journal names cells by.
+    pub axes: crate::document_structure::Axes,
+    /// The digest of the structure interpretation the layout's element
+    /// metadata was classified from (`elements::interpretation_digest`).
+    pub structure_sha256: Option<String>,
+}
+impl Inspection {
+    /// The complete mapping entries, as mappings.yml writes them.
+    pub fn entries_json(&self) -> Vec<Value> {
+        self.entries.iter().map(|e| e.json().into_owned()).collect()
+    }
+
+    /// Lets go of the content values and fonts and the mapping entries, the
+    /// largest parts besides the extraction, before a step that reads none of
+    /// them, such as replaying the structure.
+    pub(super) fn release_content(&mut self) {
+        self.values = HashMap::new();
+        self.fonts = HashMap::new();
+        self.entries = Vec::new();
+    }
 }
 fn nonempty(value: &str) -> Result<()> {
     ensure!(
@@ -87,9 +110,70 @@ impl Store {
     /// mappings.yml.
     pub fn structure(&self, id: &str, proposal: bool) -> Result<(Value, Value)> {
         let dir = self.structure_dir(id, proposal)?;
-        let inspected = self.inspect(&dir, false)?;
+        let mut inspected = self.inspect(&dir, false)?;
+        inspected.release_content();
         self.interpretation(&inspected)?
             .context("document has no structure interpretation")
+    }
+
+    /// The element metadata of every page of the adopted document, or of its
+    /// proposal, with the fonts it refers to resolved, the roles and headers
+    /// of its table cells from the structure interpretation, and the visuals
+    /// its references point to: what is read beside the body, as the
+    /// `document-elements` contract.
+    pub fn elements(&self, id: &str, proposal: bool) -> Result<Value> {
+        let dir = self.structure_dir(id, proposal)?;
+        let (mut inspected, layout) = self.inspect_layout(&dir, false, &Planned::new(), true)?;
+        let mut layout = layout.context("layout kept")?;
+        inspected.release_content();
+        // The interpretation of the stored extraction, as import classifies
+        // the layout from, whether or not the original has changed since.
+        let (structure, _) = crate::document_structure::replay_verified_corrections(
+            &self.root,
+            &inspected.mappings["interpretation"],
+            &inspected.extraction,
+            string(&inspected.meta["extraction"])?,
+            &inspected.axes,
+        )?;
+        elements::interpret(&mut layout, array(&structure["elements"])?)?;
+        let mut pages = serde_json::Map::new();
+        for (page_id, sheet) in layout["sheets"]
+            .as_object()
+            .context("layout sheets missing")?
+        {
+            let mut metadata = sheet["element_metadata"].clone();
+            for element in metadata
+                .as_array_mut()
+                .context("element metadata missing")?
+            {
+                if let Some(rows) = element.get_mut("rows") {
+                    for row in rows.as_array_mut().context("table rows missing")? {
+                        for cell in row["cells"].as_array_mut().context("table cells missing")? {
+                            resolve_font(sheet, cell)?;
+                        }
+                    }
+                } else {
+                    resolve_font(sheet, element)?;
+                }
+            }
+            pages.insert(
+                page_id.clone(),
+                json!({"name":sheet["name"],"element_metadata":metadata,"visuals":sheet["visuals"]}),
+            );
+        }
+        let out = json!({"schema_version":"1","document_id":id,"proposal":proposal,"pages":pages});
+        validate("document-elements", &out)?;
+        Ok(out)
+    }
+
+    /// The extraction of the adopted document, or of its proposal, with every
+    /// cell's font, style and cached result in place, as the `extraction-view`
+    /// contract.
+    pub fn extraction_view(&self, id: &str, proposal: bool) -> Result<Value> {
+        let dir = self.structure_dir(id, proposal)?;
+        let extraction = crate::extraction::view(&self.inspect(&dir, false)?.extraction)?;
+        validate("extraction-view", &extraction)?;
+        Ok(extraction)
     }
 
     /// Saves `structure` as the corrections of the adopted document, or of its
@@ -109,18 +193,20 @@ impl Store {
             &self.root,
             &inspected.extraction,
             structure,
+            &inspected.axes,
         )?;
         let (reconstructed, report) = crate::document_structure::replay_corrections(
             &self.root,
             &journal,
             &inspected.extraction,
+            &inspected.axes,
         )?;
         ensure!(
             reconstructed == *structure,
             "structure cannot be reproduced from corrections"
         );
         let path = dir.join("mappings.yml");
-        let mut mappings = read(&path, Some("mappings"))?;
+        let mut mappings = read_mappings(&path)?;
         mappings["interpretation"] = journal;
         ensure!(
             self.fingerprint(&dir)?.as_deref() == Some(&inspected.fingerprint),
@@ -141,10 +227,13 @@ impl Store {
             }
             planned.insert(
                 "layout.yml".into(),
-                Some(serialized(Path::new("layout.yml"), &layout)?),
+                Some(identity::stored(&mut layout, &inspected.extraction)?),
             );
         }
-        planned.insert("mappings.yml".into(), Some(serialized(&path, &mappings)?));
+        planned.insert(
+            "mappings.yml".into(),
+            Some(stored_mappings(&path, &mappings)?),
+        );
         self.inspect_with(&dir, false, &planned)?;
         self.commit(&dir, &planned, &inspected.fingerprint)?;
         Ok(report)
@@ -352,6 +441,44 @@ fn read_planned(name: &str, path: &Path, planned: &Planned, schema: &str) -> Res
     let value = parse(std::str::from_utf8(bytes)?, name.ends_with(".json"))?;
     validate(schema, &value)?;
     Ok(value)
+}
+
+/// Reads and validates the stored `layout.yml` at `path` of a document or
+/// proposal, as its documents read it: its rows and columns placed under
+/// the pending operations and its element metadata complete, with what the
+/// stored form leaves out in place.
+pub fn read_layout(path: &Path) -> Result<Value> {
+    let dir = path.parent().context("layout has no document directory")?;
+    let extraction = crate::extraction::read_record(&dir.join("extraction.json"))?;
+    identity::load(dir, &extraction, &Planned::new())
+}
+
+/// Writes a layout as [`read_layout`] gives it to `layout.yml` at `path`, in
+/// its stored form.
+pub fn write_layout(path: &Path, layout: &mut Value) -> Result<()> {
+    let dir = path.parent().context("layout has no document directory")?;
+    let extraction = crate::extraction::read_record(&dir.join("extraction.json"))?;
+    replace(path, &identity::stored(layout, &extraction)?)
+}
+
+/// The block, row and column of the grid of a layout `sheet` that the element
+/// `id` writes to.
+pub fn element_binding(sheet: &Value, id: &str) -> Result<(String, String, String)> {
+    elements::Bindings::of(sheet)?.get(id)
+}
+
+/// The ID of the element of a layout `sheet` at `row` and `column` of `block`.
+pub fn element_id(sheet: &Value, block: &str, row: &str, column: &str) -> Result<String> {
+    elements::Bindings::id(sheet, block, row, column)
+}
+
+/// Replaces the font index of an element or table cell with the font.
+fn resolve_font(sheet: &Value, element: &mut Value) -> Result<()> {
+    let font = elements::font(sheet, element)?;
+    if !font.is_null() {
+        element["font"] = font;
+    }
+    Ok(())
 }
 
 fn fingerprint_of(files: &serde_json::Map<String, Value>) -> String {

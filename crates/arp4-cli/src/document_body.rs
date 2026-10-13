@@ -5,6 +5,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 /// Separate editable values from identities, topology and source references.
+/// The metadata keeps no place for the values, which [`join`] puts back
+/// under the element's type or the cell's `value`; only a table cell holding
+/// a formula keeps a null `formula`, the mark that its value is a formula.
 pub fn split(elements: &Value) -> Result<(Value, Value)> {
     let mut metadata = elements.clone();
     let mut body = Vec::new();
@@ -14,7 +17,7 @@ pub fn split(elements: &Value) -> Result<(Value, Value)> {
             "text" | "formula" => e
                 .as_object_mut()
                 .unwrap()
-                .insert(kind.clone(), Value::Null)
+                .remove(&kind)
                 .context("element value missing")?,
             "table" => {
                 let columns = array(&e["columns"])?.clone();
@@ -26,16 +29,13 @@ pub fn split(elements: &Value) -> Result<(Value, Value)> {
                             .iter()
                             .position(|c| c["id"] == cell["column"])
                             .context("unknown table column")?;
-                        let key = if cell.get("formula").is_some() {
-                            "formula"
+                        let fields = cell.as_object_mut().unwrap();
+                        values[index] = if fields.contains_key("formula") {
+                            fields.insert("formula".into(), Value::Null)
                         } else {
-                            "value"
-                        };
-                        values[index] = cell
-                            .as_object_mut()
-                            .unwrap()
-                            .insert(key.into(), Value::Null)
-                            .context("cell value missing")?;
+                            fields.remove("value")
+                        }
+                        .context("cell value missing")?;
                     }
                     rows.push(json!(values));
                 }
@@ -49,37 +49,40 @@ pub fn split(elements: &Value) -> Result<(Value, Value)> {
     Ok((json!(body), metadata))
 }
 
-/// Reconstruct the internal writer elements using only the recorded slots.
-/// Missing table cells are null padding and cannot be made writable by hand.
-pub fn join(body: &Value, metadata: &Value) -> Result<Value> {
+/// Calls `visit` with each value of `body` and the element or table cell of
+/// `metadata` it belongs to, in order, after checking that the body still has
+/// the shape the metadata records. Missing table cells are null padding and
+/// cannot be made writable by hand. Nothing is copied.
+pub fn each(
+    body: &Value,
+    metadata: &Value,
+    mut visit: impl FnMut(&Value, &Value) -> Result<()>,
+) -> Result<()> {
     let body = array(body)?;
-    let mut result = metadata.clone();
-    let elements = result.as_array_mut().context("element metadata missing")?;
+    let elements = array(metadata).context("element metadata missing")?;
     ensure!(
         body.len() == elements.len(),
         "element count changed; use ARP structural operations"
     );
     for (value, e) in body.iter().zip(elements) {
-        let kind = string(&e["type"])?.to_owned();
+        let kind = string(&e["type"])?;
         let fields = value
             .as_object()
             .context("body element must be an object")?;
         ensure!(
-            fields.len() == 1 && fields.contains_key(&kind),
+            fields.len() == 1 && fields.contains_key(kind),
             "element kind changed; use ARP structural operations"
         );
-        let value = &value[&kind];
-        match kind.as_str() {
-            "text" => e["text"] = value.clone(),
+        let value = &value[kind];
+        match kind {
+            "text" => visit(e, value)?,
             "formula" => {
                 ensure!(value.is_string(), "formula must be a string");
-                e["formula"] = value.clone();
+                visit(e, value)?;
             }
             "table" => {
-                let columns = array(&e["columns"])?.clone();
-                let rows = e["rows"]
-                    .as_array_mut()
-                    .context("table metadata rows missing")?;
+                let columns = array(&e["columns"])?;
+                let rows = array(&e["rows"]).context("table metadata rows missing")?;
                 let values = array(value)?;
                 ensure!(
                     values.len() == rows.len(),
@@ -92,26 +95,18 @@ pub fn join(body: &Value, metadata: &Value) -> Result<Value> {
                         "table column count changed; use ARP column operations"
                     );
                     let mut present = vec![false; columns.len()];
-                    for cell in row["cells"]
-                        .as_array_mut()
-                        .context("table metadata cells missing")?
-                    {
+                    for cell in array(&row["cells"]).context("table metadata cells missing")? {
                         let index = columns
                             .iter()
                             .position(|c| c["id"] == cell["column"])
                             .context("unknown table column")?;
                         ensure!(!present[index], "duplicate table slot");
                         present[index] = true;
-                        let key = if cell.get("formula").is_some() {
-                            "formula"
-                        } else {
-                            "value"
-                        };
                         ensure!(
-                            key != "formula" || values[index].is_string(),
+                            cell.get("formula").is_none() || values[index].is_string(),
                             "formula must be a string"
                         );
-                        cell[key] = values[index].clone();
+                        visit(cell, &values[index])?;
                     }
                     ensure!(
                         values.iter().zip(present).all(|(v, p)| p || v.is_null()),
@@ -123,6 +118,39 @@ pub fn join(body: &Value, metadata: &Value) -> Result<Value> {
                 ensure!(value.is_null(), "non-text element must remain null")
             }
             _ => bail!("unknown element type"),
+        }
+    }
+    Ok(())
+}
+
+/// Reconstruct the internal writer elements using only the recorded slots:
+/// the metadata with every value of [`each`] in place.
+pub fn join(body: &Value, metadata: &Value) -> Result<Value> {
+    let mut values = vec![];
+    each(body, metadata, |_, value| {
+        values.push(value.clone());
+        Ok(())
+    })?;
+    let mut values = values.into_iter();
+    let mut result = metadata.clone();
+    for e in result.as_array_mut().unwrap() {
+        let mut put = |slot: &mut Value, key: &str| slot[key] = values.next().unwrap();
+        match e["type"].as_str() {
+            Some("text") => put(e, "text"),
+            Some("formula") => put(e, "formula"),
+            Some("table") => {
+                for row in e["rows"].as_array_mut().unwrap() {
+                    for cell in row["cells"].as_array_mut().unwrap() {
+                        let key = if cell.get("formula").is_some() {
+                            "formula"
+                        } else {
+                            "value"
+                        };
+                        put(cell, key);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Ok(result)

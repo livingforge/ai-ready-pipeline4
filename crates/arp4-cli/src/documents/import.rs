@@ -189,6 +189,14 @@ impl Store {
         } else {
             adopted
         };
+        // Records an earlier version of ARP wrote are not read: with --force the
+        // document is made anew from the original, without them. Only --force
+        // reads every record to find out.
+        let earlier = if force {
+            self.unreadable_records(id)?
+        } else {
+            None
+        };
         if !force
             && unprotected.is_none()
             && recorded.is_file()
@@ -197,15 +205,52 @@ impl Store {
             return Ok(None);
         }
         let Some(record) = unprotected else {
-            return self
-                .import_original_with_bytes(path, id, None, Some(raw))
-                .map(Some);
+            let result = self.import_original_with_bytes(path, id, None, Some(raw), earlier)?;
+            if self.reproduces_adopted(id)? {
+                self.discard(id)?;
+                return Ok(None);
+            }
+            return Ok(Some(result));
         };
         let mut result = self
-            .import_original_with_bytes(path, id, None, Some(raw))
+            .import_original_with_bytes(path, id, None, Some(raw), earlier)
             .context("the encryption was removed from the original, but its import failed")?;
         result["unprotected"] = record;
         Ok(Some(result))
+    }
+
+    /// Why the records of the adopted document or the proposal of `id` cannot
+    /// be read by this version, when they cannot: an earlier version wrote them.
+    fn unreadable_records(&self, id: &str) -> Result<Option<String>> {
+        for dir in [self.document(id)?, self.proposal_path(id)?] {
+            if !dir.join("document.yml").is_file() {
+                continue;
+            }
+            let readable = || -> Result<()> {
+                read(&dir.join("document.yml"), Some("document"))?;
+                read(&dir.join("layout.yml"), Some("document-layout"))?;
+                read_mappings(&dir.join("mappings.yml"))?;
+                crate::extraction::read_record(&dir.join("extraction.json"))?;
+                if dir.join("content").is_dir() {
+                    for page in fs::read_dir(dir.join("content"))? {
+                        read(&page?.path(), Some("content"))?;
+                    }
+                }
+                Ok(())
+            };
+            if let Err(error) = readable() {
+                return Ok(Some(format!("{error:#}")));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether the proposal of `id` holds what its adopted document holds, so
+    /// there is nothing to record or adopt.
+    fn reproduces_adopted(&self, id: &str) -> Result<bool> {
+        let current = self.document(id)?;
+        Ok(current.join("document.yml").is_file()
+            && self.fingerprint(&current)? == self.fingerprint(&self.proposal_path(id)?)?)
     }
 
     /// Removes the encryption of the original at `path`, whose bytes are `raw`,
@@ -331,15 +376,19 @@ impl Store {
         id: &str,
         carry: Option<&Carry>,
     ) -> Result<Value> {
-        self.import_original_with_bytes(source, id, carry, None)
+        self.import_original_with_bytes(source, id, carry, None, None)
     }
 
+    /// [`Store::import_original`] of the original's bytes `raw`, when read
+    /// already. `earlier` says why the records of the document are not read,
+    /// when an earlier version wrote them: the document is then made anew.
     fn import_original_with_bytes(
         &self,
         source: &Path,
         id: &str,
         carry: Option<&Carry>,
         raw: Option<Vec<u8>>,
+        earlier: Option<String>,
     ) -> Result<Value> {
         document_id(id)?;
         let ext = extension(source);
@@ -390,7 +439,10 @@ impl Store {
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let mut extraction = json!({"schema_version":"1","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"sheets":[],"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        let mut extraction = json!({"schema_version":"2","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"sheets":[],"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        if matches!(&book, Source::Excel(workbook) if workbook.date1904) {
+            extraction["date1904"] = json!(true);
+        }
         let field_codes = book.word_field_codes()?;
         if !field_codes.is_empty() {
             extraction["field_codes"] = json!(field_codes);
@@ -413,8 +465,13 @@ impl Store {
         }
         // Moved in rather than serialized again: the sheets hold every cell.
         extraction["sheets"] = Value::Array(book.sheets().into_owned());
-        validate("extraction", &extraction)?;
-        let mut layout = if identity::is_excel(&extraction) {
+        // The parsed original is not needed past its sheets; only its bytes
+        // are compared again at the end.
+        let raw = book.into_raw();
+        // Encoded once, in the stored form: the record is these bytes and its
+        // key is their hash. The rest of import reads the expanded form.
+        let extraction_bytes = crate::extraction::stored(&mut extraction)?;
+        let mut layout = if identity::is_excel(&extraction) && earlier.is_none() {
             let identity_base = if carry.is_none()
                 && destination.join("document.yml").is_file()
                 && read(&destination.join("document.yml"), Some("document"))?["source"]["sha256"]
@@ -430,37 +487,57 @@ impl Store {
         } else {
             identity::initial(&extraction)?
         };
-        // Encoded once: the record is these bytes and its key is their hash.
-        let extraction_bytes = encoded(&extraction);
         let extraction_hash = hash(&extraction_bytes);
-        let same_extraction = current.join("document.yml").exists()
+        let same_extraction = earlier.is_none()
+            && current.join("document.yml").exists()
             && read(&current.join("document.yml"), Some("document"))?["extraction"]
                 == extraction_hash;
-        let previous = if current.join("mappings.yml").exists() {
-            let previous = read(&current.join("mappings.yml"), Some("mappings"))?;
+        let previous = if earlier.is_none() && current.join("mappings.yml").exists() {
+            let previous = read_mappings(&current.join("mappings.yml"))?;
+            // A journal recording nothing is not stored.
             let journal = previous["interpretation"].clone();
-            crate::document_structure::validate_corrections(&journal)?;
-            (journal["document"] == id && journal["source_path"] == source_path).then_some(journal)
+            if journal.is_null() {
+                None
+            } else {
+                crate::document_structure::validate_corrections(&journal)?;
+                Some(journal)
+            }
         } else {
             None
         };
         // The interpretation of the version before is carried onto this one
         // with the operations apply wrote or, for an original edited outside
-        // ARP, those aligning the two versions. When carrying fails, the
-        // corrections are kept as recorded and replay matches them by address.
+        // ARP, those aligning the two versions. An original saved again with
+        // the same content aligns with no operation: its interpretation is
+        // carried to it as to one apply wrote with no cell changed, rather
+        // than left naming the original it was made for. When carrying fails,
+        // the corrections are kept as recorded and replay matches them by
+        // address.
         let aligned = match (carry, &previous) {
-            (None, Some(journal)) if !same_extraction && interpreted(journal) => {
+            (None, Some(journal))
+                if (!same_extraction && interpreted(journal))
+                    || (same_extraction
+                        && !records_nothing(journal)
+                        && journal["source_sha256"] != info["sha256"]) =>
+            {
                 Some(self.aligned(&current, journal, &extraction))
             }
             _ => None,
         };
-        let interpretation =
-            previous.unwrap_or_else(|| crate::document_structure::empty_corrections(&extraction));
+        // A journal holding nothing is made again for this version, so it does
+        // not keep naming the original and extraction it was first made for.
+        let interpretation = match previous {
+            Some(journal) if !records_nothing(&journal) => journal,
+            _ => crate::document_structure::empty_corrections(&extraction, &extraction_hash),
+        };
         let attempt = match (carry, &aligned) {
             (Some(carry), _) => Some(Ok(carry)),
             (None, Some(aligned)) => Some(aligned.as_ref()),
             (None, None) => None,
         };
+        // The journal names cells by the row and column identities of this
+        // version.
+        let axes = identity::axes(&layout)?;
         let (interpretation, carried) = match attempt {
             Some(Ok(carry)) => match crate::document_structure::carry_corrections(
                 &self.root,
@@ -469,6 +546,7 @@ impl Store {
                 &extraction,
                 &carry.operations,
                 carry.carrier,
+                &axes,
             ) {
                 Ok((journal, record)) => (journal, record),
                 Err(error) => (interpretation, not_carried(carry.carrier, &error)),
@@ -482,6 +560,7 @@ impl Store {
                 &interpretation,
                 &extraction,
                 &extraction_hash,
+                &axes,
             )?;
             elements::classify(&mut layout, array(&structure["elements"])?)?;
             elements::geometry(&mut layout, &extraction, &[])?;
@@ -504,26 +583,24 @@ impl Store {
             &ready.join("proposal.json"),
             &json!({"schema_version":"1","document_id":id,"base":base}),
         )?;
-        let mut tables = vec![];
         for (i, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
             let page = format!("sheet-{}", i + 1);
             let mut rows = json!({});
             let mut formulas = json!({});
             let mut fonts = json!({});
-            let mut columns = BTreeSet::new();
             for c in array(&sheet["cells"])? {
                 let address = string(&c["address"])?;
                 let (_, row) = excel::coordinate(address)?;
                 let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
-                columns.insert(column.to_owned());
                 rows[&format!("r{row}")][column] = c["value"].clone();
+                let font = crate::extraction::font(sheet, c)?;
                 if c["type"] == "formula" {
                     let f = string(&c["id"])?;
                     formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));
-                    if let Some(font) = c.get("font") {
+                    if !font.is_null() {
                         fonts["formulas"][f]["formula"] = font.clone();
                     }
-                } else if let Some(font) = c.get("font") {
+                } else if !font.is_null() {
                     fonts["table-1"][&format!("r{row}")][column] = font.clone();
                 }
             }
@@ -535,19 +612,13 @@ impl Store {
                 }
             }
             let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":&note}});
-            for (block, title, body, cols) in [
-                (
-                    "table-1",
-                    "本文",
-                    rows,
-                    columns.into_iter().collect::<Vec<_>>(),
-                ),
-                ("formulas", "数式原文", formulas, vec!["formula".into()]),
-                ("shapes", "図形の文字", shapes, vec!["text".into()]),
+            for (block, title, body) in [
+                ("table-1", "本文", rows),
+                ("formulas", "数式原文", formulas),
+                ("shapes", "図形の文字", shapes),
             ] {
                 if body.as_object().is_some_and(|o| !o.is_empty()) {
                     blocks[block] = json!({"title":title,"rows":body});
-                    tables.push(json!({"page":page,"block":block,"columns":cols,"references":[]}));
                 }
             }
             write(
@@ -555,16 +626,23 @@ impl Store {
                     .join("content")
                     .join(excel::filename(string(&sheet["name"])?)),
                 &elements::encode(
-                    &json!({"schema_version":"4","document_id":id,"page_id":page,"source_path":source_path,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
+                    &json!({"schema_version":"4","page_id":page,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
                     &mut layout,
                 )?,
             )?;
         }
-        write(&ready.join("layout.yml"), &layout)?;
+        replace(
+            &ready.join("layout.yml"),
+            &identity::stored(&mut layout, &extraction)?,
+        )?;
         // The per-cell entries follow from the extraction; inspection derives them.
-        write(
-            &ready.join("mappings.yml"),
-            &json!({"schema_version":"1","entries":[],"tables":tables,"omissions":[],"operations":[],"interpretation":interpretation}),
+        let mappings_path = ready.join("mappings.yml");
+        replace(
+            &mappings_path,
+            &stored_mappings(
+                &mappings_path,
+                &json!({"schema_version":"1","interpretation":interpretation}),
+            )?,
         )?;
         replace(&ready.join("extraction.json"), &extraction_bytes)?;
         let names = files(&ready)?
@@ -578,10 +656,7 @@ impl Store {
                 record.encode_utf16().count()
             );
         }
-        ensure!(
-            fs::read(source)? == book.raw(),
-            "source changed during import"
-        );
+        ensure!(fs::read(source)? == raw, "source changed during import");
         // Not inspected again here: record inspects the proposal before it can be adopted.
         fs::create_dir_all(destination.parent().unwrap())?;
         let previous = stage.path().join("previous");
@@ -600,6 +675,9 @@ impl Store {
             json!({"document_id":id,"proposal":destination,"findings":extraction["findings"]});
         if !carried.is_null() {
             result["structure"] = carried;
+        }
+        if let Some(reason) = earlier {
+            result["discarded_records"] = json!(reason);
         }
         Ok(result)
     }
@@ -621,13 +699,17 @@ impl Store {
     fn aligned(&self, current: &Path, journal: &Value, extraction: &Value) -> Result<Carry> {
         let meta = read(&current.join("document.yml"), Some("document"))?;
         let key = string(&meta["extraction"])?;
-        let before = read(&current.join("extraction.json"), Some("extraction"))?;
+        let before = crate::extraction::read_record(&current.join("extraction.json"))?;
         ensure!(
-            hash(&encoded(&before)) == key,
+            crate::extraction::hash(&before)? == key,
             "extraction integrity failure"
         );
         let (structure, _) = crate::document_structure::replay_earlier_corrections(
-            &self.root, journal, &before, key,
+            &self.root,
+            journal,
+            &before,
+            key,
+            &identity::stored_axes(current, &Planned::new())?,
         )?;
         let operations = crate::document_structure::align_operations(&before, extraction)?;
         Ok(Carry {
@@ -650,6 +732,14 @@ fn interpreted(journal: &Value) -> bool {
                 .is_some_and(|items| !items.is_empty())
         })
         || journal["review"]["status"] != "pending"
+}
+
+/// Whether a journal records nothing a reader decided, not even an order.
+pub(super) fn records_nothing(journal: &Value) -> bool {
+    !interpreted(journal)
+        && journal["element_order"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
 }
 
 fn not_carried(carrier: Carrier, error: &anyhow::Error) -> Value {

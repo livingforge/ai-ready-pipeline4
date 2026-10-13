@@ -17,6 +17,7 @@ mod formula_edit;
 use formula_edit::*;
 mod fonts;
 mod import;
+pub mod number_format;
 mod visuals;
 mod worksheet;
 pub(crate) use worksheet::original_position;
@@ -108,6 +109,8 @@ struct CellFormat {
     number_format: String,
     appearance: Value,
     font: crate::fonts::RunFont,
+    /// The sides its border draws: left, right, top, bottom.
+    sides: [bool; 4],
 }
 impl Workbook {
     /// The worksheets as the extraction records them, each with its cells.

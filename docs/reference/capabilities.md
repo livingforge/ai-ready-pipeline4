@@ -70,6 +70,7 @@
       "diagram_min_shapes": 3
     },
     "document_structure_table_descriptions": true,
+    "document_structure_table_parents": true,
     "document_structure_visual_graphs": true,
     "document_structure_writeback": false,
     "documents_apply_export_confirmation": "human layout review bound to exact candidate and report hashes",
@@ -80,6 +81,7 @@
     ],
     "documents_folder_import": true,
     "documents_font_edits": "Excel cells (one font name for latin and East Asian text) and shape text, Word paragraphs and table cells (sizes in half points), PowerPoint paragraphs and table cells (RRGGBB colors) through documents values; exact base and old font properties",
+    "documents_import_adopt": "import --adopt adopts new proposals as extracted, without record or review; documents stay imported until edited",
     "documents_import_unprotect": "encrypted Office originals are saved over unencrypted before import: password encryption (Agile, Standard AES) with passwords from --password-stdin; IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights",
     "documents_remove": true,
     "documents_schema": true,

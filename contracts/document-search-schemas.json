@@ -12,6 +12,11 @@
       "failed": {"type": "array"},
       "error": {"type": "object"},
       "detail": {"type": "string"},
+      "tables": {
+        "type": "object",
+        "description": "Tables listed once for all queries, as search-passage table with the document of their rows: document_id, source_path, state and structure_reviewed (and extraction_path with --full). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.",
+        "additionalProperties": {"type": "object"}
+      },
       "queries": {
         "type": "array", "minItems": 2, "maxItems": 32,
         "items": {
@@ -72,7 +77,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "Fragment stored in the search index. CLI search responses omit extraction_sha256, including with --full. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.",
     "type": "object", "additionalProperties": false,
-    "required": ["document_id", "source_path", "extraction_sha256", "kind", "title", "text", "sources", "context", "structure_reviewed"],
+    "required": ["document_id", "source_path", "extraction_sha256", "kind", "title", "text", "sources", "structure_reviewed"],
     "properties": {
       "document_id": {"type": "string"},
       "source_path": {"type": "string"},
@@ -81,10 +86,38 @@
       "title": {"type": "string"},
       "text": {"type": "string"},
       "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
-      "context": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+      "table": {
+        "type": "object", "additionalProperties": false,
+        "required": ["element", "sheet", "columns"],
+        "description": "The interpreted table a row belongs to. Headings and within come from the tables it is nested in, outermost first.",
+        "properties": {
+          "element": {"type": "string"},
+          "sheet": {"type": "string"},
+          "headings": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "Column headers of enclosing tables above this table, each after the headers above it."},
+          "within": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field"}, "description": "Cells of the enclosing tables' records this table belongs to, by row and column."},
+          "columns": {
+            "type": "array",
+            "description": "One entry per value, in column order: the cell's column and the column headers above it. Headers in the row itself are values, not headers.",
+            "items": {
+              "type": "object", "additionalProperties": false, "required": ["column", "headers"],
+              "properties": {"column": {"type": "string"}, "headers": {"$ref": "#/$defs/headers"}}
+            }
+          }
+        }
+      },
+      "row": {"type": "integer", "minimum": 1},
+      "values": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. Null when the text is not known; unread names why. A row too long for one passage lists the pieces of this passage, without its empty cells."},
+      "row_context": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field"}, "description": "Row headers of other rows that head this row, such as a merged item name or a section row, outermost first."},
+      "unread": {"type": "object", "minProperties": 1, "additionalProperties": {"enum": ["unreadable", "not_examined", "uncalculated"]}, "description": "Cells of the row by address without a known text: a reader could not read it or has not examined it, or a formula was saved without its result."},
       "structure_reviewed": {"type": "boolean"}
     },
+    "dependentRequired": {"table": ["row", "values"], "row": ["table"], "values": ["table"], "row_context": ["table"], "unread": ["table"]},
     "$defs": {
+      "headers": {"type": "array", "items": {"type": "string"}, "description": "Header texts, those higher in the header chain first, then by row and column."},
+      "field": {
+        "type": "object", "additionalProperties": false, "required": ["headers", "text"],
+        "properties": {"headers": {"$ref": "#/$defs/headers"}, "text": {"type": "string"}}
+      },
       "source": {
         "type": "object", "additionalProperties": false,
         "required": ["pointer", "sheet", "address", "position", "text", "start", "end"],
@@ -92,7 +125,9 @@
           "pointer": {"type": "string"}, "sheet": {"type": "string"},
           "address": {"type": "string"},
           "position": {"type": ["object", "null"]},
-          "text": {"type": "string"},
+          "text": {"type": "string", "description": "The text the original shows. A workbook cell shows its value, for a formula its result, under its number format."},
+          "value": {"type": ["string", "number", "boolean"], "description": "The stored value of a workbook cell, when it reads otherwise than text."},
+          "formula": {"type": "string", "description": "The formula of a workbook cell. Its result is the stored value; a formula saved without one shows no text."},
           "start": {"type": "integer", "minimum": 0},
           "end": {"type": "integer", "minimum": 0}
         }

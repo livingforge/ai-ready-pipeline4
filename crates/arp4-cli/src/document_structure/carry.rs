@@ -6,6 +6,7 @@
 //! row or neighbour, and readings of drawings and images follow what they
 //! show. The result is recorded as corrections of the new extraction, so
 //! replay reproduces it.
+use super::corrections::SourceCell;
 use super::*;
 use crate::excel::{MergeState, Merges, StructuralOperation};
 use anyhow::bail;
@@ -107,6 +108,7 @@ mod visual_performance_tests {
         let values: Vec<_> = (1..=2_000)
             .flat_map(|row| (1..=10).map(move |column| cell(column, row)))
             .collect();
+        let sheet = json!({"name":"S"});
         let indexed_cells: BTreeMap<_, _> = values
             .iter()
             .map(|value| {
@@ -115,7 +117,7 @@ mod visual_performance_tests {
                         "S".to_owned(),
                         string(&value["address"]).unwrap().to_owned(),
                     ),
-                    value,
+                    (&sheet, value),
                 )
             })
             .collect();
@@ -260,25 +262,26 @@ fn address(line: u32, across: u32, rows: bool) -> Result<String> {
     Ok(format!("{}{row}", crate::excel::column_name(column)?))
 }
 
-/// An extraction cell's content, without the position its ID and address hold.
-fn content(cell: &Value) -> Value {
-    let mut content = cell.clone();
+/// An extraction cell's content, with its font and style in place and without
+/// the position its ID and address hold.
+fn content((sheet, cell): SourceCell<'_>) -> Result<Value> {
+    let mut content = crate::extraction::cell(sheet, cell)?;
     if let Some(fields) = content.as_object_mut() {
         fields.remove("id");
         fields.remove("address");
     }
-    content
+    Ok(content)
 }
 
-/// The cells of each sheet by address.
-fn sheet_cells(extraction: &Value) -> Result<BTreeMap<(String, String), &Value>> {
+/// The cells of each sheet by address, with the sheet they are on.
+fn sheet_cells(extraction: &Value) -> Result<BTreeMap<(String, String), SourceCell<'_>>> {
     let mut cells = BTreeMap::new();
     for sheet in array(&extraction["sheets"])? {
         let name = string(&sheet["name"])?;
         for cell in array(&sheet["cells"])? {
             cells.insert(
                 (name.to_owned(), string(&cell["address"])?.to_owned()),
-                cell,
+                (sheet, cell),
             );
         }
     }
@@ -287,12 +290,12 @@ fn sheet_cells(extraction: &Value) -> Result<BTreeMap<(String, String), &Value>>
 
 /// A numeric index for checking image regions without parsing and scanning all
 /// extraction cells for each region.
-type CoordinateCells<'a> = BTreeMap<String, BTreeMap<(u32, u32), &'a Value>>;
+type CoordinateCells<'a> = BTreeMap<String, BTreeMap<(u32, u32), SourceCell<'a>>>;
 
 fn coordinate_cells<'a>(
-    cells: &BTreeMap<(String, String), &'a Value>,
+    cells: &BTreeMap<(String, String), SourceCell<'a>>,
 ) -> Result<CoordinateCells<'a>> {
-    let mut indexed: BTreeMap<String, BTreeMap<(u32, u32), &Value>> = BTreeMap::new();
+    let mut indexed: CoordinateCells<'a> = BTreeMap::new();
     for ((sheet, address), cell) in cells {
         let (column, row) = crate::excel::coordinate(address)?;
         indexed
@@ -313,6 +316,7 @@ pub(super) fn carry(
     after: &Value,
     operations: &[StructuralOperation],
     carrier: Carrier,
+    axes: &super::grid::Axes,
 ) -> Result<(Value, Value)> {
     let sheets = array(&before["sheets"])?;
     let names: Vec<&str> = sheets
@@ -380,6 +384,34 @@ pub(super) fn carry(
             .transpose()?,
             None => None,
         };
+        // A table nested in another takes the new cells of its own columns
+        // when it extends; its parent leaves those columns to it.
+        let mut reserved: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+        for element in elements.iter().filter(|element| {
+            insert
+                && element.value["sheet"] == operation.sheet.as_str()
+                && element.value["kind"] == "table"
+        }) {
+            let Some(parent) = element.value["parent"]["element"].as_str() else {
+                continue;
+            };
+            let positions: Vec<(u32, u32)> = element
+                .cells
+                .iter()
+                .map(|cell| point(&cell.value))
+                .collect::<Result<_>>()?;
+            let lines: BTreeSet<u32> = positions.iter().map(|p| line(*p, rows)).collect();
+            let (Some(&first), Some(&last)) = (lines.first(), lines.last()) else {
+                continue;
+            };
+            let style_in = style_line.is_some_and(|line| lines.contains(&line));
+            if (at > first && at <= last) || (rows && at == last + 1 && style_in) {
+                reserved
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .extend(positions.iter().map(|p| across(*p, rows)));
+            }
+        }
         for element in elements
             .iter_mut()
             .filter(|element| element.value["sheet"] == operation.sheet.as_str())
@@ -457,7 +489,24 @@ pub(super) fn carry(
             } else {
                 template
             };
+            let existing = element.cells.len();
             extend(element, &prefix, rows, template, at, count, &merges)?;
+            if let Some(skip) = reserved.get(element.value["id"].as_str().unwrap_or("")) {
+                let mut index = 0;
+                let mut kept = Ok(());
+                element.cells.retain(|cell| {
+                    index += 1;
+                    index <= existing
+                        || match point(&cell.value) {
+                            Ok(position) => !skip.contains(&across(position, rows)),
+                            Err(error) => {
+                                kept = Err(error);
+                                true
+                            }
+                        }
+                });
+                kept?;
+            }
         }
     }
 
@@ -483,14 +532,14 @@ pub(super) fn carry(
                         dropped.insert(id);
                         continue;
                     };
-                    cell.value["text_state"] = json!(corrections::text_state(Some(now)));
+                    cell.value["text_state"] = json!(corrections::text_state(Some(now.1)));
                     effect(&mut effects, &element_id, "added", &id);
                 }
                 Some(origin) => {
                     let then = before_cells.get(&(sheet.clone(), origin.clone()));
                     match (then, now) {
                         (None, None) => {}
-                        (Some(then), Some(now)) if content(then) == content(now) => {}
+                        (Some(&then), Some(&now)) if content(then)? == content(now)? => {}
                         (Some(_), None) => {
                             effect(&mut effects, &element_id, "changed", &id);
                             changed += 1;
@@ -501,7 +550,7 @@ pub(super) fn carry(
                             let examined = ["read", "empty"]
                                 .contains(&cell.value["text_state"].as_str().unwrap_or(""));
                             cell.value["text_state"] = if examined {
-                                json!(corrections::text_state(Some(now)))
+                                json!(corrections::text_state(Some(now.1)))
                             } else {
                                 json!("not_examined")
                             };
@@ -619,6 +668,8 @@ pub(super) fn carry(
             leftover.len()
         ));
         let mut used: BTreeSet<String> = kept_ids.clone();
+        let mut renamed: BTreeMap<String, Value> = BTreeMap::new();
+        let mut fresh = vec![];
         for mut element in inferred {
             let sheet = string(&element["sheet"])?.to_owned();
             element["cells"].as_array_mut().unwrap().retain(|cell| {
@@ -642,12 +693,33 @@ pub(super) fn carry(
                     .unwrap()
                     .retain(|header| local.contains(header.as_str().unwrap_or("")));
             }
-            element["id"] = json!(rebase::fresh_id(&mut used, string(&element["id"])?));
+            let inferred_id = string(&element["id"])?.to_owned();
+            element["id"] = json!(rebase::fresh_id(&mut used, &inferred_id));
+            renamed.insert(inferred_id, element["id"].clone());
             affected.push(
                 json!({"kind":"element","id":element["id"],"reason":"inferred","cells":local}),
             );
+            fresh.push(element);
+        }
+        // A parser table nested in another parser table follows that table's new ID.
+        for mut element in fresh {
+            if let Some(parent) = element.get_mut("parent")
+                && let Some(id) = parent["element"].as_str().and_then(|id| renamed.get(id))
+            {
+                parent["element"] = id.clone();
+            }
             carried.push(element);
         }
+    }
+    let orphans = super::relations::prune_parents(&mut carried);
+    if !orphans.is_empty() {
+        reasons.push(format!(
+            "{} tables lost the table they were nested in; check whether they still belong to another table",
+            orphans.len()
+        ));
+    }
+    for id in orphans {
+        affected.push(json!({"kind":"element","id":id,"reason":"parent_removed"}));
     }
 
     // A reading of a drawing or an image belongs to what it shows. It follows
@@ -701,7 +773,7 @@ pub(super) fn carry(
             .copied()
             .unwrap_or(usize::MAX)
     });
-    let after_hash = hash(&encoded(after));
+    let after_hash = crate::extraction::hash(after)?;
     let mut result = json!({"schema_version":1,"document":after["document_id"],
         "source":{"path":after["source"]["path"],"sha256":after["source"]["sha256"]},
         "extraction_hash":after_hash,"regions":regions,"elements":carried,"visuals":visuals,
@@ -729,8 +801,8 @@ pub(super) fn carry(
     } else {
         "pending"
     };
-    let mut journal = corrections::record(root, after, &result)?;
-    let (replayed, _) = rebase::rebase(root, &journal, after, &after_hash, true)?;
+    let mut journal = corrections::record(root, after, &result, axes)?;
+    let (replayed, _) = rebase::rebase(root, &journal, after, &after_hash, true, axes)?;
     ensure!(
         replayed == result,
         "the carried interpretation does not replay from its corrections"
@@ -1124,8 +1196,8 @@ fn moved_range(
     sheet: &str,
     shown: &str,
     operations: &[StructuralOperation],
-    before_cells: &BTreeMap<String, BTreeMap<(u32, u32), &Value>>,
-    after_cells: &BTreeMap<String, BTreeMap<(u32, u32), &Value>>,
+    before_cells: &CoordinateCells<'_>,
+    after_cells: &CoordinateCells<'_>,
 ) -> Result<Option<String>> {
     let ((left, top), (right, bottom)) = range(shown)?;
     let corner = |column: u32, row: u32| -> Option<(u32, u32)> {
@@ -1144,23 +1216,20 @@ fn moved_range(
         return Ok(None);
     }
     // The cells of each range by their place in it.
-    let shown_cells = |cells: &BTreeMap<String, BTreeMap<(u32, u32), &Value>>,
-                       left: u32,
-                       top: u32,
-                       right: u32,
-                       bottom: u32| {
-        cells
-            .get(sheet)
-            .into_iter()
-            .flat_map(|sheet_cells| sheet_cells.range((top, 0)..=(bottom, u32::MAX)))
-            .filter(|&(&(row, column), _)| {
-                (left..=right).contains(&column) && (top..=bottom).contains(&row)
-            })
-            .map(|(&(row, column), cell)| ((column - left, row - top), content(cell)))
-            .collect::<BTreeMap<_, _>>()
-    };
-    if shown_cells(before_cells, left, top, right, bottom)
-        != shown_cells(after_cells, new_left, new_top, new_right, new_bottom)
+    let shown_cells =
+        |cells: &CoordinateCells<'_>, left: u32, top: u32, right: u32, bottom: u32| {
+            cells
+                .get(sheet)
+                .into_iter()
+                .flat_map(|sheet_cells| sheet_cells.range((top, 0)..=(bottom, u32::MAX)))
+                .filter(|&(&(row, column), _)| {
+                    (left..=right).contains(&column) && (top..=bottom).contains(&row)
+                })
+                .map(|(&(row, column), &cell)| Ok(((column - left, row - top), content(cell)?)))
+                .collect::<Result<BTreeMap<_, _>>>()
+        };
+    if shown_cells(before_cells, left, top, right, bottom)?
+        != shown_cells(after_cells, new_left, new_top, new_right, new_bottom)?
     {
         return Ok(None);
     }

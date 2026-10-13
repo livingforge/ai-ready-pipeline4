@@ -14,8 +14,8 @@
 | --- | --- | --- |
 | doctor | 実装・機能・応答仕様 | 同じ応答 |
 | skills install / documents init | state・件数またはroot | 保存先を確認 |
-| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無） | 再抽出が必要なら `--force`。既存候補があれば保持する |
-| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected` | 各候補のcontentと対応表。再抽出が必要なら `--force` |
+| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無）。`--adopt` で採用した場合は候補パスの代わりに `document` と `state: imported`、採用しなかった場合は `state: needs_record` と `not_adopted`（`edited` / `reviewed`） | 再抽出が必要なら `--force`。既存候補があれば保持する |
+| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）。採用に失敗した原本はfailedに入り、候補が残る | 各候補のcontentと対応表。再抽出が必要なら `--force` |
 | remove | 削除した文書ID | 残りの文書をstatusで確認 |
 | discard | 破棄した候補の文書ID | 原本と採用済み文書は保持する |
 | record / review | 対象ID・実行した状態 | 保存されたformation.json / review.json |
@@ -26,7 +26,7 @@
 | diff | 比較別の全変更件数・差分のページ | 次ページ、または `--out <新規パス>` |
 | export（outなし） | 全体件数・計画のページ・complete | 次ページ、必要な場合は `--full` |
 | export（outあり） | 全体件数・written・Excelとreportのパス | 保存された完全なreport |
-| apply | 原本反映結果と再抽出候補（needs_record） | 候補を確認してrecord・adopt |
+| apply | 原本反映結果と再抽出候補（needs_record）。出力が原本と同じなら原本を書き換えず候補も作らない `state: unchanged` | 候補を確認してrecord・adopt |
 | schema | プロパティ名・型・必須かどうか | `--pointer <JSON Pointer>`、必要な場合は `--full` |
 | spec check | ready/blocked・種類別 summary・coverage・問題のページ | `--offset` / `--limit`、`--full`、または `--out <診断.json>` |
 | spec capture / sources / prompt / schema / render | 出力パス | render は `.report.json` も保存。手順は [設計書生成](specifications.md) |
@@ -119,11 +119,12 @@ export は出力を読み直し、スライドとノートの順序と文字列�
 | needs_record | 候補が未記録、または記録後に変更された。実際の成形後にrecordする |
 | ready_to_adopt | 候補の現在内容の記録があり、現在の検査で採用を妨げる条件がない。adoptで現在版にする |
 | needs_review | 採用直後、またはレビュー後に変更された。確認した担当者がreviewする |
+| imported | `import --adopt` で抽出したまま採用し、その後の編集がない。レビュー対象外（一括reviewはskipする）。編集するとneeds_review |
 | reviewed | 現在内容のレビュー記録がある |
 | blocked | blockersにsource_changed / unresolved_mappings / authority_changedがある |
 | invalid | 証跡や文書構造の検証に失敗。errorを確認する |
 
-`check --require-reviewed` は未レビューでも失敗する。status/checkの通常実行では、needs_recordなどの作業途中の状態やblocked自体はコマンド失敗ではない。invalidは失敗する。採用した候補は削除する。別の候補が残っている場合、そのbaseと現在データが異なるためauthority_changedになる。現在の正本だけを見るなら文書IDで絞る。
+`check --require-reviewed` は未レビューでも失敗する（importedも未レビューとして扱う）。status/checkの通常実行では、needs_recordなどの作業途中の状態やblocked自体はコマンド失敗ではない。invalidは失敗する。採用した候補は削除する。別の候補が残っている場合、そのbaseと現在データが異なるためauthority_changedになる。現在の正本だけを見るなら文書IDで絞る。
 
 ## エラーとスクリプトでの利用
 

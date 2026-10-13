@@ -7,6 +7,7 @@ pub mod document_source;
 pub mod document_structure;
 pub mod documents;
 pub mod excel;
+pub mod extraction;
 pub mod fonts;
 pub mod native_text;
 pub mod ocr;
@@ -56,6 +57,7 @@ pub fn capabilities() -> serde_json::Value {
             "document_structure_compact_drawings": true,
             "document_structure_visual_graphs": true,
             "document_structure_table_descriptions": true,
+            "document_structure_table_parents": true,
             "document_structure_imported_image_paths": true,
             "document_structure_corrections_in_document": true,
             "document_structure_writeback": false,
@@ -71,6 +73,7 @@ pub fn capabilities() -> serde_json::Value {
             "excel_value_writeback_preservation_check": true,
             "document_ids": "source path below the sources folder",
             "documents_folder_import": true,
+            "documents_import_adopt": "import --adopt adopts new proposals as extracted, without record or review; documents stay imported until edited",
             "documents_import_unprotect": "encrypted Office originals are saved over unencrypted before import: password encryption (Agile, Standard AES) with passwords from --password-stdin; IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights",
             "documents_batch_steps": ["record", "adopt", "review"],
             "documents_remove": true,

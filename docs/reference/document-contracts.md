@@ -22,28 +22,17 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use value arrays (version 4); identities, table topology and source bindings live only in document-layout.","required":["schema_version","document_id","page_id","title","elements"],"type":"object"}</code> |
-| <code>/properties/document_id</code> | <code>{"pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use value arrays (version 4); identities, table topology and source bindings live only in document-layout.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
 | <code>/properties/elements</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items</code> | <code>{}</code> |
 | <code>/properties/elements/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["text"],"type":"object"}</code> |
-| <code>/properties/elements/items/oneOf/0/properties/text</code> | <code>{}</code> |
-| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1</code> | <code>{"additionalProperties":false,"required":["ref"],"type":"object"}</code> |
-| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1/properties/ref</code> | <code>{"additionalProperties":false,"required":["block","field"],"type":"object"}</code> |
-| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1/properties/ref/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/elements/items/oneOf/0/properties/text/anyOf/1/properties/ref/properties/field</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/0/properties/text</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/elements/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["formula"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/1/properties/formula</code> | <code>{"type":"string"}</code> |
 | <code>/properties/elements/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["table"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/2/properties/table</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items/oneOf/2/properties/table/items</code> | <code>{"type":"array"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items</code> | <code>{}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1</code> | <code>{"additionalProperties":false,"required":["ref"],"type":"object"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1/properties/ref</code> | <code>{"additionalProperties":false,"required":["block","field"],"type":"object"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1/properties/ref/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items/anyOf/1/properties/ref/properties/field</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/items/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/elements/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["blank"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/3/properties/blank</code> | <code>{"type":"null"}</code> |
 | <code>/properties/elements/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["image"],"type":"object"}</code> |
@@ -54,7 +43,6 @@
 | <code>/properties/elements/items/oneOf/6/properties/drawing</code> | <code>{"type":"null"}</code> |
 | <code>/properties/page_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
-| <code>/properties/source_path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 
 ## document
@@ -69,13 +57,124 @@
 | <code>/properties/source/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/source/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 
+## document-elements
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"documents elements-read が書き出す本文要素の読み出し。ページごとに、本文の elements と同じ順の要素メタデータ（ID・表の列と行・見出し関係・結合・数式区分・現在のフォント）と、画像・グラフ・図形の参照先 visuals を返す。layout.yml のフォント番号は解決済みのフォントで返す。編集の入力には使わない。","required":["schema_version","document_id","proposal","pages"],"type":"object"}</code> |
+| <code>/properties/document_id</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages</code> | <code>{"description":"ページID（content の page_id）ごとの要素","type":"object"}</code> |
+| <code>/properties/pages/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","element_metadata","visuals"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata</code> | <code>{"description":"Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions.","type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items</code> | <code>{}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/type</code> | <code>{"const":"text"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/visual</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/type</code> | <code>{"const":"formula"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/2/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/2/properties/type</code> | <code>{"const":"blank"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["id","type","columns","rows"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns</code> | <code>{"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items</code> | <code>{"additionalProperties":false,"required":["id"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"additionalProperties":false,"required":["id","cells"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells</code> | <code>{"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","column","role","headers"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column_span</code> | <code>{"minimum":2,"type":"integer"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/formula</code> | <code>{"description":"表セルの値が数式であることを示す。値は本文にある","type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers</code> | <code>{"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/role</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/row_span</code> | <code>{"minimum":2,"type":"integer"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["id","type","ref"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/4/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/4/properties/ref</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/4/properties/type</code> | <code>{"enum":["image","chart","drawing"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals</code> | <code>{"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties</code> | <code>{"additionalProperties":false,"required":["kind","source","drawing_id","anchor","order_basis"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/edit_as</code> | <code>{"enum":["absolute","oneCell","twoCell"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/col</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/row</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/height</code> | <code>{"description":"高さ（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/kind</code> | <code>{"enum":["twoCellAnchor","oneCellAnchor","absoluteAnchor","slide"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/left</code> | <code>{"description":"スライド左端からの位置（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/pos</code> | <code>{"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/pos/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/rotation</code> | <code>{"description":"回転（度）","type":["number","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/col</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/top</code> | <code>{"description":"スライド上端からの位置（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/width</code> | <code>{"description":"幅（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/asset</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/chart_part</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/drawing_id</code> | <code>{"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/kind</code> | <code>{"enum":["image","chart","drawing"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/order_basis</code> | <code>{"enum":["cell_anchor","unpositioned"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/parent</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/source</code> | <code>{"pattern":"^/sheets/[0-9]+/drawings/[0-9]+$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/visuals/additionalProperties/properties/text_key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/proposal</code> | <code>{"description":"採用前の候補を読んだ場合はtrue","type":"boolean"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+
 ## document-layout
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Document positions, identities and value-free element_metadata indexed in the same order as body elements. Only ARP structural operations update both files. Same-shape manual reordering is a value edit, not an identity move.","required":["schema_version","document_id","source_sha256","sheets","history"],"type":"object"}</code> |
-| <code>/properties/document_id</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/history</code> | <code>{"type":"array"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Document positions, identities and value-free element_metadata indexed in the same order as body elements. Only ARP structural operations update both files. Same-shape manual reordering is a value edit, not an identity move.","required":["schema_version","structure_sha256","sheets"],"type":"object"}</code> |
+| <code>/properties/history</code> | <code>{"description":"適用済みの行・列操作。空なら保存しない","type":"array"}</code> |
 | <code>/properties/history/items</code> | <code>{}</code> |
 | <code>/properties/history/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count"],"type":"object"}</code> |
 | <code>/properties/history/items/oneOf/0/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
@@ -93,153 +192,63 @@
 | <code>/properties/history/items/oneOf/1/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"12"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","rows","columns","formulas","row_order","column_order","bindings","groups","metadata_sha256","blanks","notes","merges","block_titles","visuals","element_metadata"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/bindings</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties</code> | <code>{"additionalProperties":false,"required":["block","row","column"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties/properties/column</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/bindings/additionalProperties/properties/row</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/blanks</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/blanks/additionalProperties</code> | <code>{"additionalProperties":false,"required":["first_row","last_row"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/blanks/additionalProperties/properties/first_row</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/blanks/additionalProperties/properties/last_row</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/block_titles</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","rows","columns","metadata_sha256","element_metadata"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/block_titles</code> | <code>{"description":"本文の行を持つブロックの見出し。空なら保存しない","type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/block_titles/additionalProperties</code> | <code>{"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/column_order</code> | <code>{"type":"array","uniqueItems":true}</code> |
-| <code>/properties/sheets/additionalProperties/properties/column_order/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/columns</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/columns/additionalProperties</code> | <code>{"additionalProperties":false,"required":["key","position"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/columns/additionalProperties/properties/key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/columns/additionalProperties/properties/position</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/columns</code> | <code>{"description":"列の識別IDを rows と同じ区間で並べたもの（A..T、C..T +1、add-1=C）","type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/columns/items</code> | <code>{"pattern":"^([a-zA-Z0-9][a-zA-Z0-9_-]*=[a-zA-Z0-9]+&#124;[a-zA-Z0-9]+(\\.\\.[a-zA-Z0-9]+)?( [+-][0-9]+)?)$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata</code> | <code>{"description":"Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions.","type":"array"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items</code> | <code>{}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","type","text"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font</code> | <code>{"description":"このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す","minimum":0,"type":["integer","null"]}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/text</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/type</code> | <code>{"const":"text"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/0/properties/visual</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","type","formula"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/formula</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font</code> | <code>{"description":"このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す","minimum":0,"type":["integer","null"]}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/type</code> | <code>{"const":"formula"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2</code> | <code>{"additionalProperties":false,"description":"前後の要素の間の空き。IDは前後の要素から決まるため保存しない","required":["type"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2/properties/type</code> | <code>{"const":"blank"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["id","type","columns","rows"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items</code> | <code>{"additionalProperties":false,"required":["id"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"additionalProperties":false,"required":["id","cells"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","column","role","headers"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column_span</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/formula</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/role</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/row_span</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/value</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/oneOf/0</code> | <code>{"not":{"required":["formula"]},"required":["value"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/oneOf/1</code> | <code>{"not":{"required":["value"]},"required":["formula"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3</code> | <code>{"additionalProperties":false,"description":"表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない","required":["type","rows"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells</code> | <code>{"description":"数式の印かフォントを持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない","type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties/properties/font</code> | <code>{"description":"このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す","minimum":0,"type":["integer","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties/properties/formula</code> | <code>{"description":"表セルの値が数式であることを示す。値は本文にある","type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"description":"記録行ごとに、行の識別IDとその行のセルの列の識別IDを空白で区切って並べたもの（r7 B..J、r8 B C ins-1）。セルIDは cell_&lt;行&gt;_&lt;列&gt;。A..Z は列 A から Z までの識別IDを順に並べたもの","type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*( [a-zA-Z0-9][a-zA-Z0-9_-]*(\\.\\.[A-Z]+)?)+$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["id","type","ref"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/ref</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/type</code> | <code>{"enum":["image","chart","drawing"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/formulas</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts</code> | <code>{"description":"このシートの要素メタデータが番号で参照するフォントのうち、抽出結果の同じセルのフォントと異なるもの。同じフォントは1つにまとめる。空なら保存しない","type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/formulas</code> | <code>{"description":"数式セルの識別IDと、その行・列の識別ID。空なら保存しない","type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties</code> | <code>{"additionalProperties":false,"required":["row","column"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/column</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/row</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/groups</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties</code> | <code>{"additionalProperties":false,"required":["table","role","headers"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/headers</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/role</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/groups/additionalProperties/properties/table</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/merges</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/merges/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/metadata_sha256</code> | <code>{"description":"Digest of the value-free element_metadata; array slots are bound by this metadata.","pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/metadata_sha256</code> | <code>{"description":"Digest of the stored value-free element_metadata; array slots are bound by this metadata.","pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/name</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/notes</code> | <code>{"type":["object","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/row_order</code> | <code>{"type":"array","uniqueItems":true}</code> |
-| <code>/properties/sheets/additionalProperties/properties/row_order/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/rows</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/rows/additionalProperties</code> | <code>{"additionalProperties":false,"required":["key","position"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/rows/additionalProperties/properties/key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/rows/additionalProperties/properties/position</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties</code> | <code>{"additionalProperties":false,"required":["kind","source","drawing_id","anchor","order_basis"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/edit_as</code> | <code>{"enum":["absolute","oneCell","twoCell"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/col</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/row</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/from/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/height</code> | <code>{"description":"高さ（ポイント）","type":["number","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/kind</code> | <code>{"enum":["twoCellAnchor","oneCellAnchor","absoluteAnchor","slide"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/left</code> | <code>{"description":"スライド左端からの位置（ポイント）","type":["number","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/pos</code> | <code>{"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/pos/additionalProperties</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/rotation</code> | <code>{"description":"回転（度）","type":["number","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/col</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/top</code> | <code>{"description":"スライド上端からの位置（ポイント）","type":["number","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/anchor/properties/width</code> | <code>{"description":"幅（ポイント）","type":["number","null"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/asset</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/chart_part</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/drawing_id</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/rows</code> | <code>{"description":"行の識別IDを抽出時の位置の順に並べた区間。r1..r12 は識別ID r1〜r12 が同じ番号の行、r13..r38 +1 は1行ずれた r14〜r39 の行、ins-1=r13 は番号を持たない識別IDとその行。未適用の挿入の識別IDは操作から決まるため保存しない","type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/rows/items</code> | <code>{"pattern":"^([a-zA-Z0-9][a-zA-Z0-9_-]*=[a-zA-Z0-9]+&#124;[a-zA-Z0-9]+(\\.\\.[a-zA-Z0-9]+)?( [+-][0-9]+)?)$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals</code> | <code>{"description":"本文が参照する図形・画像の種類と、図形の文字の本文キー。配置・部品・画像は読み込み時に抽出結果と未適用の操作から求めるため保存しない。空なら保存しない","type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/kind</code> | <code>{"enum":["image","chart","drawing"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/order_basis</code> | <code>{"enum":["cell_anchor","unpositioned"]}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/parent</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/source</code> | <code>{"pattern":"^/sheets/[0-9]+/drawings/[0-9]+$","type":"string"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/text_key</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/source_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/visuals/additionalProperties/properties/text_key</code> | <code>{"type":"string"}</code> |
+| <code>/properties/structure_sha256</code> | <code>{"description":"要素メタデータの表の区分（どのセルがどの表に入るか）を決めた構造解釈の要約。documents status は現在のARPで再生した構造解釈と比べ、異なれば structure_outdated を返す","pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 
 ## edit-decisions
 
@@ -1091,7 +1100,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","document_id","source","parser","sheets","findings","assets"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","parser","sheets"],"type":"object"}</code> |
 | <code>/properties/assets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/assets/items</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
 | <code>/properties/assets/items/properties/ocr</code> | <code>{"additionalProperties":false,"required":["status","text","reason"],"type":"object"}</code> |
@@ -1106,6 +1115,262 @@
 | <code>/properties/chart_parts/items/properties/formulas/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/chart_parts/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/chart_parts/items/properties/xml</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/date1904</code> | <code>{"const":true,"description":"An Excel workbook counting date serials from 1904-01-01 (workbookPr date1904). Absent for the 1900 date system and other originals."}</code> |
+| <code>/properties/field_codes</code> | <code>{"type":"array"}</code> |
+| <code>/properties/field_codes/items</code> | <code>{"additionalProperties":false,"required":["part","instruction"],"type":"object"}</code> |
+| <code>/properties/field_codes/items/properties/instruction</code> | <code>{"type":"string"}</code> |
+| <code>/properties/field_codes/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/findings</code> | <code>{"type":"array"}</code> |
+| <code>/properties/findings/items</code> | <code>{"additionalProperties":false,"required":["level","code","message"],"type":"object"}</code> |
+| <code>/properties/findings/items/properties/code</code> | <code>{"type":"string"}</code> |
+| <code>/properties/findings/items/properties/level</code> | <code>{"type":"string"}</code> |
+| <code>/properties/findings/items/properties/message</code> | <code>{"type":"string"}</code> |
+| <code>/properties/opaque_parts</code> | <code>{"type":"array"}</code> |
+| <code>/properties/opaque_parts/items</code> | <code>{"additionalProperties":false,"required":["part","kind","sha256"],"type":"object"}</code> |
+| <code>/properties/opaque_parts/items/properties/kind</code> | <code>{"enum":["activex","printer_settings"]}</code> |
+| <code>/properties/opaque_parts/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/opaque_parts/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/parser</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/print_settings</code> | <code>{"description":"印刷設定のOpen XML要素。同じ要素は1回だけ置き、それを持つ部品を parts に最初に現れた順で並べる。読み込み時に部品ごとの一覧へ戻す","type":"array"}</code> |
+| <code>/properties/print_settings/items</code> | <code>{"additionalProperties":false,"required":["parts","component","xml"],"type":"object"}</code> |
+| <code>/properties/print_settings/items/properties/component</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/print_settings/items/properties/parts</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/print_settings/items/properties/parts/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/print_settings/items/properties/xml</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"2"}</code> |
+| <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells","fonts","styles"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","type","value"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"description":"このシートの fonts での番号","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/formula</code> | <code>{"description":"数式のないセルでは保存しない","type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"Excelのセルでシート番号とアドレスから決まるID（c-&lt;シート番号&gt;-&lt;アドレス&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"description":"General は保存しない","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/column</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/columns</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/columns/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/headings</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/headings/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/kind</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_end</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_start</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"description":"このシートの styles での番号","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/1</code> | <code>{"if":{"properties":{"type":{"const":"error"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/2</code> | <code>{"if":{"properties":{"type":{"const":"number"}}},"then":{"properties":{"value":{"type":"number"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}}},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}}},"then":{"properties":{"value":{"type":"null"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/5</code> | <code>{"else":{"properties":{"formula":{"type":"null"}}},"if":{"properties":{"type":{"const":"formula"}}},"then":{"properties":{"formula":{"type":"string"}},"required":["formula"]}}</code> |
+| <code>/properties/sheets/items/properties/comments</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/comments/items</code> | <code>{"additionalProperties":false,"required":["address","kind","author","text"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/author</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/kind</code> | <code>{"enum":["note","thread","reply"]}</code> |
+| <code>/properties/sheets/items/properties/comments/items/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/computed</code> | <code>{"description":"Ranges Excel fills from an array formula or spill, a What-If data table or a pivot table; their member cells are not written back.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/computed/items</code> | <code>{"additionalProperties":false,"required":["range","kind"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/computed/items/properties/kind</code> | <code>{"enum":["array","data_table","pivot"]}</code> |
+| <code>/properties/sheets/items/properties/computed/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","kind","anchor"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/edit_as</code> | <code>{"enum":["absolute","oneCell","twoCell"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/col</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/row</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/height</code> | <code>{"description":"高さ（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/kind</code> | <code>{"enum":["twoCellAnchor","oneCellAnchor","absoluteAnchor","slide"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/left</code> | <code>{"description":"スライド左端からの位置（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/pos</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/pos/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/rotation</code> | <code>{"description":"回転（度）","type":["number","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/col</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/top</code> | <code>{"description":"スライド上端からの位置（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/width</code> | <code>{"description":"幅（ポイント）","type":["number","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/chart_part</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/connections</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/connections/items</code> | <code>{"additionalProperties":false,"required":["end","target","site","basis"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/basis</code> | <code>{"const":"explicit"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/end</code> | <code>{"enum":["stCxn","endCxn"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/site</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/connections/items/properties/target</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/0</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1</code> | <code>{"additionalProperties":false,"required":["kind","linked_cell","list_range","checked"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/checked</code> | <code>{"description":"Saved state of a check box or option button; null for other controls and for the mixed state.","type":["boolean","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/kind</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/linked_cell</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/list_range</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/description</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/fill</code> | <code>{"description":"図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font</code> | <code>{"additionalProperties":false,"description":"図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/geometry</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/group</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/id</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/0</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1</code> | <code>{"additionalProperties":false,"required":["part","asset","sha256"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/asset</code> | <code>{"pattern":"^image-[0-9]{3,}\\.[A-Za-z0-9]+$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/part</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/1/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/kind</code> | <code>{"enum":["shape","picture","connector","group","graphic"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/line</code> | <code>{"additionalProperties":false,"description":"図形の線の色（RRGGBB・none・null）と太さ（ポイント）","required":["color","width"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/line/properties/color</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/line/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/line/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/line/properties/width</code> | <code>{"type":["number","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/linked_image</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/macro</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/part</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/type</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/0</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/0</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1</code> | <code>{"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts</code> | <code>{"description":"セルが番号で参照する原本のフォント。同じフォントは1つにまとめる。数式の計算結果はセルの value にあり、別には保存しない","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/hidden_columns</code> | <code>{"description":"Excel columns hidden on the sheet, by letter. Their cells are still extracted.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/merges</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/merges/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/state</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/styles</code> | <code>{"description":"セルが番号で参照する書式。同じ書式は1つにまとめる","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/styles/items</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/fill</code> | <code>{"description":"Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/tables</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/parent</code> | <code>{"description":"Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/slide_layouts</code> | <code>{"description":"PowerPointのスライドレイアウト。add_slideで新しいスライドを作る元になる。cellsはそのレイアウトから作るスライドの空のプレースホルダーの文字とフォント","type":"array"}</code> |
+| <code>/properties/slide_layouts/items</code> | <code>{"additionalProperties":false,"required":["name","part","placeholders","cells"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells</code> | <code>{"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","address","type","value","formula","cached","number_format"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/cached</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/formula</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/number_format</code> | <code>{"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/column</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/columns</code> | <code>{"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/columns/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/headings</code> | <code>{"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/headings/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/kind</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/line_end</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/line_start</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/border</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/allOf/1</code> | <code>{"if":{"properties":{"type":{"const":"error"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/allOf/2</code> | <code>{"if":{"properties":{"type":{"const":"number"}}},"then":{"properties":{"value":{"type":"number"}}}}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}}},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}}},"then":{"properties":{"value":{"type":"null"}}}}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/allOf/5</code> | <code>{"else":{"properties":{"cached":{"type":"null"},"formula":{"type":"null"}}},"if":{"properties":{"type":{"const":"formula"}}},"then":{"properties":{"formula":{"type":"string"}}}}</code> |
+| <code>/properties/slide_layouts/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/placeholders</code> | <code>{"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/placeholders/items</code> | <code>{"additionalProperties":false,"required":["type","index","name"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/placeholders/items/properties/index</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/placeholders/items/properties/name</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/placeholders/items/properties/type</code> | <code>{"minLength":1,"type":"string"}</code> |
+
+## extraction-view
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"documents extraction-read が書き出す抽出結果の読み出し。extraction.json はシートごとのフォント・書式の表をセルが番号で参照し、数式の計算結果を保存しない。この読み出しは各セルにフォント・書式・計算結果（cached。数式なら value と同じ）を戻した形で、JSON Pointer の位置は extraction.json と同じ。編集の入力には使わない。","required":["schema_version","document_id","source","parser","sheets","findings","assets"],"type":"object"}</code> |
+| <code>/properties/assets</code> | <code>{"type":"array"}</code> |
+| <code>/properties/assets/items</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr</code> | <code>{"additionalProperties":false,"required":["status","text","reason"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/assets/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/chart_parts</code> | <code>{"type":"array"}</code> |
+| <code>/properties/chart_parts/items</code> | <code>{"additionalProperties":false,"required":["part","formulas","xml"],"type":"object"}</code> |
+| <code>/properties/chart_parts/items/properties/formulas</code> | <code>{"type":"array"}</code> |
+| <code>/properties/chart_parts/items/properties/formulas/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/chart_parts/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/chart_parts/items/properties/xml</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/date1904</code> | <code>{"const":true,"description":"An Excel workbook counting date serials from 1904-01-01 (workbookPr date1904). Absent for the 1900 date system and other originals."}</code> |
 | <code>/properties/document_id</code> | <code>{"pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
 | <code>/properties/field_codes</code> | <code>{"type":"array"}</code> |
 | <code>/properties/field_codes/items</code> | <code>{"additionalProperties":false,"required":["part","instruction"],"type":"object"}</code> |
@@ -1127,9 +1392,11 @@
 | <code>/properties/print_settings/items/properties/component</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/print_settings/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/print_settings/items/properties/xml</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"2"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","address","type","value","formula","cached","number_format"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
@@ -1162,8 +1429,9 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/border</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"description":"Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
@@ -1279,6 +1547,7 @@
 | <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/parent</code> | <code>{"description":"Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts</code> | <code>{"description":"PowerPointのスライドレイアウト。add_slideで新しいスライドを作る元になる。cellsはそのレイアウトから作るスライドの空のプレースホルダーの文字とフォント","type":"array"}</code> |
@@ -1341,21 +1610,26 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","document_id","extraction","content","actor","model","prompt_sha256"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","content"],"type":"object"}</code> |
 | <code>/properties/actor</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/by</code> | <code>{"const":"import","description":"The content is what import extracted from the original, adopted without forming: no actor, model or prompt."}</code> |
 | <code>/properties/content</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
-| <code>/properties/document_id</code> | <code>{"pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
-| <code>/properties/extraction</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/model</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/prompt_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/oneOf/0</code> | <code>{"required":["actor","model","prompt_sha256"]}</code> |
+| <code>/oneOf/0/properties/by</code> | <code>false</code> |
+| <code>/oneOf/1</code> | <code>{"required":["by"]}</code> |
+| <code>/oneOf/1/properties/actor</code> | <code>false</code> |
+| <code>/oneOf/1/properties/model</code> | <code>false</code> |
+| <code>/oneOf/1/properties/prompt_sha256</code> | <code>false</code> |
 
 ## mappings
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","entries","omissions","operations","interpretation"],"type":"object"}</code> |
-| <code>/properties/entries</code> | <code>{"description":"Only entries that differ from those derived from the extraction. Document management derives one entry per cell, formula and page block, and an entry here with the same page, block and field replaces it.","type":"array"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version"],"type":"object"}</code> |
+| <code>/properties/entries</code> | <code>{"description":"Only entries that differ from those derived from the extraction. Document management derives one entry per cell, formula and page block, and an entry here with the same page, block and field replaces it. Left out when empty.","type":"array"}</code> |
 | <code>/properties/entries/items</code> | <code>{"additionalProperties":false,"required":["page","block","field","reason","writeback","target"],"type":"object"}</code> |
 | <code>/properties/entries/items/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/entries/items/properties/field</code> | <code>{"type":["string","null"]}</code> |
@@ -1384,14 +1658,14 @@
 | <code>/properties/entries/items/properties/target/anyOf/3/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/entries/items/properties/target/anyOf/4</code> | <code>{"type":"null"}</code> |
 | <code>/properties/entries/items/properties/writeback</code> | <code>{"enum":["cell","formula","operation","excluded","pending","shape"]}</code> |
-| <code>/properties/interpretation</code> | <code>{"description":"Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management.","type":"object"}</code> |
-| <code>/properties/omissions</code> | <code>{"type":"array"}</code> |
+| <code>/properties/interpretation</code> | <code>{"description":"Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management. Left out when it records nothing: inspection makes the empty journal of the current extraction.","type":"object"}</code> |
+| <code>/properties/omissions</code> | <code>{"description":"Left out when empty.","type":"array"}</code> |
 | <code>/properties/omissions/items</code> | <code>{"additionalProperties":false,"required":["target","reason"],"type":"object"}</code> |
 | <code>/properties/omissions/items/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/omissions/items/properties/target</code> | <code>{"additionalProperties":false,"required":["sheet","cell"],"type":"object"}</code> |
 | <code>/properties/omissions/items/properties/target/properties/cell</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/omissions/items/properties/target/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations</code> | <code>{"type":"array"}</code> |
+| <code>/properties/operations</code> | <code>{"description":"Left out when empty.","type":"array"}</code> |
 | <code>/properties/operations/items</code> | <code>{}</code> |
 | <code>/properties/operations/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","asset","anchor"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/0/properties/anchor</code> | <code>{"additionalProperties":false,"required":["from","to"],"type":"object"}</code> |
@@ -1552,18 +1826,6 @@
 | <code>/properties/operations/items/oneOf/13/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
-| <code>/properties/tables</code> | <code>{"type":"array"}</code> |
-| <code>/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["page","block","columns","references"],"type":"object"}</code> |
-| <code>/properties/tables/items/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/tables/items/properties/columns</code> | <code>{"minItems":1,"type":"array","uniqueItems":true}</code> |
-| <code>/properties/tables/items/properties/columns/items</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/tables/items/properties/page</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/tables/items/properties/references</code> | <code>{"type":"array"}</code> |
-| <code>/properties/tables/items/properties/references/items</code> | <code>{"additionalProperties":false,"required":["row","column","block","field"],"type":"object"}</code> |
-| <code>/properties/tables/items/properties/references/items/properties/block</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/tables/items/properties/references/items/properties/column</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/tables/items/properties/references/items/properties/field</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/tables/items/properties/references/items/properties/row</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 
 ## project-config
 
@@ -1609,31 +1871,56 @@
 | <code>/properties/revision</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/scope</code> | <code>{"const":"adopted_extraction"}</code> |
 | <code>/properties/summary</code> | <code>{"type":"object"}</code> |
+| <code>/properties/tables</code> | <code>{"description":"Tables listed once for all queries, as search-passage table with the document of their rows: document_id, source_path, state and structure_reviewed (and extraction_path with --full). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.","type":"object"}</code> |
+| <code>/properties/tables/additionalProperties</code> | <code>{"type":"object"}</code> |
 
 ## search-passage
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Fragment stored in the search index. CLI search responses omit extraction_sha256, including with --full. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.","required":["document_id","source_path","extraction_sha256","kind","title","text","sources","context","structure_reviewed"],"type":"object"}</code> |
-| <code>/properties/context</code> | <code>{"type":"array"}</code> |
-| <code>/properties/context/items</code> | <code>{"$ref":"#/$defs/source"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"dependentRequired":{"row":["table"],"row_context":["table"],"table":["row","values"],"unread":["table"],"values":["table"]},"description":"Fragment stored in the search index. CLI search responses omit extraction_sha256, including with --full. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.","required":["document_id","source_path","extraction_sha256","kind","title","text","sources","structure_reviewed"],"type":"object"}</code> |
 | <code>/properties/document_id</code> | <code>{"type":"string"}</code> |
 | <code>/properties/extraction_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/kind</code> | <code>{"enum":["row","block","comment","drawing","ocr"]}</code> |
+| <code>/properties/row</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/row_context</code> | <code>{"description":"Row headers of other rows that head this row, such as a merged item name or a section row, outermost first.","minItems":1,"type":"array"}</code> |
+| <code>/properties/row_context/items</code> | <code>{"$ref":"#/$defs/field"}</code> |
 | <code>/properties/source_path</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sources</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sources/items</code> | <code>{"$ref":"#/$defs/source"}</code> |
 | <code>/properties/structure_reviewed</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/table</code> | <code>{"additionalProperties":false,"description":"The interpreted table a row belongs to. Headings and within come from the tables it is nested in, outermost first.","required":["element","sheet","columns"],"type":"object"}</code> |
+| <code>/properties/table/properties/columns</code> | <code>{"description":"One entry per value, in column order: the cell's column and the column headers above it. Headers in the row itself are values, not headers.","type":"array"}</code> |
+| <code>/properties/table/properties/columns/items</code> | <code>{"additionalProperties":false,"required":["column","headers"],"type":"object"}</code> |
+| <code>/properties/table/properties/columns/items/properties/column</code> | <code>{"type":"string"}</code> |
+| <code>/properties/table/properties/columns/items/properties/headers</code> | <code>{"$ref":"#/$defs/headers"}</code> |
+| <code>/properties/table/properties/element</code> | <code>{"type":"string"}</code> |
+| <code>/properties/table/properties/headings</code> | <code>{"description":"Column headers of enclosing tables above this table, each after the headers above it.","minItems":1,"type":"array"}</code> |
+| <code>/properties/table/properties/headings/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/table/properties/sheet</code> | <code>{"type":"string"}</code> |
+| <code>/properties/table/properties/within</code> | <code>{"description":"Cells of the enclosing tables' records this table belongs to, by row and column.","minItems":1,"type":"array"}</code> |
+| <code>/properties/table/properties/within/items</code> | <code>{"$ref":"#/$defs/field"}</code> |
 | <code>/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
+| <code>/properties/unread</code> | <code>{"description":"Cells of the row by address without a known text: a reader could not read it or has not examined it, or a formula was saved without its result.","minProperties":1,"type":"object"}</code> |
+| <code>/properties/unread/additionalProperties</code> | <code>{"enum":["unreadable","not_examined","uncalculated"]}</code> |
+| <code>/properties/values</code> | <code>{"description":"Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. Null when the text is not known; unread names why. A row too long for one passage lists the pieces of this passage, without its empty cells.","type":"array"}</code> |
+| <code>/properties/values/items</code> | <code>{"type":["string","null"]}</code> |
+| <code>/$defs/field</code> | <code>{"additionalProperties":false,"required":["headers","text"],"type":"object"}</code> |
+| <code>/$defs/field/properties/headers</code> | <code>{"$ref":"#/$defs/headers"}</code> |
+| <code>/$defs/field/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/$defs/headers</code> | <code>{"description":"Header texts, those higher in the header chain first, then by row and column.","type":"array"}</code> |
+| <code>/$defs/headers/items</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/source</code> | <code>{"additionalProperties":false,"required":["pointer","sheet","address","position","text","start","end"],"type":"object"}</code> |
 | <code>/$defs/source/properties/address</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/source/properties/end</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/$defs/source/properties/formula</code> | <code>{"description":"The formula of a workbook cell. Its result is the stored value; a formula saved without one shows no text.","type":"string"}</code> |
 | <code>/$defs/source/properties/pointer</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/source/properties/position</code> | <code>{"type":["object","null"]}</code> |
 | <code>/$defs/source/properties/sheet</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/source/properties/start</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/$defs/source/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/$defs/source/properties/text</code> | <code>{"description":"The text the original shows. A workbook cell shows its value, for a formula its result, under its number format.","type":"string"}</code> |
+| <code>/$defs/source/properties/value</code> | <code>{"description":"The stored value of a workbook cell, when it reads otherwise than text.","type":["string","number","boolean"]}</code> |
 
 ## search-profile
 

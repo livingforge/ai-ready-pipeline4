@@ -32,15 +32,17 @@ impl Store {
         let mut targets = BTreeSet::new();
         for edit in array(&request["edits"])? {
             let sheet = string(&edit["sheet"])?;
-            let (target, entry) = match edit["shape"].as_str() {
+            let (target, found) = match edit["shape"].as_str() {
                 Some(shape) => (
                     shape,
-                    array(&inspected.mappings["entries"])?
+                    inspected
+                        .entries
                         .iter()
                         .find(|entry| {
-                            entry["target"]["sheet"] == sheet
-                                && entry["target"]["shape"] == shape
-                                && entry["writeback"] == "shape"
+                            entry.writeback().is_ok_and(|w| w == "shape")
+                                && matches!(entry.target(),
+                                    Ok(Some(MappingTarget::Shape { sheet: s, shape: h }))
+                                        if s == sheet && h == shape)
                         })
                         .with_context(|| {
                             format!("{sheet} has no editable text of shape {shape}")
@@ -50,20 +52,23 @@ impl Store {
                     let cell = string(&edit["cell"])?;
                     (
                         cell,
-                        array(&inspected.mappings["entries"])?
+                        inspected
+                            .entries
                             .iter()
                             .find(|entry| {
-                                entry["target"]["sheet"] == sheet
-                                    && entry["target"]["cell"] == cell
-                                    && matches!(
-                                        entry["writeback"].as_str(),
-                                        Some("cell" | "formula")
-                                    )
+                                entry
+                                    .writeback()
+                                    .is_ok_and(|w| matches!(w, "cell" | "formula"))
+                                    && matches!(entry.target(),
+                                        Ok(Some(MappingTarget::Cell { sheet: s, cell: c }))
+                                            if s == sheet && c == cell)
                             })
                             .context("target is not an editable value or formula cell")?,
                     )
                 }
             };
+            let entry = found.json();
+            let entry = &*entry;
             ensure!(
                 targets.insert((sheet, target)),
                 "duplicate value edit target"
@@ -146,7 +151,7 @@ impl Store {
             .collect::<Result<_>>()?;
         planned.insert(
             "layout.yml".into(),
-            Some(serialized(Path::new("layout.yml"), &layout)?),
+            Some(identity::stored(&mut layout, &inspected.extraction)?),
         );
         let checked = self.inspect_with(&dir, false, &planned)?;
         // Preview all pending cell edits, not just this request: earlier renames
@@ -165,7 +170,9 @@ impl Store {
         let shapes = shape_drawings(&checked.extraction)?;
         let mut changes = vec![];
         let mut formulas = vec![];
-        for entry in array(&checked.mappings["entries"])? {
+        for entry in &checked.entries {
+            let entry = entry.json();
+            let entry = &*entry;
             if !matches!(
                 entry["writeback"].as_str(),
                 Some("cell" | "formula" | "shape")
@@ -204,7 +211,7 @@ impl Store {
                 _ => {}
             }
         }
-        let fonts = font_changes(&checked.extraction, &checked.mappings, &checked.fonts)?;
+        let fonts = font_changes(&checked.extraction, &checked.entries, &checked.fonts)?;
         // Exercise the format's writer protections before any managed files change.
         let stage = Stage::new_in(&under(&self.arp, "cache/export")?, &self.arp)?;
         let preview = stage
@@ -249,7 +256,7 @@ pub(super) fn shape_drawings(extraction: &Value) -> Result<BTreeMap<(&str, &str)
 /// original, with the properties that changed.
 pub(super) fn font_changes(
     extraction: &Value,
-    mappings: &Value,
+    entries: &[Entry],
     fonts: &HashMap<(String, String, String), Value>,
 ) -> Result<Vec<Value>> {
     if fonts.is_empty() {
@@ -258,7 +265,10 @@ pub(super) fn font_changes(
     let mut cells = BTreeMap::new();
     for sheet in array(&extraction["sheets"])? {
         for cell in array(&sheet["cells"])? {
-            cells.insert((string(&sheet["name"])?, string(&cell["address"])?), cell);
+            cells.insert(
+                (string(&sheet["name"])?, string(&cell["address"])?),
+                (sheet, cell),
+            );
         }
     }
     let shapes = shape_drawings(extraction)?;
@@ -267,7 +277,9 @@ pub(super) fn font_changes(
         .filter_map(|sheet| sheet["name"].as_str())
         .collect();
     let mut changes = vec![];
-    for entry in array(&mappings["entries"])? {
+    for entry in entries {
+        let entry = entry.json();
+        let entry = &*entry;
         if !matches!(
             entry["writeback"].as_str(),
             Some("cell" | "formula" | "shape")
@@ -286,10 +298,10 @@ pub(super) fn font_changes(
             continue;
         }
         let (target, original) = match mapping_target(&entry["target"])? {
-            Some(MappingTarget::Cell { sheet, cell }) => (
-                json!({"sheet":sheet,"cell":cell}),
-                &cells.get(&(sheet, cell)).context("missing cell")?["font"],
-            ),
+            Some(MappingTarget::Cell { sheet, cell }) => (json!({"sheet":sheet,"cell":cell}), {
+                let (sheet, cell) = cells.get(&(sheet, cell)).context("missing cell")?;
+                crate::extraction::font(sheet, cell)?
+            }),
             Some(MappingTarget::Shape { sheet, shape }) => (
                 json!({"sheet":sheet,"shape":shape}),
                 &shapes

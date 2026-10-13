@@ -516,7 +516,7 @@ impl Store {
             ));
         }
         let mappings_path = dir.join("mappings.yml");
-        let mut mappings = read(&mappings_path, Some("mappings"))?;
+        let mut mappings = read_mappings(&mappings_path)?;
         let recorded = array(&mappings["operations"])?.clone();
         let repeated = match &edit.id {
             Some(op) => {
@@ -691,7 +691,7 @@ impl Store {
         }
         planned.insert(
             "mappings.yml".to_owned(),
-            Some(serialized(&mappings_path, &mappings)?),
+            Some(stored_mappings(&mappings_path, &mappings)?),
         );
         changed.insert(page_name.clone());
         for name in &changed {
@@ -705,7 +705,7 @@ impl Store {
         }
         planned.insert(
             "layout.yml".into(),
-            Some(serialized(Path::new("layout.yml"), &layout)?),
+            Some(identity::stored(&mut layout, extraction)?),
         );
         book.ensure_row_edits_supported(&operations, array(&mappings["operations"])?)
             .map_err(|error| rejection("structural_edit_unsupported", format!("{error:#}")))?;
@@ -1072,7 +1072,9 @@ fn deleted_content(
         })
     };
     let mut deleted = vec![];
-    for entry in array(&inspected.mappings["entries"])? {
+    for entry in &inspected.entries {
+        let entry = entry.json();
+        let entry = &*entry;
         let Some(position) = entry["position"].as_object() else {
             continue;
         };

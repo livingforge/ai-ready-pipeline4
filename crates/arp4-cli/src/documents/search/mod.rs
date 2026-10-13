@@ -52,15 +52,30 @@ const SQL: &str = include_str!("../../../../../contracts/document-search.sql");
 fn signature() -> String {
     hash(
         format!(
-            "{SQL}{}{}{}{}{}",
+            "{SQL}{}{}{}{}{}{}",
             include_str!("mod.rs"),
             include_str!("corpus.rs"),
             include_str!("analyzer.rs"),
             include_str!("stamp.rs"),
+            include_str!("../../excel/number_format.rs"),
             env!("CARGO_PKG_VERSION")
         )
         .as_bytes(),
     )
+}
+
+/// A passage as stored: JSON, deflate-compressed. A table row repeats its
+/// keys, sheet and headers for every cell, which compresses several times over.
+fn pack(passage: &Value) -> Result<Vec<u8>> {
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+    serde_json::to_writer(&mut encoder, passage)?;
+    Ok(encoder.finish()?)
+}
+
+fn unpack(stored: &[u8]) -> Result<Value> {
+    Ok(serde_json::from_reader(flate2::read::DeflateDecoder::new(
+        stored,
+    ))?)
 }
 
 fn delete_document(db: &Connection, id: &str) -> Result<()> {
@@ -158,8 +173,11 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let signature = signature();
         if refresh {
+            // A table row of a few KiB leaves most of a 4 KiB page empty; 16 KiB
+            // pages hold several. It applies to a new index file, and to an older
+            // one when the VACUUM below rebuilds it for a new signature.
             db.execute_batch(
-                "PRAGMA journal_mode=DELETE; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;",
+                "PRAGMA page_size=16384; PRAGMA journal_mode=DELETE; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;",
             )?;
             let tx = db.transaction()?;
             let saved: Option<String> = tx
@@ -228,12 +246,7 @@ impl Store {
                             // Revalidate paths before reading a changed document for indexing.
                             let dir = under(&base, id)?;
                             let inspected = self.inspect(&dir, false)?;
-                            let (formation, _) = self.formation(&dir)?;
-                            ensure!(
-                                formation["document_id"] == *id
-                                    && formation["extraction"] == inspected.meta["extraction"],
-                                "formation identity mismatch"
-                            );
+                            self.formation(&dir)?;
                             let (passages, state) = {
                                 let _timer = Timer::new(&mut timings.index_update);
                                 (corpus::build(self, &inspected)?, search_state(&inspected)?)
@@ -247,22 +260,22 @@ impl Store {
                             let _timer = Timer::new(&mut timings.index_update);
                             delete_document(&tx, id)?;
                             let mut repetition_groups = BTreeMap::<(String, String), i64>::new();
+                            let mut heading_groups = BTreeMap::<(String, String), i64>::new();
                             for passage in passages {
                                 let title = normalize(string(&passage["title"])?);
                                 let body = normalize(string(&passage["text"])?);
-                                let raw_context = array(&passage["context"])?
-                                    .iter()
-                                    .map(|s| s["text"].as_str().unwrap_or(""))
-                                    .collect::<Vec<_>>()
-                                    .join(" | ");
-                                let context = normalize(&raw_context);
+                                let context = normalize(&corpus::headings(&passage));
                                 let next_group = i64::try_from(repetition_groups.len() + 1)?;
                                 let repetition_group = *repetition_groups
                                     .entry((body.clone(), context.clone()))
                                     .or_insert(next_group);
+                                let next_group = i64::try_from(heading_groups.len() + 1)?;
+                                let heading_group = *heading_groups
+                                    .entry((title.clone(), context.clone()))
+                                    .or_insert(next_group);
                                 let identifiers = identifiers(string(&passage["text"])?);
-                                tx.execute("INSERT INTO passages(document,payload,title,body,context,repetition_group,identifiers) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                            params![id, passage.to_string(), title, body, context, repetition_group, identifiers])?;
+                                tx.execute("INSERT INTO passages(document,payload,title,body,repetition_group,heading_group,identifiers) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                            params![id, pack(&passage)?, title, body, repetition_group, heading_group, identifiers])?;
                                 tx.execute("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)",
                             params![tx.last_insert_rowid(), words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
                             }
@@ -370,20 +383,32 @@ impl Store {
             // Count the same candidates for a nonempty page instead of running MATCH twice.
             // Repeated text with the same header text is deferred, never discarded:
             // different sheets/positions remain addressable through normal paging.
+            // Hits whose body holds no query term matched only their headings;
+            // they follow the body hits, one per heading group before the rest.
             let sql = format!(
                 "WITH matches AS MATERIALIZED (
-            SELECT p.id,p.document,p.repetition_group,bm25(terms,3.0,1.0,1.5,0.15) AS cost,
+            SELECT p.id,p.document,p.repetition_group,p.heading_group,
+                bm25(terms,3.0,1.0,1.5,0.15) AS cost,
                 instr(p.identifiers,?3)>0 AS exact, instr(p.body,?4)>0 AS phrase,
-                instr(p.title,?4)>0 AS heading {filter}
+                instr(p.title,?4)>0 AS heading,
+                NOT EXISTS (SELECT 1 FROM json_each(?7) WHERE instr(p.body,value)>0) AS headed
+                {filter}
             ), ranked AS (
                 SELECT *,row_number() OVER (
                     PARTITION BY document,repetition_group
                     ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
-                ) AS repetition FROM matches
+                ) AS repetition,
+                row_number() OVER (
+                    PARTITION BY headed,document,heading_group
+                    ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
+                ) AS deferral,
+                count(*) OVER (PARTITION BY headed,document,heading_group) AS group_hits
+                FROM matches
             ) SELECT p.payload,d.state,-r.cost,r.exact,r.phrase,r.heading,
-                     (SELECT count(*) FROM matches)
+                     (SELECT count(*) FROM matches),r.headed,r.group_hits
             FROM ranked r JOIN passages p ON p.id=r.id JOIN documents d ON d.id=r.document
-            ORDER BY r.exact DESC,r.phrase DESC,r.heading DESC,r.repetition,r.cost,r.document,r.id
+            ORDER BY r.headed,CASE WHEN r.headed THEN r.deferral ELSE 1 END,
+                r.exact DESC,r.phrase DESC,r.heading DESC,r.repetition,r.cost,r.document,r.id
             LIMIT ?5 OFFSET ?6"
             );
             let limit = options.limit.map(i64::try_from).transpose()?.unwrap_or(-1);
@@ -394,7 +419,8 @@ impl Store {
                 query.identifier,
                 query.normalized,
                 limit,
-                i64::try_from(options.offset)?
+                i64::try_from(options.offset)?,
+                serde_json::to_string(&query.groups.concat())?
             ])?;
             let mut items = vec![];
             let mut total = None;
@@ -406,10 +432,13 @@ impl Store {
                     total = Some(row.get::<_, usize>(6)?);
                 }
                 let response_started = Instant::now();
-                let mut item: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+                let mut item = unpack(&row.get::<_, Vec<u8>>(0)?)?;
                 item["state"] = serde_json::from_str(&row.get::<_, String>(1)?)?;
                 item["score"] = json!(row.get::<_, f64>(2)?);
                 item["match"] = json!({"exact_identifier":row.get::<_, bool>(3)?,"phrase_in_body":row.get::<_, bool>(4)?,"phrase_in_title":row.get::<_, bool>(5)?});
+                if row.get::<_, bool>(7)? {
+                    item["heading_only"] = json!({"group_hits":row.get::<_, usize>(8)?});
+                }
                 item["extraction_path"] = json!(format!(
                     ".arp/documents/{}/extraction.json",
                     string(&item["document_id"])?
@@ -495,10 +524,10 @@ fn search_state(inspected: &Inspection) -> Result<Value> {
         }
     }
     let mut edited = !array(&inspected.mappings["operations"])?.is_empty();
-    for entry in array(&inspected.mappings["entries"])? {
-        if entry["writeback"] == "cell"
-            && let Some(MappingTarget::Cell { sheet, cell }) = mapping_target(&entry["target"])?
-            && let Some(value) = inspected.values.get(&key(entry)?)
+    for entry in &inspected.entries {
+        if entry.writeback().is_ok_and(|w| w == "cell")
+            && let Some(MappingTarget::Cell { sheet, cell }) = entry.target()?
+            && let Some(value) = inspected.values.get(&entry.key()?)
         {
             edited |= originals
                 .get(&(sheet, cell))

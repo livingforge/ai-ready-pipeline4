@@ -688,6 +688,11 @@ pub(crate) enum DocumentCommand {
         /// each encrypted original is opened with the first that fits.
         #[arg(long)]
         password_stdin: bool,
+        /// Adopt each new proposal as extracted, without record and review: the
+        /// document is `imported` until edited. A proposal whose adopted document
+        /// has edits or a review is kept for record and adopt (`not_adopted`).
+        #[arg(long)]
+        adopt: bool,
     },
     /// Remove the documents at or below an ID whose originals were moved, renamed or deleted.
     Remove { document: String },
@@ -722,6 +727,28 @@ pub(crate) enum DocumentCommand {
     /// Write a derived structure view from the document's canonical corrections,
     /// with the report of how they replay on its extraction.
     StructureRead {
+        document: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Read the proposal instead of the adopted document.
+        #[arg(long)]
+        proposal: bool,
+    },
+    /// Write the element metadata of every page, with current fonts resolved, and
+    /// the visuals its references point to (the document-elements contract): the
+    /// IDs, table rows and columns, headers, spans and formula kinds of the body.
+    ElementsRead {
+        document: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Read the proposal instead of the adopted document.
+        #[arg(long)]
+        proposal: bool,
+    },
+    /// Write the extraction with every cell's font, style and cached result in
+    /// place (the extraction-view contract): extraction.json stores fonts and
+    /// styles once per sheet and leaves out the cached results.
+    ExtractionRead {
         document: String,
         #[arg(long)]
         out: PathBuf,

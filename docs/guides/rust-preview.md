@@ -23,6 +23,8 @@ arp4 documents init --root <project>
 
 取り込みをAIに委任する場合、利用者は原本またはフォルダと作業範囲を伝えます。AIはimport、候補の成形と検査、record、adoptを進め、実際に内容を確認した文書だけreviewを記録します。結果は取り込み件数、採用件数、未レビュー件数、確認が必要な文書の箇所と理由をまとめて報告します。原本でしか確認できない情報、曖昧な対応、失敗やblockersがあれば、該当文書について利用者の判断を求めます。採用はレビュー完了を意味しません。
 
+成形もレビューも行わず、原本を取り込んで採用データ（`.arp/documents/<文書ID>/`）を作るだけなら、`arp4 documents import docs --adopt --root C:/my-project` で取り込みと採用を1回で行えます。record・adoptは不要で、文書は `imported` 状態（抽出したまま、レビュー対象外）になります。採用済み文書に編集やレビュー記録がある場合は置き換えず、候補を残して `not_adopted` に理由を返すので、通常の手順で確認・record・adoptします。
+
 以下では、原本を `C:/my-project/docs/基本設計.xlsx` に置き、任意の作業フォルダーで実行します。この節の JSON 取り出し例は PowerShell 用です。文書IDは `docs/` からの相対パス `基本設計.xlsx` です。Linux の Agent は JSON 応答の document_id を読み、同じ CLI 引数で操作します。
 
 ```powershell
@@ -80,7 +82,7 @@ arp4 documents export 基本設計.xlsx --root C:/my-project
 arp4 documents export 基本設計.xlsx --out C:/my-project/.arp/cache/export/基本設計-更新.xlsx --root C:/my-project
 ```
 
-exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本への反映は `documents apply 基本設計.xlsx --root C:/my-project` を使います。反映後は再抽出された候補を確認し、record・adoptしてください。
+exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本への反映は `documents apply 基本設計.xlsx --root C:/my-project` を使います。反映後は再抽出された候補を確認し、record・adoptしてください。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。
 未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・書き戻し対象外の値（結合セルの左上以外の値、数式の計算結果）の編集・署名付きブック・既存出力の上書きを拒否します。
 通常セル更新では元のZIP部品を保持し、数式がある場合はキャッシュを無効化して次回Excel起動時の再計算を指定します。
 ARPは数式を計算しません。`=...` で始まる通常セルの文字列は文字列のまま出力します。

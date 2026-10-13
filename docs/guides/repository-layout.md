@@ -14,9 +14,10 @@ repository/
     .gitignore
     .gitattributes                  改行を変換させない（* -text）
     documents/<文書ID>/             文書IDは原本のsourcesからの相対パス（例: xxx/yyy/仕様.xlsx/）
-      document.yml                  原本の相対パス・ハッシュ
-      extraction.json               原本の抽出結果
+      document.yml                  原本の相対パス・ハッシュ（この文書の記録で唯一の原本ハッシュ）
+      extraction.json               原本の抽出結果（documents extraction-read で読む。原本のパス・ハッシュは持たない）
       content/*.yml                 AIが参照・編集する内容
+      layout.yml                    本文要素と原本位置の対応（documents elements-read で読む）
       mappings.yml                  構造操作・構造修正と、既定と異なる原本位置への対応
       formation.json・prompt.txt    成形時の判断記録
       review.json                   現在内容のレビュー
@@ -30,7 +31,7 @@ repository/
     work/                           実行状態・一時処理（Git対象外）
 ```
 
-文書本文の正本は元のOffice等のファイルです。ARPはそのコピーを保存しません。文書IDはsourcesフォルダからの原本の相対パス（拡張子込み）で、`.arp/documents/` と `.arp/changes/` は原本のフォルダ構造をそのまま映します。フォルダ名やファイル名に識別用のハッシュは付けません。原本ハッシュは `document.yml` の中で変更検出に使います。
+文書本文の正本は元のOffice等のファイルです。ARPはそのコピーを保存しません。文書IDはsourcesフォルダからの原本の相対パス（拡張子込み）で、`.arp/documents/` と `.arp/changes/` は原本のフォルダ構造をそのまま映します。フォルダ名やファイル名に識別用のハッシュは付けません。原本ハッシュは `document.yml` の中で変更検出に使います。`extraction.json`・`layout.yml`・本文・`mappings.yml` は原本ハッシュを持たないため（構造解釈の修正記録があればその対象の版だけを持つ）、内容を変えずに保存し直した原本を再importしても、変わるのは `document.yml` の原本ハッシュと成形記録（`formation.json`）の内容ハッシュの2行だけです。
 
 原本の移動・リネームは、新しいパスの文書の追加と、旧パスの文書の削除です。`documents import <フォルダ>` は新しいパスを取り込み、原本が見つからない文書を `missing` として返します。`documents remove <文書IDまたはフォルダ>` はそれらを削除し、原本が残っている文書の削除は拒否します。旧文書の根拠・承認は引き継がず、新しい抽出結果からcaptureとレビューをやり直します。
 
@@ -66,7 +67,7 @@ workflowの作業先は `.arp/work/workflow/<run-id>/`、既定IDはcurrentで�
 2. record・adopt後は `.arp/documents/<文書ID>/` を使用します。採用した候補は削除します。採用時点では未レビューで、確認後にreviewを記録します。
 3. 現在データをGitへコミットし、以後の文書差分は `documents diff --document <ID>` でHEADと比較します。候補のdiffは現在データとの比較です。
 4. YAMLの変更をreviewし、`documents export <ID>` で反映計画を確認します。
-5. `documents apply <ID>` で元ファイルへ反映し、再抽出候補を作ります。候補を確認してrecord・adoptします。applyだけでは再抽出内容をレビュー済みにしません。
+5. `documents apply <ID>` で元ファイルへ反映し、再抽出候補を作ります。候補を確認してrecord・adoptします。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。applyだけでは再抽出内容をレビュー済みにしません。
 
 原本ハッシュが変わっていたら古い対応で書き戻しません。未対応・曖昧な対応は未反映として扱います。原本を変えずに出力する場合は `export --out <repo>/.arp/cache/export/<新規名>` を使います。
 要件・仕様の現在版は `spec registry apply --change <JSON>` で更新し、Gitへコミットします。生成した閲覧文書は `spec registry render` で `.arp/cache/registry/` に出力します。

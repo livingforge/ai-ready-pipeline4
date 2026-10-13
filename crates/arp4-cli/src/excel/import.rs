@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{HashMap, HashSet};
 
 /// Sheet types that carry no cell grid for extraction. Their parts are kept
 /// byte-for-byte on writeback because only patched parts are rewritten.
@@ -246,6 +247,7 @@ impl Workbook {
             number_format: "General".to_owned(),
             appearance: json!({"bold":false,"fill":0,"border":0,"strike":false}),
             font: crate::fonts::RunFont::default(),
+            sides: [false; 4],
         }];
         if let Some(doc) = &styles {
             if let Some(n) = child(doc.root_element(), "numFmts") {
@@ -258,6 +260,45 @@ impl Workbook {
                     );
                 }
             }
+            // The sides each border draws; a side without a style draws no line.
+            let border_sides: Vec<[bool; 4]> = child(doc.root_element(), "borders")
+                .map(|n| {
+                    n.children()
+                        .filter(Node::is_element)
+                        .map(|border| {
+                            let drawn = |names: &[&str]| {
+                                names.iter().any(|name| {
+                                    child(border, name).is_some_and(|side| {
+                                        side.attribute("style").is_some_and(|s| s != "none")
+                                    })
+                                })
+                            };
+                            [
+                                drawn(&["left", "start"]),
+                                drawn(&["right", "end"]),
+                                drawn(&["top"]),
+                                drawn(&["bottom"]),
+                            ]
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Fills that paint the cell: a pattern other than none, or a gradient.
+            let painted: Vec<bool> = child(doc.root_element(), "fills")
+                .map(|n| {
+                    n.children()
+                        .filter(Node::is_element)
+                        .map(|fill| {
+                            child(fill, "gradientFill").is_some()
+                                || child(fill, "patternFill").is_some_and(|pattern| {
+                                    pattern
+                                        .attribute("patternType")
+                                        .is_some_and(|kind| kind != "none")
+                                })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             if let Some(n) = child(doc.root_element(), "cellXfs") {
                 let font_list: Vec<_> = child(doc.root_element(), "fonts")
                     .map(|n| {
@@ -302,10 +343,25 @@ impl Workbook {
                         let font = f.attribute("fontId").unwrap_or("0").parse::<usize>()?;
                         let (bold, strike, font) = font_list.get(font).cloned().unwrap_or_default();
                         let font = font.or(&inherited(f));
-                        let appearance = json!({"bold":bold,
-                        "fill":f.attribute("fillId").unwrap_or("0").parse::<u32>()?,
-                        "border":f.attribute("borderId").unwrap_or("0").parse::<u32>()?,
+                        let border = f.attribute("borderId").unwrap_or("0").parse::<u32>()?;
+                        let sides = border_sides
+                            .get(border as usize)
+                            .copied()
+                            .unwrap_or_default();
+                        let fill = f.attribute("fillId").unwrap_or("0").parse::<u32>()?;
+                        // A border drawing no side or a fill painting nothing looks
+                        // like none, as writers save such formats for plain cells.
+                        let mut appearance = json!({"bold":bold,
+                        "fill":if painted.get(fill as usize).copied().unwrap_or(true) { fill } else { 0 },
+                        "border":if border_sides.get(border as usize).is_none() || sides.contains(&true) { border } else { 0 },
                         "strike":strike});
+                        let indent = child(f, "alignment")
+                            .and_then(|alignment| alignment.attribute("indent"))
+                            .and_then(|level| level.parse::<u32>().ok())
+                            .unwrap_or(0);
+                        if indent > 0 {
+                            appearance["indent"] = json!(indent);
+                        }
                         let number_format = formats
                             .get(&f.attribute("numFmtId").unwrap_or("0").parse()?)
                             .cloned()
@@ -314,6 +370,7 @@ impl Workbook {
                             number_format,
                             appearance,
                             font,
+                            sides,
                         })
                     })
                     .collect::<Result<_>>()?;
@@ -336,6 +393,10 @@ impl Workbook {
             );
             let mut cells = vec![];
             let mut addresses = BTreeSet::new();
+            // Border sides by position, and the cells holding nothing.
+            let mut sides: HashMap<(u32, u32), [bool; 4]> = HashMap::new();
+            let mut blanks = vec![];
+            let mut filled = vec![];
             let hidden = |n: &Node<'_, '_>| matches!(n.attribute("hidden"), Some("1" | "true"));
             let mut hidden_rows = vec![];
             let mut hidden_columns = vec![];
@@ -425,11 +486,17 @@ impl Workbook {
                             },
                             _ => ("string", json!(decode_xstring(raw_value))),
                         };
-                        if value.is_null() && formula.is_none() {
-                            continue;
-                        }
                         let format = c.attribute("s").unwrap_or("0").parse::<usize>()?;
                         ensure!(format < cell_formats.len(), "invalid style index");
+                        let position = coordinate(address)?;
+                        if cell_formats[format].sides.iter().any(|side| *side) {
+                            sides.insert(position, cell_formats[format].sides);
+                        }
+                        if value.is_null() && formula.is_none() {
+                            blanks.push(position);
+                            continue;
+                        }
+                        filled.push(position);
                         cells.push(Cell {
                             address: address.to_owned(),
                             kind: if formula.is_some() { "formula" } else { kind },
@@ -442,25 +509,26 @@ impl Workbook {
                     }
                 }
             }
-            let merges = child(doc.root_element(), "mergeCells")
+            let mut merges = child(doc.root_element(), "mergeCells")
                 .map(|n| {
                     n.children()
                         .filter(Node::is_element)
                         .map(|m| {
-                            m.attribute("ref")
-                                .context("missing merge reference")
-                                .map(str::to_owned)
+                            let range = m.attribute("ref").context("missing merge reference")?;
+                            let (a, b) = range.split_once(':').context("invalid merge range")?;
+                            let (c1, r1) = coordinate(a)?;
+                            let (c2, r2) = coordinate(b)?;
+                            ensure!(c1 <= c2 && r1 <= r2, "reversed merge range");
+                            Ok(((r1, c1, r2, c2), range.to_owned()))
                         })
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?
                 .unwrap_or_default();
-            for m in &merges {
-                let (a, b) = m.split_once(':').context("invalid merge range")?;
-                let (c1, r1) = coordinate(a)?;
-                let (c2, r2) = coordinate(b)?;
-                ensure!(c1 <= c2 && r1 <= r2, "reversed merge range");
-            }
+            // Excel rewrites mergeCells in its own order on save; keep the
+            // extraction independent of it so a save alone changes nothing.
+            merges.sort();
+            let merges: Vec<String> = merges.into_iter().map(|(_, range)| range).collect();
             let drawings = visuals::extract_visuals(
                 &parts,
                 &part,
@@ -470,7 +538,12 @@ impl Workbook {
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
             let computed = computed_ranges(&parts, &part, doc.root_element())?;
-            sheets.push(json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed}));
+            let mut sheet = json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed});
+            let boxes = bordered_blanks(&blanks, &filled, &sides, &merges)?;
+            if !boxes.is_empty() {
+                sheet["bordered_blanks"] = json!(boxes);
+            }
+            sheets.push(sheet);
             sheet_cells.push(cells);
         }
         // Name unique images in first-use order across the workbook. Hashes remain
@@ -574,4 +647,130 @@ fn iso_date_serial(text: &str, date1904: bool) -> Option<f64> {
         serial += (hours * 3600.0 + minutes * 60.0 + seconds) / 86_400.0;
     }
     (serial >= 0.0).then_some(serial)
+}
+
+/// Empty cells and empty merged ranges drawn as boxes: ranges holding no value
+/// or formula whose four sides all show a line, drawn by the cell or by the
+/// neighbour across that side. An empty field of a ruled table is one; the
+/// edge of a frame drawn around tables shows one or two sides and is not.
+/// So are the empty cells of a field holding a value written without merging,
+/// which spills over them: lines run along its top and bottom and close it at
+/// both ends, with no line between its cells (`filled`: cells with a value).
+/// Single cells are joined into rectangles; the ranges are in row order.
+fn bordered_blanks(
+    blanks: &[(u32, u32)],
+    filled: &[(u32, u32)],
+    sides: &HashMap<(u32, u32), [bool; 4]>,
+    merges: &[String],
+) -> Result<Vec<String>> {
+    let side =
+        |position: (u32, u32), index: usize| sides.get(&position).is_some_and(|drawn| drawn[index]);
+    let mut merged: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
+    let mut covered = HashSet::new();
+    for range in merges {
+        let (a, b) = range.split_once(':').context("invalid merge range")?;
+        let (start, end) = (coordinate(a)?, coordinate(b)?);
+        merged.insert(start, end);
+        for column in start.0..=end.0 {
+            for row in start.1..=end.1 {
+                if (column, row) != start {
+                    covered.insert((column, row));
+                }
+            }
+        }
+    }
+    let mut ranges = vec![];
+    let mut singles = BTreeSet::new();
+    for &start in blanks {
+        if covered.contains(&start) {
+            continue;
+        }
+        let end = merged.get(&start).copied().unwrap_or(start);
+        let ((left, top), (right, bottom)) = (start, end);
+        let closed = (side((left, top), 0) || left > 1 && side((left - 1, top), 1))
+            && (side((right, top), 1) || side((right + 1, top), 0))
+            && (side((left, top), 2) || top > 1 && side((left, top - 1), 3))
+            && (side((left, bottom), 3) || side((left, bottom + 1), 2));
+        if !closed {
+            continue;
+        }
+        if start == end {
+            singles.insert((top, left));
+        } else {
+            ranges.push(((top, left), (bottom, right)));
+        }
+    }
+    let empty: HashSet<_> = blanks
+        .iter()
+        .copied()
+        .filter(|p| !covered.contains(p) && !merged.contains_key(p))
+        .collect();
+    let ruled = |(column, row): (u32, u32)| {
+        (side((column, row), 2) || row > 1 && side((column, row - 1), 3))
+            && (side((column, row), 3) || side((column, row + 1), 2))
+    };
+    // Whether a line runs down the right edge of the cell.
+    let closes = |(column, row): (u32, u32)| side((column, row), 1) || side((column + 1, row), 0);
+    for &(column, row) in filled {
+        if covered.contains(&(column, row))
+            || merged.contains_key(&(column, row))
+            || !ruled((column, row))
+        {
+            continue;
+        }
+        let mut left = column;
+        while left > 1
+            && !closes((left - 1, row))
+            && empty.contains(&(left - 1, row))
+            && ruled((left - 1, row))
+        {
+            left -= 1;
+        }
+        let mut right = column;
+        while !closes((right, row)) && empty.contains(&(right + 1, row)) && ruled((right + 1, row))
+        {
+            right += 1;
+        }
+        let opened = if left == 1 {
+            side((1, row), 0)
+        } else {
+            closes((left - 1, row))
+        };
+        if opened && closes((right, row)) {
+            singles.extend((left..=right).filter(|c| *c != column).map(|c| (row, c)));
+        }
+    }
+    // Runs of single cells along a row, then runs of equal rows below each other.
+    let mut runs: Vec<(u32, u32, u32)> = vec![];
+    for (row, column) in singles {
+        match runs.last_mut() {
+            Some((r, _, end)) if *r == row && *end + 1 == column => *end = column,
+            _ => runs.push((row, column, column)),
+        }
+    }
+    let mut open: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+    for (row, left, right) in runs {
+        match open.get_mut(&(left, right)) {
+            Some((_, bottom)) if *bottom + 1 == row => *bottom = row,
+            _ => {
+                if let Some((top, bottom)) = open.insert((left, right), (row, row)) {
+                    ranges.push(((top, left), (bottom, right)));
+                }
+            }
+        }
+    }
+    for ((left, right), (top, bottom)) in open {
+        ranges.push(((top, left), (bottom, right)));
+    }
+    ranges.sort_unstable();
+    ranges
+        .into_iter()
+        .map(|((top, left), (bottom, right))| {
+            Ok(format!(
+                "{}{top}:{}{bottom}",
+                column_name(left)?,
+                column_name(right)?
+            ))
+        })
+        .collect()
 }

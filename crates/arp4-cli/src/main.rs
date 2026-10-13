@@ -202,6 +202,7 @@ fn run(cli: Cli) -> Result<bool> {
                         "source_checked_this_search":false});
                     let failed = first.failed.clone();
                     let mut responses = Vec::with_capacity(query.len());
+                    let mut tables = response::SearchTables::default();
                     let mut ok = true;
                     for (text, found) in query.iter().zip(batch.results) {
                         let mut items = found.items;
@@ -209,11 +210,14 @@ fn run(cli: Cli) -> Result<bool> {
                             strip_search_hashes(item);
                             if output.full {
                                 round_search_score(item);
+                                lift_search_document(item);
                             } else {
                                 compact_search_item(item);
+                                lift_search_document(item);
+                                *item = response::fit_search_item(item.take());
                             }
                         }
-                        let mut result = pager.page(items);
+                        let mut result = pager.page_search(items, &mut tables);
                         let returned = result["page"]["returned"].as_u64().unwrap() as usize;
                         result["page"]["total"] = json!(found.total);
                         result["page"]["offset"] = json!(offset);
@@ -243,10 +247,13 @@ fn run(cli: Cli) -> Result<bool> {
                         responses.push(result);
                     }
                     let result = if query.len() == 1 {
-                        responses.pop().unwrap()
+                        let mut result = responses.pop().unwrap();
+                        result["tables"] = tables.into_value();
+                        result
                     } else {
-                        let mut result = json!({"queries": responses, "revision": batch.revision,
-                            "scope": "adopted_extraction", "summary":summary, "failed":failed});
+                        let mut result = json!({"queries": responses, "tables": tables.into_value(),
+                            "revision": batch.revision, "scope": "adopted_extraction",
+                            "summary":summary, "failed":failed});
                         if !ok {
                             result["error"] = json!({"code":"partial_search","message":"Invalid documents were excluded; see failed."});
                         }
@@ -285,7 +292,9 @@ fn run(cli: Cli) -> Result<bool> {
                 }
                 DocumentCommand::Apply { document } => {
                     let mut result = store.apply(&document)?;
-                    result["proposal"] = relative(&root, &result["proposal"])?;
+                    if !result["proposal"].is_null() {
+                        result["proposal"] = relative(&root, &result["proposal"])?;
+                    }
                     if !output.full {
                         count_carried_cells(&mut result["structure"]);
                         summarize_export(&mut result["report"], include_hashes)?;
@@ -324,6 +333,7 @@ fn run(cli: Cli) -> Result<bool> {
                     source,
                     force,
                     password_stdin,
+                    adopt,
                 } => {
                     let unprotection = arp4_cli::documents::Unprotection::new(if password_stdin {
                         passwords(std::io::stdin().lock())?
@@ -333,14 +343,39 @@ fn run(cli: Cli) -> Result<bool> {
                     let (path, _) = store.resolve(&source)?;
                     if path.is_dir() {
                         let mut result = store.import_folder(&source, force, &unprotection)?;
-                        let imported = !array(&result["imported"])?.is_empty();
-                        result["state"] = json!(if imported {
+                        let mut proposals = !array(&result["imported"])?.is_empty();
+                        if adopt {
+                            let mut adopted = vec![];
+                            let mut not_adopted = vec![];
+                            let mut failed = array(&result["failed"])?.clone();
+                            for id in array(&result["imported"])?.clone() {
+                                let id = string(&id)?;
+                                match store.adopt_import(id) {
+                                    Ok(taken) if taken["state"] == "imported" => {
+                                        adopted.push(json!(id))
+                                    }
+                                    Ok(taken) if taken["state"] == "needs_record" => {
+                                        not_adopted.push(json!({"document_id":id,"reason":taken["not_adopted"]}));
+                                    }
+                                    // The proposal held what the document holds and is gone.
+                                    Ok(_) => {}
+                                    Err(error) => failed.push(json!({"document_id":id,"reason":format!("imported but not adopted: {error:#}")})),
+                                }
+                            }
+                            proposals = !not_adopted.is_empty();
+                            result["adopted"] = json!(adopted);
+                            result["not_adopted"] = json!(not_adopted);
+                            result["failed"] = json!(failed);
+                        }
+                        result["state"] = json!(if proposals {
                             "needs_record"
+                        } else if adopt && !array(&result["adopted"])?.is_empty() {
+                            "imported"
                         } else {
                             "unchanged"
                         });
                         if !array(&result["failed"])?.is_empty() {
-                            result["error"] = json!({"code":"operation_failed","message":"Some originals could not be imported; see failed. The other originals were imported."});
+                            result["error"] = json!({"code":"operation_failed","message":"Some originals could not be imported or adopted; see failed. The other originals were."});
                             output.emit(result, false);
                             return Ok(false);
                         }
@@ -348,8 +383,28 @@ fn run(cli: Cli) -> Result<bool> {
                     } else {
                         let mut result = store.import_with(&source, force, &unprotection)?;
                         if result["state"] != "unchanged" {
-                            result["proposal"] = relative(&root, &result["proposal"])?;
                             result["state"] = json!("needs_record");
+                            if adopt {
+                                let id = string(&result["document_id"])?.to_owned();
+                                let taken = store.adopt_import(&id).with_context(|| {
+                                    format!(
+                                        "{id} was imported but not adopted; its proposal remains"
+                                    )
+                                })?;
+                                match taken["state"].as_str() {
+                                    Some("needs_record") => {
+                                        result["not_adopted"] = taken["not_adopted"].clone();
+                                    }
+                                    state => {
+                                        result.as_object_mut().unwrap().remove("proposal");
+                                        result["document"] = relative(&root, &taken["document"])?;
+                                        result["state"] = json!(state);
+                                    }
+                                }
+                            }
+                            if result.get("proposal").is_some() {
+                                result["proposal"] = relative(&root, &result["proposal"])?;
+                            }
                             if !output.full {
                                 count_carried_cells(&mut result["structure"]);
                             }
@@ -375,6 +430,27 @@ fn run(cli: Cli) -> Result<bool> {
                         count_carried_cells(&mut report["carried"]);
                     }
                     json!({"state":"saved","structure":out,"document_id":document,"interpretation":report})
+                }
+                DocumentCommand::ElementsRead {
+                    document,
+                    out,
+                    proposal,
+                } => {
+                    ensure!(!out.exists(), "elements output already exists");
+                    let elements = store.elements(&document, proposal)?;
+                    arp4_cli::data::write(&out, &elements)?;
+                    let pages = elements["pages"].as_object().map_or(0, |pages| pages.len());
+                    json!({"state":"saved","elements":out,"document_id":document,"pages":pages})
+                }
+                DocumentCommand::ExtractionRead {
+                    document,
+                    out,
+                    proposal,
+                } => {
+                    ensure!(!out.exists(), "extraction output already exists");
+                    let extraction = store.extraction_view(&document, proposal)?;
+                    arp4_cli::data::write(&out, &extraction)?;
+                    json!({"state":"saved","extraction":out,"document_id":document})
                 }
                 DocumentCommand::StructureSave {
                     document,
@@ -407,16 +483,13 @@ fn run(cli: Cli) -> Result<bool> {
                         return run_batch(&store, &output, targets, &batch, include_hashes);
                     };
                     let mut result = store.record(&proposal, &model, &actor, &prompt)?;
-                    omit_hashes(
-                        &mut result,
-                        &["extraction", "content", "prompt_sha256"],
-                        include_hashes,
-                    );
+                    omit_hashes(&mut result, &["content", "prompt_sha256"], include_hashes);
                     if !output.full {
                         for key in ["schema_version", "actor", "model"] {
                             result.as_object_mut().unwrap().remove(key);
                         }
                     }
+                    result["document_id"] = json!(proposal);
                     result["state"] = json!("recorded");
                     result
                 }
@@ -577,17 +650,54 @@ fn run(cli: Cli) -> Result<bool> {
     Ok(true)
 }
 
+/// A table row names its document once, in the table it lists.
+fn lift_search_document(item: &mut Value) {
+    let object = item.as_object_mut().expect("search item object");
+    if !object.contains_key("table") {
+        return;
+    }
+    for key in [
+        "document_id",
+        "source_path",
+        "extraction_path",
+        "state",
+        "structure_reviewed",
+    ] {
+        if let Some(value) = object.remove(key) {
+            object["table"][key] = value;
+        }
+    }
+}
+
 fn compact_search_item(item: &mut Value) {
     let object = item.as_object_mut().expect("search item object");
     for key in ["score", "match", "extraction_path"] {
         object.remove(key);
     }
+    if object.contains_key("table") {
+        // The row's values, its row and the table's columns locate each cell;
+        // the line span stays for text originals, whose addresses are internal.
+        let lines: Vec<u64> = object["sources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|s| [&s["position"]["line_start"], &s["position"]["line_end"]])
+            .filter_map(Value::as_u64)
+            .collect();
+        if let (Some(start), Some(end)) = (lines.iter().min(), lines.iter().max()) {
+            object.insert("lines".into(), json!([start, end]));
+        }
+        for key in ["title", "text", "sources"] {
+            object.remove(key);
+        }
+        return;
+    }
     if let Some(sources) = object.get_mut("sources").and_then(Value::as_array_mut) {
         for source in sources {
-            source
-                .as_object_mut()
-                .expect("search source object")
-                .remove("text");
+            let source = source.as_object_mut().expect("search source object");
+            for key in ["text", "value", "formula"] {
+                source.remove(key);
+            }
         }
     }
 }
@@ -1195,6 +1305,9 @@ fn passwords(mut input: impl std::io::Read) -> Result<Vec<String>> {
     ensure!(!passwords.is_empty(), "--password-stdin read no password");
     Ok(passwords)
 }
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> std::process::ExitCode {
     #[cfg(windows)]

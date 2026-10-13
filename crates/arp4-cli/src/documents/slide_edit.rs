@@ -85,7 +85,7 @@ impl Store {
             return Err(rejection("invalid_reason", "--reason must not be empty"));
         }
         let mappings_path = dir.join("mappings.yml");
-        let mut mappings = read(&mappings_path, Some("mappings"))?;
+        let mut mappings = read_mappings(&mappings_path)?;
         let recorded = array(&mappings["operations"])?.clone();
         let op_id = match &edit.id {
             Some(op) => {
@@ -215,7 +215,6 @@ impl Store {
         let mut layout = identity::load(&dir, &inspected.extraction, &planned)?;
         let mut added = vec![];
         let mut removed = vec![];
-        let tables = mappings["tables"].as_array().cloned().unwrap_or_default();
         // The slide and its notes page, as the recorded operations leave them.
         let with_notes = |slide: &str| -> Result<Vec<String>> {
             let order = slide_order(sheets, &prior)?;
@@ -254,7 +253,6 @@ impl Store {
                     ));
                 }
                 // The copy takes the page's current values, edits included.
-                let mut new_tables = tables.clone();
                 for source in with_notes(from)? {
                     let name = if source == *from {
                         op_id.clone()
@@ -279,13 +277,7 @@ impl Store {
                     }
                     planned.insert(target.clone(), Some(serialized(Path::new(&target), &page)?));
                     added.push(target);
-                    for table in tables.iter().filter(|t| t["page"] == source_page.as_str()) {
-                        let mut table = table.clone();
-                        table["page"] = json!(page_id);
-                        new_tables.push(table);
-                    }
                 }
-                mappings["tables"] = json!(new_tables);
             }
             SlideEditKind::Delete { slide } => {
                 let names = with_notes(slide)?;
@@ -308,12 +300,6 @@ impl Store {
                     }
                 }
                 let kept = |value: &Value| !gone.contains(value.as_str().unwrap_or(""));
-                mappings["tables"] = json!(
-                    tables
-                        .into_iter()
-                        .filter(|t| kept(&t["page"]))
-                        .collect::<Vec<_>>()
-                );
                 let entries = array(&mappings["entries"])?
                     .iter()
                     .filter(|e| kept(&e["page"]))
@@ -355,24 +341,20 @@ impl Store {
                 for cell in array(&sheet["cells"])? {
                     let (_, row) = crate::excel::coordinate(string(&cell["address"])?)?;
                     rows[format!("r{row}")]["A"] = cell["value"].clone();
-                    if let Some(font) = cell.get("font") {
+                    let font = crate::extraction::font(sheet, cell)?;
+                    if !font.is_null() {
                         fonts["table-1"][format!("r{row}")]["A"] = font.clone();
                     }
                 }
                 let mut blocks =
                     json!({"extraction-notes":{"title":"未抽出・注意事項","text":note}});
-                let mut new_tables = tables.clone();
                 if rows.as_object().is_some_and(|rows| !rows.is_empty()) {
                     blocks["table-1"] = json!({"title":"本文","rows":rows});
-                    new_tables.push(
-                        json!({"page":page_id,"block":"table-1","columns":["A"],"references":[]}),
-                    );
                 }
-                mappings["tables"] = json!(new_tables);
                 layout["sheets"][&page_id] = identity::initial_sheet(sheet)?;
-                identity::reorder(&mut layout)?;
+                identity::check_axes(&layout)?;
                 let page = elements::encode(
-                    &json!({"schema_version":"4","document_id":inspected.meta["document_id"],"page_id":page_id,"source_path":source_path,"title":op_id,"blocks":blocks,"fonts":fonts}),
+                    &json!({"schema_version":"4","page_id":page_id,"title":op_id,"blocks":blocks,"fonts":fonts}),
                     &mut layout,
                 )?;
                 planned.insert(target.clone(), Some(serialized(Path::new(&target), &page)?));
@@ -384,11 +366,11 @@ impl Store {
         mappings["operations"] = Value::Array(values.clone());
         planned.insert(
             "mappings.yml".to_owned(),
-            Some(serialized(&mappings_path, &mappings)?),
+            Some(stored_mappings(&mappings_path, &mappings)?),
         );
         planned.insert(
             "layout.yml".into(),
-            Some(serialized(Path::new("layout.yml"), &layout)?),
+            Some(identity::stored(&mut layout, &inspected.extraction)?),
         );
         Source::open(&under(&self.root, source_path)?)?
             .ensure_slide_edits_supported(&values)

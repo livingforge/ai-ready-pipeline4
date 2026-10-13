@@ -52,67 +52,240 @@ pub fn kind(value: &Value) -> &'static str {
     }
 }
 
+/// Where the canonical encoding is written: a buffer, or a hash fed as it goes.
+trait Sink {
+    fn put(&mut self, text: &str);
+}
+
+impl Sink for String {
+    fn put(&mut self, text: &str) {
+        self.push_str(text);
+    }
+}
+
+/// A SHA-256 fed in blocks, so that hashing an encoding does not hold it.
+struct HashSink {
+    hasher: Sha256,
+    buffer: Vec<u8>,
+}
+
+impl HashSink {
+    const BLOCK: usize = 1 << 16;
+
+    fn new() -> Self {
+        Self {
+            hasher: Sha256::new(),
+            buffer: Vec::with_capacity(Self::BLOCK),
+        }
+    }
+
+    fn finish(mut self) -> String {
+        self.hasher.update(&self.buffer);
+        format!("{:x}", self.hasher.finalize())
+    }
+}
+
+impl Sink for HashSink {
+    fn put(&mut self, text: &str) {
+        self.buffer.extend_from_slice(text.as_bytes());
+        if self.buffer.len() >= Self::BLOCK {
+            self.hasher.update(&self.buffer);
+            self.buffer.clear();
+        }
+    }
+}
+
+fn indent(out: &mut impl Sink, depth: usize) {
+    for _ in 0..depth {
+        out.put("  ");
+    }
+}
+
+/// The members of an object, which an empty one has none of. The items of an
+/// array held by a member named in `inline` are written one per line.
+fn render_fields<'a>(
+    fields: impl Iterator<Item = (&'a String, &'a Value)>,
+    depth: usize,
+    inline: &[&str],
+    out: &mut impl Sink,
+) {
+    let mut fields = fields.peekable();
+    if fields.peek().is_none() {
+        out.put("{}");
+        return;
+    }
+    out.put(
+        "{
+",
+    );
+    for (index, (k, v)) in fields.enumerate() {
+        if index > 0 {
+            out.put(
+                ",
+",
+            );
+        }
+        indent(out, depth + 1);
+        out.put(&serde_json::to_string(k).unwrap());
+        out.put(": ");
+        match v {
+            Value::Array(items) if !items.is_empty() && inline.contains(&k.as_str()) => {
+                out.put(
+                    "[
+",
+                );
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.put(
+                            ",
+",
+                        );
+                    }
+                    indent(out, depth + 2);
+                    render_line(item, out);
+                }
+                out.put(
+                    "
+",
+                );
+                indent(out, depth + 1);
+                out.put("]");
+            }
+            _ => render(v, depth + 1, inline, out),
+        }
+    }
+    out.put(
+        "
+",
+    );
+    indent(out, depth);
+    out.put("}");
+}
+
 // Canonical JSON encoding preserves exponent signs and float representation for stable hashes.
+fn render(v: &Value, depth: usize, inline: &[&str], out: &mut impl Sink) {
+    match v {
+        Value::Object(map) => render_fields(map.iter(), depth, inline, out),
+        Value::Array(items) if !items.is_empty() => {
+            out.put(
+                "[
+",
+            );
+            for (index, v) in items.iter().enumerate() {
+                if index > 0 {
+                    out.put(
+                        ",
+",
+                    );
+                }
+                indent(out, depth + 1);
+                render(v, depth + 1, inline, out);
+            }
+            out.put(
+                "
+",
+            );
+            indent(out, depth);
+            out.put("]");
+        }
+        _ => render_scalar(v, out),
+    }
+}
+
+/// `v` on one line, its members and items separated by `, `.
+fn render_line(v: &Value, out: &mut impl Sink) {
+    match v {
+        Value::Object(map) => {
+            out.put("{");
+            for (index, (k, v)) in map.iter().enumerate() {
+                if index > 0 {
+                    out.put(", ");
+                }
+                out.put(&serde_json::to_string(k).unwrap());
+                out.put(": ");
+                render_line(v, out);
+            }
+            out.put("}");
+        }
+        Value::Array(items) => {
+            out.put("[");
+            for (index, v) in items.iter().enumerate() {
+                if index > 0 {
+                    out.put(", ");
+                }
+                render_line(v, out);
+            }
+            out.put("]");
+        }
+        _ => render_scalar(v, out),
+    }
+}
+
+fn render_scalar(v: &Value, out: &mut impl Sink) {
+    match v {
+        Value::Number(n) if n.is_f64() => {
+            let f = n.as_f64().unwrap();
+            if f != 0.0 && (f.abs() >= 1e16 || f.abs() < 1e-4) {
+                let repr = format!("{f:e}");
+                let (mantissa, exponent) = repr.split_once('e').unwrap();
+                let exp: i32 = exponent.parse().unwrap();
+                out.put(&format!("{mantissa}e{exp:+03}"));
+            } else {
+                let s = f.to_string();
+                out.put(&s);
+                if !s.contains('.') {
+                    out.put(".0");
+                }
+            }
+        }
+        _ => out.put(&serde_json::to_string(v).unwrap()),
+    }
+}
+
 /// Written into one buffer: rendering each nested value to its own string would
 /// copy every byte once per enclosing level of large inputs and extractions.
 pub fn encoded(value: &Value) -> Vec<u8> {
-    fn render(v: &Value, depth: usize, out: &mut String) {
-        let indent = |out: &mut String, depth: usize| {
-            for _ in 0..depth {
-                out.push_str("  ");
-            }
-        };
-        match v {
-            Value::Object(map) if !map.is_empty() => {
-                out.push_str("{\n");
-                for (index, (k, v)) in map.iter().enumerate() {
-                    if index > 0 {
-                        out.push_str(",\n");
-                    }
-                    indent(out, depth + 1);
-                    out.push_str(&serde_json::to_string(k).unwrap());
-                    out.push_str(": ");
-                    render(v, depth + 1, out);
-                }
-                out.push('\n');
-                indent(out, depth);
-                out.push('}');
-            }
-            Value::Array(items) if !items.is_empty() => {
-                out.push_str("[\n");
-                for (index, v) in items.iter().enumerate() {
-                    if index > 0 {
-                        out.push_str(",\n");
-                    }
-                    indent(out, depth + 1);
-                    render(v, depth + 1, out);
-                }
-                out.push('\n');
-                indent(out, depth);
-                out.push(']');
-            }
-            Value::Number(n) if n.is_f64() => {
-                let f = n.as_f64().unwrap();
-                if f != 0.0 && (f.abs() >= 1e16 || f.abs() < 1e-4) {
-                    let repr = format!("{f:e}");
-                    let (mantissa, exponent) = repr.split_once('e').unwrap();
-                    let exp: i32 = exponent.parse().unwrap();
-                    out.push_str(&format!("{mantissa}e{exp:+03}"));
-                } else {
-                    let s = f.to_string();
-                    out.push_str(&s);
-                    if !s.contains('.') {
-                        out.push_str(".0");
-                    }
-                }
-            }
-            _ => out.push_str(&serde_json::to_string(v).unwrap()),
-        }
-    }
+    encoded_lines(value, &[])
+}
+
+/// [`encoded`], with each item of an array held by a member named in `inline` on
+/// one line of its own, as an extraction keeps its cells: a changed item is
+/// one changed line of a diff.
+pub fn encoded_lines(value: &Value, inline: &[&str]) -> Vec<u8> {
     let mut out = String::new();
-    render(value, 0, &mut out);
+    render(value, 0, inline, &mut out);
     out.push('\n');
     out.into_bytes()
+}
+
+/// `hash(&encoded(value))`, without holding the encoding.
+pub fn hash_encoded(value: &Value) -> String {
+    hash_encoded_lines(value, &[])
+}
+
+/// `hash(&encoded_lines(value, inline))`, without holding the encoding.
+pub fn hash_encoded_lines(value: &Value, inline: &[&str]) -> String {
+    let mut digest = HashSink::new();
+    render(value, 0, inline, &mut digest);
+    digest.put(
+        "
+",
+    );
+    digest.finish()
+}
+
+/// [`hash_encoded`] of an object without its member `skip`, without copying it.
+pub fn hash_encoded_without(value: &Value, skip: &str) -> String {
+    let mut digest = HashSink::new();
+    match value.as_object() {
+        Some(map) => render_fields(map.iter().filter(|(k, _)| *k != skip), 0, &[], &mut digest),
+        None => render(value, 0, &[], &mut digest),
+    }
+    digest.put(
+        "
+",
+    );
+    digest.finish()
 }
 
 /// JSON with unique keys and finite numbers. Each node is moved into its parent:
@@ -210,8 +383,11 @@ pub fn validate(name: &str, value: &Value) -> Result<()> {
     if let Err(error) = validator(name)?.validate(value) {
         bail!("{name}: {error} at {}", error.instance_path())
     };
-    if name == "mappings" {
-        crate::document_structure::validate_corrections(&value["interpretation"])?;
+    // A journal recording nothing is left out.
+    if name == "mappings"
+        && let Some(journal) = value.get("interpretation")
+    {
+        crate::document_structure::validate_corrections(journal)?;
     }
     Ok(())
 }
@@ -473,6 +649,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn streamed_hashes_equal_hashes_of_the_encoding() {
+        let big: Vec<_> = (0..20_000)
+            .map(|i| {
+                json!({"id":format!("c-{i}"),"value":i as f64 / 3.0,"text":"在庫
+引当"})
+            })
+            .collect();
+        for value in [
+            json!(null),
+            json!({}),
+            json!([]),
+            json!({"review":{"status":"pending"}}),
+            json!({"a":[1, 2.5, 1e20, -0.00001],"b":{},"c":[],"review":1,"d":"x"}),
+            json!({"elements":big,"review":{"status":"accepted"}}),
+        ] {
+            assert_eq!(hash_encoded(&value), hash(&encoded(&value)));
+            let mut without = value.clone();
+            if let Some(map) = without.as_object_mut() {
+                map.remove("review");
+            }
+            assert_eq!(
+                hash_encoded_without(&value, "review"),
+                hash(&encoded(&without))
+            );
+        }
+    }
+
+    #[test]
     fn rejection_payload_is_recoverable_through_context_and_displays_compact_json() {
         let payload = json!({"code":"reply_validation_failed","diagnostics":[{"path":"/items/0"}]});
         let error = anyhow::Error::new(Rejection(payload.clone())).context("submit failed");
@@ -721,5 +925,42 @@ mod tests {
                 format!("{}\n", nested_render(&sample, 0))
             );
         }
+    }
+
+    #[test]
+    fn encoded_lines_keeps_each_item_of_the_named_member_on_one_line() {
+        let value = json!({
+            "sheets": [{
+                "cells": [
+                    {"address": "A1", "value": 1.0, "runs": [{"text": "a"}, {"text": "b"}]},
+                    {"address": "B1", "value": "語\n\"x\"", "style": {}, "tags": []},
+                ],
+                "merges": ["A1:B1"],
+            }],
+            "cells": [],
+        });
+        let text = String::from_utf8(encoded_lines(&value, &["cells"])).unwrap();
+        let expected = r#"{
+  "cells": [],
+  "sheets": [
+    {
+      "cells": [
+        {"address": "A1", "runs": [{"text": "a"}, {"text": "b"}], "value": 1.0},
+        {"address": "B1", "style": {}, "tags": [], "value": "語\n\"x\""}
+      ],
+      "merges": [
+        "A1:B1"
+      ]
+    }
+  ]
+}
+"#;
+        assert_eq!(text, expected);
+        assert_eq!(parse(&text, true).unwrap(), value);
+        assert_eq!(
+            hash_encoded_lines(&value, &["cells"]),
+            hash(text.as_bytes())
+        );
+        assert_eq!(encoded_lines(&value, &[]), encoded(&value));
     }
 }

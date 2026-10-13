@@ -11,7 +11,7 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
     };
     for path in paths {
         let source_count = input.sources.len();
-        let extraction = read(path, Some("extraction"))?;
+        let extraction = crate::extraction::read(path)?;
         let document = string(&extraction["document_id"])?;
         input.structure_requirements.insert(
             document.into(),
@@ -20,7 +20,7 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
         ensure!(
             input
                 .revisions
-                .insert(document.into(), hash(&encoded(&extraction)))
+                .insert(document.into(), crate::extraction::hash(&extraction)?)
                 .is_none(),
             "duplicate input document: {document}"
         );

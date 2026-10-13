@@ -24,6 +24,8 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 /// Parsed artifacts are kept up to this many source bytes per process.
 const PARSED_CACHE_BYTES: usize = 256 << 20;
+/// How long a command waits for another process to release the workflow.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub struct Store {
     pub root: PathBuf,
@@ -40,6 +42,9 @@ impl Store {
         Self::open_mode(root, false)
     }
     pub fn open_mode(root: &Path, shared: bool) -> Result<Self> {
+        Self::open_waiting(root, shared, LOCK_WAIT)
+    }
+    fn open_waiting(root: &Path, shared: bool, wait: std::time::Duration) -> Result<Self> {
         fs::create_dir_all(root)?;
         let root = dunce::canonicalize(root)?;
         let lock_path = crate::data::under(&root, ".rust-workflow.lock")?;
@@ -61,8 +66,9 @@ impl Store {
                 Ok(()) => break,
                 Err(std::fs::TryLockError::WouldBlock) => {
                     ensure!(
-                        started.elapsed() < std::time::Duration::from_secs(30),
-                        "workflow is in use by another process after waiting 30 seconds; check the active process before retrying; do not delete the lock file"
+                        started.elapsed() < wait,
+                        "workflow is in use by another process after waiting {} seconds; check the active process before retrying; do not delete the lock file",
+                        wait.as_secs()
                     );
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                     delay = (delay * 2).min(250);
@@ -279,6 +285,21 @@ mod tests {
         drop(second);
         rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         writer.join().unwrap();
+    }
+    #[test]
+    fn writer_gives_up_while_another_process_holds_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let reader = Store::open_mode(dir.path(), true).unwrap();
+        let error = Store::open_waiting(dir.path(), false, std::time::Duration::from_millis(200))
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("workflow is in use by another process")
+        );
+        drop(reader);
+        Store::open_waiting(dir.path(), false, std::time::Duration::from_millis(200)).unwrap();
     }
     #[test]
     fn deduplicates_archives_and_preserves_history() {

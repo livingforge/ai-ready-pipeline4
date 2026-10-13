@@ -93,12 +93,15 @@ pub(super) fn position(visual: &Value) -> (u64, u64) {
     }
 }
 
-pub(super) fn validate_references(page: &Value, sheet: &Value) -> Result<()> {
+/// Checks the references of a page's element `metadata` to the visuals of its
+/// layout `sheet`.
+pub(super) fn validate_references(metadata: &Value, sheet: &Value) -> Result<()> {
     let visuals = sheet["visuals"]
         .as_object()
         .context("visual bindings missing")?;
+    let bindings = super::elements::Bindings::of(sheet)?;
     let mut seen = BTreeSet::new();
-    for element in array(&page["elements"])? {
+    for element in array(metadata)? {
         if let Some(reference) = element["ref"].as_str() {
             let visual = visuals.get(reference).context("unknown visual reference")?;
             ensure!(
@@ -111,9 +114,9 @@ pub(super) fn validate_references(page: &Value, sheet: &Value) -> Result<()> {
             let visual = visuals
                 .get(reference)
                 .context("text references unknown visual")?;
-            let binding = &sheet["bindings"][string(&element["id"])?];
+            let (block, row, _) = bindings.get(string(&element["id"])?)?;
             ensure!(
-                binding["block"] == "shapes" && binding["row"] == visual["text_key"],
+                block == "shapes" && visual["text_key"] == row.as_str(),
                 "visual text binding mismatch"
             );
         }

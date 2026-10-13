@@ -309,16 +309,8 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "document_id": {
-        "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
-        "type": "string"
-      },
       "page_id": {
         "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-        "type": "string"
-      },
-      "source_path": {
-        "minLength": 1,
         "type": "string"
       },
       "title": {
@@ -339,42 +331,11 @@
               ],
               "properties": {
                 "text": {
-                  "anyOf": [
-                    {
-                      "type": [
-                        "string",
-                        "number",
-                        "boolean",
-                        "null"
-                      ]
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "ref": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "block": {
-                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                              "type": "string"
-                            },
-                            "field": {
-                              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "block",
-                            "field"
-                          ],
-                          "type": "object"
-                        }
-                      },
-                      "required": [
-                        "ref"
-                      ],
-                      "type": "object"
-                    }
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
                   ]
                 }
               }
@@ -403,42 +364,11 @@
                   "items": {
                     "type": "array",
                     "items": {
-                      "anyOf": [
-                        {
-                          "type": [
-                            "string",
-                            "number",
-                            "boolean",
-                            "null"
-                          ]
-                        },
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "ref": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "block": {
-                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                                  "type": "string"
-                                },
-                                "field": {
-                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                                  "type": "string"
-                                }
-                              },
-                              "required": [
-                                "block",
-                                "field"
-                              ],
-                              "type": "object"
-                            }
-                          },
-                          "required": [
-                            "ref"
-                          ],
-                          "type": "object"
-                        }
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
                       ]
                     }
                   }
@@ -499,7 +429,6 @@
     },
     "required": [
       "schema_version",
-      "document_id",
       "page_id",
       "title",
       "elements"
@@ -5315,9 +5244,9 @@
         },
         "type": "array"
       },
-      "document_id": {
-        "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
-        "type": "string"
+      "date1904": {
+        "const": true,
+        "description": "An Excel workbook counting date serials from 1904-01-01 (workbookPr date1904). Absent for the 1900 date system and other originals."
       },
       "field_codes": {
         "type": "array",
@@ -5368,13 +5297,18 @@
       },
       "print_settings": {
         "type": "array",
+        "description": "印刷設定のOpen XML要素。同じ要素は1回だけ置き、それを持つ部品を parts に最初に現れた順で並べる。読み込み時に部品ごとの一覧へ戻す",
         "items": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "part": {
-              "type": "string",
-              "minLength": 1
+            "parts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             },
             "component": {
               "type": "string",
@@ -5386,7 +5320,7 @@
             }
           },
           "required": [
-            "part",
+            "parts",
             "component",
             "xml"
           ]
@@ -5449,12 +5383,986 @@
         }
       },
       "schema_version": {
-        "const": "1"
+        "const": "2"
       },
       "sheets": {
         "items": {
           "additionalProperties": false,
           "properties": {
+            "cells": {
+              "items": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "string"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "error"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "number"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "boolean"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "null"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "else": {
+                      "properties": {
+                        "formula": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "formula"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "formula": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "formula"
+                      ]
+                    }
+                  }
+                ],
+                "properties": {
+                  "address": {
+                    "pattern": "^[A-Z]+[1-9][0-9]*$",
+                    "type": "string"
+                  },
+                  "formula": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "数式のないセルでは保存しない"
+                  },
+                  "id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "type": "string",
+                    "description": "Excelのセルでシート番号とアドレスから決まるID（c-<シート番号>-<アドレス>）は保存しない"
+                  },
+                  "number_format": {
+                    "type": "string",
+                    "description": "General は保存しない"
+                  },
+                  "type": {
+                    "enum": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null",
+                      "formula",
+                      "error"
+                    ]
+                  },
+                  "value": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "position": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "headings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "line_start": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "line_end": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "byte_start": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "byte_end": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "record": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "column": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "headings",
+                      "line_start",
+                      "line_end",
+                      "byte_start",
+                      "byte_end",
+                      "columns"
+                    ]
+                  },
+                  "style": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "このシートの styles での番号"
+                  },
+                  "font": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "このシートの fonts での番号"
+                  }
+                },
+                "required": [
+                  "address",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "fonts": {
+              "type": "array",
+              "description": "セルが番号で参照する原本のフォント。同じフォントは1つにまとめる。数式の計算結果はセルの value にあり、別には保存しない",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                "required": [
+                  "latin",
+                  "east_asian",
+                  "size",
+                  "color"
+                ],
+                "properties": {
+                  "latin": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                  },
+                  "east_asian": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                  },
+                  "size": {
+                    "description": "ポイント",
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      {
+                        "const": "mixed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "color_theme": {
+                    "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "styles": {
+              "type": "array",
+              "description": "セルが番号で参照する書式。同じ書式は1つにまとめる",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "bold": {
+                    "type": "boolean"
+                  },
+                  "fill": {
+                    "description": "Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.",
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "border": {
+                    "description": "Excel border number; 0 when the border draws no side. Equal numbers are the same border.",
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "strike": {
+                    "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                    "type": "boolean"
+                  },
+                  "indent": {
+                    "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "bold",
+                  "fill",
+                  "border"
+                ]
+              }
+            },
+            "merges": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "part": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "hidden_rows": {
+              "description": "Excel rows hidden on the sheet. Their cells are still extracted.",
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "hidden_columns": {
+              "description": "Excel columns hidden on the sheet, by letter. Their cells are still extracted.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Z]+$"
+              }
+            },
+            "bordered_blanks": {
+              "description": "Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$"
+              }
+            },
+            "tables": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "range": {
+                    "type": "string"
+                  },
+                  "header_rows": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "totals_rows": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "parent": {
+                    "description": "Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "range",
+                  "header_rows",
+                  "totals_rows"
+                ]
+              }
+            },
+            "computed": {
+              "description": "Ranges Excel fills from an array formula or spill, a What-If data table or a pivot table; their member cells are not written back.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "array",
+                      "data_table",
+                      "pivot"
+                    ]
+                  }
+                },
+                "required": [
+                  "range",
+                  "kind"
+                ]
+              }
+            },
+            "comments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "pattern": "^[A-Z]+[1-9][0-9]*$"
+                  },
+                  "kind": {
+                    "enum": [
+                      "note",
+                      "thread",
+                      "reply"
+                    ]
+                  },
+                  "author": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "address",
+                  "kind",
+                  "author",
+                  "text"
+                ]
+              }
+            },
+            "drawings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "part": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "shape",
+                      "picture",
+                      "connector",
+                      "group",
+                      "graphic"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "anchor": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "twoCellAnchor",
+                          "oneCellAnchor",
+                          "absoluteAnchor",
+                          "slide"
+                        ]
+                      },
+                      "from": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "col": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "colOff": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "row": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "rowOff": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": []
+                      },
+                      "to": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "col": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "colOff": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "row": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "rowOff": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": []
+                      },
+                      "pos": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "ext": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "edit_as": {
+                        "enum": [
+                          "absolute",
+                          "oneCell",
+                          "twoCell"
+                        ]
+                      },
+                      "left": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "スライド左端からの位置（ポイント）"
+                      },
+                      "top": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "スライド上端からの位置（ポイント）"
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "幅（ポイント）"
+                      },
+                      "height": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "高さ（ポイント）"
+                      },
+                      "rotation": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "回転（度）"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "transform": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "geometry": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "connections": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "end": {
+                          "enum": [
+                            "stCxn",
+                            "endCxn"
+                          ]
+                        },
+                        "target": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "site": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "basis": {
+                          "const": "explicit"
+                        }
+                      },
+                      "required": [
+                        "end",
+                        "target",
+                        "site",
+                        "basis"
+                      ]
+                    }
+                  },
+                  "image": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "part": {
+                            "type": "string"
+                          },
+                          "asset": {
+                            "type": "string",
+                            "pattern": "^image-[0-9]{3,}\\.[A-Za-z0-9]+$"
+                          },
+                          "sha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "part",
+                          "asset",
+                          "sha256"
+                        ]
+                      }
+                    ]
+                  },
+                  "linked_image": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "macro": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "control": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "type": "string"
+                          },
+                          "linked_cell": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "list_range": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "checked": {
+                            "description": "Saved state of a check box or option button; null for other controls and for the mixed state.",
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "linked_cell",
+                          "list_range",
+                          "checked"
+                        ]
+                      }
+                    ]
+                  },
+                  "chart_part": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "font": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "required": [
+                      "latin",
+                      "east_asian",
+                      "size",
+                      "color"
+                    ],
+                    "properties": {
+                      "latin": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                      },
+                      "east_asian": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                      },
+                      "size": {
+                        "description": "ポイント",
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "const": "mixed"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color": {
+                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "placeholder": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "index"
+                    ],
+                    "description": "PowerPointのプレースホルダーの種類と番号",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "index": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "fill": {
+                    "description": "図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^([0-9A-F]{6}|none)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "line": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "color",
+                      "width"
+                    ],
+                    "description": "図形の線の色（RRGGBB・none・null）と太さ（ポイント）",
+                    "properties": {
+                      "color": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|none)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "anchor"
+                ]
+              }
+            }
+          },
+          "required": [
+            "name",
+            "part",
+            "state",
+            "merges",
+            "cells",
+            "fonts",
+            "styles"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "slide_layouts": {
+        "type": "array",
+        "description": "PowerPointのスライドレイアウト。add_slideで新しいスライドを作る元になる。cellsはそのレイアウトから作るスライドの空のプレースホルダーの文字とフォント",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "part",
+            "placeholders",
+            "cells"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "placeholders": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "index",
+                  "name"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "index": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            },
             "cells": {
               "items": {
                 "additionalProperties": false,
@@ -5765,6 +6673,528 @@
                 "type": "object"
               },
               "type": "array"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "schema_version",
+      "parser",
+      "sheets"
+    ],
+    "type": "object"
+  },
+  "extraction-view": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "assets": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "ocr": {
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "available",
+                    "unavailable"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "status",
+                "text",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "path": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "document_id": {
+        "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
+        "type": "string"
+      },
+      "date1904": {
+        "const": true,
+        "description": "An Excel workbook counting date serials from 1904-01-01 (workbookPr date1904). Absent for the 1900 date system and other originals."
+      },
+      "field_codes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "instruction": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "part",
+            "instruction"
+          ]
+        }
+      },
+      "findings": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "level": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "level",
+            "code",
+            "message"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "parser": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "print_settings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "component": {
+              "type": "string",
+              "minLength": 1
+            },
+            "xml": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "part",
+            "component",
+            "xml"
+          ]
+        }
+      },
+      "chart_parts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "formulas": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "xml": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "part",
+            "formulas",
+            "xml"
+          ]
+        }
+      },
+      "opaque_parts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "enum": [
+                "activex",
+                "printer_settings"
+              ]
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "part",
+            "kind",
+            "sha256"
+          ]
+        }
+      },
+      "schema_version": {
+        "const": "2"
+      },
+      "sheets": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "cells": {
+              "items": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "string"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "error"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "number"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "boolean"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "null"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "value": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "else": {
+                      "properties": {
+                        "cached": {
+                          "type": "null"
+                        },
+                        "formula": {
+                          "type": "null"
+                        }
+                      }
+                    },
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "formula"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "formula": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "properties": {
+                  "address": {
+                    "pattern": "^[A-Z]+[1-9][0-9]*$",
+                    "type": "string"
+                  },
+                  "cached": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "formula": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "id": {
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "type": "string"
+                  },
+                  "number_format": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null",
+                      "formula",
+                      "error"
+                    ]
+                  },
+                  "value": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "position": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "headings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "line_start": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "line_end": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "byte_start": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "byte_end": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "record": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "column": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "headings",
+                      "line_start",
+                      "line_end",
+                      "byte_start",
+                      "byte_end",
+                      "columns"
+                    ]
+                  },
+                  "style": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "bold": {
+                        "type": "boolean"
+                      },
+                      "fill": {
+                        "description": "Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "border": {
+                        "description": "Excel border number; 0 when the border draws no side. Equal numbers are the same border.",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "strike": {
+                        "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                        "type": "boolean"
+                      },
+                      "indent": {
+                        "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "required": [
+                      "bold",
+                      "fill",
+                      "border"
+                    ]
+                  },
+                  "font": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "required": [
+                      "latin",
+                      "east_asian",
+                      "size",
+                      "color"
+                    ],
+                    "properties": {
+                      "latin": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                      },
+                      "east_asian": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                      },
+                      "size": {
+                        "description": "ポイント",
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "const": "mixed"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color": {
+                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "address",
+                  "type",
+                  "value",
+                  "formula",
+                  "cached",
+                  "number_format"
+                ],
+                "type": "object"
+              },
+              "type": "array"
             },
             "merges": {
               "items": {
@@ -5799,6 +7229,14 @@
                 "pattern": "^[A-Z]+$"
               }
             },
+            "bordered_blanks": {
+              "description": "Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$"
+              }
+            },
             "tables": {
               "type": "array",
               "items": {
@@ -5818,6 +7256,10 @@
                   "totals_rows": {
                     "type": "integer",
                     "minimum": 0
+                  },
+                  "parent": {
+                    "description": "Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.",
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -6753,7 +8195,8 @@
       "findings",
       "assets"
     ],
-    "type": "object"
+    "type": "object",
+    "description": "documents extraction-read が書き出す抽出結果の読み出し。extraction.json はシートごとのフォント・書式の表をセルが番号で参照し、数式の計算結果を保存しない。この読み出しは各セルにフォント・書式・計算結果（cached。数式なら value と同じ）を戻した形で、JSON Pointer の位置は extraction.json と同じ。編集の入力には使わない。"
   },
   "formation": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -6763,15 +8206,11 @@
         "minLength": 1,
         "type": "string"
       },
+      "by": {
+        "const": "import",
+        "description": "The content is what import extracted from the original, adopted without forming: no actor, model or prompt."
+      },
       "content": {
-        "pattern": "^[a-f0-9]{64}$",
-        "type": "string"
-      },
-      "document_id": {
-        "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
-        "type": "string"
-      },
-      "extraction": {
         "pattern": "^[a-f0-9]{64}$",
         "type": "string"
       },
@@ -6787,14 +8226,31 @@
         "const": "1"
       }
     },
+    "oneOf": [
+      {
+        "properties": {
+          "by": false
+        },
+        "required": [
+          "actor",
+          "model",
+          "prompt_sha256"
+        ]
+      },
+      {
+        "properties": {
+          "actor": false,
+          "model": false,
+          "prompt_sha256": false
+        },
+        "required": [
+          "by"
+        ]
+      }
+    ],
     "required": [
       "schema_version",
-      "document_id",
-      "extraction",
-      "content",
-      "actor",
-      "model",
-      "prompt_sha256"
+      "content"
     ],
     "type": "object"
   },
@@ -6804,10 +8260,10 @@
     "properties": {
       "interpretation": {
         "type": "object",
-        "description": "Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management."
+        "description": "Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management. Left out when it records nothing: inspection makes the empty journal of the current extraction."
       },
       "entries": {
-        "description": "Only entries that differ from those derived from the extraction. Document management derives one entry per cell, formula and page block, and an entry here with the same page, block and field replaces it.",
+        "description": "Only entries that differ from those derived from the extraction. Document management derives one entry per cell, formula and page block, and an entry here with the same page, block and field replaces it. Left out when empty.",
         "items": {
           "additionalProperties": false,
           "properties": {
@@ -7011,7 +8467,8 @@
           ],
           "type": "object"
         },
-        "type": "array"
+        "type": "array",
+        "description": "Left out when empty."
       },
       "operations": {
         "items": {
@@ -7871,81 +9328,15 @@
             }
           ]
         },
-        "type": "array"
+        "type": "array",
+        "description": "Left out when empty."
       },
       "schema_version": {
         "const": "1"
-      },
-      "tables": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "block": {
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-              "type": "string"
-            },
-            "columns": {
-              "items": {
-                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array",
-              "uniqueItems": true
-            },
-            "page": {
-              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-              "type": "string"
-            },
-            "references": {
-              "items": {
-                "additionalProperties": false,
-                "properties": {
-                  "block": {
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                    "type": "string"
-                  },
-                  "column": {
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                    "type": "string"
-                  },
-                  "field": {
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                    "type": "string"
-                  },
-                  "row": {
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "row",
-                  "column",
-                  "block",
-                  "field"
-                ],
-                "type": "object"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "page",
-            "block",
-            "columns",
-            "references"
-          ],
-          "type": "object"
-        },
-        "type": "array"
       }
     },
     "required": [
-      "schema_version",
-      "entries",
-      "omissions",
-      "operations",
-      "interpretation"
+      "schema_version"
     ],
     "type": "object"
   },
@@ -8037,22 +9428,12 @@
     "description": "Document positions, identities and value-free element_metadata indexed in the same order as body elements. Only ARP structural operations update both files. Same-shape manual reordering is a value edit, not an identity move.",
     "required": [
       "schema_version",
-      "document_id",
-      "source_sha256",
-      "sheets",
-      "history"
+      "structure_sha256",
+      "sheets"
     ],
     "properties": {
       "schema_version": {
-        "const": "4"
-      },
-      "document_id": {
-        "type": "string",
-        "minLength": 1
-      },
-      "source_sha256": {
-        "type": "string",
-        "pattern": "^[a-f0-9]{64}$"
+        "const": "12"
       },
       "sheets": {
         "type": "object",
@@ -8063,17 +9444,7 @@
             "name",
             "rows",
             "columns",
-            "formulas",
-            "row_order",
-            "column_order",
-            "bindings",
-            "groups",
             "metadata_sha256",
-            "blanks",
-            "notes",
-            "merges",
-            "block_titles",
-            "visuals",
             "element_metadata"
           ],
           "properties": {
@@ -8081,47 +9452,19 @@
               "type": "string"
             },
             "rows": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "key",
-                  "position"
-                ],
-                "properties": {
-                  "key": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-                  },
-                  "position": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 1048576
-                  }
-                }
+              "type": "array",
+              "description": "行の識別IDを抽出時の位置の順に並べた区間。r1..r12 は識別ID r1〜r12 が同じ番号の行、r13..r38 +1 は1行ずれた r14〜r39 の行、ins-1=r13 は番号を持たない識別IDとその行。未適用の挿入の識別IDは操作から決まるため保存しない",
+              "items": {
+                "type": "string",
+                "pattern": "^([a-zA-Z0-9][a-zA-Z0-9_-]*=[a-zA-Z0-9]+|[a-zA-Z0-9]+(\\.\\.[a-zA-Z0-9]+)?( [+-][0-9]+)?)$"
               }
             },
             "columns": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "key",
-                  "position"
-                ],
-                "properties": {
-                  "key": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-                  },
-                  "position": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 16384
-                  }
-                }
+              "type": "array",
+              "description": "列の識別IDを rows と同じ区間で並べたもの（A..T、C..T +1、add-1=C）",
+              "items": {
+                "type": "string",
+                "pattern": "^([a-zA-Z0-9][a-zA-Z0-9_-]*=[a-zA-Z0-9]+|[a-zA-Z0-9]+(\\.\\.[a-zA-Z0-9]+)?( [+-][0-9]+)?)$"
               }
             },
             "formulas": {
@@ -8141,107 +9484,72 @@
                     "type": "string"
                   }
                 }
-              }
+              },
+              "description": "数式セルの識別IDと、その行・列の識別ID。空なら保存しない"
             },
-            "row_order": {
+            "fonts": {
               "type": "array",
-              "uniqueItems": true,
+              "description": "このシートの要素メタデータが番号で参照するフォントのうち、抽出結果の同じセルのフォントと異なるもの。同じフォントは1つにまとめる。空なら保存しない",
               "items": {
-                "type": "string"
-              }
-            },
-            "column_order": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string"
-              }
-            },
-            "bindings": {
-              "type": "object",
-              "additionalProperties": {
                 "type": "object",
                 "additionalProperties": false,
-                "properties": {
-                  "block": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-                  },
-                  "row": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-                  },
-                  "column": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
-                  }
-                },
+                "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
                 "required": [
-                  "block",
-                  "row",
-                  "column"
-                ]
-              }
-            },
-            "groups": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "additionalProperties": false,
+                  "latin",
+                  "east_asian",
+                  "size",
+                  "color"
+                ],
                 "properties": {
-                  "table": {
+                  "latin": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                  },
+                  "east_asian": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                  },
+                  "size": {
+                    "description": "ポイント",
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      {
+                        "const": "mixed"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "color": {
+                    "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "color_theme": {
+                    "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                     "type": "string",
-                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                  },
-                  "role": {
-                    "type": "string"
-                  },
-                  "headers": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                    }
+                    "minLength": 1
                   }
-                },
-                "required": [
-                  "table",
-                  "role",
-                  "headers"
-                ]
-              }
-            },
-            "blanks": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "first_row": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "last_row": {
-                    "type": "integer",
-                    "minimum": 1
-                  }
-                },
-                "required": [
-                  "first_row",
-                  "last_row"
-                ]
-              }
-            },
-            "notes": {
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "merges": {
-              "type": "array",
-              "items": {
-                "type": "string"
+                }
               }
             },
             "block_titles": {
@@ -8251,12 +9559,701 @@
                   "string",
                   "null"
                 ]
-              }
+              },
+              "description": "本文の行を持つブロックの見出し。空なら保存しない"
             },
             "metadata_sha256": {
               "type": "string",
               "pattern": "^[a-f0-9]{64}$",
-              "description": "Digest of the value-free element_metadata; array slots are bound by this metadata."
+              "description": "Digest of the stored value-free element_metadata; array slots are bound by this metadata."
+            },
+            "visuals": {
+              "type": "object",
+              "description": "本文が参照する図形・画像の種類と、図形の文字の本文キー。配置・部品・画像は読み込み時に抽出結果と未適用の操作から求めるため保存しない。空なら保存しない",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "image",
+                      "chart",
+                      "drawing"
+                    ]
+                  },
+                  "text_key": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "element_metadata": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "const": "text"
+                      },
+                      "visual": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "font": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "const": "formula"
+                      },
+                      "font": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "const": "blank"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ],
+                    "description": "前後の要素の間の空き。IDは前後の要素から決まるため保存しない"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "const": "table"
+                      },
+                      "rows": {
+                        "type": "array",
+                        "description": "記録行ごとに、行の識別IDとその行のセルの列の識別IDを空白で区切って並べたもの（r7 B..J、r8 B C ins-1）。セルIDは cell_<行>_<列>。A..Z は列 A から Z までの識別IDを順に並べたもの",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*( [a-zA-Z0-9][a-zA-Z0-9_-]*(\\.\\.[A-Z]+)?)+$"
+                        }
+                      },
+                      "cells": {
+                        "type": "object",
+                        "description": "数式の印かフォントを持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない",
+                        "additionalProperties": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "formula": {
+                              "type": "null",
+                              "description": "表セルの値が数式であることを示す。値は本文にある"
+                            },
+                            "font": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 0,
+                              "description": "このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "rows"
+                    ],
+                    "description": "表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "enum": [
+                          "image",
+                          "chart",
+                          "drawing"
+                        ]
+                      },
+                      "ref": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type",
+                      "ref"
+                    ]
+                  }
+                ]
+              },
+              "description": "Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions."
+            }
+          }
+        }
+      },
+      "history": {
+        "items": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "at": {
+                  "maximum": 1048576,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "count": {
+                  "maximum": 1048576,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "insert_rows",
+                    "delete_rows",
+                    "insert_columns",
+                    "delete_columns"
+                  ]
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "style_from": {
+                  "maximum": 1048576,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "at",
+                "count"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "at": {
+                  "maximum": 1048576,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "count": {
+                  "maximum": 1048576,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "move_columns"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "to": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16384
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "at",
+                "count",
+                "to"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array",
+        "description": "適用済みの行・列操作。空なら保存しない"
+      },
+      "structure_sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$",
+        "description": "要素メタデータの表の区分（どのセルがどの表に入るか）を決めた構造解釈の要約。documents status は現在のARPで再生した構造解釈と比べ、異なれば structure_outdated を返す"
+      }
+    }
+  },
+  "document-elements": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "description": "documents elements-read が書き出す本文要素の読み出し。ページごとに、本文の elements と同じ順の要素メタデータ（ID・表の列と行・見出し関係・結合・数式区分・現在のフォント）と、画像・グラフ・図形の参照先 visuals を返す。layout.yml のフォント番号は解決済みのフォントで返す。編集の入力には使わない。",
+    "required": [
+      "schema_version",
+      "document_id",
+      "proposal",
+      "pages"
+    ],
+    "properties": {
+      "schema_version": {
+        "const": "1"
+      },
+      "document_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "proposal": {
+        "type": "boolean",
+        "description": "採用前の候補を読んだ場合はtrue"
+      },
+      "pages": {
+        "type": "object",
+        "description": "ページID（content の page_id）ごとの要素",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "element_metadata",
+            "visuals"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "element_metadata": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "const": "text"
+                      },
+                      "visual": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "font": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                        "required": [
+                          "latin",
+                          "east_asian",
+                          "size",
+                          "color"
+                        ],
+                        "properties": {
+                          "latin": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                          },
+                          "east_asian": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                          },
+                          "size": {
+                            "description": "ポイント",
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "const": "mixed"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color": {
+                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "const": "formula"
+                      },
+                      "font": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                        "required": [
+                          "latin",
+                          "east_asian",
+                          "size",
+                          "color"
+                        ],
+                        "properties": {
+                          "latin": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                          },
+                          "east_asian": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                          },
+                          "size": {
+                            "description": "ポイント",
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "const": "mixed"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color": {
+                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "const": "blank"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "const": "table"
+                      },
+                      "columns": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                            }
+                          },
+                          "required": [
+                            "id"
+                          ]
+                        }
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                            },
+                            "cells": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                                  },
+                                  "column": {
+                                    "type": "string",
+                                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                                  },
+                                  "role": {
+                                    "type": "string"
+                                  },
+                                  "headers": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                                    }
+                                  },
+                                  "formula": {
+                                    "type": "null",
+                                    "description": "表セルの値が数式であることを示す。値は本文にある"
+                                  },
+                                  "row_span": {
+                                    "type": "integer",
+                                    "minimum": 2
+                                  },
+                                  "column_span": {
+                                    "type": "integer",
+                                    "minimum": 2
+                                  },
+                                  "font": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                                    "required": [
+                                      "latin",
+                                      "east_asian",
+                                      "size",
+                                      "color"
+                                    ],
+                                    "properties": {
+                                      "latin": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ],
+                                        "minLength": 1,
+                                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                                      },
+                                      "east_asian": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ],
+                                        "minLength": 1,
+                                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                                      },
+                                      "size": {
+                                        "description": "ポイント",
+                                        "anyOf": [
+                                          {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0
+                                          },
+                                          {
+                                            "const": "mixed"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "color": {
+                                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "color_theme": {
+                                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "column",
+                                  "role",
+                                  "headers"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "cells"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type",
+                      "columns",
+                      "rows"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      },
+                      "type": {
+                        "enum": [
+                          "image",
+                          "chart",
+                          "drawing"
+                        ]
+                      },
+                      "ref": {
+                        "type": "string",
+                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type",
+                      "ref"
+                    ]
+                  }
+                ]
+              },
+              "description": "Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions."
             },
             "visuals": {
               "type": "object",
@@ -8440,511 +10437,9 @@
                   }
                 }
               }
-            },
-            "element_metadata": {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      },
-                      "type": {
-                        "const": "text"
-                      },
-                      "text": {
-                        "type": "null"
-                      },
-                      "visual": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      },
-                      "font": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                        "required": [
-                          "latin",
-                          "east_asian",
-                          "size",
-                          "color"
-                        ],
-                        "properties": {
-                          "latin": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
-                            "minLength": 1,
-                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                          },
-                          "east_asian": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
-                            "minLength": 1,
-                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                          },
-                          "size": {
-                            "description": "ポイント",
-                            "anyOf": [
-                              {
-                                "type": "number",
-                                "exclusiveMinimum": 0
-                              },
-                              {
-                                "const": "mixed"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "color": {
-                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "color_theme": {
-                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        }
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "type",
-                      "text"
-                    ]
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      },
-                      "type": {
-                        "const": "formula"
-                      },
-                      "formula": {
-                        "type": "null"
-                      },
-                      "font": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                        "required": [
-                          "latin",
-                          "east_asian",
-                          "size",
-                          "color"
-                        ],
-                        "properties": {
-                          "latin": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
-                            "minLength": 1,
-                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                          },
-                          "east_asian": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
-                            "minLength": 1,
-                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                          },
-                          "size": {
-                            "description": "ポイント",
-                            "anyOf": [
-                              {
-                                "type": "number",
-                                "exclusiveMinimum": 0
-                              },
-                              {
-                                "const": "mixed"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "color": {
-                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "color_theme": {
-                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        }
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "type",
-                      "formula"
-                    ]
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      },
-                      "type": {
-                        "const": "blank"
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "type"
-                    ]
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      },
-                      "type": {
-                        "const": "table"
-                      },
-                      "columns": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": {
-                              "type": "string",
-                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                            }
-                          },
-                          "required": [
-                            "id"
-                          ]
-                        }
-                      },
-                      "rows": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": {
-                              "type": "string",
-                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                            },
-                            "cells": {
-                              "type": "array",
-                              "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                  "id": {
-                                    "type": "string",
-                                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                                  },
-                                  "column": {
-                                    "type": "string",
-                                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                                  },
-                                  "role": {
-                                    "type": "string"
-                                  },
-                                  "headers": {
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string",
-                                      "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                                    }
-                                  },
-                                  "value": {
-                                    "type": "null"
-                                  },
-                                  "formula": {
-                                    "type": "null"
-                                  },
-                                  "row_span": {
-                                    "type": "integer",
-                                    "minimum": 1
-                                  },
-                                  "column_span": {
-                                    "type": "integer",
-                                    "minimum": 1
-                                  },
-                                  "font": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                                    "required": [
-                                      "latin",
-                                      "east_asian",
-                                      "size",
-                                      "color"
-                                    ],
-                                    "properties": {
-                                      "latin": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ],
-                                        "minLength": 1,
-                                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                                      },
-                                      "east_asian": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ],
-                                        "minLength": 1,
-                                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                                      },
-                                      "size": {
-                                        "description": "ポイント",
-                                        "anyOf": [
-                                          {
-                                            "type": "number",
-                                            "exclusiveMinimum": 0
-                                          },
-                                          {
-                                            "const": "mixed"
-                                          },
-                                          {
-                                            "type": "null"
-                                          }
-                                        ]
-                                      },
-                                      "color": {
-                                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                                        "anyOf": [
-                                          {
-                                            "type": "string",
-                                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                                          },
-                                          {
-                                            "type": "null"
-                                          }
-                                        ]
-                                      },
-                                      "color_theme": {
-                                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                                        "type": "string",
-                                        "minLength": 1
-                                      }
-                                    }
-                                  }
-                                },
-                                "required": [
-                                  "id",
-                                  "column",
-                                  "role",
-                                  "headers"
-                                ],
-                                "oneOf": [
-                                  {
-                                    "required": [
-                                      "value"
-                                    ],
-                                    "not": {
-                                      "required": [
-                                        "formula"
-                                      ]
-                                    }
-                                  },
-                                  {
-                                    "required": [
-                                      "formula"
-                                    ],
-                                    "not": {
-                                      "required": [
-                                        "value"
-                                      ]
-                                    }
-                                  }
-                                ]
-                              }
-                            }
-                          },
-                          "required": [
-                            "id",
-                            "cells"
-                          ]
-                        }
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "type",
-                      "columns",
-                      "rows"
-                    ]
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      },
-                      "type": {
-                        "enum": [
-                          "image",
-                          "chart",
-                          "drawing"
-                        ]
-                      },
-                      "ref": {
-                        "type": "string",
-                        "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "type",
-                      "ref"
-                    ]
-                  }
-                ]
-              },
-              "description": "Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions."
             }
           }
         }
-      },
-      "history": {
-        "items": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "at": {
-                  "maximum": 1048576,
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                "count": {
-                  "maximum": 1048576,
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "enum": [
-                    "insert_rows",
-                    "delete_rows",
-                    "insert_columns",
-                    "delete_columns"
-                  ]
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "style_from": {
-                  "maximum": 1048576,
-                  "minimum": 1,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "at",
-                "count"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "at": {
-                  "maximum": 1048576,
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                "count": {
-                  "maximum": 1048576,
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                "id": {
-                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "move_columns"
-                },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "sheet": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "to": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 16384
-                }
-              },
-              "required": [
-                "id",
-                "sheet",
-                "reason",
-                "kind",
-                "at",
-                "count",
-                "to"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "type": "array"
       }
     }
   }

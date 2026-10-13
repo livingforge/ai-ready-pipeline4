@@ -40,15 +40,31 @@
 | <code>/$defs/cell/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/cell/properties/role</code> | <code>{"enum":["unassigned","text","data","row_header","column_header","note"]}</code> |
 | <code>/$defs/cell/properties/text_state</code> | <code>{"enum":["read","empty","unreadable","not_examined"]}</code> |
-| <code>/$defs/correction_journal</code> | <code>{"additionalProperties":false,"required":["schema_version","document","source_path","source_sha256","baseline_extraction_hash","elements","readings","cell_states","element_order","visuals","regions","review"],"type":"object"}</code> |
+| <code>/$defs/cell_name</code> | <code>{"description":"A cell of a correction journal, by the identities of its column and row in the document's layout: J13 is the cell of the column identity J and the row identity r13, which stay with the column and row when others are inserted or deleted before them; any other identity is written in brackets, as in J[ins-1]. Without a layout the name is the address.","pattern":"^([A-Z]+&#124;\\[[^\\]]+\\])([0-9]+&#124;\\[[^\\]]+\\])$","type":"string"}</code> |
+| <code>/$defs/cell_range</code> | <code>{"description":"The cells of the extraction from the first named cell to the last, or one cell.","pattern":"^([A-Z]+&#124;\\[[^\\]]+\\])([0-9]+&#124;\\[[^\\]]+\\])(:([A-Z]+&#124;\\[[^\\]]+\\])([0-9]+&#124;\\[[^\\]]+\\]))?$","type":"string"}</code> |
+| <code>/$defs/corrected_element</code> | <code>{"additionalProperties":false,"description":"An element of a correction without its cells, which the correction lists apart; evidence is left out when there is none. The context of a parent names the parent's cells.","required":["id","kind","sheet","reading"],"type":"object"}</code> |
+| <code>/$defs/corrected_element/properties/descriptions</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/corrected_element/properties/evidence</code> | <code>{"minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/$defs/corrected_element/properties/evidence/items</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/corrected_element/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/corrected_element/properties/kind</code> | <code>{"enum":["text","table"]}</code> |
+| <code>/$defs/corrected_element/properties/parent</code> | <code>{"additionalProperties":false,"required":["element","context"],"type":"object"}</code> |
+| <code>/$defs/corrected_element/properties/parent/properties/context</code> | <code>{"type":"array","uniqueItems":true}</code> |
+| <code>/$defs/corrected_element/properties/parent/properties/context/items</code> | <code>{"$ref":"#/$defs/cell_name"}</code> |
+| <code>/$defs/corrected_element/properties/parent/properties/element</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/corrected_element/properties/reading</code> | <code>{"$ref":"#/$defs/reading"}</code> |
+| <code>/$defs/corrected_element/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
+| <code>/$defs/corrected_element/allOf/0</code> | <code>{"if":{"required":["descriptions"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
+| <code>/$defs/corrected_element/allOf/1</code> | <code>{"if":{"required":["parent"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
+| <code>/$defs/correction_journal</code> | <code>{"additionalProperties":false,"required":["schema_version","source_sha256","baseline_extraction_hash","elements","readings","cell_states","element_order","visuals","regions","review"],"type":"object"}</code> |
 | <code>/$defs/correction_journal/properties/baseline_extraction_hash</code> | <code>{"$ref":"#/$defs/hash"}</code> |
-| <code>/$defs/correction_journal/properties/carried</code> | <code>{"additionalProperties":false,"description":"How the import of this version carried the interpretation of the version before: by the row/column operations documents apply wrote, or by those found aligning the rows and columns of an original edited outside ARP. moved counts the cells that moved with the operations. affected lists each element, visual and image region the carrying touched, once for each reason, with the cells of an element: added to tables by insertions or, when new, to the element around them; removed with deleted rows/columns; or changed in value (read again from the new value unless a reader had left them unreadable or unexamined). An element left without cells is removed with every cell it lost. review says whether the review was kept.","required":["by","operations","moved","review","reasons","affected"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/carried</code> | <code>{"additionalProperties":false,"description":"How the import of this version carried the interpretation of the version before: by the row/column operations documents apply wrote, or by those found aligning the rows and columns of an original edited outside ARP. moved counts the cells that moved with the operations. affected lists each element, visual and image region the carrying touched, once for each reason, with the cells of an element: added to tables by insertions or, when new, to the element around them; removed with deleted rows/columns; or changed in value (read again from the new value unless a reader had left them unreadable or unexamined). An element left without cells is removed with every cell it lost; a table whose parent table was removed loses its parent (parent_removed). review says whether the review was kept.","required":["by","operations","moved","review","reasons","affected"],"type":"object"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/affected</code> | <code>{"type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/affected/items</code> | <code>{"additionalProperties":false,"required":["kind","id","reason"],"type":"object"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/cells</code> | <code>{"$ref":"#/$defs/ids"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/kind</code> | <code>{"enum":["element","visual","region"]}</code> |
-| <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/reason</code> | <code>{"enum":["moved","added","removed","changed","inferred"]}</code> |
+| <code>/$defs/correction_journal/properties/carried/properties/affected/items/properties/reason</code> | <code>{"enum":["moved","added","removed","changed","inferred","parent_removed"]}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/by</code> | <code>{"enum":["apply","alignment"]}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/moved</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/operations</code> | <code>{"$ref":"#/$defs/ids"}</code> |
@@ -56,27 +72,31 @@
 | <code>/$defs/correction_journal/properties/carried/properties/reasons/items</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/carried/properties/review</code> | <code>{"enum":["kept","pending","not_reviewed"]}</code> |
 | <code>/$defs/correction_journal/properties/cell_states</code> | <code>{"description":"Cells whose text_state is not the one the parser reads from their value (read when it holds text, empty otherwise), with the hash of the cell they were given for.","type":"array"}</code> |
-| <code>/$defs/correction_journal/properties/cell_states/items</code> | <code>{"additionalProperties":false,"required":["sheet","address","sha256","text_state"],"type":"object"}</code> |
-| <code>/$defs/correction_journal/properties/cell_states/items/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items</code> | <code>{"additionalProperties":false,"required":["sheet","cell","sha256","text_state"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/cell_states/items/properties/cell</code> | <code>{"$ref":"#/$defs/cell_name"}</code> |
 | <code>/$defs/correction_journal/properties/cell_states/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/cell_states/items/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/correction_journal/properties/cell_states/items/properties/text_state</code> | <code>{"enum":["read","empty","unreadable","not_examined"]}</code> |
-| <code>/$defs/correction_journal/properties/document</code> | <code>{"$ref":"#/$defs/document_id"}</code> |
 | <code>/$defs/correction_journal/properties/element_order</code> | <code>{"$ref":"#/$defs/ids"}</code> |
-| <code>/$defs/correction_journal/properties/elements</code> | <code>{"description":"Elements whose structure differs from the parser's hypothesis: kind, cells, roles, headers, descriptions or evidence. Each cell's text_state is as the parser reads it; a reader's other states are in cell_states.","type":"array"}</code> |
-| <code>/$defs/correction_journal/properties/elements/items</code> | <code>{"additionalProperties":false,"required":["element","sources"],"type":"object"}</code> |
-| <code>/$defs/correction_journal/properties/elements/items/properties/element</code> | <code>{"$ref":"#/$defs/element"}</code> |
-| <code>/$defs/correction_journal/properties/elements/items/properties/sources</code> | <code>{"minItems":1,"type":"array"}</code> |
-| <code>/$defs/correction_journal/properties/elements/items/properties/sources/items</code> | <code>{"additionalProperties":false,"required":["address","sha256"],"type":"object"}</code> |
-| <code>/$defs/correction_journal/properties/elements/items/properties/sources/items/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/correction_journal/properties/elements/items/properties/sources/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
-| <code>/$defs/correction_journal/properties/readings</code> | <code>{"description":"Readings of elements whose structure the parser inferred as the reader left it, each bound to a cell of the element; replay gives the reading to the parser's element holding that cell.","type":"array"}</code> |
-| <code>/$defs/correction_journal/properties/readings/items</code> | <code>{"additionalProperties":false,"required":["element","sheet","anchor","reading"],"type":"object"}</code> |
-| <code>/$defs/correction_journal/properties/readings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["address","sha256"],"type":"object"}</code> |
-| <code>/$defs/correction_journal/properties/readings/items/properties/anchor/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/correction_journal/properties/readings/items/properties/anchor/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/correction_journal/properties/elements</code> | <code>{"description":"Elements whose structure differs from the parser's hypothesis: kind, cells, roles, headers, descriptions or evidence. cells lists ranges whose cells of the extraction, row by row and range after range, are the element's cells; changes gives each cell whose ID, role or headers differ from those the parser gives the cell, and only the fields that differ. A cell the parser gives no element has the ID s&lt;sheet number&gt;-&lt;address&gt;, the role unassigned and no headers. Each cell's text_state is the one the parser reads from its value; a reader's other states are in cell_states. sha256 binds the element to its cells and to what the parser gives them; replayed on an extraction where they differ, every cell of the element is examined again.","type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items</code> | <code>{"additionalProperties":false,"required":["element","cells","sha256"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/cells</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/cells/items</code> | <code>{"$ref":"#/$defs/cell_range"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes/items</code> | <code>{"additionalProperties":false,"minProperties":2,"required":["cell"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes/items/properties/cell</code> | <code>{"$ref":"#/$defs/cell_name"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes/items/properties/headers</code> | <code>{"type":"array","uniqueItems":true}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes/items/properties/headers/items</code> | <code>{"$ref":"#/$defs/cell_name"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes/items/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/changes/items/properties/role</code> | <code>{"enum":["unassigned","text","data","row_header","column_header","note"]}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/element</code> | <code>{"$ref":"#/$defs/corrected_element"}</code> |
+| <code>/$defs/correction_journal/properties/elements/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
+| <code>/$defs/correction_journal/properties/readings</code> | <code>{"description":"Readings of elements whose structure the parser inferred as the reader left it, each bound to a cell of the element and the hash of that cell; replay gives the reading to the parser's element holding that cell.","type":"array"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items</code> | <code>{"additionalProperties":false,"required":["element","sheet","anchor","sha256","reading"],"type":"object"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/anchor</code> | <code>{"$ref":"#/$defs/cell_name"}</code> |
 | <code>/$defs/correction_journal/properties/readings/items/properties/element</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/readings/items/properties/reading</code> | <code>{"$ref":"#/$defs/reading"}</code> |
+| <code>/$defs/correction_journal/properties/readings/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/readings/items/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/correction_journal/properties/regions</code> | <code>{"type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/regions/items</code> | <code>{"$ref":"#/$defs/region"}</code> |
@@ -88,8 +108,7 @@
 | <code>/$defs/correction_journal/properties/review/oneOf/1/properties/content_hash</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/review/oneOf/1/properties/reason</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/correction_journal/properties/review/oneOf/1/properties/status</code> | <code>{"enum":["accepted","rejected"]}</code> |
-| <code>/$defs/correction_journal/properties/schema_version</code> | <code>{"const":1}</code> |
-| <code>/$defs/correction_journal/properties/source_path</code> | <code>{"$ref":"#/$defs/source_path"}</code> |
+| <code>/$defs/correction_journal/properties/schema_version</code> | <code>{"const":2}</code> |
 | <code>/$defs/correction_journal/properties/source_sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/visuals</code> | <code>{"type":"array"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items</code> | <code>{"additionalProperties":false,"required":["visual","sources"],"type":"object"}</code> |
@@ -120,9 +139,13 @@
 | <code>/$defs/element/properties/evidence</code> | <code>{"$ref":"#/$defs/ids"}</code> |
 | <code>/$defs/element/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/element/properties/kind</code> | <code>{"enum":["text","table"]}</code> |
+| <code>/$defs/element/properties/parent</code> | <code>{"additionalProperties":false,"description":"The table this table is nested in, on the same sheet: a table inside a cell of a Word table, or a table written in the detail columns of an Excel table. Its cells stay owned by this table and link only to its own headers. Context lists the parent's cells that qualify this table as a whole: the parent's headers above it and the parent's cells of the records it belongs to.","required":["element","context"],"type":"object"}</code> |
+| <code>/$defs/element/properties/parent/properties/context</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/element/properties/parent/properties/element</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/element/properties/reading</code> | <code>{"$ref":"#/$defs/reading"}</code> |
 | <code>/$defs/element/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
 | <code>/$defs/element/allOf/0</code> | <code>{"if":{"required":["descriptions"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
+| <code>/$defs/element/allOf/1</code> | <code>{"if":{"required":["parent"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
 | <code>/$defs/graph</code> | <code>{"additionalProperties":false,"description":"Reviewed interpretation within one visual. Node IDs are local. Sources reference that visual's extraction sources or evidence regions; labels are interpretations, not exact quotations. Vision requires image evidence on the visual.","required":["nodes","edges","reading"],"type":"object"}</code> |
 | <code>/$defs/graph/properties/edges</code> | <code>{"type":"array","uniqueItems":true}</code> |
 | <code>/$defs/graph/properties/edges/items</code> | <code>{"additionalProperties":false,"required":["from","to","label","sources"],"type":"object"}</code> |

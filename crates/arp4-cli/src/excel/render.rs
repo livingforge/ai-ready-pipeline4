@@ -23,10 +23,12 @@ pub fn render(
     let request_path = stage.path().join("request.json");
     let result_path = stage.path().join("result.json");
     let output = stage.path().join("render.png");
+    // Waiting for another render takes at most half the time, leaving the
+    // rest to this one.
     fs::write(
         &request_path,
         encoded(
-            &json!({"source":source,"sheet":sheet,"range":range,"output":output,"result":result_path}),
+            &json!({"source":source,"sheet":sheet,"range":range,"output":output,"result":result_path,"lock_wait_seconds":timeout / 2}),
         ),
     )?;
     let log = stage.path().join("stderr.txt");

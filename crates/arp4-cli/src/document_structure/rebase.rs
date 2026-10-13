@@ -1,4 +1,7 @@
+use super::corrections::SourceCell;
+use super::grid::Axes;
 use super::*;
+use std::collections::HashMap;
 
 pub(super) fn fresh_id(used: &mut BTreeSet<String>, preferred: &str) -> String {
     if used.insert(preferred.to_owned()) {
@@ -51,7 +54,8 @@ fn holding_index(elements: &[Value]) -> BTreeMap<String, BTreeMap<String, (usize
     holding
 }
 
-/// Replays `journal` on the extraction `current`. `original` requires the
+/// Replays `journal` on the extraction `current`, whose cells it names by the
+/// identities of their rows and columns in `axes`. `original` requires the
 /// original to be still the one `current` was extracted from.
 pub(super) fn rebase(
     root: &Path,
@@ -59,63 +63,82 @@ pub(super) fn rebase(
     current: &Value,
     extraction_hash: &str,
     original: bool,
+    axes: &Axes,
 ) -> Result<(Value, Value)> {
     corrections::validate_journal(journal)?;
-    ensure!(
-        journal["document"] == current["document_id"]
-            && journal["source_path"] == current["source"]["path"],
-        "corrections belong to another document or source path"
-    );
     let same_source = journal["source_sha256"] == current["source"]["sha256"];
-    let mut source_cells = BTreeMap::new();
-    for sheet in array(&current["sheets"])? {
-        let name = string(&sheet["name"])?;
-        for cell in array(&sheet["cells"])? {
-            let key = (name.to_owned(), string(&cell["address"])?.to_owned());
-            ensure!(
-                source_cells.insert(key, cell).is_none(),
-                "duplicate source cell"
-            );
-        }
-    }
+    let sheets = corrections::sheets(current)?;
+    // Validated once below, after the corrections are applied.
+    let mut result = inferred(current, extraction_hash)?;
+    let defaults = corrections::Defaults::of(array(&result["elements"])?)?;
     let region_ids: BTreeSet<String> = array(&journal["regions"])?
         .iter()
         .map(|region| string(&region["id"]).map(str::to_owned))
         .collect::<Result<_>>()?;
-    let mut conflicts = Vec::new();
-    let mut candidates = BTreeMap::new();
+    // The IDs the corrections give cells, which the context of a parent names.
+    let mut ids = HashMap::new();
     for correction in array(&journal["elements"])? {
-        let mut element = correction["element"].clone();
-        let id = string(&element["id"])?.to_owned();
-        let sheet = string(&element["sheet"])?.to_owned();
-        let anchors = array(&correction["sources"])?;
-        let cells = element["cells"].as_array_mut().unwrap();
-        ensure!(
-            anchors.len() == cells.len(),
-            "correction cell anchor count mismatch"
-        );
-        let mut missing = false;
-        let mut changed = Vec::new();
-        for (cell, anchor) in cells.iter_mut().zip(anchors) {
-            let address = string(&cell["address"])?.to_owned();
-            ensure!(
-                anchor["address"] == address,
-                "correction cell anchor mismatch"
-            );
-            let key = (sheet.clone(), address.clone());
-            if let Some(source) = source_cells.get(&key) {
-                if anchor["sha256"] != hash(&encoded(source)) {
-                    cell["text_state"] = json!("not_examined");
-                    changed.push(address);
-                }
-            } else {
-                missing = true;
+        let name = string(&correction["element"]["sheet"])?;
+        for change in correction["changes"].as_array().into_iter().flatten() {
+            if let (Some(id), Ok(point)) =
+                (change.get("id"), axes.point(name, string(&change["cell"])?))
+            {
+                ids.insert((name.to_owned(), corrections::address(point)?), id.clone());
             }
         }
-        if missing || (!same_source && !array(&element["evidence"])?.is_empty()) {
-            conflicts.push(json!({"kind":"element","id":id,
-                "reason":if missing {"source_cells_missing"} else {"image_evidence_requires_new_source_review"}}));
+    }
+    let mut conflicts = Vec::new();
+    let mut candidates = BTreeMap::new();
+    let mut claimed = BTreeSet::new();
+    for correction in array(&journal["elements"])? {
+        let id = string(&correction["element"]["id"])?.to_owned();
+        let name = string(&correction["element"]["sheet"])?;
+        let replayed = match sheets.get(name) {
+            Some(sheet) => corrections::replayed(correction, sheet, &defaults, &ids, axes)?,
+            None => None,
+        };
+        // A cell another correction holds is missing to this one.
+        let Some((mut element, matched)) = replayed.filter(|(element, _)| {
+            element["cells"].as_array().unwrap().iter().all(|cell| {
+                !claimed.contains(&(
+                    name.to_owned(),
+                    cell["address"].as_str().unwrap().to_owned(),
+                ))
+            })
+        }) else {
+            conflicts.push(json!({"kind":"element","id":id,"reason":"source_cells_missing"}));
             continue;
+        };
+        if !same_source && !array(&element["evidence"])?.is_empty() {
+            conflicts.push(json!({"kind":"element","id":id,
+                "reason":"image_evidence_requires_new_source_review"}));
+            continue;
+        }
+        let cells = element["cells"].as_array_mut().unwrap();
+        claimed.extend(cells.iter().map(|cell| {
+            (
+                name.to_owned(),
+                cell["address"].as_str().unwrap().to_owned(),
+            )
+        }));
+        // Its cells, or what the parser gives them, changed since it was
+        // recorded: each cell is read again, and keeps only headers that are
+        // still headers of the element.
+        let mut changed = Vec::new();
+        if !matched {
+            let headers: BTreeSet<String> = cells
+                .iter()
+                .filter(|cell| cell["role"] == "row_header" || cell["role"] == "column_header")
+                .filter_map(|cell| cell["id"].as_str().map(str::to_owned))
+                .collect();
+            for cell in cells.iter_mut() {
+                cell["text_state"] = json!("not_examined");
+                cell["headers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|header| header.as_str().is_some_and(|h| headers.contains(h)));
+                changed.push(cell["address"].clone());
+            }
         }
         ensure!(
             candidates.insert(id.clone(), element).is_none(),
@@ -152,8 +175,6 @@ pub(super) fn rebase(
         }
     }
 
-    // Validated once below, after the corrections are applied.
-    let mut result = inferred(current, extraction_hash)?;
     if same_source {
         result["regions"] = journal["regions"].clone();
     }
@@ -174,11 +195,17 @@ pub(super) fn rebase(
         })
         .collect();
     let mut fresh = Vec::new();
+    let mut renamed: BTreeMap<String, Value> = BTreeMap::new();
     let mut used_ids: BTreeSet<String> = retained
         .iter()
         .map(|element| element["id"].as_str().unwrap().to_owned())
         .collect();
-    for mut element in result["elements"].as_array().unwrap().iter().cloned() {
+    // The inferred elements are moved, not copied: there is one per table and
+    // text of the extraction, each with its cells.
+    let Value::Array(inferred_elements) = result["elements"].take() else {
+        anyhow::bail!("inferred elements missing");
+    };
+    for mut element in inferred_elements {
         let sheet = string(&element["sheet"])?.to_owned();
         element["cells"].as_array_mut().unwrap().retain(|cell| {
             !owned.contains(&(sheet.clone(), cell["address"].as_str().unwrap().to_owned()))
@@ -198,34 +225,56 @@ pub(super) fn rebase(
                 .unwrap()
                 .retain(|header| local.contains(header.as_str().unwrap_or("")));
         }
-        element["id"] = json!(fresh_id(&mut used_ids, string(&element["id"])?));
+        let inferred_id = string(&element["id"])?.to_owned();
+        element["id"] = json!(fresh_id(&mut used_ids, &inferred_id));
+        renamed.insert(inferred_id, element["id"].clone());
         fresh.push(element);
     }
-    let corrected: BTreeSet<&str> = retained
+    // A parser table nested in another parser table follows that table's new ID.
+    for element in &mut fresh {
+        if let Some(parent) = element.get_mut("parent")
+            && let Some(id) = parent["element"].as_str().and_then(|id| renamed.get(id))
+        {
+            parent["element"] = id.clone();
+        }
+    }
+    let corrected: BTreeSet<String> = retained
         .iter()
-        .map(|element| element["id"].as_str().unwrap())
+        .map(|element| element["id"].as_str().unwrap().to_owned())
         .collect();
-    let mut elements: Vec<Value> = retained.iter().chain(fresh.iter()).cloned().collect();
+    let carried_elements = retained.len();
+    let mut elements: Vec<Value> = retained.into_iter().chain(fresh).collect();
+    for id in relations::prune_parents(&mut elements) {
+        if corrected.contains(&id) {
+            conflicts.push(json!({"kind":"element","id":id,"reason":"parent_dependency_changed"}));
+        }
+    }
 
     // A reading of an element the parser got right goes to the parser's
     // element holding its anchor cell, while that cell is what was read.
     let holding = holding_index(&elements);
+    // The address and source cell a cell name of the journal names now.
+    let source = |sheet: &str, cell: &Value| -> Result<Option<(String, Option<SourceCell<'_>>)>> {
+        let Ok(point) = axes.point(sheet, string(cell)?) else {
+            return Ok(None);
+        };
+        let address = corrections::address(point)?;
+        let now = sheets.get(sheet).and_then(|s| s.source(&address));
+        Ok(Some((address, now)))
+    };
     for reading in array(&journal["readings"])? {
         let sheet = string(&reading["sheet"])?;
-        let address = string(&reading["anchor"]["address"])?;
-        let now = source_cells
-            .get(&(sheet.to_owned(), address.to_owned()))
-            .copied();
+        let (address, now) = source(sheet, &reading["anchor"])?.unwrap_or_default();
         let reason = match holding
             .get(sheet)
-            .and_then(|cells| cells.get(address))
+            .and_then(|cells| cells.get(&address))
             .map(|(index, _)| *index)
         {
             None => Some("source_cells_missing"),
             Some(index) if corrected.contains(elements[index]["id"].as_str().unwrap_or("")) => {
                 Some("anchor_in_corrected_element")
             }
-            Some(_) if corrections::cell_hash(now) != reading["anchor"]["sha256"] => {
+            Some(_) if corrections::cell_hash(now)? != reading["sha256"] => {
                 Some("source_cells_changed")
             }
             Some(index) => {
@@ -242,15 +291,14 @@ pub(super) fn rebase(
     // cell is to be examined again.
     for state in array(&journal["cell_states"])? {
         let sheet = string(&state["sheet"])?;
-        let address = string(&state["address"])?;
-        let now = source_cells
-            .get(&(sheet.to_owned(), address.to_owned()))
-            .copied();
-        let Some(&(index, cell_index)) = holding.get(sheet).and_then(|cells| cells.get(address))
+        let Some((address, now)) = source(sheet, &state["cell"])? else {
+            continue;
+        };
+        let Some(&(index, cell_index)) = holding.get(sheet).and_then(|cells| cells.get(&address))
         else {
             continue;
         };
-        let changed = corrections::cell_hash(now) != state["sha256"];
+        let changed = corrections::cell_hash(now)? != state["sha256"];
         let cell = &mut elements[index]["cells"][cell_index];
         if changed {
             cell["text_state"] = json!("not_examined");
@@ -259,7 +307,7 @@ pub(super) fn rebase(
             cell["text_state"] = state["text_state"].clone();
         }
     }
-    result["elements"] = json!(elements);
+    result["elements"] = Value::Array(elements);
 
     let mut visuals = result["visuals"].as_array().unwrap().clone();
     let carried_visuals = rebase_visuals(
@@ -293,7 +341,7 @@ pub(super) fn rebase(
     }
     let validation = validate_hashed(root, current, extraction_hash, &result, original)?;
     let mut report = json!({"state":if validation["ready"] == true {"reviewed"} else {"needs_review"},
-        "ready":validation["ready"],"carried_elements":retained.len(),
+        "ready":validation["ready"],"carried_elements":carried_elements,
         "carried_visuals":carried_visuals,"conflicts":conflicts});
     // How apply carried this version, while it is the version replayed.
     if same_source

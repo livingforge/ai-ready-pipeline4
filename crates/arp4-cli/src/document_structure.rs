@@ -13,10 +13,12 @@ mod carry;
 mod context;
 mod corrections;
 mod edit;
+mod grid;
 mod inference;
 mod policy;
 mod rebase;
 mod relations;
+pub use grid::Axes;
 pub use policy::{policy as requirement_policy, requirements};
 
 pub fn schema() -> Value {
@@ -26,20 +28,30 @@ pub fn schema() -> Value {
     .unwrap()
 }
 
-pub fn empty_corrections(extraction: &Value) -> Value {
-    corrections::empty(extraction)
+pub fn empty_corrections(extraction: &Value, extraction_hash: &str) -> Value {
+    corrections::empty(extraction, extraction_hash)
 }
 
 pub fn validate_corrections(value: &Value) -> Result<()> {
     corrections::validate_journal(value)
 }
 
+/// Replays the correction `journal` on `extraction`, whose cells it names by
+/// the identities of their rows and columns in `axes`.
 pub fn replay_corrections(
     root: &Path,
     journal: &Value,
     extraction: &Value,
+    axes: &Axes,
 ) -> Result<(Value, Value)> {
-    rebase::rebase(root, journal, extraction, &hash(&encoded(extraction)), true)
+    rebase::rebase(
+        root,
+        journal,
+        extraction,
+        &crate::extraction::hash(extraction)?,
+        true,
+        axes,
+    )
 }
 
 /// [`replay_corrections`] for an extraction whose canonical hash the caller has
@@ -49,8 +61,9 @@ pub fn replay_verified_corrections(
     journal: &Value,
     extraction: &Value,
     extraction_hash: &str,
+    axes: &Axes,
 ) -> Result<(Value, Value)> {
-    rebase::rebase(root, journal, extraction, extraction_hash, true)
+    rebase::rebase(root, journal, extraction, extraction_hash, true, axes)
 }
 
 /// [`replay_verified_corrections`] on the extraction of an earlier version of
@@ -61,8 +74,9 @@ pub fn replay_earlier_corrections(
     journal: &Value,
     extraction: &Value,
     extraction_hash: &str,
+    axes: &Axes,
 ) -> Result<(Value, Value)> {
-    rebase::rebase(root, journal, extraction, extraction_hash, false)
+    rebase::rebase(root, journal, extraction, extraction_hash, false, axes)
 }
 
 /// How the row and column operations between two versions of an original
@@ -97,8 +111,9 @@ pub fn align_operations(
 
 /// Carries `structure`, the interpretation of the extraction `before`, onto
 /// `after`, the extraction of the original changed by `operations`. Returns
-/// the correction journal for `after` and the record of what moved, was added,
-/// removed or changed, and whether the review was kept.
+/// the correction journal for `after`, naming its cells by `axes`, and the
+/// record of what moved, was added, removed or changed, and whether the review
+/// was kept.
 pub fn carry_corrections(
     root: &Path,
     structure: &Value,
@@ -106,12 +121,20 @@ pub fn carry_corrections(
     after: &Value,
     operations: &[crate::excel::StructuralOperation],
     carrier: Carrier,
+    axes: &Axes,
 ) -> Result<(Value, Value)> {
-    carry::carry(root, structure, before, after, operations, carrier)
+    carry::carry(root, structure, before, after, operations, carrier, axes)
 }
 
-pub fn record_corrections(root: &Path, extraction: &Value, structure: &Value) -> Result<Value> {
-    corrections::record(root, extraction, structure)
+/// The correction journal of `structure` on `extraction`, which names cells by
+/// the identities of their rows and columns in `axes`.
+pub fn record_corrections(
+    root: &Path,
+    extraction: &Value,
+    structure: &Value,
+    axes: &Axes,
+) -> Result<Value> {
+    corrections::record(root, extraction, structure, axes)
 }
 
 #[derive(Clone, ValueEnum)]
@@ -220,9 +243,8 @@ pub enum StructureCommand {
 }
 
 pub fn content_hash(value: &Value) -> String {
-    let mut content = value.clone();
-    content.as_object_mut().unwrap().remove("review");
-    hash(&encoded(&content))
+    // Hashed as encoded, without copying the structure to leave the review out.
+    crate::data::hash_encoded_without(value, "review")
 }
 
 fn validate_schema(value: &Value) -> Result<()> {
@@ -288,7 +310,7 @@ fn png(root: &Path, image: &str) -> Result<Vec<u8>> {
 }
 
 fn extraction(path: &Path) -> Result<Value> {
-    let value = read(path, Some("extraction"))?;
+    let value = crate::extraction::read(path)?;
     let extension = Path::new(string(&value["source"]["path"])?)
         .extension()
         .and_then(|e| e.to_str())
@@ -303,7 +325,7 @@ fn extraction(path: &Path) -> Result<Value> {
 }
 
 pub fn initialize(root: &Path, extraction: &Value) -> Result<Value> {
-    let extraction_hash = hash(&encoded(extraction));
+    let extraction_hash = crate::extraction::hash(extraction)?;
     let value = inferred(extraction, &extraction_hash)?;
     validate_hashed(root, extraction, &extraction_hash, &value, true)?;
     Ok(value)
@@ -320,7 +342,13 @@ fn inferred(extraction: &Value, extraction_hash: &str) -> Result<Value> {
 
 /// Validity is distinct from readiness: pending/unreadable cells remain inspectable.
 pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value> {
-    validate_hashed(root, extraction, &hash(&encoded(extraction)), value, true)
+    validate_hashed(
+        root,
+        extraction,
+        &crate::extraction::hash(extraction)?,
+        value,
+        true,
+    )
 }
 
 /// [`validate`] against the already computed hash of `extraction`. `current`
@@ -466,18 +494,32 @@ fn validate_hashed(
                 );
             }
         }
-        // Iterative traversal avoids recursive overflow for deeply nested headers.
+        // Iterative traversal avoids recursive overflow for deeply nested
+        // headers. A cell is finished once all its headers are, and is not
+        // followed again, so a header repeated down a long table is read once
+        // rather than from every record; a header still on the path is a cycle.
+        let mut finished: BTreeMap<&str, bool> = BTreeMap::new();
         for id in local.keys() {
-            let mut pending = vec![*id];
-            let mut seen = BTreeSet::new();
-            while let Some(current) = pending.pop() {
-                if !seen.insert(current) {
+            if finished.contains_key(id) {
+                continue;
+            }
+            finished.insert(id, false);
+            let mut path = vec![(*id, 0)];
+            while let Some(&(current, next)) = path.last() {
+                let Some(h) = array(&local[current]["headers"])?.get(next) else {
+                    finished.insert(current, true);
+                    path.pop();
                     continue;
-                }
-                for h in array(&local[current]["headers"])? {
-                    let h = string(h)?;
-                    ensure!(h != *id, "cyclic header relationship");
-                    pending.push(h);
+                };
+                path.last_mut().unwrap().1 += 1;
+                let h = string(h)?;
+                ensure!(
+                    finished.get(h) != Some(&false),
+                    "cyclic header relationship"
+                );
+                if !finished.contains_key(h) {
+                    finished.insert(h, false);
+                    path.push((h, 0));
                 }
             }
         }
@@ -717,7 +759,7 @@ pub fn apply(
         );
         let mut found = None;
         for path in extractions {
-            let ext = read(path, Some("extraction"))?;
+            let ext = crate::extraction::read(path)?;
             if ext["document_id"] == document {
                 context::assets(path, &ext)?;
                 found = Some(ext);

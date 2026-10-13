@@ -1744,28 +1744,30 @@ Usage: arp4 documents [OPTIONS] <COMMAND>
 Commands:
   schema
   init
-  import          Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
-  remove          Remove the documents at or below an ID whose originals were moved, renamed or deleted
-  discard         Discard one proposal, leaving the original and adopted document untouched
-  search          Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
-  search-refresh  Reconcile canonical documents with the local search index
-  structure-read  Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
-  structure-save  Save structure corrections; remove a managed work/structure view on success
-  rows            Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
-  columns         Insert or delete Excel worksheet columns, like rows
-  slides          Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
-  shapes          Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
-  record          Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
-  adopt           Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
-  review          Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
+  import           Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
+  remove           Remove the documents at or below an ID whose originals were moved, renamed or deleted
+  discard          Discard one proposal, leaving the original and adopted document untouched
+  search           Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+  search-refresh   Reconcile canonical documents with the local search index
+  structure-read   Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
+  elements-read    Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
+  extraction-read  Write the extraction with every cell's font, style and cached result in place (the extraction-view contract): extraction.json stores fonts and styles once per sheet and leaves out the cached results
+  structure-save   Save structure corrections; remove a managed work/structure view on success
+  rows             Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
+  columns          Insert or delete Excel worksheet columns, like rows
+  slides           Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+  shapes           Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
+  record           Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
+  adopt            Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
+  review           Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
   diff
-  apply           Apply the exact export candidate whose layout was confirmed, then re-extract
-  confirm-export  Record a human layout review of an exported candidate and its exact hash
-  values          Edit existing Office/PDF text or Excel values, formulas and table labels using the value-edits contract, before structural operations
+  apply            Apply the exact export candidate whose layout was confirmed, then re-extract
+  confirm-export   Record a human layout review of an exported candidate and its exact hash
+  values           Edit existing Office/PDF text or Excel values, formulas and table labels using the value-edits contract, before structural operations
   export
   check
   status
-  help            Print this message or the help of the given subcommand(s)
+  help             Print this message or the help of the given subcommand(s)
 
 Options:
       --full
@@ -1876,6 +1878,9 @@ Options:
 
       --password-stdin
           Read passwords of encrypted originals from standard input, one per line; each encrypted original is opened with the first that fits
+
+      --adopt
+          Adopt each new proposal as extracted, without record and review: the document is `imported` until edited. A proposal whose adopted document has edits or a review is kept for record and adopt (`not_adopted`)
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
@@ -2025,6 +2030,80 @@ Options:
 Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
 
 Usage: arp4 documents structure-read [OPTIONS] --out <OUT> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --out <OUT>
+
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --proposal
+          Read the proposal instead of the adopted document
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents elements-read`
+
+```text
+Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
+
+Usage: arp4 documents elements-read [OPTIONS] --out <OUT> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --out <OUT>
+
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --proposal
+          Read the proposal instead of the adopted document
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents extraction-read`
+
+```text
+Write the extraction with every cell's font, style and cached result in place (the extraction-view contract): extraction.json stores fonts and styles once per sheet and leaves out the cached results
+
+Usage: arp4 documents extraction-read [OPTIONS] --out <OUT> <DOCUMENT>
 
 Arguments:
   <DOCUMENT>

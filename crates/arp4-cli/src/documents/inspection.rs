@@ -14,6 +14,20 @@ impl Store {
         require_reviewed: bool,
         planned: &Planned,
     ) -> Result<Inspection> {
+        Ok(self
+            .inspect_layout(dir, require_reviewed, planned, false)?
+            .0)
+    }
+    /// [`Store::inspect_with`] together with the layout the inspection read,
+    /// when `keep_layout` asks for it. Otherwise the layout is dropped as soon
+    /// as the pages are read: it is as large as the extraction.
+    pub(super) fn inspect_layout(
+        &self,
+        dir: &Path,
+        require_reviewed: bool,
+        planned: &Planned,
+        keep_layout: bool,
+    ) -> Result<(Inspection, Option<Value>)> {
         let files = self
             .file_hashes_with(dir, planned)?
             .context("document not found")?;
@@ -37,7 +51,8 @@ impl Store {
             files["extraction.json"] == ext_key,
             "extraction integrity failure"
         );
-        let extraction = read(&metadata.join("extraction.json"), Some("extraction"))?;
+        let extraction = crate::extraction::read_record(&metadata.join("extraction.json"))?;
+        let axes = identity::stored_axes(dir, planned)?;
         let layout = identity::load(dir, &extraction, planned)?;
         ensure!(
             meta["source"] == extraction["source"]
@@ -71,22 +86,25 @@ impl Store {
             page_files.insert(string(&page["page_id"])?.to_owned(), name);
             content_pages.push(page);
         }
-        let stored = read_planned(
+        let structure_sha256 = layout["structure_sha256"].as_str().map(str::to_owned);
+        let layout = keep_layout.then_some(layout);
+        let mut stored = complete_mappings(read_planned(
             "mappings.yml",
             &metadata.join("mappings.yml"),
             planned,
             "mappings",
-        )?;
+        )?);
+        // A journal recording nothing is not stored: it is the one of this
+        // extraction.
+        if stored.get("interpretation").is_none() {
+            stored["interpretation"] =
+                crate::document_structure::empty_corrections(&extraction, ext_key);
+        }
         // Checked like the original, with the pages slide operations delete or add.
         let operated = operated_extraction(&extraction, &stored["operations"])?;
-        let mut mappings = with_default_entries(stored, &operated)?;
+        let (mappings, entries) = with_default_entries(stored, &operated)?;
         let journal = &mappings["interpretation"];
         crate::document_structure::validate_corrections(journal)?;
-        ensure!(
-            journal["document"] == meta["document_id"]
-                && journal["source_path"] == meta["source"]["path"],
-            "document interpretation belongs to another source"
-        );
         if !structure_format(&meta)? {
             ensure!(
                 journal["elements"].as_array().is_some_and(Vec::is_empty)
@@ -145,11 +163,14 @@ impl Store {
             )
             .collect();
         self.image_assets(dir, &assets)?;
-        mappings = regenerate_mappings(mappings, &operated, &content_pages, &operations)?;
-        let content = Self::validate_content(&meta, &mappings, &content_pages)?;
+        let (mappings, entries) =
+            regenerate_mappings(mappings, entries, &operated, &content_pages, &operations)?;
+        // The pages give their values and fonts up; nothing reads them after.
+        let content = Self::validate_content(&entries, content_pages)?;
         validate_coverage(
             &operated,
             &mappings,
+            &entries,
             &content,
             &operations,
             native_text,
@@ -171,31 +192,32 @@ impl Store {
         let review = metadata.join("review.json");
         if review.exists() {
             let r = read(&review, Some("review"))?;
-            let (f, key) = self.formation(dir)?;
-            ensure!(
-                r["formation"] == key
-                    && f["document_id"] == meta["document_id"]
-                    && f["extraction"] == meta["extraction"],
-                "review/formation identity mismatch"
-            );
+            let (_, key) = self.formation(dir)?;
+            ensure!(r["formation"] == key, "review/formation identity mismatch");
             reviewed = r["content"] == fp;
         }
         ensure!(
             !require_reviewed || reviewed,
             "content changed or not reviewed; run documents review"
         );
-        Ok(Inspection {
-            meta,
-            extraction,
-            mappings,
-            values,
-            fonts,
-            page_files,
-            fingerprint: fp,
-            reviewed,
-            source_current,
-            source_missing,
-        })
+        Ok((
+            Inspection {
+                meta,
+                extraction,
+                mappings,
+                entries,
+                values,
+                fonts,
+                page_files,
+                fingerprint: fp,
+                reviewed,
+                source_current,
+                source_missing,
+                axes,
+                structure_sha256,
+            },
+            layout,
+        ))
     }
 }
 impl Store {
@@ -213,50 +235,32 @@ impl Store {
             &inspected.mappings["interpretation"],
             &inspected.extraction,
             string(&inspected.meta["extraction"])?,
+            &inspected.axes,
         )
         .map(Some)
     }
-    fn validate_content(
-        meta: &Value,
-        mappings: &Value,
-        pages: &[Value],
-    ) -> Result<ValidatedContent> {
-        let entries = array(&mappings["entries"])?;
-        let tables = mappings["tables"].as_array().cloned().unwrap_or_default();
-        let mut table_keys = BTreeSet::new();
-        let mut table_definitions = BTreeMap::new();
-        for t in &tables {
-            ensure!(
-                table_keys.insert((
-                    string(&t["page"])?.to_owned(),
-                    string(&t["block"])?.to_owned()
-                )),
-                "duplicate table definition"
-            );
-            table_definitions.insert((string(&t["page"])?, string(&t["block"])?), t);
-        }
+    fn validate_content(entries: &[Entry], mut pages: Vec<Value>) -> Result<ValidatedContent> {
         // Positioned entries by page and block, so that each table block does not
         // scan every entry of a document with many sheets, slides or pages.
-        let mut positioned: BTreeMap<(&str, &str), Vec<&Value>> = BTreeMap::new();
-        for e in entries.iter().filter(|e| e.get("position").is_some()) {
-            if let (Some(page), Some(block)) = (e["page"].as_str(), e["block"].as_str()) {
-                positioned.entry((page, block)).or_default().push(e);
+        let mut positioned: BTreeMap<(&str, &str), Vec<(&Entry, EntryPosition)>> = BTreeMap::new();
+        for e in entries {
+            if let Some(position) = e.position()? {
+                positioned
+                    .entry((e.page()?, e.block()?))
+                    .or_default()
+                    .push((e, position));
             }
         }
         let mut values = HashMap::new();
         let mut fonts = HashMap::new();
         let mut expected = BTreeSet::new();
         let mut page_ids = BTreeSet::new();
-        let mut references = vec![];
-        for page in pages {
-            ensure!(
-                page["document_id"] == meta["document_id"]
-                    && page["source_path"] == meta["source"]["path"],
-                "page identity mismatch"
-            );
+        for page in &mut pages {
             let page_id = string(&page["page_id"])?.to_owned();
             ensure!(page_ids.insert(page_id.clone()), "duplicate page ID");
-            for (block, body) in page["blocks"].as_object().unwrap() {
+            // Values and fonts are moved into the maps rather than copied.
+            let mut page_fonts = page["fonts"].take();
+            for (block, body) in page["blocks"].as_object_mut().unwrap() {
                 let base = (page_id.clone(), block.clone());
                 expected.insert((base.0.clone(), base.1.clone(), String::new()));
                 // Local links require full link/asset semantics; reject unsupported links instead of silently accepting them.
@@ -270,72 +274,47 @@ impl Store {
                         "local document links are not yet supported by Rust"
                     );
                 }
-                if let Some(fields) = body["fields"].as_object() {
+                // Looked up with get_mut: indexing a missing member mutably adds it.
+                if let Some(fields) = body.get_mut("fields").and_then(Value::as_object_mut) {
                     for (field, value) in fields {
                         values.insert(
                             (base.0.clone(), base.1.clone(), field.clone()),
-                            value.clone(),
+                            value.take(),
                         );
                     }
                 }
-                if let Some(rows) = body["rows"].as_object() {
-                    let table = table_definitions
-                        .get(&(page_id.as_str(), block.as_str()))
-                        .context("rows require table definition")?;
-                    ensure!(body.get("fields").is_none(), "table cannot contain fields");
-                    let columns = array(&table["columns"])?;
-                    let known_columns: HashSet<&str> =
-                        columns.iter().filter_map(Value::as_str).collect();
-                    let known = |column: &str| known_columns.contains(column);
+                let has_fields = body.get("fields").is_some();
+                if let Some(rows) = body.get_mut("rows").and_then(Value::as_object_mut) {
+                    ensure!(!has_fields, "table cannot contain fields");
                     let mut consumed = HashSet::new();
-                    for e in positioned
+                    for (e, pos) in positioned
                         .get(&(page_id.as_str(), block.as_str()))
                         .into_iter()
                         .flatten()
                     {
-                        let pos = &e["position"];
-                        let row = string(&pos["row"])?;
-                        let col = string(&pos["column"])?;
+                        let (row, col) = (pos.row, pos.column);
                         let value = rows
-                            .get(row)
-                            .and_then(|r| r.get(col))
+                            .get_mut(row)
+                            .and_then(|r| r.get_mut(col))
                             .context("missing table position")?;
                         ensure!(consumed.insert((row, col)), "duplicate table position");
                         ensure!(
-                            kind(value) != "object"
-                                && (value.is_null() || kind(value) == pos["type"]),
+                            kind(value) != "object" && (value.is_null() || kind(value) == pos.kind),
                             "table type/value mismatch"
                         );
-                        ensure!(known(col), "unknown column");
-                        ensure!(!e["field"].is_null(), "table field required");
-                        if let Some(font) = page["fonts"][block.as_str()][row]
-                            .get(col)
+                        ensure!(!e.field_is_null(), "table field required");
+                        if let Some(font) = page_fonts
+                            .get_mut(block.as_str())
+                            .and_then(|fonts| fonts.get_mut(row))
+                            .and_then(|fonts| fonts.get_mut(col))
                             .filter(|font| !font.is_null())
                         {
-                            fonts.insert(key(e)?, font.clone());
+                            fonts.insert(e.key()?, font.take());
                         }
                         ensure!(
-                            values.insert(key(e)?, value.clone()).is_none(),
+                            values.insert(e.key()?, value.take()).is_none(),
                             "duplicate table field"
                         );
-                    }
-                    for r in array(&table["references"])? {
-                        let row = string(&r["row"])?;
-                        let col = string(&r["column"])?;
-                        ensure!(
-                            consumed.insert((row, col))
-                                && rows.get(row).and_then(|v| v.get(col))
-                                    == Some(
-                                        &json!({"ref":{"block":r["block"],"field":r["field"]}})
-                                    ),
-                            "invalid table reference"
-                        );
-                        ensure!(known(col), "unknown reference column");
-                        references.push((
-                            page_id.clone(),
-                            string(&r["block"])?.into(),
-                            string(&r["field"])?.into(),
-                        ));
                     }
                     let mut count = 0;
                     for row in rows.values() {
@@ -344,21 +323,10 @@ impl Store {
                         count += obj.len();
                     }
                     ensure!(count == consumed.len(), "unmapped table value");
-                } else {
-                    ensure!(!table_keys.contains(&base), "mapped table has no rows");
                 }
             }
         }
         ensure!(!page_ids.is_empty(), "content is empty");
-        for r in references {
-            ensure!(values.contains_key(&r), "missing table reference target");
-        }
-        for (p, b) in table_keys {
-            ensure!(
-                expected.contains(&(p, b, String::new())),
-                "orphaned table definition"
-            );
-        }
         Ok(ValidatedContent {
             values,
             fonts,
@@ -396,25 +364,41 @@ impl Store {
     pub(super) fn state(&self, id: &str, dir: &Path, require_reviewed: bool) -> Value {
         let is_proposal = dir.join("proposal.json").is_file();
         let inspected = (|| -> Result<Value> {
-            let r = self.inspect(dir, require_reviewed)?;
-            let report = self.interpretation(&r)?.map(|(_, report)| report);
+            let mut r = self.inspect(dir, require_reviewed)?;
+            let pending = r
+                .entries
+                .iter()
+                .filter(|e| e.writeback().is_ok_and(|w| w == "pending"))
+                .count();
+            r.release_content();
+            let interpretation = self.interpretation(&r)?;
+            // The tables of the element metadata are those of the
+            // interpretation the layout was classified from; the replay infers
+            // tables with this version of ARP.
+            let structure_outdated = interpretation
+                .as_ref()
+                .map(|(structure, _)| {
+                    Ok::<_, anyhow::Error>(
+                        r.structure_sha256.as_deref()
+                            != Some(
+                                elements::interpretation_digest(array(&structure["elements"])?)?
+                                    .as_str(),
+                            ),
+                    )
+                })
+                .transpose()?;
+            let report = interpretation.map(|(_, report)| report);
             let formation = self.management(dir)?.join("formation.json");
-            let recorded = if formation.exists() {
+            let (recorded, by_import) = if formation.exists() {
                 let (f, _) = self.formation(dir)?;
-                ensure!(
-                    f["document_id"] == r.meta["document_id"]
-                        && f["extraction"] == r.meta["extraction"],
-                    "formation identity mismatch"
-                );
-                f["content"] == r.fingerprint
+                (
+                    f["content"] == r.fingerprint,
+                    adoption::formed_by_import(&f),
+                )
             } else {
                 ensure!(is_proposal, "formation missing from adopted document");
-                false
+                (false, false)
             };
-            let pending = array(&r.mappings["entries"])?
-                .iter()
-                .filter(|e| e["writeback"] == "pending")
-                .count();
             let mut blockers = vec![];
             if r.source_missing {
                 blockers.push("source_missing");
@@ -445,6 +429,9 @@ impl Store {
                 }
             } else if r.reviewed {
                 "reviewed"
+            } else if by_import && recorded {
+                // Adopted as import extracted it, with no edits to review.
+                "imported"
             } else {
                 "needs_review"
             };
@@ -459,6 +446,7 @@ impl Store {
                 "source_current":r.source_current,"content":r.fingerprint,"pending":pending,
                 "structure_ready":report.as_ref().is_some_and(|report| report["ready"] == true),
                 "structure_conflicts":report.as_ref().map(|report| report["conflicts"].as_array().map(Vec::len).unwrap_or(0)),
+                "structure_outdated":structure_outdated,
                 "state":state,"blockers":blockers,"no_changes":no_changes}),
             )
         })();
@@ -485,12 +473,12 @@ struct ValidatedContent {
 fn validate_coverage(
     extraction: &Value,
     mappings: &Value,
+    entries: &[Entry],
     content: &ValidatedContent,
     operations: &[excel::StructuralOperation],
     native_text: bool,
     text_format: bool,
 ) -> Result<()> {
-    let entries = array(&mappings["entries"])?;
     let values = &content.values;
     let expected = &content.expected;
     // Keys borrow from the extraction and mappings: a large workbook has an entry per cell.
@@ -528,12 +516,9 @@ fn validate_coverage(
         .map(|(name, merges)| Ok((name.as_str(), excel::Merges::new(merges)?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
     for e in entries {
-        let k = key(e)?;
-        ensure!(
-            !string(&e["reason"])?.trim().is_empty(),
-            "new text requires reason"
-        );
-        let mapped_target = mapping_target(&e["target"])?;
+        let k = e.key()?;
+        ensure!(!e.reason()?.trim().is_empty(), "new text requires reason");
+        let mapped_target = e.target()?;
         if let Some(MappingTarget::Cell { sheet, cell }) = mapped_target {
             let pair = (sheet, cell);
             ensure!(cells.contains_key(&pair), "missing Excel target");
@@ -545,9 +530,9 @@ fn validate_coverage(
             }
             covered_cells.insert(pair);
         }
-        match string(&e["writeback"])? {
+        match e.writeback()? {
             "excluded" => {
-                let reason = string(&e["reason"])?;
+                let reason = e.reason()?;
                 ensure!(!reason.trim().is_empty(), "exclusion requires reason");
                 // An excluded cell is never written, so an edit would be lost.
                 if let (Some(MappingTarget::Cell { sheet, cell }), Some(value)) =
@@ -555,7 +540,7 @@ fn validate_coverage(
                 {
                     let source = &cells[&(*sheet, *cell)];
                     let original = match source["formula"].as_str() {
-                        Some(formula) if e["position"]["column"] == "formula" => {
+                        Some(formula) if e.position()?.is_some_and(|p| p.column == "formula") => {
                             json!(format!("={formula}"))
                         }
                         _ => source["value"].clone(),

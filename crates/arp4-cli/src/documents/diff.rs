@@ -99,18 +99,26 @@ fn semantic_changes(
         return Ok(vec![]);
     }
     ensure!(
-        a["schema_version"] == "4" && b["schema_version"] == "4",
-        "semantic diff requires document element bindings"
+        a["schema_version"] == identity::LAYOUT_VERSION
+            && b["schema_version"] == identity::LAYOUT_VERSION,
+        "semantic diff requires layout.yml version {} on both sides; commit the re-imported documents first",
+        identity::LAYOUT_VERSION
     );
     let mut out = vec![];
     let bm = value(before, "mappings.yml")?;
     let am = value(after, "mappings.yml")?;
-    let history: Vec<_> = array(&b["history"])?
-        .iter()
+    let source_changed = value(before, "document.yml")?["source"]["sha256"]
+        != value(after, "document.yml")?["source"]["sha256"];
+    // An empty history is not stored.
+    let history: Vec<_> = b["history"]
+        .as_array()
+        .into_iter()
+        .flatten()
         .filter(|o| {
-            !array(&a["history"])
-                .is_ok_and(|history| history.iter().any(|old| old["id"] == o["id"]))
-                || (a["source_sha256"] != b["source_sha256"]
+            !a["history"]
+                .as_array()
+                .is_some_and(|history| history.iter().any(|old| old["id"] == o["id"]))
+                || (source_changed
                     && bm["operations"].as_array().is_some_and(|pending| {
                         pending.iter().any(|old| {
                             ["id", "kind", "sheet", "at", "count", "to", "style_from"]
@@ -159,6 +167,10 @@ fn semantic_changes(
             out.push(json!({"kind":"column_moved","sheet":operation.sheet,"operation_id":operation.id,"from":operation.at,"count":operation.count,"to":match operation.kind{excel::OperationKind::MoveColumns{to}=>to,_=>unreachable!()}}));
         }
     }
+    // Rows and columns are stored as their keys; place them as each version's
+    // pending operations do.
+    let a = identity::placed(a, &bm["operations"])?;
+    let b = identity::placed(b, &am["operations"])?;
     for (page, sheet) in b["sheets"].as_object().context("layout sheets missing")? {
         let previous = &a["sheets"][page];
         if previous.is_null() {
@@ -371,8 +383,9 @@ mod performance_tests {
                 "layout.yml".into(),
                 DiffFile::Text(
                     json!({
-                        "schema_version":"4", "history":[],
-                        "sheets":{"sheet-1":{"name":"Sheet", "rows":{}, "columns":{}}}
+                        "schema_version":identity::LAYOUT_VERSION,
+                        "sheets":{"sheet-1":{"name":"Sheet", "rows":[], "columns":[], "element_metadata":[],
+                            "metadata_sha256":hash_encoded(&json!([]))}}
                     })
                     .to_string(),
                 ),

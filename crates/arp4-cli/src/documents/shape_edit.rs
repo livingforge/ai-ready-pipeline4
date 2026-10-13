@@ -58,7 +58,7 @@ impl Store {
             return Err(rejection("invalid_reason", "--reason must not be empty"));
         }
         let mappings_path = dir.join("mappings.yml");
-        let mut mappings = read(&mappings_path, Some("mappings"))?;
+        let mut mappings = read_mappings(&mappings_path)?;
         let recorded = array(&mappings["operations"])?.clone();
         let kind = string(&edit.operation["kind"])?.to_owned();
         let op_id = match &edit.id {
@@ -86,8 +86,11 @@ impl Store {
         }
         let mut values = recorded.clone();
         values.push(operation.clone());
-        validate("mappings", &json!({"schema_version":"1","entries":[],"tables":[],"omissions":[],"operations":values,"interpretation":mappings["interpretation"]}))
-            .map_err(|error| rejection("invalid_shape", format!("{error:#}")))?;
+        validate(
+            "mappings",
+            &json!({"schema_version":"1","operations":values}),
+        )
+        .map_err(|error| rejection("invalid_shape", format!("{error:#}")))?;
         let operations = parse_shape_operations(&values)
             .map_err(|error| rejection("invalid_shape", format!("{error:#}")))?;
         // The slide must be one the operations leave.
@@ -135,7 +138,7 @@ impl Store {
         let mut planned = Planned::new();
         planned.insert(
             "mappings.yml".to_owned(),
-            Some(serialized(&mappings_path, &mappings)?),
+            Some(stored_mappings(&mappings_path, &mappings)?),
         );
         let result = self
             .inspect_with(&dir, false, &planned)

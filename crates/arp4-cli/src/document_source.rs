@@ -216,7 +216,9 @@ impl Source {
                     name == "sectPr" && node.tag_name().namespace() == Some(WORD)
                 };
                 if relevant {
-                    result.push(json!({"part":part,"component":name,"xml":&text[node.range()]}));
+                    let mut xml = String::new();
+                    canonical_xml(node, &mut xml);
+                    result.push(json!({"part":part,"component":name,"xml":xml}));
                 }
             }
         }
@@ -464,6 +466,13 @@ impl Source {
         }
     }
 
+    pub fn into_raw(self) -> Vec<u8> {
+        match self {
+            Self::Excel(book) => book.raw,
+            Self::Text(doc) => doc.raw,
+        }
+    }
+
     pub fn raw(&self) -> &[u8] {
         match self {
             Self::Excel(book) => &book.raw,
@@ -557,27 +566,8 @@ impl Source {
 
     fn base_note(&self) -> &'static str {
         match self {
-            Self::Text(doc) if doc.format == "md" => {
-                "Markdownの見出し階層・段落・リスト・表・コード等を原文のままブロック単位で抽出します。textのA1等はブロック番号です。positionの行範囲・UTF-8バイト範囲と原本ハッシュで出典を確認してください。リンク先・画像は読み込みません。本文は原本を直接編集し、同じ文書IDで再取込してください。確認用YAMLの本文変更・export/applyは未対応です。"
-            }
-            Self::Text(doc) if matches!(doc.format.as_str(), "csv" | "tsv") => {
-                "CSV/TSVを全項目文字列としてレコード・列単位で抽出します。先頭行も通常のレコードで、ヘッダーや型を推測しません。引用符内の改行・区切り文字、先頭ゼロ、空欄を保持します。recordsのA1等は列・レコード番号で、物理行番号ではありません。positionは原本の引用符を含むフィールドの行・UTF-8バイト範囲です。引用符は構文として復号します。原本を直接編集して再取込してください。YAML本文変更・export/applyは未対応です。"
-            }
-            Self::Text(doc) if matches!(doc.backend, TextBackend::Native) => {
-                "UTF-8テキストを空行を含め行単位で抽出します。textのA1等は原本の行番号です。positionの行・UTF-8バイト範囲と原本ハッシュで出典を確認してください。原本を直接編集して同じ文書IDで再取込してください。確認用YAMLの本文変更・export/applyは未対応です。"
-            }
-            Self::Excel(_) => {
-                "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味とActiveXコントロールの内部設定は未抽出です。印刷設定とグラフXMLは読み取り専用で抽出し、ActiveX部品はハッシュで記録します。"
-            }
-            Self::Text(doc) if doc.format == "pdf" => {
-                "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。画像・OCR・フォーム・注釈・Form XObject内の文字は未抽出です。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
-            }
-            Self::Text(doc) if word(&doc.format) => {
-                "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表し、入れ子の表は外側のセルの本文に含めます。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
-            }
-            _ => {
-                "PPTXの各スライドの本文・表を段落と表のセル単位で抽出し、スライドのノートはスライドの後にnotes-N（Nはスライド番号）として抽出します。表の外の段落は図形をまたいでスライドの上から1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。セル内の段落は改行で表します。ノートのスライド番号・日付・ヘッダー・フッターはノートマスターから表示されるため抽出しません。書き戻しは変更箇所を含むrunだけを書き換え、段落内の改行・タブを追加・削除・置換できます。段落の分割・結合となる変更は拒否し、段落・表の行はdocuments rowsで追加・削除します。スライドはdocuments slidesで複製・削除でき、複製したスライドは操作IDの名前で本文を編集します。マスター・画像・OCR・グラフ内部の文字は未抽出です。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
-            }
+            Self::Excel(_) => base_note(EXCEL_FORMATS[0]),
+            Self::Text(doc) => base_note(&doc.format),
         }
     }
 
@@ -1093,6 +1083,35 @@ fn office_containers(
     }
 }
 
+/// The note on what the extraction of an original in `format`, its file
+/// extension in lower case, reads and leaves out, before what the original
+/// itself adds to it.
+pub fn base_note(format: &str) -> &'static str {
+    match format {
+        "md" => {
+            "Markdownの見出し階層・段落・リスト・表・コード等を原文のままブロック単位で抽出します。textのA1等はブロック番号です。positionの行範囲・UTF-8バイト範囲と原本ハッシュで出典を確認してください。リンク先・画像は読み込みません。本文は原本を直接編集し、同じ文書IDで再取込してください。確認用YAMLの本文変更・export/applyは未対応です。"
+        }
+        "csv" | "tsv" => {
+            "CSV/TSVを全項目文字列としてレコード・列単位で抽出します。先頭行も通常のレコードで、ヘッダーや型を推測しません。引用符内の改行・区切り文字、先頭ゼロ、空欄を保持します。recordsのA1等は列・レコード番号で、物理行番号ではありません。positionは原本の引用符を含むフィールドの行・UTF-8バイト範囲です。引用符は構文として復号します。原本を直接編集して再取込してください。YAML本文変更・export/applyは未対応です。"
+        }
+        "txt" => {
+            "UTF-8テキストを空行を含め行単位で抽出します。textのA1等は原本の行番号です。positionの行・UTF-8バイト範囲と原本ハッシュで出典を確認してください。原本を直接編集して同じ文書IDで再取込してください。確認用YAMLの本文変更・export/applyは未対応です。"
+        }
+        format if is_excel(format) => {
+            "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味とActiveXコントロールの内部設定は未抽出です。印刷設定とグラフXMLは読み取り専用で抽出し、ActiveX部品はハッシュで記録します。"
+        }
+        "pdf" => {
+            "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。画像・OCR・フォーム・注釈・Form XObject内の文字は未抽出です。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
+        }
+        format if word(format) => {
+            "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表します。セル内の入れ子の表はそのセルの範囲に独自の行・列を持ち、外側のセルは入れ子の表に合わせて広がり（他のセルは結合として記録）、tablesに外側の表をparentとして記録します。罫線がなく、値のある全セルが表を持つ外側の表はレイアウト用の枠とみなし、表として記録しません。入れ子の表を持つ表の行の追加・削除は拒否します。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
+        }
+        _ => {
+            "PPTXの各スライドの本文・表を段落と表のセル単位で抽出し、スライドのノートはスライドの後にnotes-N（Nはスライド番号）として抽出します。表の外の段落は図形をまたいでスライドの上から1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。セル内の段落は改行で表します。ノートのスライド番号・日付・ヘッダー・フッターはノートマスターから表示されるため抽出しません。書き戻しは変更箇所を含むrunだけを書き換え、段落内の改行・タブを追加・削除・置換できます。段落の分割・結合となる変更は拒否し、段落・表の行はdocuments rowsで追加・削除します。スライドはdocuments slidesで複製・削除でき、複製したスライドは操作IDの名前で本文を編集します。マスター・画像・OCR・グラフ内部の文字は未抽出です。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
+        }
+    }
+}
+
 fn word(format: &str) -> bool {
     WORD_FORMATS.contains(&format)
 }
@@ -1260,6 +1279,76 @@ fn branch_texts<'cache, 'a, 'input>(
                 .collect();
             BranchTexts { nodes, positions }
         })
+}
+
+/// `node` written the same way whichever program saved it: attributes sorted
+/// by name, no space before `/>`, no whitespace-only text between elements,
+/// and text and values with only the characters XML requires escaped. Excel
+/// saves the same settings with other spacing and order than other writers.
+fn canonical_xml(node: Node<'_, '_>, out: &mut String) {
+    let qualified = |namespace: Option<&str>, local: &str| match namespace
+        .and_then(|uri| node.lookup_prefix(uri))
+        .filter(|prefix| !prefix.is_empty())
+    {
+        Some(prefix) => format!("{prefix}:{local}"),
+        None => local.to_owned(),
+    };
+    let tag = qualified(node.tag_name().namespace(), node.tag_name().name());
+    out.push('<');
+    out.push_str(&tag);
+    let mut attributes: Vec<_> = node
+        .attributes()
+        .map(|a| (qualified(a.namespace(), a.name()), a.value()))
+        .collect();
+    attributes.sort();
+    for (name, value) in attributes {
+        out.push(' ');
+        out.push_str(&name);
+        out.push_str("=\"");
+        for c in value.chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '"' => out.push_str("&quot;"),
+                '\t' => out.push_str("&#9;"),
+                '\n' => out.push_str("&#10;"),
+                '\r' => out.push_str("&#13;"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+    let nested = node.children().any(|c| c.is_element());
+    let children: Vec<_> = node
+        .children()
+        .filter(|c| {
+            c.is_element()
+                || (c.is_text() && !(nested && c.text().is_some_and(|t| t.trim().is_empty())))
+        })
+        .collect();
+    if children.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    for child in children {
+        if child.is_element() {
+            canonical_xml(child, out);
+        } else {
+            for c in child.text().unwrap_or_default().chars() {
+                match c {
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    '\r' => out.push_str("&#13;"),
+                    c => out.push(c),
+                }
+            }
+        }
+    }
+    out.push_str("</");
+    out.push_str(&tag);
+    out.push('>');
 }
 
 pub(crate) fn xml_text(value: &str) -> Result<String> {
@@ -3155,6 +3244,52 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    /// The canonical XML of the first element named `name` in `xml`.
+    fn canonical(xml: &str, name: &str) -> String {
+        let doc = Document::parse(xml).unwrap();
+        let node = doc
+            .descendants()
+            .find(|n| n.tag_name().name() == name)
+            .unwrap();
+        let mut out = String::new();
+        canonical_xml(node, &mut out);
+        out
+    }
+
+    #[test]
+    fn print_settings_read_the_same_whichever_program_saved_them() {
+        const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let excel = format!(
+            r#"<worksheet xmlns="{MAIN}" xmlns:r="{REL}"><pageSetUpPr/><pageSetup paperSize="9" orientation="landscape" r:id="rId1"/><headerFooter><oddHeader>&amp;C&amp;"ＭＳ ゴシック"見出し &lt;1&gt;</oddHeader></headerFooter></worksheet>"#
+        );
+        let other = format!(
+            r#"<x:worksheet xmlns:x="{MAIN}" xmlns:rel="{REL}">
+  <x:pageSetUpPr />
+  <x:pageSetup rel:id="rId1" orientation='landscape' paperSize="9" />
+  <x:headerFooter>
+    <x:oddHeader>&amp;C&amp;"ＭＳ ゴシック"見出し &lt;1></x:oddHeader>
+  </x:headerFooter>
+</x:worksheet>"#
+        );
+        assert_eq!(canonical(&excel, "pageSetUpPr"), "<pageSetUpPr/>");
+        assert_eq!(
+            canonical(&excel, "pageSetup"),
+            r#"<pageSetup orientation="landscape" paperSize="9" r:id="rId1"/>"#
+        );
+        assert_eq!(
+            canonical(&excel, "headerFooter"),
+            r#"<headerFooter><oddHeader>&amp;C&amp;"ＭＳ ゴシック"見出し &lt;1&gt;</oddHeader></headerFooter>"#
+        );
+        // Spacing, attribute order and quotes do not show; the prefixes the
+        // writer declared do.
+        assert_eq!(canonical(&other, "pageSetUpPr"), "<x:pageSetUpPr/>");
+        assert_eq!(
+            canonical(&other, "headerFooter"),
+            r#"<x:headerFooter><x:oddHeader>&amp;C&amp;"ＭＳ ゴシック"見出し &lt;1&gt;</x:oddHeader></x:headerFooter>"#
+        );
+    }
 
     #[test]
     fn office_parts_keep_binary_names_without_retaining_bytes() {

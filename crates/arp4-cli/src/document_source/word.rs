@@ -1,8 +1,10 @@
 //! Word text laid out on a grid. Paragraphs outside tables take one row each in
 //! column A; a table keeps its rows and grid columns, reports merged cells as
-//! merges and its range as an explicit table. A block's text joins the text of
-//! its paragraphs, and `segments` map that text back to the `w:t` elements so
-//! that an edit changes only the runs it touches.
+//! merges and its range as an explicit table. A table nested in a cell takes
+//! grid rows and columns of its own inside that cell, which grows to hold it,
+//! and is reported as a table whose parent is the outer table. A block's text
+//! joins the text of its paragraphs, and `segments` map that text back to the
+//! `w:t` elements so that an edit changes only the runs it touches.
 use super::*;
 use crate::excel::{OperationKind, StructuralOperation, column_name};
 use std::ops::Range;
@@ -125,13 +127,23 @@ fn new_table_row(
 }
 
 /// Whether row operations can change `node`: text box paragraphs have a copy
-/// for older readers, and a section break ends a section.
+/// for older readers, a section break ends a section, and a table holding
+/// tables in its cells spreads a row over several grid rows.
 fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
     ensure!(
         !node
             .ancestors()
             .any(|a| word_element(a, "txbxContent") || alternate_branch(a)),
         "row {row} is in a text box; insert or delete its paragraphs in Word"
+    );
+    ensure!(
+        !word_element(node, "tr")
+            || !nearest(node, "tbl").is_some_and(|table| {
+                table
+                    .descendants()
+                    .any(|n| word_element(n, "tbl") && n != table)
+            }),
+        "row {row} is in a table that holds other tables in its cells; insert or delete its rows in Word"
     );
     Ok(())
 }
@@ -835,13 +847,350 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
     }
 }
 
+/// What a table cell shows, in order: the text of consecutive paragraphs as one
+/// block, or a table nested in the cell.
+enum Content<'a, 'input> {
+    Text(Block<'a, 'input>),
+    Table(Measured<'a, 'input>),
+}
+
 struct GridCell<'a, 'input> {
     node: Node<'a, 'input>,
     row: usize,
     column: usize,
     span: usize,
-    restart: bool,
+    /// The last row of a vertically merged cell, else the cell's own row.
+    bottom: usize,
     continued: bool,
+    fill: bool,
+    content: Vec<Content<'a, 'input>>,
+}
+
+impl GridCell<'_, '_> {
+    /// Grid columns and rows the content needs: a nested table its own, a block one.
+    fn size(&self) -> (usize, usize) {
+        let mut width = 1;
+        let mut height = 0;
+        for content in &self.content {
+            match content {
+                Content::Text(_) => height += 1,
+                Content::Table(table) => {
+                    width = width.max(table.width());
+                    height += table.height();
+                }
+            }
+        }
+        (width, height.max(1))
+    }
+}
+
+/// A table measured for the grid. A cell holding a table takes as many grid
+/// columns and rows as that table needs, so its table row and Word grid column
+/// may take several.
+struct Measured<'a, 'input> {
+    node: Node<'a, 'input>,
+    rows: Vec<Node<'a, 'input>>,
+    cells: Vec<GridCell<'a, 'input>>,
+    /// The Word table grid's column count.
+    grid: usize,
+    /// Grid columns of each Word grid column.
+    columns: Vec<usize>,
+    /// Grid rows of each table row.
+    heights: Vec<usize>,
+}
+
+impl Measured<'_, '_> {
+    fn width(&self) -> usize {
+        self.columns.iter().sum()
+    }
+    fn height(&self) -> usize {
+        self.heights.iter().sum()
+    }
+}
+
+/// Adds the text of `paragraphs`, when they show any, as a block of the cell.
+fn push_text<'a, 'input>(
+    content: &mut Vec<Content<'a, 'input>>,
+    paragraphs: Option<Text<'a, 'input, '_>>,
+    fill: bool,
+    place: &super::word_fonts::TablePlace,
+) {
+    if let Some(text) = paragraphs
+        && !text.text.is_empty()
+    {
+        content.push(Content::Text(text.block(
+            String::new(),
+            fill,
+            Some(place.clone()),
+        )));
+    }
+}
+
+fn measure<'a, 'input>(
+    table: Node<'a, 'input>,
+    instructions: &BTreeSet<usize>,
+    hidden: &HiddenBranches,
+) -> Result<Measured<'a, 'input>> {
+    let rows: Vec<_> = table
+        .descendants()
+        .filter(|n| word_element(*n, "tr") && nearest(*n, "tbl") == Some(table))
+        .collect();
+    let mut cells = vec![];
+    for (r, tr) in rows.iter().enumerate() {
+        let mut column = number(property(*tr, "trPr", "gridBefore"), 0)?;
+        for tc in tr
+            .descendants()
+            .filter(|n| word_element(*n, "tc") && nearest(*n, "tr") == Some(*tr))
+        {
+            let span = number(property(tc, "tcPr", "gridSpan"), 1)?.max(1);
+            let merge = property(tc, "tcPr", "vMerge");
+            cells.push((
+                GridCell {
+                    node: tc,
+                    row: r,
+                    column,
+                    span,
+                    bottom: r,
+                    continued: merge.is_some_and(|m| value(m).is_none_or(|v| v == "continue")),
+                    fill: property(tc, "tcPr", "shd")
+                        .and_then(|s| s.attribute((WORD, "fill")))
+                        .is_some_and(|f| {
+                            !f.eq_ignore_ascii_case("auto") && !f.eq_ignore_ascii_case("FFFFFF")
+                        }),
+                    content: vec![],
+                },
+                merge.is_some_and(|m| value(m) == Some("restart")),
+            ));
+            column += span;
+        }
+    }
+    let grid = cells
+        .iter()
+        .map(|(c, _)| c.column + c.span)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let continued: BTreeSet<(usize, usize)> = cells
+        .iter()
+        .filter(|(cell, _)| cell.continued)
+        .map(|(cell, _)| (cell.row, cell.column))
+        .collect();
+    let mut measured = vec![];
+    for (mut cell, restart) in cells {
+        if restart {
+            while continued.contains(&(cell.bottom + 1, cell.column)) {
+                cell.bottom += 1;
+            }
+        }
+        let place = super::word_fonts::TablePlace {
+            first_row: cell.row == 0,
+            last_row: cell.bottom + 1 == rows.len(),
+            first_column: cell.column == 0,
+            last_column: cell.column + cell.span == grid,
+        };
+        // The cell's own paragraphs, text boxes included, and the tables in it;
+        // those tables' paragraphs are their cells'. A continued part of a
+        // vertically merged cell keeps all its text in one block.
+        let mut content = vec![];
+        let mut paragraphs: Option<Text<'a, 'input, '_>> = None;
+        for node in cell.node.descendants().filter(|n| {
+            !hidden.contains(*n)
+                && (cell.continued
+                    || nearest(*n, "tc") == Some(cell.node)
+                    || !word_element(*n, "p"))
+        }) {
+            if word_element(node, "p") {
+                paragraphs
+                    .get_or_insert_with(|| Text::new(instructions, hidden))
+                    .paragraph(node);
+            } else if word_element(node, "tbl")
+                && !cell.continued
+                && nearest(node, "tc") == Some(cell.node)
+            {
+                let nested = measure(node, instructions, hidden)?;
+                if !nested.rows.is_empty() {
+                    push_text(&mut content, paragraphs.take(), cell.fill, &place);
+                    content.push(Content::Table(nested));
+                }
+            }
+        }
+        push_text(&mut content, paragraphs, cell.fill, &place);
+        cell.content = content;
+        measured.push(cell);
+    }
+    let mut columns = vec![1; grid];
+    let mut heights = vec![1; rows.len()];
+    let mut sizing: Vec<_> = measured.iter().filter(|c| !c.continued).collect();
+    sizing.sort_by_key(|c| c.span);
+    for cell in &sizing {
+        let (width, _) = cell.size();
+        let have: usize = columns[cell.column..cell.column + cell.span].iter().sum();
+        if have < width {
+            columns[cell.column + cell.span - 1] += width - have;
+        }
+    }
+    sizing.sort_by_key(|c| c.bottom - c.row);
+    for cell in &sizing {
+        let (_, height) = cell.size();
+        let have: usize = heights[cell.row..=cell.bottom].iter().sum();
+        if have < height {
+            heights[cell.bottom] += height - have;
+        }
+    }
+    Ok(Measured {
+        node: table,
+        rows,
+        cells: measured,
+        grid,
+        columns,
+        heights,
+    })
+}
+
+/// Whether `table` draws no borders: its own and its cells' borders are none,
+/// and no table style can draw them.
+fn borderless(table: Node<'_, '_>) -> bool {
+    let none = |borders: Node<'_, '_>| {
+        borders
+            .children()
+            .filter(|n| n.is_element())
+            .all(|side| matches!(value(side), Some("nil" | "none")))
+    };
+    let own = match property(table, "tblPr", "tblBorders") {
+        Some(borders) => none(borders),
+        None => property(table, "tblPr", "tblStyle").is_none(),
+    };
+    own && table
+        .descendants()
+        .filter(|n| word_element(*n, "tc") && nearest(*n, "tbl") == Some(table))
+        .all(|tc| property(tc, "tcPr", "tcBorders").is_none_or(none))
+}
+
+/// Places a measured table with its top left cell at grid row `top` and grid
+/// column `left` (from 0), at least `width` grid columns wide: its last column
+/// takes the rest of the cell it is nested in. Only the rows of an outermost
+/// table are rows of the document; a nested table's rows are in its parent's.
+fn place<'a, 'input>(
+    table: Measured<'a, 'input>,
+    top: usize,
+    left: usize,
+    width: usize,
+    parent: Option<&str>,
+    nested: bool,
+    output: &mut Layout<'a, 'input>,
+) -> Result<()> {
+    let mut columns = table.columns.clone();
+    let total = table.width();
+    if width > total {
+        *columns.last_mut().unwrap() += width - total;
+    }
+    let mut x = vec![left];
+    for c in &columns {
+        x.push(x.last().unwrap() + c);
+    }
+    let mut y = vec![top];
+    for h in &table.heights {
+        y.push(y.last().unwrap() + h);
+    }
+    let address = |row: usize, column: usize| -> Result<String> {
+        Ok(format!("{}{}", column_name(column as u32 + 1)?, row))
+    };
+    let range =
+        |(row, column): (usize, usize), (bottom, right): (usize, usize)| -> Result<String> {
+            Ok(format!(
+                "{}:{}",
+                address(row, column)?,
+                address(bottom, right)?
+            ))
+        };
+    // A table drawn without borders whose every filled cell holds a table lays
+    // those tables out side by side; it is no table of its own, and they are
+    // its parent's.
+    let frame = borderless(table.node)
+        && table.cells.iter().any(|c| !c.content.is_empty())
+        && table.cells.iter().all(|c| {
+            c.content.is_empty() || c.content.iter().any(|c| matches!(c, Content::Table(_)))
+        });
+    let caption = property(table.node, "tblPr", "tblCaption")
+        .and_then(value)
+        .filter(|caption| !output.tables.iter().any(|t| t["name"] == *caption));
+    let name = caption.map_or_else(
+        || format!("table-{}", output.tables.len() + 1),
+        str::to_owned,
+    );
+    let index = output.tables.len();
+    if !frame {
+        output.tables.push(Value::Null);
+    }
+    let inner = if frame {
+        parent.map(str::to_owned)
+    } else {
+        Some(name.clone())
+    };
+    if !nested {
+        for (r, tr) in table.rows.iter().enumerate() {
+            for row in y[r]..y[r + 1] {
+                output.rows.insert(row, *tr);
+            }
+        }
+    }
+    let mut emphasis = vec![];
+    for cell in table.cells {
+        let (left, right) = (x[cell.column], x[cell.column + cell.span] - 1);
+        let top = y[cell.row];
+        let bottom = if cell.continued {
+            top
+        } else {
+            y[cell.bottom + 1] - 1
+        };
+        if cell.content.is_empty() && cell.fill {
+            emphasis.push((cell.row, true));
+        }
+        if cell.content.is_empty() && (right > left || bottom > top) {
+            output.merges.push(range((top, left), (bottom, right))?);
+        }
+        let count = cell.content.len();
+        let mut row = top;
+        for (k, content) in cell.content.into_iter().enumerate() {
+            match content {
+                Content::Text(mut block) => {
+                    let last = if k + 1 == count { bottom } else { row };
+                    block.address = address(row, left)?;
+                    emphasis.push((cell.row, block.bold || cell.fill));
+                    if right > left || last > row {
+                        output.merges.push(range((row, left), (last, right))?);
+                    }
+                    output.blocks.push(block);
+                    row = last + 1;
+                }
+                Content::Table(nested) => {
+                    let height = nested.height();
+                    place(
+                        nested,
+                        row,
+                        left,
+                        right - left + 1,
+                        inner.as_deref(),
+                        true,
+                        output,
+                    )?;
+                    row += height;
+                }
+            }
+        }
+    }
+    if frame {
+        return Ok(());
+    }
+    let header_rows = header_rows(&table.rows, &emphasis, table.grid);
+    let mut definition = json!({"name":name,
+        "range":range((top, left), (y[table.rows.len()] - 1, x[columns.len()] - 1))?,
+        "header_rows":table.heights[..header_rows].iter().sum::<usize>(),"totals_rows":0});
+    if let Some(parent) = parent {
+        definition["parent"] = json!(parent);
+    }
+    output.tables[index] = definition;
+    Ok(())
 }
 
 pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a, 'input>> {
@@ -856,7 +1205,12 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a,
     let mut row = 1;
     for node in xml.descendants().filter(|n| !hidden.contains(*n)) {
         if word_element(node, "tbl") && nearest(node, "tbl").is_none() {
-            row += table(node, row, &mut output, &instructions, &hidden)?;
+            let table = measure(node, &instructions, &hidden)?;
+            if !table.rows.is_empty() {
+                let height = table.height();
+                place(table, row, 0, 0, None, false, &mut output)?;
+                row += height;
+            }
         } else if word_element(node, "p") && nearest(node, "tc").is_none() {
             let mut text = Text::new(&instructions, &hidden);
             text.paragraph(node);
@@ -870,105 +1224,6 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a,
         }
     }
     Ok(output)
-}
-
-/// Lays out one top-level table from `top`; returns the rows it occupies.
-/// Nested tables stay inside the text of their outer cell.
-fn table<'a, 'input>(
-    table: Node<'a, 'input>,
-    top: usize,
-    output: &mut Layout<'a, 'input>,
-    instructions: &BTreeSet<usize>,
-    hidden: &HiddenBranches,
-) -> Result<usize> {
-    let rows: Vec<_> = table
-        .descendants()
-        .filter(|n| word_element(*n, "tr") && nearest(*n, "tbl") == Some(table))
-        .collect();
-    let mut cells = vec![];
-    for (r, tr) in rows.iter().enumerate() {
-        output.rows.insert(top + r, *tr);
-        let mut column = number(property(*tr, "trPr", "gridBefore"), 0)?;
-        for tc in tr
-            .descendants()
-            .filter(|n| word_element(*n, "tc") && nearest(*n, "tr") == Some(*tr))
-        {
-            let span = number(property(tc, "tcPr", "gridSpan"), 1)?.max(1);
-            let merge = property(tc, "tcPr", "vMerge");
-            cells.push(GridCell {
-                node: tc,
-                row: r,
-                column,
-                span,
-                restart: merge.is_some_and(|m| value(m) == Some("restart")),
-                continued: merge.is_some_and(|m| value(m).is_none_or(|v| v == "continue")),
-            });
-            column += span;
-        }
-    }
-    if rows.is_empty() {
-        return Ok(0);
-    }
-    let width = cells
-        .iter()
-        .map(|c| c.column + c.span)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let address = |row: usize, column: usize| -> Result<String> {
-        Ok(format!("{}{}", column_name(column as u32 + 1)?, top + row))
-    };
-    let mut emphasis = vec![];
-    let continued: BTreeSet<(usize, usize)> = cells
-        .iter()
-        .filter(|cell| cell.continued)
-        .map(|cell| (cell.row, cell.column))
-        .collect();
-    for cell in &cells {
-        let mut bottom = cell.row;
-        if cell.restart {
-            while continued.contains(&(bottom + 1, cell.column)) {
-                bottom += 1;
-            }
-        }
-        if cell.span > 1 || bottom > cell.row {
-            output.merges.push(format!(
-                "{}:{}",
-                address(cell.row, cell.column)?,
-                address(bottom, cell.column + cell.span - 1)?
-            ));
-        }
-        let mut text = Text::new(instructions, hidden);
-        for paragraph in cell
-            .node
-            .descendants()
-            .filter(|n| word_element(*n, "p") && !hidden.contains(*n))
-        {
-            text.paragraph(paragraph);
-        }
-        let fill = property(cell.node, "tcPr", "shd")
-            .and_then(|s| s.attribute((WORD, "fill")))
-            .is_some_and(|f| !f.eq_ignore_ascii_case("auto") && !f.eq_ignore_ascii_case("FFFFFF"));
-        if !text.text.is_empty() {
-            let place = super::word_fonts::TablePlace {
-                first_row: cell.row == 0,
-                last_row: bottom + 1 == rows.len(),
-                first_column: cell.column == 0,
-                last_column: cell.column + cell.span == width,
-            };
-            let block = text.block(address(cell.row, cell.column)?, fill, Some(place));
-            emphasis.push((cell.row, block.bold || fill));
-            output.blocks.push(block);
-        } else if fill {
-            emphasis.push((cell.row, true));
-        }
-    }
-    let header_rows = header_rows(&rows, &emphasis, width);
-    output.tables.push(json!({
-        "name":property(table, "tblPr", "tblCaption").and_then(value).map_or_else(|| format!("table-{}", output.tables.len() + 1), str::to_owned),
-        "range":format!("{}:{}", address(0, 0)?, address(rows.len() - 1, width - 1)?),
-        "header_rows":header_rows,"totals_rows":0}));
-    Ok(rows.len())
 }
 
 /// Header rows as a hypothesis for review: rows Word repeats as a header;
@@ -1308,17 +1563,29 @@ mod tests {
                 ("C2", "型"),
                 ("A3", "ヘッダ"),
                 ("B3", "受注番号"),
-                ("C3", "内1\n内2\n後"),
-                ("B4", "数量"),
-                ("B5", "備考"),
-                ("A6", "本文"),
+                // The nested 1x2 table widens the third column to C:D and its
+                // row to two grid rows; the text after it takes the row below.
+                ("C3", "内1"),
+                ("D3", "内2"),
+                ("C4", "後"),
+                ("B5", "数量"),
+                ("B6", "備考"),
+                ("A7", "本文"),
             ]
             .map(|(a, t)| (a.to_owned(), t.to_owned()))
         );
-        assert_eq!(layout.merges, ["A2:B2", "A3:A4", "B5:C5"]);
+        assert_eq!(
+            layout.merges,
+            [
+                "A2:B2", "C2:D2", "A3:A5", "B3:B4", "C4:D4", "C5:D5", "B6:D6"
+            ]
+        );
         assert_eq!(
             layout.tables,
-            [json!({"name":"table-1","range":"A2:D5","header_rows":1,"totals_rows":0})]
+            [
+                json!({"name":"table-1","range":"A2:E6","header_rows":1,"totals_rows":0}),
+                json!({"name":"table-2","range":"C3:D3","header_rows":0,"totals_rows":0,"parent":"table-1"})
+            ]
         );
         let sheet = layout.sheet(
             "document",
@@ -1562,6 +1829,71 @@ mod tests {
 
     /// A new row goes next to a row of its kind, and a table whose rows all
     /// go is deleted.
+    #[test]
+    fn tables_in_a_frame_stand_alone_and_rows_of_nesting_tables_stay_in_word() {
+        let nested = |head: &str, value: &str| {
+            format!(
+                "<w:tbl><w:tr>{}{}</w:tr><w:tr>{}{}</w:tr></w:tbl>",
+                tc("", &p(head)),
+                tc("", &p("型")),
+                tc("", &p(value)),
+                tc("", &p("日付"))
+            )
+        };
+        let none = r#"<w:tblPr><w:tblBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="nil"/><w:right w:val="nil"/><w:insideH w:val="nil"/><w:insideV w:val="nil"/></w:tblBorders></w:tblPr>"#;
+        let body = document(&format!(
+            "<w:tbl>{none}<w:tr>{}{}</w:tr></w:tbl>{}",
+            tc("", &(p("入力") + &nested("入力項目", "受注日") + "<w:p/>")),
+            tc("", &(p("出力") + &nested("出力項目", "出荷日") + "<w:p/>")),
+            p("後")
+        ));
+        let xml = Document::parse(&body).unwrap();
+        let layout = layout(&xml).unwrap();
+        assert_eq!(
+            cells(&layout),
+            [
+                ("A1", "入力"),
+                ("A2", "入力項目"),
+                ("B2", "型"),
+                ("A3", "受注日"),
+                ("B3", "日付"),
+                ("C1", "出力"),
+                ("C2", "出力項目"),
+                ("D2", "型"),
+                ("C3", "出荷日"),
+                ("D3", "日付"),
+                ("A4", "後"),
+            ]
+            .map(|(a, t)| (a.to_owned(), t.to_owned()))
+        );
+        // The borderless frame is no table; the tables in it have no parent.
+        assert_eq!(
+            layout.tables,
+            [
+                json!({"name":"table-1","range":"A2:B3","header_rows":0,"totals_rows":0}),
+                json!({"name":"table-2","range":"C2:D3","header_rows":0,"totals_rows":0})
+            ]
+        );
+        assert_eq!(layout.merges, ["A1:B1", "C1:D1"]);
+        // A nested cell is a block of its own, edited apart from its frame.
+        let edits = edit(&layout.blocks[3], "受注予定日").unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].1, "受注予定日");
+        let delete = StructuralOperation {
+            id: "op".into(),
+            sheet: "document".into(),
+            kind: OperationKind::DeleteRows,
+            at: 2,
+            count: 1,
+            style_from: None,
+        };
+        let error = layout
+            .restructure(&body, &[&delete], &InsertedText::new())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("holds other tables"), "{error}");
+    }
+
     #[test]
     fn restructured_rows_follow_their_kind_and_whole_tables_go() {
         let operation = |kind, at, style_from| StructuralOperation {

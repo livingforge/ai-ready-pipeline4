@@ -4,12 +4,14 @@
 //! It compares cell texts for equality and recognizes note/list markers when
 //! layout also supports prose, but does not assign table roles from words alone.
 use super::*;
-use crate::excel::{column_name, coordinate};
+use crate::excel::coordinate;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 struct Cell<'a> {
     source: &'a Value,
+    /// The cell's style, from its sheet's table.
+    style: &'a Value,
     left: u32,
     top: u32,
     right: u32,
@@ -20,13 +22,13 @@ impl Cell<'_> {
         !self.source["value"].is_null() && self.source["value"] != ""
     }
     fn bold(&self) -> bool {
-        self.source["style"]["bold"] == true
+        self.style["bold"] == true
     }
     fn fill(&self) -> u64 {
-        self.source["style"]["fill"].as_u64().unwrap_or(0)
+        self.style["fill"].as_u64().unwrap_or(0)
     }
     fn bordered(&self) -> bool {
-        self.source["style"]["border"].as_u64().unwrap_or(0) > 0
+        self.style["border"].as_u64().unwrap_or(0) > 0
     }
     fn string(&self) -> bool {
         self.source["type"] == "string"
@@ -37,19 +39,31 @@ impl Cell<'_> {
     fn span(&self) -> (u32, u32) {
         (self.left, self.right)
     }
-    /// Leading spaces, which authors use to indent a child under its parent.
+    /// Leading spaces and the indent level of the cell's format, which
+    /// authors use to indent a child under its parent.
     fn indent(&self) -> usize {
         self.text()
             .chars()
             .take_while(|c| matches!(c, ' ' | '\u{3000}'))
             .count()
+            + self.style["indent"].as_u64().unwrap_or(0) as usize
     }
 }
 
 /// Cells of a candidate table, as indices into the sheet's cells.
 type Group = Vec<usize>;
+/// A rectangle of the sheet: left, top, right, bottom.
+type Extent = (u32, u32, u32, u32);
 /// Header rows of an Excel table definition: (first row, row count).
 type Explicit = Option<(u32, u32)>;
+
+/// A table candidate and the candidate it is nested in, by key.
+struct Candidate {
+    key: usize,
+    group: Group,
+    explicit: Explicit,
+    parent: Option<usize>,
+}
 
 fn root(parent: &mut [usize], mut i: usize) -> usize {
     while parent[i] != i {
@@ -71,31 +85,129 @@ fn bounds(cells: &[Cell<'_>], group: &[usize]) -> (u32, u32, u32, u32) {
 
 /// Cells that start on `top`, in column order.
 fn row<'a, 'b>(group: &[&'b Cell<'a>], top: u32) -> Vec<&'b Cell<'a>> {
-    group.iter().copied().filter(|c| c.top == top).collect()
+    in_rows(group, top, top).to_vec()
+}
+
+/// Cells of a group sorted by (top, left) that start on the rows `first` to
+/// `last`, found by bisection so that row-by-row reading stays linear.
+fn in_rows<'g, 'a, 'b>(group: &'g [&'b Cell<'a>], first: u32, last: u32) -> &'g [&'b Cell<'a>] {
+    debug_assert!(group.is_sorted_by_key(|c| (c.top, c.left)));
+    let start = group.partition_point(|c| c.top < first);
+    let end = start + group[start..].partition_point(|c| c.top <= last);
+    &group[start..end]
+}
+
+/// The most rows a cell of the group is merged down over, after its first.
+fn height(group: &[&Cell<'_>]) -> u32 {
+    group.iter().map(|c| c.bottom - c.top).max().unwrap_or(0)
+}
+
+/// Cells of a group sorted by (top, left) that cover row `y`, in the group's
+/// order. Only the rows within `height` (see [`height`]) above `y` can hold one.
+fn covering<'g, 'a, 'b>(
+    group: &'g [&'b Cell<'a>],
+    height: u32,
+    y: u32,
+) -> impl Iterator<Item = &'b Cell<'a>> + 'g {
+    in_rows(group, y.saturating_sub(height), y)
+        .iter()
+        .copied()
+        .filter(move |c| c.bottom >= y)
 }
 
 fn valued<'a, 'b>(cells: Vec<&'b Cell<'a>>) -> Vec<&'b Cell<'a>> {
     cells.into_iter().filter(|c| c.nonempty()).collect()
 }
 
-/// Groups of cells that share an edge. Corner-only contacts do not join two
-/// tables. Returns single cells when the sheet exceeds the comparison budget.
-fn components(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> (Vec<Group>, bool) {
+/// The empty boxes (left, top, right, bottom, and whether it is an empty
+/// merged range) that are fields of a ruled table. An empty merged range is a
+/// field drawn on purpose; an empty ruled cell is one only when its row reaches
+/// a value of `free` through boxes, so a ruled blank line between two tables
+/// separates them.
+fn fields(
+    cells: &[Cell<'_>],
+    free: &[usize],
+    boxes: &[(Extent, bool)],
+) -> Vec<(u32, u32, u32, u32)> {
+    let mut at: HashMap<(u32, u32), usize> = HashMap::new();
+    for (k, &((left, top, right, bottom), _)) in boxes.iter().enumerate() {
+        for y in top..=bottom {
+            for x in left..=right {
+                at.insert((x, y), k);
+            }
+        }
+    }
+    let beside = |(left, top, right, bottom): (u32, u32, u32, u32)| {
+        (top..=bottom).flat_map(move |y| [(left.wrapping_sub(1), y), (right.saturating_add(1), y)])
+    };
+    let mut reached = vec![false; boxes.len()];
+    let mut pending = vec![];
+    for c in free.iter().map(|&i| &cells[i]) {
+        for position in beside((c.left, c.top, c.right, c.bottom)) {
+            if let Some(&k) = at.get(&position)
+                && !reached[k]
+            {
+                reached[k] = true;
+                pending.push(k);
+            }
+        }
+    }
+    while let Some(k) = pending.pop() {
+        for position in beside(boxes[k].0) {
+            if let Some(&next) = at.get(&position)
+                && !reached[next]
+            {
+                reached[next] = true;
+                pending.push(next);
+            }
+        }
+    }
+    boxes
+        .iter()
+        .zip(reached)
+        .filter(|((_, merged), reached)| *merged || *reached)
+        .map(|((extent, _), _)| *extent)
+        .collect()
+}
+
+/// Groups of cells that share an edge, directly or through the empty fields of
+/// a ruled table (`boxes`: left, top, right, bottom; see [`fields`]). A box
+/// joins what lies above or below it only across the same columns, and what
+/// lies beside it only across the same rows, as the fields of one grid line up.
+/// Boxes belong to no group. Corner-only contacts do not join two tables.
+/// Returns single cells when the sheet exceeds the comparison budget.
+fn components(
+    cells: &[Cell<'_>],
+    boxes: &[(u32, u32, u32, u32)],
+    assigned: &BTreeSet<usize>,
+) -> (Vec<Group>, bool) {
     let free: Vec<_> = (0..cells.len()).filter(|i| !assigned.contains(i)).collect();
     let mut budget = 2_000_000u64;
-    let mut parent: Vec<_> = (0..cells.len()).collect();
+    // Cells, then boxes after them, as nodes of one union-find.
+    let extent = |i: usize| -> (u32, u32, u32, u32) {
+        match cells.get(i) {
+            Some(c) => (c.left, c.top, c.right, c.bottom),
+            None => boxes[i - cells.len()],
+        }
+    };
+    let nodes: Vec<usize> = free
+        .iter()
+        .copied()
+        .chain(cells.len()..cells.len() + boxes.len())
+        .collect();
+    let mut parent: Vec<_> = (0..cells.len() + boxes.len()).collect();
     let mut occupied: HashMap<(u32, u32), usize> = HashMap::new();
     let mut exhausted = false;
-    for &i in &free {
-        let c = &cells[i];
-        let area = u64::from(c.right - c.left + 1) * u64::from(c.bottom - c.top + 1);
+    for &i in &nodes {
+        let (left, top, right, bottom) = extent(i);
+        let area = u64::from(right - left + 1) * u64::from(bottom - top + 1);
         if area > budget {
             exhausted = true;
             break;
         }
         budget -= area;
-        for y in c.top..=c.bottom {
-            for x in c.left..=c.right {
+        for y in top..=bottom {
+            for x in left..=right {
                 if let Some(j) = occupied.insert((x, y), i) {
                     let (r, s) = (root(&mut parent, j), root(&mut parent, i));
                     parent[s] = r;
@@ -104,12 +216,21 @@ fn components(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> (Vec<Group>, bo
         }
     }
     if !exhausted {
-        for &i in &free {
-            let c = &cells[i];
-            let right = (c.top..=c.bottom).map(|y| (c.right.saturating_add(1), y));
-            let below = (c.left..=c.right).map(|x| (x, c.bottom.saturating_add(1)));
-            for position in right.chain(below) {
-                if let Some(&j) = occupied.get(&position) {
+        for &i in &nodes {
+            let (left, top, right, bottom) = extent(i);
+            let beside = (top..=bottom).map(|y| ((right.saturating_add(1), y), true));
+            let below = (left..=right).map(|x| ((x, bottom.saturating_add(1)), false));
+            for (position, across) in beside.chain(below) {
+                let Some(&j) = occupied.get(&position) else {
+                    continue;
+                };
+                let other = extent(j);
+                let aligned = if across {
+                    (other.1, other.3) == (top, bottom)
+                } else {
+                    (other.0, other.2) == (left, right)
+                };
+                if (i < cells.len() && j < cells.len()) || aligned {
                     let (r, s) = (root(&mut parent, j), root(&mut parent, i));
                     parent[s] = r;
                 }
@@ -127,6 +248,7 @@ fn components(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> (Vec<Group>, bo
 /// Sparse, unbordered text with an explicit note marker beside a bordered
 /// column is a side annotation, not a bridge between neighboring tables. A
 /// bordered cell in that column (typically its header) keeps it in the grid.
+/// So is sparse plain text in the margin left of a bordered grid.
 fn side_annotations(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
     let mut columns = HashMap::<u32, Vec<&Cell<'_>>>::new();
     let mut bordered_rows = HashMap::<u32, Vec<u32>>::new();
@@ -164,29 +286,59 @@ fn side_annotations(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize
             && c.fill() == 0
             && c.left == c.right
     };
+    // Marks written in the margin left of a bordered grid, such as revision
+    // marks: plain text in the column just outside its first column, beside a
+    // few of its records but not its first row.
+    let plain = |c: &Cell<'_>| c.string() && !c.bordered() && c.fill() == 0 && !c.bold();
+    let margin = |c: &Cell<'_>| {
+        plain(c)
+            && bordered_runs
+                .get(&(c.right + 1, c.top))
+                .is_some_and(|&(top, bottom)| {
+                    let local: Vec<_> = cells
+                        .iter()
+                        .filter(|o| {
+                            o.nonempty() && o.right == c.right && o.top >= top && o.top <= bottom
+                        })
+                        .collect();
+                    c.top > top
+                        && local.iter().all(|o| plain(o) && o.top > top)
+                        && local.len() * 2 <= (bottom - top) as usize
+                })
+    };
     cells
         .iter()
         .enumerate()
-        .filter(|(i, c)| {
-            !assigned.contains(i)
-                && c.nonempty()
-                && annotation(c)
-                && c.left.checked_sub(1).is_some_and(|left| {
-                    bordered_runs
-                        .get(&(left, c.top))
-                        .is_some_and(|(top, bottom)| {
-                            columns.get(&c.left).is_some_and(|column| {
-                                let first = column.partition_point(|cell| cell.top < *top);
-                                let last = column.partition_point(|cell| cell.top <= *bottom);
-                                let local = &column[first..last];
-                                !local.is_empty()
-                                    && local.len() <= 2
-                                    && local.iter().all(|cell| annotation(cell))
-                            })
+        .filter(|(i, c)| !assigned.contains(i) && c.nonempty() && margin(c))
+        .map(|(i, _)| i)
+        .chain(
+            cells
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| {
+                    !assigned.contains(i)
+                        && c.nonempty()
+                        && annotation(c)
+                        && c.left.checked_sub(1).is_some_and(|left| {
+                            bordered_runs
+                                .get(&(left, c.top))
+                                .is_some_and(|(top, bottom)| {
+                                    columns.get(&c.left).is_some_and(|column| {
+                                        let first = column.partition_point(|cell| cell.top < *top);
+                                        let last =
+                                            column.partition_point(|cell| cell.top <= *bottom);
+                                        let local = &column[first..last];
+                                        !local.is_empty()
+                                            && local.len() <= 2
+                                            && local.iter().all(|cell| annotation(cell))
+                                    })
+                                })
                         })
                 })
-        })
-        .map(|(i, _)| i)
+                .map(|(i, _)| i),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -268,6 +420,14 @@ fn prose_bullets(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
         .collect()
 }
 
+/// The extent of each group, `None` for an empty one.
+fn extents(cells: &[Cell<'_>], groups: &[Group]) -> Vec<Option<Extent>> {
+    groups
+        .iter()
+        .map(|group| (!group.is_empty()).then(|| bounds(cells, group)))
+        .collect()
+}
+
 /// Attaches a standalone caption across a single blank row, except the document heading.
 fn attach_captions(cells: &[Cell<'_>], remaining: &mut [Group]) {
     let captions: Vec<_> = remaining
@@ -276,6 +436,7 @@ fn attach_captions(cells: &[Cell<'_>], remaining: &mut [Group]) {
         .filter(|(_, g)| g.len() == 1)
         .map(|(i, g)| (i, g[0]))
         .collect();
+    let mut extents = extents(cells, remaining);
     for (slot, id) in captions {
         if remaining[slot].is_empty() {
             continue;
@@ -290,19 +451,17 @@ fn attach_captions(cells: &[Cell<'_>], remaining: &mut [Group]) {
             .filter(|(i, g)| {
                 *i != slot
                     && g.len() > 1
-                    && bounds(cells, g)
-                        == (
-                            caption.left,
-                            caption.bottom + 2,
-                            caption.right,
-                            bounds(cells, g).3,
-                        )
+                    && extents[*i].is_some_and(|(left, top, right, _)| {
+                        (left, top, right) == (caption.left, caption.bottom + 2, caption.right)
+                    })
             })
             .map(|(i, _)| i)
             .collect();
         if let [target] = candidates.as_slice() {
             remaining[*target].push(id);
             remaining[slot].clear();
+            extents[*target] = Some(bounds(cells, &remaining[*target]));
+            extents[slot] = None;
         }
     }
 }
@@ -310,11 +469,12 @@ fn attach_captions(cells: &[Cell<'_>], remaining: &mut [Group]) {
 /// Attaches a row of bold headers to the records that begin one blank row
 /// below it in the same columns.
 fn attach_headers(cells: &[Cell<'_>], remaining: &mut [Group]) {
+    let mut extents = extents(cells, remaining);
     for slot in 0..remaining.len() {
         let head = &remaining[slot];
-        let (left, top, right, bottom) = match head.as_slice() {
-            [] | [_] => continue,
-            group => bounds(cells, group),
+        let (left, top, right, bottom) = match (head.as_slice(), extents[slot]) {
+            ([] | [_], _) | (_, None) => continue,
+            (_, Some(extent)) => extent,
         };
         if top != bottom
             || !head
@@ -330,20 +490,26 @@ fn attach_headers(cells: &[Cell<'_>], remaining: &mut [Group]) {
                 if other == slot || group.is_empty() {
                     return false;
                 }
-                let (l, t, r, _) = bounds(cells, group);
+                let Some((l, t, r, _)) = extents[other] else {
+                    return false;
+                };
+                if (l, t, r) != (left, bottom + 2, right) {
+                    return false;
+                }
                 let first: Vec<_> = group.iter().filter(|i| cells[**i].top == t).collect();
-                (l, t, r) == (left, bottom + 2, right)
-                    && first
-                        .iter()
-                        .map(|i| cells[**i].span())
-                        .collect::<BTreeSet<_>>()
-                        == spans
+                first
+                    .iter()
+                    .map(|i| cells[**i].span())
+                    .collect::<BTreeSet<_>>()
+                    == spans
                     && !first.iter().all(|i| cells[**i].bold())
             })
             .collect();
         if let [target] = targets.as_slice() {
             let head = std::mem::take(&mut remaining[slot]);
             remaining[*target].extend(head);
+            extents[*target] = Some(bounds(cells, &remaining[*target]));
+            extents[slot] = None;
         }
     }
 }
@@ -351,47 +517,62 @@ fn attach_headers(cells: &[Cell<'_>], remaining: &mut [Group]) {
 /// Joins columns set apart by one blank column to the table on their left
 /// when they cover the same rows and have no row labels of their own.
 fn join_columns(cells: &[Cell<'_>], remaining: &mut [Group]) {
+    // A group's extent, whether it is one column, and whether it has row
+    // labels of its own, kept for the groups not yet joined.
+    let shape = |group: &Group| {
+        let (left, top, right, bottom) = bounds(cells, group);
+        let single = group.iter().all(|i| cells[*i].left == left);
+        let labelled = group
+            .iter()
+            .map(|i| &cells[*i])
+            .any(|c| c.left == left && c.top > top && c.string() && c.nonempty());
+        ((left, top, right, bottom), single, labelled)
+    };
+    let mut shapes: Vec<_> = remaining
+        .iter()
+        .map(|group| (!group.is_empty()).then(|| shape(group)))
+        .collect();
     loop {
-        let mut joined = None;
-        'search: for a in 0..remaining.len() {
-            if remaining[a].is_empty() {
-                continue;
-            }
-            let (left, top, right, bottom) = bounds(cells, &remaining[a]);
-            if remaining[a].iter().all(|i| cells[*i].left == left) {
-                continue;
-            }
-            for (b, candidate) in remaining.iter().enumerate() {
-                if b == a || candidate.is_empty() {
-                    continue;
-                }
-                let (l, t, _, bt) = bounds(cells, candidate);
-                let labelled = candidate
-                    .iter()
-                    .map(|i| &cells[*i])
-                    .any(|c| c.left == l && c.top > t && c.string() && c.nonempty());
-                let single = candidate.iter().all(|i| cells[*i].left == l);
-                if right.checked_add(2) == Some(l)
-                    && (t, bt) == (top, bottom)
-                    && (single || !labelled)
-                {
-                    joined = Some((a, b));
-                    break 'search;
-                }
+        // Groups by their first column and their first and last rows, in order.
+        let mut by_edge: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::new();
+        for (b, found) in shapes.iter().enumerate() {
+            if let Some(((left, top, _, bottom), ..)) = found {
+                by_edge.entry((*left, *top, *bottom)).or_default().push(b);
             }
         }
+        let joined = shapes.iter().enumerate().find_map(|(a, found)| {
+            let ((_, top, right, bottom), single, _) = (*found)?;
+            if single {
+                return None;
+            }
+            let b = by_edge
+                .get(&(right.checked_add(2)?, top, bottom))?
+                .iter()
+                .copied()
+                .find(|&b| {
+                    b != a && shapes[b].is_some_and(|(_, single, labelled)| single || !labelled)
+                })?;
+            Some((a, b))
+        });
         let Some((a, b)) = joined else { break };
         let moved = std::mem::take(&mut remaining[b]);
         remaining[a].extend(moved);
+        shapes[a] = Some(shape(&remaining[a]));
+        shapes[b] = None;
     }
 }
 
 /// A stepped row-label column may not touch the rest of its row. Join short,
 /// bordered fragments under the same merged header when their rows already
 /// contain records to the right. A shared outer border alone does not qualify.
-fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<(Group, Explicit)>) -> Result<()> {
+fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<Candidate>) -> Result<()> {
     let mut candidate_headers = vec![];
-    for (table, explicit) in groups.iter() {
+    for Candidate {
+        group: table,
+        explicit,
+        ..
+    } in groups.iter()
+    {
         if explicit.is_some() || table.len() < 4 {
             candidate_headers.push(None);
             continue;
@@ -411,7 +592,8 @@ fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<(Group, Explicit)>
         candidate_headers.push(stub);
     }
     let mut moves = vec![];
-    for (source, (fragment, explicit)) in groups.iter().enumerate() {
+    for (source, candidate) in groups.iter().enumerate() {
+        let (fragment, explicit) = (&candidate.group, candidate.explicit);
         if explicit.is_some()
             || fragment.len() > 3
             || fragment
@@ -424,7 +606,7 @@ fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<(Group, Explicit)>
             .iter()
             .zip(&candidate_headers)
             .enumerate()
-            .filter_map(|(target, ((table, _), header))| {
+            .filter_map(|(target, (Candidate { group: table, .. }, header))| {
                 if target == source {
                     return None;
                 }
@@ -451,12 +633,14 @@ fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<(Group, Explicit)>
         }
     }
     for (source, target) in moves {
-        let fragment = std::mem::take(&mut groups[source].0);
-        groups[target].0.extend(fragment);
+        let fragment = std::mem::take(&mut groups[source].group);
+        groups[target].group.extend(fragment);
     }
-    groups.retain(|(group, _)| !group.is_empty());
-    for (group, _) in groups {
-        group.sort_by_key(|&i| (cells[i].top, cells[i].left));
+    groups.retain(|candidate| !candidate.group.is_empty());
+    for candidate in groups {
+        candidate
+            .group
+            .sort_by_key(|&i| (cells[i].top, cells[i].left));
     }
     Ok(())
 }
@@ -518,15 +702,18 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
     }
     // Merged headings may have unfilled placeholder cells. Compare the cells
     // that actually carry headings, rather than the placeholders underneath.
-    let shade = first[0].fill();
-    let shaded = shade != 0 && first.iter().all(|c| c.fill() == shade);
-    // A fill that the header rows share and no record uses.
+    // Headings may be filled differently, such as a group of columns or the
+    // weekend in its own color; each is still a fill.
+    let shades: BTreeSet<u64> = first.iter().map(|c| c.fill()).collect();
+    let shaded = !shades.contains(&0);
+    let shade = |c: &&Cell<'_>| shades.contains(&c.fill());
+    // Fills that the header rows share and no record uses.
     let mut fill_end = None;
     if shaded && (first.len() >= 2 || single) {
         let mut end = last(&first_all);
         loop {
             let next = valued(row(group, end + 1));
-            if next.is_empty() || !next.iter().all(|c| c.fill() == shade) {
+            if next.is_empty() || !next.iter().all(shade) {
                 break;
             }
             end = last(&next);
@@ -536,11 +723,15 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
             .filter(|c| c.top > end && c.nonempty())
             .map(|c| c.top)
             .min();
+        // Records may keep the header's fill on their labels at the left, as a
+        // list written across the page shades its header row and label columns.
         if next_row.is_some_and(|at| {
-            group
+            let line: Vec<_> = group
                 .iter()
                 .filter(|c| c.top == at && c.nonempty())
-                .all(|c| c.fill() != shade)
+                .collect();
+            let plain = line.iter().filter(|c| !shade(c)).map(|c| c.left).min();
+            plain.is_some_and(|x| line.iter().all(|c| !shade(c) || c.right < x))
         }) {
             fill_end = Some(end);
         }
@@ -624,10 +815,17 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
         let labelled = group
             .iter()
             .all(|c| (c.left == left) == marked(c) && (c.left != left || c.string()));
-        let complete = tops
-            .iter()
-            .all(|t| group.iter().any(|c| c.top == *t && c.left == left));
-        if labelled && complete && tops.len() >= 2 && columns.len() >= 3 {
+        // Every row starts at the left edge.
+        let complete = || {
+            group
+                .iter()
+                .filter(|c| c.left == left)
+                .map(|c| c.top)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == tops.len()
+        };
+        if labelled && tops.len() >= 2 && columns.len() >= 3 && complete() {
             header = Some((
                 header_top,
                 row(group, header_top)
@@ -677,21 +875,40 @@ fn later_headers(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    // The header rows' labels with their places relative to the first row.
+    let height = header.1 - header.0;
+    let block = |start: u32| -> BTreeSet<(u32, u32, (u32, u32), &str)> {
+        in_rows(group, start, start + height)
+            .iter()
+            .filter(|c| c.nonempty())
+            .map(|c| (c.top - start, c.bottom - start, c.span(), c.text()))
+            .collect()
+    };
+    let original = block(header.0);
     let mut repeated = BTreeSet::new();
-    for k in 1..tops.len().saturating_sub(1) {
-        let cells = valued(row(group, tops[k]));
+    let mut k = 1;
+    while k + 1 < tops.len() {
+        // The whole header written again, such as after a page break, in any look.
+        if original.len() >= 2 && block(tops[k]) == original {
+            repeated.extend(tops[k]..=tops[k] + height);
+            k = tops.partition_point(|t| *t <= tops[k] + height);
+            continue;
+        }
+        let at = k;
+        k += 1;
+        let cells = valued(row(group, tops[at]));
         if cells.len() < 2 || !cells.iter().all(|c| c.bold() && c.string()) {
             continue;
         }
         let found = labels(cells);
         if found == leaf || (found.len() == leaf.len() && found.values().eq(leaf.values())) {
-            repeated.insert(tops[k]);
+            repeated.insert(tops[at]);
         } else if split
             && (found.keys().eq(leaf.keys()) || !found.keys().all(|span| leaf.contains_key(span)))
         {
             // A lone cell directly above the new header is that table's title.
-            let titled = k >= 2 && valued(row(group, tops[k - 1])).len() == 1;
-            return (repeated, Some(tops[if titled { k - 1 } else { k }]));
+            let titled = at >= 2 && valued(row(group, tops[at - 1])).len() == 1;
+            return (repeated, Some(tops[if titled { at - 1 } else { at }]));
         }
     }
     (repeated, None)
@@ -763,8 +980,14 @@ fn strip(cells: &[Cell<'_>], group: &mut Group, leftovers: &mut Vec<usize>) {
     }
 }
 
-/// Splits a group of touching cells into the tables it holds.
-fn refine(cells: &[Cell<'_>], mut group: Group, leftovers: &mut Vec<usize>) -> Result<Vec<Group>> {
+/// Splits a group of touching cells into the tables it holds, each with the
+/// index in the result of the table it is nested in.
+fn refine(
+    cells: &[Cell<'_>],
+    boxes: &[(u32, u32, u32, u32)],
+    mut group: Group,
+    leftovers: &mut Vec<usize>,
+) -> Result<Vec<(Group, Option<usize>)>> {
     strip(cells, &mut group, leftovers);
     if group.is_empty() {
         return Ok(vec![]);
@@ -773,27 +996,237 @@ fn refine(cells: &[Cell<'_>], mut group: Group, leftovers: &mut Vec<usize>) -> R
     // Two grids can touch along a full vertical edge. A different final row,
     // together with a header and record labels on both sides, gives a much
     // stronger boundary than adjacency gives evidence of one wide grid.
-    if let Some((left, right)) = split_touching_tables(cells, &group)? {
-        let mut tables = refine(cells, left, leftovers)?;
-        tables.extend(refine(cells, right, leftovers)?);
+    if let Some((left, right)) = split_touching_tables(cells, boxes, &group)? {
+        let mut tables = refine(cells, boxes, left, leftovers)?;
+        append(&mut tables, refine(cells, boxes, right, leftovers)?, None);
         return Ok(tables);
     }
     let view: Vec<_> = group.iter().map(|i| &cells[*i]).collect();
-    let at = match layout(&view, None)?.header {
+    let header = layout(&view, None)?.header;
+    // Ruled rows of labels and values, such as a table's name and storage,
+    // written directly over the header of its column list are a form of their own.
+    if header.is_none()
+        && let Some(&first) = view.first()
+        && frame_row(&row(&view, first.top))
+    {
+        let mut below = first.bottom + 1;
+        loop {
+            let line = row(&view, below);
+            if line.is_empty() || !frame_row(&line) {
+                break;
+            }
+            below = line.iter().map(|c| c.bottom).max().unwrap() + 1;
+        }
+        let (upper, lower): (Group, Group) = group.iter().partition(|i| cells[**i].top < below);
+        let rest: Vec<_> = lower.iter().map(|i| &cells[*i]).collect();
+        if !rest.is_empty()
+            && rest.iter().all(|c| c.top >= below)
+            && layout(&rest, None)?
+                .header
+                .is_some_and(|(top, _)| top == below)
+        {
+            let mut tables = vec![(upper, None)];
+            append(&mut tables, refine(cells, boxes, lower, leftovers)?, None);
+            return Ok(tables);
+        }
+    }
+    let children = nested_tables(&view, header);
+    if !children.is_empty() {
+        let inside = |c: &Cell<'_>| {
+            children.iter().any(|&(left, top, right, bottom)| {
+                c.left >= left && c.right <= right && c.top >= top && c.top <= bottom
+            })
+        };
+        let (parent, rest): (Group, Group) = group.into_iter().partition(|i| !inside(&cells[*i]));
+        let mut tables = vec![(parent, None)];
+        for &(left, top, right, bottom) in &children {
+            let child = rest
+                .iter()
+                .copied()
+                .filter(|i| {
+                    let c = &cells[*i];
+                    c.left >= left && c.right <= right && c.top >= top && c.top <= bottom
+                })
+                .collect();
+            append(
+                &mut tables,
+                refine(cells, boxes, child, leftovers)?,
+                Some(0),
+            );
+        }
+        return Ok(tables);
+    }
+    let at = match header {
         Some(header) => later_headers(&view, header, true).1,
         None => None,
     };
     let Some(at) = at else {
-        return Ok(vec![group]);
+        return Ok(vec![(group, None)]);
     };
     let (upper, lower) = group.into_iter().partition(|i| cells[*i].top < at);
-    let mut tables = vec![upper];
-    tables.extend(refine(cells, lower, leftovers)?);
+    let mut tables = vec![(upper, None)];
+    append(&mut tables, refine(cells, boxes, lower, leftovers)?, None);
     Ok(tables)
 }
 
-fn split_touching_tables(cells: &[Cell<'_>], group: &[usize]) -> Result<Option<(Group, Group)>> {
-    let (left, top, right, _) = bounds(cells, group);
+/// Appends tables found in a part of a group; their own top-level tables are
+/// nested in `parent`, an index of `tables`.
+fn append(
+    tables: &mut Vec<(Group, Option<usize>)>,
+    found: Vec<(Group, Option<usize>)>,
+    parent: Option<usize>,
+) {
+    let offset = tables.len();
+    for (group, nested) in found {
+        tables.push((group, nested.map(|p| p + offset).or(parent)));
+    }
+}
+
+/// Header-like text: a bold or filled label.
+fn labelled(c: &Cell<'_>) -> bool {
+    c.string() && c.nonempty() && (c.bold() || c.fill() != 0)
+}
+
+/// A number that numbers the records: a number, digits, or circled numbers
+/// such as ① that refer to the same mark on a screen image.
+fn number_mark(c: &Cell<'_>) -> bool {
+    let text = c.text().trim();
+    c.source["value"].is_number()
+        || (!text.is_empty()
+            && text.chars().all(|ch| {
+                ch.is_ascii_digit()
+                    || matches!(ch, '\u{2460}'..='\u{2473}' | '\u{24EA}' | '\u{24F5}'..='\u{24FE}'
+                        | '\u{2776}'..='\u{2793}' | '\u{3251}'..='\u{325F}' | '\u{32B1}'..='\u{32BF}')
+            }))
+}
+
+/// An identifier such as `J01` or `SPW0010`, or a date written as text:
+/// ASCII letters, digits and separators with at least one digit.
+fn identifier(c: &Cell<'_>) -> bool {
+    let text = c.text().trim();
+    text.chars().any(|ch| ch.is_ascii_digit())
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+}
+
+/// A ruled row of labels and values, such as the frame atop a form sheet:
+/// filled labels alternate with plain values, two pairs or more. A label may
+/// stand before an empty field, a value not yet written.
+fn frame_row(line: &[&Cell<'_>]) -> bool {
+    let line = valued(line.to_vec());
+    let label = |c: &Cell<'_>| c.fill() != 0 && c.string();
+    line.len() >= 4
+        && line.iter().all(|c| c.bordered())
+        && label(line[0])
+        && line.windows(2).all(|pair| {
+            if label(pair[1]) {
+                !label(pair[0]) || pair[0].right + 1 < pair[1].left
+            } else {
+                label(pair[0])
+            }
+        })
+        && line.iter().filter(|c| !label(c)).count() >= 2
+}
+
+/// Child tables written inside the records of a table, as (left, top, right,
+/// bottom). A child starts at a row of two or more adjoining labels of one look that spans
+/// only part of the table's columns, beside a parent cell merged down across
+/// that row; it is a table of its own only when records follow its labels.
+/// It ends before a blank row, a cell crossing its columns, a single cell across
+/// all its columns (the parent's text), the next child's labels, or, when the
+/// parent's keys are on its left, the next parent record.
+fn nested_tables(group: &[&Cell<'_>], header: Option<(u32, u32)>) -> Vec<(u32, u32, u32, u32)> {
+    let left = group.iter().map(|c| c.left).min().unwrap();
+    let right = group.iter().map(|c| c.right).max().unwrap();
+    let top = group.iter().map(|c| c.top).min().unwrap();
+    let bottom = group.iter().map(|c| c.bottom).max().unwrap();
+    let body_top = header.map_or(top + 1, |h| h.1 + 1);
+    let tall = height(group);
+    let mut found: Vec<(u32, u32, u32, u32)> = vec![];
+    let taken = |found: &[(u32, u32, u32, u32)], c: &Cell<'_>| {
+        found
+            .iter()
+            .any(|&(l, t, r, b)| c.left <= r && c.right >= l && c.top <= b && c.bottom >= t)
+    };
+    for r in body_top..=bottom {
+        let line = row(group, r);
+        let mut k = 0;
+        while k < line.len() {
+            // A maximal run of adjoining labels of one look starting on this row.
+            let look = |c: &Cell<'_>| (c.bold(), c.fill());
+            let mut end = k;
+            while end < line.len()
+                && labelled(line[end])
+                && (end == k
+                    || (line[end - 1].right.checked_add(1) == Some(line[end].left)
+                        && look(line[end]) == look(line[k])))
+            {
+                end += 1;
+            }
+            if end == k {
+                k += 1;
+                continue;
+            }
+            let run = &line[k..end];
+            k = end;
+            let (x0, x1) = (run[0].left, run[run.len() - 1].right);
+            if run.len() < 2 || (x0 == left && x1 == right) || run.iter().any(|c| taken(&found, c))
+            {
+                continue;
+            }
+            let outside = |c: &Cell<'_>| c.right < x0 || c.left > x1;
+            let crossing =
+                |c: &Cell<'_>| (c.left < x0 && c.right >= x0) || (c.left <= x1 && c.right > x1);
+            // A parent cell merged down across the labels holds the child.
+            if !covering(group, tall, r).any(|c| outside(c) && c.bottom > r) {
+                continue;
+            }
+            let keys_left = x0 > left;
+            let mut last = r;
+            let mut records = false;
+            for y in r + 1..=bottom {
+                let starting = row(group, y);
+                let within: Vec<_> = starting
+                    .iter()
+                    .copied()
+                    .filter(|c| c.left >= x0 && c.right <= x1)
+                    .collect();
+                let covered =
+                    covering(group, tall, y).any(|c| c.top < y && c.left >= x0 && c.right <= x1);
+                let next_labels = records
+                    && within.len() >= 2
+                    && within.iter().all(|c| labelled(c))
+                    && within[0].left == x0
+                    && within[within.len() - 1].right == x1;
+                let parent_text = matches!(within.as_slice(), [c] if c.span() == (x0, x1));
+                let next_record =
+                    keys_left && starting.iter().any(|c| c.right < x0 && c.nonempty());
+                if starting.iter().any(|c| crossing(c))
+                    || (within.is_empty() && !covered)
+                    || next_labels
+                    || parent_text
+                    || next_record
+                {
+                    break;
+                }
+                records |= within.iter().any(|c| c.nonempty() && !labelled(c));
+                last = y;
+            }
+            if records {
+                found.push((x0, r, x1, last));
+            }
+        }
+    }
+    found
+}
+
+fn split_touching_tables(
+    cells: &[Cell<'_>],
+    boxes: &[(u32, u32, u32, u32)],
+    group: &[usize],
+) -> Result<Option<(Group, Group)>> {
+    let (left, top, right, last) = bounds(cells, group);
     if right - left < 3 {
         return Ok(None);
     }
@@ -803,15 +1236,26 @@ fn split_touching_tables(cells: &[Cell<'_>], group: &[usize]) -> Result<Option<(
         .filter(|seam| *seam > left && *seam + 1 < right)
         .collect();
     for seam in seams.into_iter().rev() {
+        // An empty box of the grid across the seam joins the two sides.
         if group
             .iter()
             .any(|&i| cells[i].left <= seam && cells[i].right > seam)
+            || boxes.iter().any(|&(l, t, r, b)| {
+                l <= seam && r > seam && l >= left && r <= right && t >= top && b <= last
+            })
         {
             continue;
         }
         let (a, b): (Group, Group) = group.iter().copied().partition(|&i| cells[i].right <= seam);
         let plausible = |side: &[usize]| -> Result<Option<u32>> {
-            let (l, t, r, bottom) = bounds(cells, side);
+            let (l, t, r, mut bottom) = bounds(cells, side);
+            // Empty boxes of the grid below a side carry it down.
+            while let Some(&(_, _, _, b)) = boxes
+                .iter()
+                .find(|&&(bl, bt, br, _)| bt == bottom + 1 && bl >= l && br <= r)
+            {
+                bottom = b;
+            }
             if l == r || t != top || bottom < top + 2 {
                 return Ok(None);
             }
@@ -843,7 +1287,198 @@ enum Labels {
     Through(u32),
     /// Text cells that begin in one of these columns.
     Columns(BTreeSet<u32>),
+    /// Text cells within one of these column spans (left, right).
+    Spans(Vec<(u32, u32)>),
+    /// Filled text cells: the labels of a form, wherever they stand.
+    Marked,
     None,
+}
+
+/// The columns that name the records under a header whose first row has
+/// cells merged down through every header row, and the last column of the
+/// stub (`heads`: the first header row's cells in column order, without the
+/// last column). Design documents merge down every heading without
+/// subheadings, attributes included, so a merged-down heading alone does not
+/// make its column a row label. From the left, a column names the records
+/// while it holds a value in every record and its values seldom repeat within
+/// the label on its left, until a column of names that are not codes, such as
+/// a function's name after its ID, tells every record apart with the labels
+/// on its left; a later column that happens not to repeat, such as a
+/// description, is an attribute. A heading with subheadings names them only over stepped names,
+/// one value in each record. Under a one-row header, the walk runs only where
+/// names step across columns or indents, as in a folder tree, and besides the
+/// first column only such stepped names are labels. Adjoining headings, one
+/// for each level of a tree, are one label area when each record starts one
+/// name there; under a header of several rows, each of them is merged down
+/// through all the rows. Numbers and digit codes that do not name the records, such as
+/// level numbers, are passed over; the first other column that does not name
+/// them ends the stub. `None` when no heading is merged down and no names
+/// step, or no column names the records.
+fn stub_labels(
+    group: &[&Cell<'_>],
+    heads: &[&Cell<'_>],
+    merged_down: &dyn Fn(&Cell<'_>) -> bool,
+    body: &dyn Fn(&Cell<'_>) -> bool,
+) -> Option<(u32, Vec<(u32, u32)>)> {
+    let mut starts: BTreeMap<u32, Vec<&&Cell<'_>>> = BTreeMap::new();
+    for c in group.iter().filter(|c| body(c) && c.nonempty()) {
+        starts.entry(c.top).or_default().push(c);
+    }
+    let records: BTreeSet<u32> = starts.keys().copied().collect();
+    let tall = height(group);
+    let values = |left: u32, right: u32| -> Vec<&Cell<'_>> {
+        group
+            .iter()
+            .copied()
+            .filter(|c| body(c) && c.nonempty() && c.left >= left && c.right <= right)
+            .collect()
+    };
+    let one_each = |values: &[&Cell<'_>]| {
+        let tall = height(values);
+        records
+            .iter()
+            .all(|&y| covering(values, tall, y).count() == 1)
+    };
+    // Names that start in different columns and run to the right edge, merged
+    // or spilling over empty cells, or that differ in indent.
+    let steps = |values: &[&Cell<'_>]| {
+        let right = values.iter().map(|c| c.right).max();
+        (values.iter().map(|c| c.left).collect::<HashSet<_>>().len() >= 2
+            && values
+                .iter()
+                .all(|c| Some(c.right) == right || c.left == c.right))
+            || values
+                .iter()
+                .map(|c| c.indent())
+                .collect::<HashSet<_>>()
+                .len()
+                >= 2
+    };
+    // A tree across the columns of its levels: every record starts one name,
+    // in different columns, and a name runs to the right edge, spills over
+    // empty cells or is merged down over its descendants. Read record by
+    // record, so that the columns of a wide table, tried pair by pair, are
+    // told apart at their first record rather than by all of its cells.
+    let tree = |left: u32, right: u32| {
+        let mut lefts = HashSet::new();
+        starts.values().all(|line| {
+            let mut names = line.iter().filter(|c| c.left >= left && c.right <= right);
+            let (Some(c), None) = (names.next(), names.next()) else {
+                return false;
+            };
+            lefts.insert(c.left);
+            c.string() && (c.right == right || c.left == c.right || c.bottom > c.top)
+        }) && lefts.len() >= 2
+    };
+    let layered = heads.iter().any(|c| merged_down(c));
+    // Label areas: a heading's columns, or adjoining headings over one tree.
+    let mut areas: Vec<(u32, u32, bool)> = heads
+        .iter()
+        .map(|c| (c.left, c.right, merged_down(c)))
+        .collect();
+    // Under a header of several rows, each level's heading is merged down
+    // through all of them.
+    let mut tree_area = None;
+    'search: for start in 0..heads.len() {
+        for end in (start + 1..heads.len()).rev() {
+            let adjoining =
+                (start..end).all(|k| heads[k].right.checked_add(1) == Some(heads[k + 1].left));
+            let level = !layered || heads[start..=end].iter().all(|c| merged_down(c));
+            let (left, right) = (heads[start].left, heads[end].right);
+            if adjoining && level && tree(left, right) {
+                areas.splice(start..=end, [(left, right, false)]);
+                tree_area = Some(start);
+                break 'search;
+            }
+        }
+    }
+    if !layered
+        && tree_area.is_none()
+        && !heads.iter().any(|head| {
+            let values = values(head.left, head.right);
+            values.iter().all(|c| c.string()) && one_each(&values) && steps(&values)
+        })
+    {
+        return None;
+    }
+    let key = |c: &Cell<'_>| !c.string() || number_mark(c);
+    // The names in the label areas tell every record apart.
+    let distinguished = |spans: &[(u32, u32)]| {
+        let names: HashSet<Vec<&str>> = records
+            .iter()
+            .map(|&y| {
+                covering(group, tall, y)
+                    .filter(|c| {
+                        body(c)
+                            && c.nonempty()
+                            && !key(c)
+                            && spans.iter().any(|&(l, r)| c.left >= l && c.right <= r)
+                    })
+                    .map(|c| c.text())
+                    .collect()
+            })
+            .collect();
+        names.len() == records.len()
+    };
+    let mut next = areas.first()?.0;
+    let mut end = None;
+    let mut spans: Vec<(u32, u32)> = vec![];
+    for (k, &(left, right, merged)) in areas.iter().enumerate() {
+        if left != next {
+            break;
+        }
+        let values = values(left, right);
+        if values.is_empty() {
+            break;
+        }
+        // A cell across several columns, such as a total, covers the row.
+        let complete = records.iter().all(|&y| {
+            covering(group, tall, y)
+                .any(|c| body(c) && c.nonempty() && c.left <= right && c.right >= left)
+        });
+        let single = one_each(&values);
+        let stepped = if tree_area == Some(k) {
+            true
+        } else if layered {
+            merged || single
+        } else {
+            single && (k == 0 || steps(&values))
+        };
+        // Distinct values per group: the nearest label on the left merged
+        // down across more rows, such as a subsystem over its tables.
+        let owner = |c: &Cell<'_>| {
+            spans.iter().rev().find_map(|&(l, r)| {
+                // Merged down over the whole of `c`, so over its first row.
+                covering(group, tall, c.top)
+                    .find(|o| {
+                        body(o)
+                            && o.nonempty()
+                            && o.left >= l
+                            && o.right <= r
+                            && o.bottom >= c.bottom
+                            && o.bottom - o.top > c.bottom - c.top
+                    })
+                    .map(|o| (o.left, o.top))
+            })
+        };
+        let distinct = values
+            .iter()
+            .map(|c| (owner(c), c.text()))
+            .collect::<HashSet<_>>()
+            .len();
+        if complete && stepped && distinct * 5 >= values.len() * 4 {
+            spans.push((left, right));
+            if values.iter().any(|c| !key(c) && !identifier(c)) && distinguished(&spans) {
+                end = Some(right);
+                break;
+            }
+        } else if !((merged || single) && values.iter().all(|c| key(c))) {
+            break;
+        }
+        end = Some(right);
+        next = right + 1;
+    }
+    Some((end?, spans)).filter(|(_, spans)| !spans.is_empty())
 }
 
 /// Roles and header links of one table, or `None` when the group is not a table.
@@ -852,7 +1487,7 @@ fn interpret(
     indices: &[usize],
     explicit: Explicit,
     sheet_index: usize,
-) -> Result<Option<(Vec<Value>, String)>> {
+) -> Result<Option<Vec<Value>>> {
     let mut group: Vec<_> = indices.iter().map(|i| &cells[*i]).collect();
     group.sort_by_key(|c| (c.top, c.left));
     let Layout {
@@ -896,7 +1531,9 @@ fn interpret(
         *row_counts.entry(c.top).or_default() += 1;
     }
     let multi_rows = row_counts.values().filter(|v| **v >= 2).count();
+    let frame_row = header.is_none() && row_counts.len() == 1 && frame_row(&group);
     let is_table = explicit.is_some()
+        || frame_row
         || (nonempty.len() >= 3
             && (multi_rows >= 2
                 || (caption
@@ -937,49 +1574,157 @@ fn interpret(
             && leaf.len() % period == 0
             && (0..leaf.len()).all(|i| leaf[i].text() == leaf[i % period].text())
     });
-    let stub_end = group
+    // Row labels start at the first column holding records. It is the left
+    // edge unless a nested table took the records of the leftmost columns.
+    let label_left = if group.iter().any(|c| body(c) && c.left == left) {
+        left
+    } else {
+        group
+            .iter()
+            .filter(|c| body(c) && c.nonempty())
+            .map(|c| c.left)
+            .min()
+            .unwrap_or(left)
+    };
+    // Header cells merged down through the whole header stand over the columns
+    // that may name the records; one in the last column heads those records.
+    let mut heads: Vec<_> = group
         .iter()
+        .copied()
         .filter(|c| {
-            header
-                .is_some_and(|(first, last)| c.top == first && c.bottom == last && c.bottom > c.top)
+            header.is_some_and(|(first, _)| c.top == first)
+                && c.right < right
+                && c.right >= label_left
+                && c.nonempty()
         })
-        .map(|c| c.right)
-        .max()
-        .or_else(|| {
-            // A broad first header may name staggered row labels in several
-            // columns, without a vertically merged stub below it.
-            group
-                .iter()
-                .filter(|c| {
-                    in_header(c)
-                        && c.left == left
-                        && c.right < right
-                        && c.right > left
-                        && group
-                            .iter()
-                            .filter(|other| {
-                                body(other)
-                                    && other.left >= left
-                                    && other.right <= c.right
-                                    && other.string()
-                                    && other.nonempty()
-                            })
-                            .map(|other| other.left)
-                            .collect::<BTreeSet<_>>()
-                            .len()
-                            >= 2
-                })
-                .map(|c| c.right)
-                .max()
-        });
+        .collect();
+    heads.sort_by_key(|c| c.left);
+    let stub = header.and_then(|(first, last)| {
+        let merged_down = |c: &Cell<'_>| c.top == first && c.bottom == last && c.bottom > c.top;
+        stub_labels(&group, &heads, &merged_down, &body)
+    });
+    let stub_end = stub.as_ref().map(|(end, _)| *end).or_else(|| {
+        // A broad first header may name staggered row labels in several
+        // columns, without a vertically merged stub below it.
+        group
+            .iter()
+            .filter(|c| {
+                in_header(c)
+                    && c.left == left
+                    && c.right < right
+                    && c.right > left
+                    && group
+                        .iter()
+                        .filter(|other| {
+                            body(other)
+                                && other.left >= left
+                                && other.right <= c.right
+                                && other.string()
+                                && other.nonempty()
+                        })
+                        .map(|other| other.left)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        >= 2
+            })
+            .map(|c| c.right)
+            .max()
+    });
     let through = stub_end.unwrap_or_else(|| {
         group
             .iter()
-            .filter(|c| c.left == left)
+            .filter(|c| c.left == label_left && (label_left == left || body(c)))
             .map(|c| c.right)
             .min()
-            .unwrap_or(left)
+            .unwrap_or(label_left)
     });
+    // A list numbered in its first column, such as items ① to ⑧ beside a
+    // screen image, is named by the column of names after the numbers as
+    // well, past IDs between them. So is a list numbered after a category
+    // merged down over its records, such as the records of a file layout.
+    let through = if stub_end.is_none() && label_left == left && header.is_some() {
+        let starting = |x: u32| -> Vec<&&Cell<'_>> {
+            group
+                .iter()
+                .filter(|c| body(c) && c.nonempty() && c.left == x)
+                .collect()
+        };
+        let records: BTreeSet<u32> = group
+            .iter()
+            .filter(|c| body(c) && c.nonempty())
+            .map(|c| c.top)
+            .collect();
+        // One cell in every record, each standing under a heading of its own
+        // through every header row, not under a group of columns, such as the
+        // source item of a mapping.
+        let column = |x: u32| -> Option<(u32, Vec<&&Cell<'_>>)> {
+            let cells = starting(x);
+            let own_heading = group.iter().any(|c| {
+                in_header(c)
+                    && header.is_some_and(|(first, last)| c.top == first && c.bottom == last)
+                    && c.left == x
+            });
+            let right = cells.iter().map(|c| c.right).max()?;
+            (own_heading
+                && cells.len() == records.len()
+                && cells.iter().map(|c| c.top).collect::<BTreeSet<_>>() == records)
+                .then_some((right, cells))
+        };
+        let numbered =
+            |cells: &[&&Cell<'_>]| cells.len() >= 2 && cells.iter().all(|c| number_mark(c));
+        let first = starting(left);
+        let category = first.len() < records.len()
+            && first.iter().any(|c| c.bottom > c.top)
+            && first.iter().all(|c| c.string() && !number_mark(c));
+        let mut at = None;
+        if first.len() >= 2 && first.iter().all(|c| c.right == through && number_mark(c)) {
+            at = Some(through + 1);
+        } else if category && let Some((end, numbers)) = column(through + 1) {
+            at = numbered(&numbers).then_some(end + 1);
+        }
+        // A code names a record only with the name after it; a date written
+        // as text, with no letters, is an attribute.
+        let code = |c: &Cell<'_>| {
+            let text = c.text().trim();
+            text.chars().any(|ch| ch.is_ascii_alphabetic())
+                && text.chars().any(|ch| ch.is_ascii_digit() || ch == '_')
+                && text
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        };
+        let mut names = at.and_then(column);
+        while let Some((end, cells)) = &names
+            && cells.iter().all(|c| code(c))
+        {
+            names = column(end + 1);
+        }
+        // Names that do not repeat within the category on their left.
+        let first: Vec<&Cell<'_>> = first.into_iter().copied().collect();
+        let first_tall = height(&first);
+        let owner = |c: &Cell<'_>| {
+            covering(&first, first_tall, c.top)
+                .find(|_| category)
+                .map(|o| o.top)
+        };
+        match names {
+            Some((end, cells))
+                if cells
+                    .iter()
+                    .all(|c| c.string() && !number_mark(c) && !identifier(c) && !code(c))
+                    && cells
+                        .iter()
+                        .map(|c| (owner(c), c.text()))
+                        .collect::<HashSet<_>>()
+                        .len()
+                        == cells.len() =>
+            {
+                end
+            }
+            _ => through,
+        }
+    } else {
+        through
+    };
     let columns: BTreeSet<_> = group.iter().filter(|c| body(c)).map(|c| c.left).collect();
     let column_all = |column: u32, test: &dyn Fn(&Cell<'_>) -> bool| {
         let mut cells = group
@@ -1050,12 +1795,34 @@ fn interpret(
             .copied()
             .filter(|column| column_all(*column, &|c| c.string()))
             .collect();
-        if header.is_none() && plain && shaded.contains(&left) && shaded.len() >= 2 {
+        // Labels of a form may not line up in columns when its rows divide
+        // the width differently; each row still alternates labels and values.
+        let form = frame_row
+            || header.is_none()
+                && shaded.contains(&left)
+                && group
+                    .iter()
+                    .filter(|c| body(c) && c.nonempty())
+                    .map(|c| c.top)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .filter(|&y| {
+                        let line = valued(row(&group, y));
+                        line.iter().filter(|c| c.fill() != 0 && c.string()).count() >= 2
+                            && line.iter().any(|c| c.fill() == 0)
+                    })
+                    .count()
+                    >= 2;
+        if form {
+            Labels::Marked
+        } else if header.is_none() && plain && shaded.contains(&left) && shaded.len() >= 2 {
             Labels::Columns(shaded)
-        } else if nested_labels {
-            Labels::Through(left + 1)
         } else if year_labels {
             Labels::Through(left)
+        } else if let Some((_, spans)) = &stub {
+            Labels::Spans(spans.clone())
+        } else if nested_labels {
+            Labels::Through(left + 1)
         } else if group
             .iter()
             .any(|c| body(c) && c.right <= through && c.string())
@@ -1079,6 +1846,12 @@ fn interpret(
             let label = match &labels {
                 Labels::Through(limit) => c.right <= *limit,
                 Labels::Columns(columns) => columns.contains(&c.left),
+                // A label across all the label columns, such as a total.
+                Labels::Spans(spans) => {
+                    spans.iter().any(|&(l, r)| c.left >= l && c.right <= r)
+                        || (c.left <= spans[0].0 && c.right >= spans[spans.len() - 1].1)
+                }
+                Labels::Marked => c.fill() != 0,
                 Labels::None => false,
             };
             if label && (c.string() || (year_labels && c.left == left)) {
@@ -1108,37 +1881,68 @@ fn interpret(
             _ => {}
         }
     }
-    // A repeated header stands in for the header cells it repeats.
-    let mut replaced: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (row, headers) in header_rows.iter().filter(|(row, _)| repeated.contains(row)) {
-        for &i in headers {
-            replaced.insert(
-                i,
-                header_rows
-                    .range(..row)
-                    .flat_map(|(_, earlier)| earlier)
-                    .copied()
-                    .filter(|&j| {
-                        group[j].span() == group[i].span() && group[j].text() == group[i].text()
-                    })
-                    .collect(),
-            );
+    // Bands of different looks nest: a look first seen after another is a
+    // level below it, as the band of a job under the band of its job net.
+    let mut looks: Vec<(bool, u64)> = vec![];
+    let mut band_parents: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut open_bands: Vec<(usize, usize)> = vec![];
+    for &i in &bands {
+        let look = (group[i].bold(), group[i].fill());
+        let level = match looks.iter().position(|l| *l == look) {
+            Some(level) => level,
+            None => {
+                looks.push(look);
+                looks.len() - 1
+            }
+        };
+        while open_bands.last().is_some_and(|&(_, l)| l >= level) {
+            open_bands.pop();
         }
+        band_parents.insert(i, open_bands.iter().map(|&(b, _)| b).collect());
+        open_bands.push((i, level));
     }
+    // A repeated header stands in for the header cells it repeats.
+    let repeats: HashSet<usize> = header_rows
+        .iter()
+        .filter(|(row, _)| repeated.contains(row))
+        .flat_map(|(_, headers)| headers.iter().copied())
+        .collect();
     // Rows that a label does not reach across.
     let barriers: BTreeSet<_> = bands
         .iter()
         .map(|i| group[*i].top)
         .chain(repeated.iter().copied())
         .collect();
+    // Label columns that a cell of the row stands in, including one across
+    // several columns such as a total, which a label above does not continue into.
     let occupied: HashSet<_> = group
         .iter()
-        .filter(|c| label_columns.contains_key(&c.left))
-        .flat_map(|c| (c.top..=c.bottom).map(|y| (c.left, y)))
+        .flat_map(|c| {
+            label_columns
+                .range(c.left..=c.right)
+                .flat_map(move |(column, _)| (c.top..=c.bottom).map(move |y| (*column, y)))
+        })
         .collect();
     // Indented labels belong to the nearest label above with a smaller indent.
+    // Names stepped across the columns of one label span indent by the column
+    // they start in.
+    let area = |c: &Cell<'_>| match &labels {
+        Labels::Spans(spans) => spans
+            .iter()
+            .find(|&&(l, r)| c.left >= l && c.right <= r)
+            .map_or(c.left, |&(l, _)| l),
+        _ => c.left,
+    };
+    let level = |c: &Cell<'_>| (c.left - area(c), c.indent());
+    let mut areas: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for column_labels in label_columns.values() {
+        for &i in column_labels {
+            areas.entry(area(group[i])).or_default().push(i);
+        }
+    }
     let mut parents: HashMap<usize, Vec<usize>> = HashMap::new();
-    for column in label_columns.values() {
+    for column in areas.values_mut() {
+        column.sort_by_key(|&i| (group[i].top, group[i].left));
         let mut open: Vec<usize> = vec![];
         for (k, &i) in column.iter().enumerate() {
             if k > 0
@@ -1151,7 +1955,7 @@ fn interpret(
             }
             while open
                 .last()
-                .is_some_and(|p| group[*p].indent() >= group[i].indent())
+                .is_some_and(|p| level(group[*p]) >= level(group[i]))
             {
                 open.pop();
             }
@@ -1170,6 +1974,72 @@ fn interpret(
             c.source["address"].as_str().unwrap()
         )
     };
+    // The header cells each cell links to, in the header rows above it.
+    let header_links = |c: &Cell<'_>, current: &str| -> Vec<usize> {
+        let mut links = vec![];
+        for headers in header_rows.range(..c.top).map(|(_, headers)| headers) {
+            let above: Vec<_> = headers
+                .iter()
+                .copied()
+                .filter(|&i| group[i].bottom < c.top)
+                .collect();
+            let covering: Vec<_> = above
+                .iter()
+                .copied()
+                .filter(|&i| group[i].left <= c.left && group[i].right >= c.right)
+                .collect();
+            if !covering.is_empty() || current == "column_header" {
+                links.extend(covering);
+                continue;
+            }
+            // A value merged across several headers, or wider than its header.
+            let within: Vec<_> = above
+                .iter()
+                .copied()
+                .filter(|&i| group[i].left >= c.left && group[i].right <= c.right)
+                .collect();
+            if !within.is_empty() {
+                links.extend(within);
+            } else if let Some(widest) = above
+                .iter()
+                .copied()
+                .filter(|&i| group[i].left <= c.right && group[i].right >= c.left)
+                .max_by_key(|&i| {
+                    let h = group[i];
+                    (
+                        h.right.min(c.right) - h.left.max(c.left),
+                        std::cmp::Reverse(h.left),
+                    )
+                })
+            {
+                links.push(widest);
+            }
+        }
+        // Of a header cell written again, the last repeat linked
+        // stands in for the copies above it.
+        let mut last_repeat: HashMap<((u32, u32), &str), u32> = HashMap::new();
+        for &i in links.iter().filter(|i| repeats.contains(i)) {
+            let top = last_repeat
+                .entry((group[i].span(), group[i].text()))
+                .or_default();
+            *top = (*top).max(group[i].top);
+        }
+        links.retain(|&i| {
+            last_repeat
+                .get(&(group[i].span(), group[i].text()))
+                .is_none_or(|&top| group[i].top >= top)
+        });
+        links
+    };
+    // The last row the header cells of the first k header rows reach, so
+    // that cells under all of them, spanning the same columns, link alike.
+    let header_tops: Vec<u32> = header_rows.keys().copied().collect();
+    let mut reach = vec![0; header_tops.len() + 1];
+    for (k, headers) in header_rows.values().enumerate() {
+        let bottom = headers.iter().map(|&i| group[i].bottom).max().unwrap_or(0);
+        reach[k + 1] = reach[k].max(bottom);
+    }
+    let mut alike: HashMap<(usize, u32, u32), Vec<usize>> = HashMap::new();
     let interpreted: Vec<_> = group
         .iter()
         .enumerate()
@@ -1178,49 +2048,26 @@ fn interpret(
             let mut links = vec![];
             let wide = !single && c.span() == (left, right);
             if current != "text" && !(wide && !in_header(c) && current != "column_header") {
-                for headers in header_rows.range(..c.top).map(|(_, headers)| headers) {
-                    let above: Vec<_> = headers
-                        .iter()
-                        .copied()
-                        .filter(|&i| group[i].bottom < c.top)
-                        .collect();
-                    let covering: Vec<_> = above
-                        .iter()
-                        .copied()
-                        .filter(|&i| group[i].left <= c.left && group[i].right >= c.right)
-                        .collect();
-                    if !covering.is_empty() || current == "column_header" {
-                        links.extend(covering);
-                        continue;
-                    }
-                    // A value merged across several headers, or wider than its header.
-                    let within: Vec<_> = above
-                        .iter()
-                        .copied()
-                        .filter(|&i| group[i].left >= c.left && group[i].right <= c.right)
-                        .collect();
-                    if !within.is_empty() {
-                        links.extend(within);
-                    } else if let Some(widest) = above
-                        .iter()
-                        .copied()
-                        .filter(|&i| group[i].left <= c.right && group[i].right >= c.left)
-                        .max_by_key(|&i| {
-                            let h = group[i];
-                            (h.right.min(c.right) - h.left.max(c.left), std::cmp::Reverse(h.left))
-                        })
-                    {
-                        links.push(widest);
-                    }
-                }
-                let shadowed: Vec<_> = links.iter().filter_map(|i| replaced.get(i)).flatten().collect();
-                links.retain(|i| !shadowed.contains(&i));
+                let rows_above = header_tops.partition_point(|&top| top < c.top);
+                links = if current != "column_header" && reach[rows_above] < c.top {
+                    alike
+                        .entry((rows_above, c.left, c.right))
+                        .or_insert_with(|| header_links(c, current))
+                        .clone()
+                } else {
+                    header_links(c, current)
+                };
             }
             if matches!(current, "data" | "row_header") && !band(c) {
                 let mut beside: Vec<_> = label_rows.get(&c.top).cloned().unwrap_or_default();
-                // A label left blank continues the label above it.
+                // A label left blank continues the label above it. Stepped
+                // names have their parents instead: a row naming itself in a
+                // label span continues no other name of that span.
+                let own = label_rows.get(&c.top).map(Vec::as_slice).unwrap_or_default();
                 for (column, labels) in &label_columns {
-                    if occupied.contains(&(*column, c.top)) {
+                    if occupied.contains(&(*column, c.top))
+                        || own.iter().any(|&o| area(group[o]) == area(group[labels[0]]))
+                    {
                         continue;
                     }
                     let above = labels.partition_point(|&i| group[i].top < c.top);
@@ -1238,11 +2085,19 @@ fn interpret(
                     .collect();
                 before.sort_by_key(|&i| std::cmp::Reverse(group[i].right));
                 // Labels in adjoining columns form one hierarchy; a label of
-                // another block of columns is not this cell's label.
+                // another block of columns is not this cell's label. Columns
+                // passed over within the stub, such as numbers between a
+                // section and the item names, do not part them.
+                let passed_over = |to: u32| match &labels {
+                    Labels::Spans(spans) => spans.last().is_some_and(|&(_, r)| to <= r + 1),
+                    Labels::Through(limit) => to <= limit.saturating_add(1),
+                    _ => false,
+                };
                 let mut edge = c.left;
                 let mut chosen = vec![];
                 for (k, &i) in before.iter().enumerate() {
-                    let adjoining = group[i].right.checked_add(1) == Some(edge);
+                    let adjoining = group[i].right.checked_add(1) == Some(edge)
+                        || (group[i].right < edge && passed_over(edge));
                     if (k == 0 && current == "data") || adjoining {
                         chosen.push(i);
                         edge = group[i].left;
@@ -1265,8 +2120,26 @@ fn interpret(
                     }
                     links.extend(parents.get(&i).into_iter().flatten());
                 }
+                // A form label followed directly by other labels groups them
+                // and heads the rest of its row, as an estimate over its kinds.
+                if matches!(labels, Labels::Marked) {
+                    let line = label_rows.get(&c.top).map(Vec::as_slice).unwrap_or_default();
+                    links.extend(line.iter().copied().filter(|&i| {
+                        group[i].right < c.left
+                            && group[i].top == c.top
+                            && line
+                                .iter()
+                                .any(|&j| group[j].left == group[i].right + 1 && group[j].top == c.top)
+                    }));
+                }
                 let above = bands.partition_point(|&i| group[i].top < c.top);
-                links.extend(above.checked_sub(1).map(|k| bands[k]));
+                if let Some(&nearest) = above.checked_sub(1).and_then(|k| bands.get(k)) {
+                    links.push(nearest);
+                    links.extend(&band_parents[&nearest]);
+                }
+            }
+            if band(c) {
+                links.extend(band_parents.get(&index).into_iter().flatten());
             }
             links.retain(|&i| i != index);
             links.sort_unstable();
@@ -1276,14 +2149,82 @@ fn interpret(
                 "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
         })
         .collect();
-    let range = format!(
-        "{}{}:{}{}",
-        column_name(left)?,
-        top,
-        column_name(right)?,
-        bottom
-    );
-    Ok(Some((interpreted, range)))
+    Ok(Some(interpreted))
+}
+
+/// The parent of each explicit table definition, by index, from the name of
+/// the definition it is nested in.
+fn explicit_parents(tables: &[Value]) -> Result<Vec<Option<usize>>> {
+    let names: HashMap<&str, usize> = tables
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| Some((t["name"].as_str()?, i)))
+        .collect();
+    let parents: Vec<Option<usize>> = tables
+        .iter()
+        .map(|t| match t["parent"].as_str() {
+            Some(name) => names
+                .get(name)
+                .copied()
+                .map(Some)
+                .context("unknown parent table definition"),
+            None => Ok(None),
+        })
+        .collect::<Result<_>>()?;
+    for start in 0..parents.len() {
+        let mut table = start;
+        for _ in 0..=parents.len() {
+            match parents[table] {
+                Some(parent) => table = parent,
+                None => break,
+            }
+        }
+        ensure!(parents[table].is_none(), "cyclic table definitions");
+    }
+    Ok(parents)
+}
+
+/// The cells of `parent` that qualify a table nested in it at `child` (left,
+/// top, right, bottom): the lowest column headers above the child's columns,
+/// and the parent's cells beside the child, those of the records it belongs to.
+fn context(
+    by_address: &HashMap<&str, &Cell<'_>>,
+    parent: &Value,
+    child: (u32, u32, u32, u32),
+) -> Result<Vec<Value>> {
+    let (x0, r0, x1, r1) = child;
+    let mut members = vec![];
+    for cell in array(&parent["cells"])? {
+        let c = *by_address
+            .get(string(&cell["address"])?)
+            .context("parent cell missing from extraction")?;
+        if c.nonempty() {
+            members.push((c, cell));
+        }
+    }
+    let above: Vec<_> = members
+        .iter()
+        .filter(|(c, cell)| {
+            cell["role"] == "column_header" && c.left <= x1 && c.right >= x0 && c.bottom < r0
+        })
+        .collect();
+    let lowest = above.iter().map(|(c, _)| c.bottom).max();
+    let mut chosen: Vec<_> = above
+        .into_iter()
+        .filter(|(c, _)| Some(c.bottom) == lowest)
+        .chain(members.iter().filter(|(c, cell)| {
+            cell["role"] != "column_header"
+                && cell["role"] != "text"
+                && (c.right < x0 || c.left > x1)
+                && c.top <= r1
+                && c.bottom >= r0
+        }))
+        .collect();
+    chosen.sort_by_key(|(c, _)| (c.top, c.left));
+    Ok(chosen
+        .into_iter()
+        .map(|(_, cell)| cell["id"].clone())
+        .collect())
 }
 
 pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
@@ -1303,6 +2244,7 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 .unwrap_or((left, top));
             cells.push(Cell {
                 source: c,
+                style: crate::extraction::style(sheet, c)?,
                 left,
                 top,
                 right,
@@ -1311,8 +2253,10 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
         }
         cells.sort_by_key(|c| (c.top, c.left));
         let mut assigned = BTreeSet::new();
-        let mut groups: Vec<(Group, Explicit)> = vec![];
-        // Explicit table boundaries have precedence over layout heuristics.
+        let mut groups: Vec<Candidate> = vec![];
+        // Explicit table boundaries have precedence over layout heuristics. A
+        // table nested in another claims its cells first; the outer table
+        // keeps the rest of its range.
         if let Some(tables) = sheet["tables"].as_array() {
             let mut rows: BTreeMap<u32, Vec<(u32, usize)>> = BTreeMap::new();
             if !tables.is_empty() {
@@ -1325,28 +2269,52 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 let end = row.partition_point(|(column, _)| *column <= last);
                 row[start..end].iter().map(|(_, i)| *i).collect()
             };
+            let parents = explicit_parents(tables)?;
+            let ancestors = |mut table: usize| {
+                let mut chain = vec![];
+                while let Some(parent) = parents[table] {
+                    chain.push(parent);
+                    table = parent;
+                }
+                chain
+            };
+            let mut order: Vec<usize> = (0..tables.len()).collect();
+            order.sort_by_key(|&t| std::cmp::Reverse(ancestors(t).len()));
+            let mut owner: HashMap<usize, usize> = HashMap::new();
             let mut found = vec![];
-            for t in tables {
-                let bounds = range(string(&t["range"])?)?;
-                let indices: Vec<_> = rows
+            for t in order {
+                let bounds = range(string(&tables[t]["range"])?)?;
+                let mut indices = vec![];
+                for i in rows
                     .range(bounds.0.1..=bounds.1.1)
                     .flat_map(|(_, row)| within(row, bounds.0.0, bounds.1.0))
-                    .collect();
-                ensure!(
-                    indices.iter().all(|i| assigned.insert(*i)),
-                    "overlapping table definitions"
-                );
+                {
+                    match owner.get(&i) {
+                        None => {
+                            owner.insert(i, t);
+                            indices.push(i);
+                        }
+                        Some(&inner) => ensure!(
+                            ancestors(inner).contains(&t),
+                            "overlapping table definitions"
+                        ),
+                    }
+                }
+                assigned.extend(indices.iter().copied());
                 found.push((
+                    t,
                     indices,
                     bounds,
-                    t["header_rows"].as_u64().unwrap_or(0) as u32,
+                    tables[t]["header_rows"].as_u64().unwrap_or(0) as u32,
                 ));
             }
-            for (mut indices, bounds, mut header_rows) in found {
+            found.sort_by_key(|(t, ..)| *t);
+            for (t, mut indices, bounds, mut header_rows) in found {
                 let mut header_top = bounds.0.1;
-                // Group headers written directly above the table: bold cells
-                // within its columns, at least one merged across several.
+                // Group headers written directly above an outermost table:
+                // bold cells within its columns, at least one merged across several.
                 if header_rows > 0
+                    && parents[t].is_none()
                     && let Some(row) = header_top.checked_sub(1).and_then(|top| rows.get(&top))
                 {
                     let above: Vec<_> = within(row, bounds.0.0, bounds.1.0)
@@ -1365,9 +2333,13 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                         header_rows += 1;
                     }
                 }
-                if !indices.is_empty() {
-                    groups.push((indices, Some((header_top, header_rows))));
-                }
+                indices.sort_by_key(|&i| (cells[i].top, cells[i].left));
+                groups.push(Candidate {
+                    key: t,
+                    group: indices,
+                    explicit: Some((header_top, header_rows)),
+                    parent: parents[t],
+                });
             }
         }
         let mut leftovers = side_annotations(&cells, &assigned);
@@ -1375,7 +2347,27 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
         let prose = prose_bullets(&cells, &assigned);
         leftovers.extend(prose);
         assigned.extend(leftovers.iter().copied());
-        let (mut remaining, exhausted) = components(&cells, &assigned);
+        // An empty merged range is one box; other ranges list single cells.
+        let merged: HashSet<&str> = array(&sheet["merges"])?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let mut boxes = vec![];
+        for r in array(sheet.get("bordered_blanks").unwrap_or(&json!([])))? {
+            let ((left, top), (right, bottom)) = range(string(r)?)?;
+            if merged.contains(string(r)?) {
+                boxes.push(((left, top, right, bottom), true));
+            } else {
+                for y in top..=bottom {
+                    for x in left..=right {
+                        boxes.push(((x, y, x, y), false));
+                    }
+                }
+            }
+        }
+        let free: Vec<_> = (0..cells.len()).filter(|i| !assigned.contains(i)).collect();
+        let boxes = fields(&cells, &free, &boxes);
+        let (mut remaining, exhausted) = components(&cells, &boxes, &assigned);
         if exhausted {
             leftovers.extend(remaining.into_iter().flatten());
         } else {
@@ -1383,13 +2375,25 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
             attach_headers(&cells, &mut remaining);
             join_columns(&cells, &mut remaining);
             for group in remaining.into_iter().filter(|g| !g.is_empty()) {
-                for table in refine(&cells, group, &mut leftovers)? {
-                    groups.push((table, None));
+                let base = groups.iter().map(|c| c.key + 1).max().unwrap_or(0);
+                for (offset, (table, parent)) in refine(&cells, &boxes, group, &mut leftovers)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    groups.push(Candidate {
+                        key: base + offset,
+                        group: table,
+                        explicit: None,
+                        parent: parent.map(|p| base + p),
+                    });
                 }
             }
         }
-        groups.sort_by_key(|(g, _)| {
-            g.iter()
+        groups.retain(|candidate| !candidate.group.is_empty());
+        groups.sort_by_key(|candidate| {
+            candidate
+                .group
+                .iter()
                 .map(|i| (cells[*i].top, cells[*i].left))
                 .min()
                 .unwrap()
@@ -1397,54 +2401,63 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
         // A short blank band can be a page or writing break inside one table.
         // Join only when numbered record keys continue exactly and the two
         // bands occupy the same horizontal extent. This also tolerates changed
-        // logical column widths in the lower band.
+        // logical column widths in the lower band. Nested tables keep their place.
         let mut at = 0;
         while at + 1 < groups.len() {
             let (a, b) = (&groups[at], &groups[at + 1]);
-            let same_table = if a.1.is_none() && b.1.is_none() {
-                let (al, _, ar, ab) = bounds(&cells, &a.0);
-                let (bl, bt, br, _) = bounds(&cells, &b.0);
-                let view = |ids: &[usize]| -> Vec<_> {
-                    let mut v: Vec<_> = ids.iter().map(|&i| &cells[i]).collect();
-                    v.sort_by_key(|c| (c.top, c.left));
-                    v
-                };
-                let later = view(&b.0);
-                let later_layout = layout(&later, None)?;
-                let titled_later = later_layout.caption
-                    && later
-                        .iter()
-                        .any(|c| c.top == later_layout.top && c.nonempty());
-                let a_headers = leaf_signature(&cells, &a.0, None)?;
-                let b_headers = leaf_signature(&cells, &b.0, None)?;
-                let different_headers = !a_headers.is_empty()
-                    && !b_headers.is_empty()
-                    && (a_headers.len() != b_headers.len()
-                        || !a_headers
-                            .iter()
-                            .zip(&b_headers)
-                            .all(|(first, second)| first.1 == second.1));
-                match (record_series(&view(&a.0), al), record_series(&later, bl)) {
-                    (Some((ap, aw, _, last)), Some((bp, bw, first, _))) => {
-                        !titled_later
-                            && !different_headers
-                            && al == bl
-                            && ar == br
-                            && bt > ab
-                            && bt - ab <= 5
-                            && ap == bp
-                            && aw == bw
-                            && last.checked_add(1) == Some(first)
-                    }
-                    _ => false,
-                }
-            } else {
-                false
+            let nested = |c: &Candidate| {
+                c.parent.is_some() || groups.iter().any(|other| other.parent == Some(c.key))
             };
+            let same_table =
+                if a.explicit.is_none() && b.explicit.is_none() && !nested(a) && !nested(b) {
+                    let (al, _, ar, ab) = bounds(&cells, &a.group);
+                    let (bl, bt, br, _) = bounds(&cells, &b.group);
+                    let view = |ids: &[usize]| -> Vec<_> {
+                        let mut v: Vec<_> = ids.iter().map(|&i| &cells[i]).collect();
+                        v.sort_by_key(|c| (c.top, c.left));
+                        v
+                    };
+                    let later = view(&b.group);
+                    let later_layout = layout(&later, None)?;
+                    let titled_later = later_layout.caption
+                        && later
+                            .iter()
+                            .any(|c| c.top == later_layout.top && c.nonempty());
+                    let a_headers = leaf_signature(&cells, &a.group, None)?;
+                    let b_headers = leaf_signature(&cells, &b.group, None)?;
+                    let different_headers = !a_headers.is_empty()
+                        && !b_headers.is_empty()
+                        && (a_headers.len() != b_headers.len()
+                            || !a_headers
+                                .iter()
+                                .zip(&b_headers)
+                                .all(|(first, second)| first.1 == second.1));
+                    match (
+                        record_series(&view(&a.group), al),
+                        record_series(&later, bl),
+                    ) {
+                        (Some((ap, aw, _, last)), Some((bp, bw, first, _))) => {
+                            !titled_later
+                                && !different_headers
+                                && al == bl
+                                && ar == br
+                                && bt > ab
+                                && bt - ab <= 5
+                                && ap == bp
+                                && aw == bw
+                                && last.checked_add(1) == Some(first)
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
             if same_table {
-                let next = groups.remove(at + 1).0;
-                groups[at].0.extend(next);
-                groups[at].0.sort_by_key(|&i| (cells[i].top, cells[i].left));
+                let next = groups.remove(at + 1).group;
+                groups[at].group.extend(next);
+                groups[at]
+                    .group
+                    .sort_by_key(|&i| (cells[i].top, cells[i].left));
             } else {
                 at += 1;
             }
@@ -1457,24 +2470,31 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
             bool,
         );
         let mut preceding: Option<PrecedingTable> = None;
-        for (indices, explicit) in groups {
-            let Some((interpreted, range)) = interpret(&cells, &indices, explicit, sheet_index)?
-            else {
+        // Output index of each interpreted candidate, by key.
+        let mut interpreted_tables: HashMap<usize, usize> = HashMap::new();
+        let mut nested = vec![];
+        for candidate in &groups {
+            let (indices, explicit) = (&candidate.group, candidate.explicit);
+            let Some(interpreted) = interpret(&cells, indices, explicit, sheet_index)? else {
                 leftovers.extend(indices);
                 preceding = None;
                 continue;
             };
-            let rectangle = bounds(&cells, &indices);
+            let rectangle = bounds(&cells, indices);
             let signature = if explicit.is_none() {
-                leaf_signature(&cells, &indices, explicit)?
+                leaf_signature(&cells, indices, explicit)?
             } else {
                 vec![]
             };
             let id = format!("sheet-{}-table-{}", sheet_index + 1, output.len() + 1);
+            // The cells give the range; the reason leaves it out, so moving the
+            // table does not change its reading.
             let mut reason = format!(
-                "{}; range {range}. Header links are layout hypotheses requiring review.",
+                "{}. Header links are layout hypotheses requiring review.",
                 if explicit.is_some() {
                     "Explicit table boundary from the source"
+                } else if candidate.parent.is_some() {
+                    "Labels and records written within the records of another table, beside its merged cells"
                 } else {
                     "Adjacent cell regions with repeated row fields; headers set apart by bold text or fill, and aligned row labels"
                 }
@@ -1489,11 +2509,25 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 reason.push_str(&format!(" Possible continuation of {previous_id}: matching leaf headers after one blank row; confirm whether these are one table or two."));
             }
             preceding = Some((rectangle, signature, id.clone(), explicit.is_none()));
-            output.push(
-                json!({"id":id,"kind":"table","sheet":sheet["name"],"evidence":[],
+            let element = json!({"id":id,"kind":"table","sheet":sheet["name"],"evidence":[],
                 "reading":{"method":"parser","actor":"arp4","reason":reason},
-                "cells":interpreted}),
-            );
+                "cells":interpreted});
+            if let Some(parent) = candidate.parent {
+                nested.push((output.len(), parent, rectangle));
+            }
+            interpreted_tables.insert(candidate.key, output.len());
+            output.push(element);
+        }
+        // A table whose parent was not read as a table stands on its own.
+        let by_address: HashMap<&str, &Cell<'_>> = cells
+            .iter()
+            .map(|c| (c.source["address"].as_str().unwrap_or(""), c))
+            .collect();
+        for (child, parent, rectangle) in nested {
+            if let Some(&parent) = interpreted_tables.get(&parent) {
+                output[child]["parent"] = json!({"element":output[parent]["id"],
+                    "context":context(&by_address, &output[parent], rectangle)?});
+            }
         }
         if !leftovers.is_empty() {
             leftovers.sort_unstable();
@@ -1552,6 +2586,88 @@ mod tests {
         json!({"address":address,"value":value,"type":"string","formula":null,"style":{"bold":false,"fill":0,"border":0}})
     }
     #[test]
+    fn rows_and_covering_cells_are_those_a_scan_finds() {
+        let values: Vec<_> = (1..=12)
+            .flat_map(|row| ["A", "B", "C"].map(|column| cell(&format!("{column}{row}"), "x")))
+            .collect();
+        // B2 is merged down to B5 and C7 to C12; A and the rest are single.
+        fn extent(c: &Value) -> Cell<'_> {
+            let (left, top) = coordinate(c["address"].as_str().unwrap()).unwrap();
+            let bottom = match c["address"].as_str().unwrap() {
+                "B2" => 5,
+                "C7" => 12,
+                _ => top,
+            };
+            Cell {
+                source: c,
+                style: &Value::Null,
+                left,
+                top,
+                right: left,
+                bottom,
+            }
+        }
+        let cells: Vec<_> = values.iter().map(extent).collect();
+        let group: Vec<_> = cells.iter().collect();
+        let tall = height(&group);
+        assert_eq!(tall, 5);
+        let at = |found: Vec<&Cell<'_>>| -> Vec<(u32, u32)> {
+            found.iter().map(|c| (c.left, c.top)).collect()
+        };
+        for y in 0..=13 {
+            let scan: Vec<_> = group.iter().copied().filter(|c| c.top == y).collect();
+            assert_eq!(at(row(&group, y)), at(scan), "row {y}");
+            let scan: Vec<_> = group
+                .iter()
+                .copied()
+                .filter(|c| c.top <= y && c.bottom >= y)
+                .collect();
+            assert_eq!(at(covering(&group, tall, y).collect()), at(scan), "row {y}");
+        }
+    }
+    #[test]
+    fn records_under_a_repeated_header_link_to_its_last_repeat() {
+        let head = |address: &str, value: &str| json!({"address":address,"value":value,"type":"string","formula":null,"style":{"bold":true,"fill":1,"border":1}});
+        let record = |address: &str, value: &str| json!({"address":address,"value":value,"type":"string","formula":null,"style":{"bold":false,"fill":0,"border":1}});
+        let mut cells = vec![];
+        for row in 1..=8 {
+            if [1, 4, 7].contains(&row) {
+                cells.extend([
+                    head(&format!("A{row}"), "ID"),
+                    head(&format!("B{row}"), "名前"),
+                    head(&format!("C{row}"), "種別"),
+                ]);
+            } else {
+                cells.extend([
+                    record(&format!("A{row}"), &format!("K-{row:02}")),
+                    record(&format!("B{row}"), &format!("名前{row}")),
+                    record(&format!("C{row}"), &format!("種別{row}")),
+                ]);
+            }
+        }
+        let extraction = json!({"sheets":[{"name":"S","merges":[],"cells":cells}]});
+        let result = elements(&extraction).unwrap();
+        let table = result.iter().find(|e| e["kind"] == "table").unwrap();
+        let headers = |address: &str| -> Vec<String> {
+            let found = table["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["address"] == address)
+                .unwrap();
+            found["headers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h.as_str().unwrap().to_owned())
+                .filter(|h| h.starts_with("s1-C"))
+                .collect()
+        };
+        assert_eq!(headers("C2"), ["s1-C1"]);
+        assert_eq!(headers("C5"), ["s1-C4"]);
+        assert_eq!(headers("C8"), ["s1-C7"]);
+    }
+    #[test]
     fn explicit_table_takes_precedence_and_honors_no_header() {
         let extraction = json!({"sheets":[{"name":"S","merges":[],"tables":[{"range":"B2:C3","header_rows":1}],
             "cells":[cell("A2","outside"),cell("B2","Key"),cell("C2","Value"),cell("B3","x"),cell("C3","y")]}]});
@@ -1602,6 +2718,51 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("overlapping")
+        );
+    }
+    #[test]
+    fn explicit_nested_tables_claim_their_cells_and_name_their_context() {
+        let cells: Vec<_> = [
+            ("A1", "Item"),
+            ("B1", "Checks"),
+            ("A2", "Code"),
+            ("B2", "Kind"),
+            ("C2", "Message"),
+            ("B3", "Required"),
+            ("C3", "E001"),
+            ("A4", "Date"),
+            ("B4", "none"),
+        ]
+        .into_iter()
+        .map(|(address, value)| cell(address, value))
+        .collect();
+        let tables = json!([
+            {"name":"outer","range":"A1:C4","header_rows":1},
+            {"name":"inner","range":"B2:C3","header_rows":1,"parent":"outer"}
+        ]);
+        let mut extraction = json!({"sheets":[{"name":"S","merges":["A2:A3","B1:C1","B4:C4"],
+            "tables":tables,"cells":cells}]});
+        let result = elements(&extraction).unwrap();
+        let addresses = |table: &Value| -> Vec<String> {
+            table["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["address"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(addresses(&result[0]), ["A1", "B1", "A2", "A4", "B4"]);
+        assert_eq!(addresses(&result[1]), ["B2", "C2", "B3", "C3"]);
+        assert_eq!(
+            result[1]["parent"],
+            json!({"element":"sheet-1-table-1","context":["s1-B1","s1-A2"]})
+        );
+        extraction["sheets"][0]["tables"][0]["parent"] = json!("inner");
+        assert!(
+            elements(&extraction)
+                .unwrap_err()
+                .to_string()
+                .contains("cyclic")
         );
     }
     #[test]

@@ -1,5 +1,6 @@
 //! Agent-facing presentation only. Persisted evidence never passes through here.
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use std::collections::{HashMap, HashSet};
 
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 const ITEM_BYTES: usize = 2048;
@@ -32,7 +33,10 @@ fn bounded(mut value: Value, budget: usize) -> Value {
     if !value.is_object() {
         return json!({"omitted":true,"bytes":original_bytes});
     }
-    let mut omitted = Vec::new();
+    let mut omitted = match value.as_object_mut().unwrap().remove("omitted_fields") {
+        Some(Value::Array(earlier)) => earlier,
+        _ => Vec::new(),
+    };
     while bytes(&value) > budget.saturating_sub(512) {
         let largest = value
             .as_object()
@@ -43,13 +47,111 @@ fn bounded(mut value: Value, budget: usize) -> Value {
             .map(|(k, _)| k.clone());
         let Some(key) = largest else { break };
         value.as_object_mut().unwrap().remove(&key);
-        omitted.push(key);
+        omitted.push(json!(key));
     }
     value["omitted_fields"] = json!(omitted);
     if bytes(&value) > budget {
         return json!({"ok":value.get("ok"),"omitted":true,"bytes":original_bytes});
     }
     value
+}
+
+const TABLE_BYTES: usize = 4096;
+
+/// Remove the fields named by `steps` in order, as far as needed to fit
+/// `budget`, naming each removed one in `omitted_fields`.
+fn shed(mut value: Value, steps: &[&'static str], budget: usize) -> Value {
+    let mut omitted = Vec::new();
+    for step in steps {
+        if bytes(&value) <= budget {
+            break;
+        }
+        let mut removed = false;
+        match step.split_once("[].") {
+            Some((list, field)) => {
+                for entry in value[list].as_array_mut().into_iter().flatten() {
+                    if let Some(entry) = entry.as_object_mut() {
+                        removed |= entry.remove(field).is_some();
+                    }
+                }
+            }
+            None => {
+                if let Some(object) = value.as_object_mut() {
+                    removed = object.remove(*step).is_some();
+                }
+            }
+        }
+        if removed {
+            omitted.push(*step);
+            value["omitted_fields"] = json!(omitted);
+        }
+    }
+    value
+}
+
+/// Fit one search hit, shedding what its pointers can recover before the
+/// values and the row headers. A table row's table, listed once per
+/// response, is fitted on its own and keeps its column headers last.
+pub fn fit_search_item(mut item: Value) -> Value {
+    // Room for the `index` that `Output::page` adds to a shortened item.
+    const INDEX_BYTES: usize = 32;
+    let table = item
+        .as_object_mut()
+        .and_then(|object| object.remove("table"));
+    let mut item = shed(
+        item,
+        &[
+            "sources[].position",
+            "text",
+            "sources",
+            "values",
+            "row_context",
+        ],
+        ITEM_BYTES - INDEX_BYTES,
+    );
+    if let Some(table) = table {
+        item["table"] = shed(table, &["within", "headings", "columns"], TABLE_BYTES);
+    }
+    item
+}
+
+/// Tables listed once per search response. Rows of the same table under the
+/// same headers name it by `table_ref` instead of repeating it.
+#[derive(Default)]
+pub struct SearchTables {
+    ids: HashMap<String, String>,
+    listed: Map<String, Value>,
+}
+
+/// A table first seen on a hit, listed once that hit is kept on the page.
+struct NewTable {
+    key: String,
+    id: String,
+    table: Value,
+}
+
+impl SearchTables {
+    /// Move a hit's table out of it. A hit outside a table gets no reference.
+    fn detach(&self, item: &mut Value) -> Option<NewTable> {
+        let table = item.as_object_mut()?.remove("table")?;
+        let key = table.to_string();
+        if let Some(id) = self.ids.get(&key) {
+            item["table_ref"] = json!(id);
+            return None;
+        }
+        let id = format!("t{}", self.ids.len() + 1);
+        item["table_ref"] = json!(id);
+        Some(NewTable { key, id, table })
+    }
+
+    fn add(&mut self, new: NewTable) {
+        self.ids.insert(new.key, new.id.clone());
+        self.listed.insert(new.id, new.table);
+    }
+
+    pub fn into_value(self) -> Value {
+        Value::Object(self.listed)
+    }
 }
 
 impl Output {
@@ -94,11 +196,31 @@ impl Output {
                 json!(offset + returned as u64)
             };
             shortened = true;
+            let referenced: HashSet<String> = value["queries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|q| q["items"].as_array().into_iter().flatten())
+                .filter_map(|item| item["table_ref"].as_str().map(str::to_owned))
+                .collect();
+            if let Some(listed) = value["tables"].as_object_mut() {
+                listed.retain(|id, _| referenced.contains(id));
+            }
         }
         Ok(value)
     }
 
     pub fn page(&self, items: Vec<Value>) -> Value {
+        self.page_with(items, None)
+    }
+
+    /// Page search hits, listing each table once in `tables`. A table counts
+    /// toward the page budget only on the hit that first lists it.
+    pub fn page_search(&self, items: Vec<Value>, tables: &mut SearchTables) -> Value {
+        self.page_with(items, Some(tables))
+    }
+
+    fn page_with(&self, items: Vec<Value>, mut tables: Option<&mut SearchTables>) -> Value {
         let total = items.len();
         let offset = self.offset.unwrap_or(0).min(total);
         let limit = if self.full {
@@ -108,7 +230,8 @@ impl Output {
         };
         let mut selected = Vec::new();
         let mut used = 0;
-        for (index, item) in items.into_iter().enumerate().skip(offset).take(limit) {
+        for (index, mut item) in items.into_iter().enumerate().skip(offset).take(limit) {
+            let new = tables.as_deref().and_then(|t| t.detach(&mut item));
             let mut item = if self.full {
                 item
             } else {
@@ -117,11 +240,17 @@ impl Output {
             if item.get("omitted_fields").is_some() || item.get("omitted").is_some() {
                 item["index"] = json!(index);
             }
-            let size = bytes(&item) + 1;
+            let listed = new
+                .as_ref()
+                .map_or(0, |new| bytes(&new.table) + new.id.len() + 4);
+            let size = bytes(&item) + 1 + listed;
             if !self.full && used + size > PAGE_BYTES {
                 break;
             }
             used += size;
+            if let (Some(tables), Some(new)) = (tables.as_deref_mut(), new) {
+                tables.add(new);
+            }
             selected.push(item);
         }
         let end = offset + selected.len();
@@ -296,6 +425,109 @@ mod tests {
         assert_eq!(value["state"], "recorded");
         assert_eq!(value["omitted_fields"], json!(["actor"]));
         assert_eq!(output.page(vec![])["page"]["next_offset"], Value::Null);
+    }
+
+    #[test]
+    fn search_items_keep_values_and_table_headers_longest() {
+        let table = json!({"element":"t","sheet":"S",
+            "within":[{"headers":["項目名"],"text":"顧客コード".repeat(100)}],
+            "columns":[{"column":"A","headers":["大項目","中項目"]}]});
+        let item = json!({"document_id":"d","title":"d / S","kind":"row","text":"本文".repeat(250),
+            "sources":[{"pointer":"/sheets/0/cells/9/value","sheet":"S","address":"A11",
+                "position":{"headings":["見出し".repeat(20)]},"start":0,"end":600}],
+            "table":table,"row":11,"values":["本文".repeat(250)]});
+        let fitted = fit_search_item(item.clone());
+        let mut rest = fitted.clone();
+        rest.as_object_mut().unwrap().remove("table");
+        assert!(bytes(&rest) < ITEM_BYTES);
+        assert_eq!(
+            fitted["omitted_fields"],
+            json!(["sources[].position", "text"])
+        );
+        assert_eq!(fitted["values"], item["values"]);
+        assert_eq!(fitted["sources"][0]["address"], "A11");
+        // The table is fitted apart: its parent records go before its columns.
+        assert!(bytes(&fitted["table"]) <= TABLE_BYTES);
+        assert_eq!(fitted["table"]["columns"], table["columns"]);
+        assert!(fitted["table"].get("omitted_fields").is_none());
+        let mut wide = item.clone();
+        wide["table"]["within"][0]["text"] = json!("顧客".repeat(2000));
+        let fitted = fit_search_item(wide);
+        assert_eq!(fitted["table"]["omitted_fields"], json!(["within"]));
+        assert_eq!(fitted["table"]["columns"], table["columns"]);
+
+        let mut huge = item.clone();
+        huge["title"] = json!("t".repeat(3000));
+        let page = Output::default()
+            .page_search(vec![fit_search_item(huge)], &mut SearchTables::default());
+        let kept = &page["items"][0];
+        assert!(bytes(kept) <= ITEM_BYTES);
+        assert_eq!(kept["index"], 0);
+        assert_eq!(kept["table_ref"], "t1");
+        assert_eq!(
+            kept["omitted_fields"],
+            json!(["sources[].position", "text", "sources", "values", "title"])
+        );
+
+        let short = json!({"text":"x","table":{"columns":[]}});
+        assert_eq!(fit_search_item(short.clone()), short);
+    }
+
+    #[test]
+    fn shared_tables_count_once_toward_the_page() {
+        let table =
+            json!({"element":"t","columns":[{"column":"A","headers":["見出し".repeat(150)]}]});
+        let items: Vec<_> = (0..40)
+            .map(|i| json!({"values":[format!("row {i}")],"table":table}))
+            .collect();
+        let output = Output {
+            limit: Some(100),
+            ..Output::default()
+        };
+        let inline = output.page(items.clone());
+        let mut tables = SearchTables::default();
+        let shared = output.page_search(items, &mut tables);
+        let returned = shared["page"]["returned"].as_u64().unwrap();
+        assert_eq!(returned, 40);
+        assert!(inline["page"]["returned"].as_u64().unwrap() < returned);
+        let listed = tables.into_value();
+        assert_eq!(listed, json!({"t1":table}));
+        let page = &shared["items"];
+        assert!(
+            page.as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["table_ref"] == "t1" && i.get("table").is_none())
+        );
+
+        let mut tables = SearchTables::default();
+        let distinct: Vec<_> = (0..2)
+            .map(|i| json!({"text":"x".repeat(1200),"table":{"element":format!("t{i}")}}))
+            .collect();
+        let queries: Vec<_> = (0..16)
+            .map(|i| {
+                let mut query = output.page_search(
+                    if i == 0 {
+                        distinct.clone()
+                    } else {
+                        vec![json!({"text":"x".repeat(1200)})]
+                    },
+                    &mut tables,
+                );
+                query["query"] = json!(format!("q{i}"));
+                query
+            })
+            .collect();
+        let fitted = output
+            .fit_search_batch(json!({"queries":queries,"tables":tables.into_value()}))
+            .unwrap();
+        let kept = fitted["queries"][0]["items"].as_array().unwrap();
+        let listed = fitted["tables"].as_object().unwrap();
+        assert_eq!(listed.len(), kept.len(), "{fitted}");
+        assert!(
+            kept.iter()
+                .all(|i| listed.contains_key(i["table_ref"].as_str().unwrap()))
+        );
     }
 
     #[test]

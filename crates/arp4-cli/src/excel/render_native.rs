@@ -7,7 +7,7 @@ use crate::office_com::{
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 use serde_json::json;
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 use windows::{
     Win32::{
         Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0},
@@ -16,7 +16,7 @@ use windows::{
             Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
         },
     },
-    core::w,
+    core::{HRESULT, w},
 };
 
 #[derive(Deserialize)]
@@ -26,16 +26,22 @@ struct Request {
     range: Option<String>,
     output: String,
     result: String,
+    /// How long to wait for another render to finish with the clipboard.
+    lock_wait_seconds: u64,
 }
 
 struct RenderMutex(Handle);
 impl RenderMutex {
-    fn lock() -> Result<Self> {
+    /// Takes the clipboard from other renders of this session, waiting up to
+    /// `seconds` for one to finish. A render whose worker was killed leaves the
+    /// mutex abandoned, which is taken as free.
+    fn lock(seconds: u64) -> Result<Self> {
         let handle = Handle(unsafe { CreateMutexW(None, false, w!("Local\\ARP4ExcelRender"))? });
-        let state = unsafe { WaitForSingleObject(handle.0, 0) };
+        let millis = u32::try_from(seconds.saturating_mul(1000)).unwrap_or(u32::MAX - 1);
+        let state = unsafe { WaitForSingleObject(handle.0, millis) };
         ensure!(
             state == WAIT_OBJECT_0 || state == WAIT_ABANDONED,
-            "Another Excel render is using the clipboard; retry after it finishes."
+            "Another Excel render used the clipboard for {seconds} seconds; retry after it finishes."
         );
         Ok(Self(handle))
     }
@@ -46,6 +52,36 @@ impl Drop for RenderMutex {
             let _ = ReleaseMutex(self.0.0);
         }
     }
+}
+
+/// The error Excel gives for a failed call, which is also what a clipboard
+/// call gives while another program has the clipboard open.
+const EXCEL_CALL_FAILED: HRESULT = HRESULT(0x800A_03EC_u32 as i32);
+
+/// How many times a clipboard call is tried, waiting longer after each try.
+const CLIPBOARD_ATTEMPTS: u32 = 5;
+
+/// Runs a clipboard call of Excel, trying it again while it fails as it does
+/// when another program has the clipboard open: clipboard viewers, history and
+/// sync read it right after it changes. A call failing that way for another
+/// reason fails after the last try.
+fn on_clipboard<T>(mut call: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut attempt = 1;
+    loop {
+        match call() {
+            Err(error) if attempt < CLIPBOARD_ATTEMPTS && excel_call_failed(&error) => {
+                std::thread::sleep(Duration::from_millis(100 * u64::from(attempt)));
+                attempt += 1;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+fn excel_call_failed(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|error| error.code() == EXCEL_CALL_FAILED)
 }
 
 fn address(mut column: i32, row: i32) -> String {
@@ -81,7 +117,7 @@ fn png_dimensions(path: &Path) -> Result<(u32, u32)> {
 pub fn worker(request_path: &Path) -> Result<()> {
     let request: Request = serde_json::from_slice(&fs::read(request_path)?)?;
     super::render::validate_source(Path::new(&request.source))?;
-    let _mutex = RenderMutex::lock()?;
+    let _mutex = RenderMutex::lock(request.lock_wait_seconds)?;
     let _apartment = Apartment::new()?;
     let (excel, job) = isolated_application("Excel.Application", "excel.exe")?;
     let outcome = render_with_excel(&excel, &request);
@@ -189,10 +225,10 @@ fn render_range(
     let line = prop(&prop(&prop(&chart, "ChartArea")?, "Format")?, "Line")?;
     put(&line, "Visible", Arg::Int(0))?;
     call(&sheet, "Activate", vec![])?;
-    call(&cells, "CopyPicture", vec![Arg::Int(1), Arg::Int(-4147)])?;
+    on_clipboard(|| call(&cells, "CopyPicture", vec![Arg::Int(1), Arg::Int(-4147)]))?;
     call(scratch, "Activate", vec![])?;
     call(&chart_object, "Activate", vec![])?;
-    call(&chart, "Paste", vec![])?;
+    on_clipboard(|| call(&chart, "Paste", vec![]))?;
     ensure!(
         call(
             &chart,
@@ -216,4 +252,73 @@ fn render_range(
         }))?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+
+    /// An error as a failed COM call returns it.
+    fn failed(code: HRESULT) -> anyhow::Error {
+        Err::<(), _>(windows::core::Error::from(code))
+            .context("Office COM call \"CopyPicture\" failed")
+            .unwrap_err()
+    }
+
+    #[test]
+    fn a_render_waits_for_another_to_finish_with_the_clipboard() {
+        let (held, holding) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _lock = RenderMutex::lock(0).unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        holding.recv().unwrap();
+        let busy = std::thread::spawn(|| RenderMutex::lock(0).map(|_| ()))
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert!(busy.to_string().contains("Another Excel render"), "{busy}");
+        let waited = std::thread::spawn(|| {
+            let started = std::time::Instant::now();
+            RenderMutex::lock(10).map(|_| started.elapsed())
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        assert!(waited >= Duration::from_millis(200), "{waited:?}");
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn clipboard_calls_are_tried_again_while_excel_fails_them() {
+        let mut tries = 0;
+        let result = on_clipboard(|| {
+            tries += 1;
+            if tries < 3 {
+                Err(failed(EXCEL_CALL_FAILED))
+            } else {
+                Ok(tries)
+            }
+        });
+        assert_eq!(result.unwrap(), 3);
+
+        let mut tries = 0;
+        let result = on_clipboard(|| -> Result<()> {
+            tries += 1;
+            Err(failed(EXCEL_CALL_FAILED))
+        });
+        assert!(result.is_err());
+        assert_eq!(tries, CLIPBOARD_ATTEMPTS);
+
+        // Other failures are not the clipboard's: they fail at once.
+        let mut tries = 0;
+        let result = on_clipboard(|| -> Result<()> {
+            tries += 1;
+            Err(failed(HRESULT(0x8002_0009_u32 as i32)))
+        });
+        assert!(result.is_err());
+        assert_eq!(tries, 1);
+    }
 }

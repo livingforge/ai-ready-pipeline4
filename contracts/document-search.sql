@@ -15,11 +15,12 @@ CREATE TABLE IF NOT EXISTS metadata (
 CREATE TABLE IF NOT EXISTS passages (
     id INTEGER PRIMARY KEY,
     document TEXT NOT NULL,
-    payload TEXT NOT NULL,
+    -- The passage as JSON, deflate-compressed; only returned hits are expanded.
+    payload BLOB NOT NULL,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
-    context TEXT NOT NULL,
     repetition_group INTEGER NOT NULL,
+    heading_group INTEGER NOT NULL,
     identifiers TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS passages_document ON passages(document);

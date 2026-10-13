@@ -184,11 +184,62 @@ impl Store {
             Some("formation"),
         )?;
         let key = hash(&encoded(&f));
-        ensure!(
-            hash(&fs::read(dir.join("prompt.txt"))?) == f["prompt_sha256"],
-            "formation prompt changed"
-        );
+        if formed_by_import(&f) {
+            ensure!(
+                !dir.join("prompt.txt").exists(),
+                "prompt.txt beside a formation by import"
+            );
+        } else {
+            ensure!(
+                hash(&fs::read(dir.join("prompt.txt"))?) == f["prompt_sha256"],
+                "formation prompt changed"
+            );
+        }
         Ok((f, key))
+    }
+    /// Why the adopted document of `id` keeps what it holds against a new
+    /// import: `reviewed` when it has a review, `edited` when its content is not
+    /// what import made of its original. None when there is no adopted document,
+    /// or it holds what import made, so adopting a new import loses nothing.
+    pub(super) fn kept_from_import(&self, id: &str) -> Result<Option<&'static str>> {
+        let dir = self.document(id)?;
+        if !dir.join("document.yml").is_file() {
+            return Ok(None);
+        }
+        if dir.join("review.json").exists() {
+            return Ok(Some("reviewed"));
+        }
+        let (f, _) = self.formation(&dir)?;
+        Ok(
+            if formed_by_import(&f) && self.fingerprint(&dir)?.as_deref() == f["content"].as_str() {
+                None
+            } else {
+                Some("edited")
+            },
+        )
+    }
+    /// Adopts the proposal import just made of `id` as it is, recorded as formed
+    /// by import rather than by an actor, model and prompt. The adopted document
+    /// is then `imported` until its content is edited. A proposal is left for
+    /// record and adopt, with the reason, when the adopted document keeps edits
+    /// or a review (see [`Self::kept_from_import`]).
+    pub fn adopt_import(&self, id: &str) -> Result<Value> {
+        if let Some(reason) = self.kept_from_import(id)? {
+            return Ok(json!({"document_id":id,"state":"needs_record","not_adopted":reason}));
+        }
+        let dir = self.proposal(id)?;
+        ensure!(
+            !dir.join("formation.json").exists(),
+            "proposal already recorded; adopt it"
+        );
+        let result = self.inspect(&dir, false)?;
+        let f = json!({"schema_version":"1","content":result.fingerprint,"by":"import"});
+        write(&dir.join("formation.json"), &f)?;
+        let mut adopted = self.adopt(id)?;
+        if adopted.get("state").is_none() {
+            adopted["state"] = json!("imported");
+        }
+        Ok(adopted)
     }
     pub fn record(&self, id: &str, model: &str, actor: &str, prompt: &Path) -> Result<Value> {
         nonempty(model)?;
@@ -197,7 +248,7 @@ impl Store {
         let result = self.inspect(&dir, false)?;
         let raw = fs::read(prompt)?;
         let prompt_hash = hash(&raw);
-        let f = json!({"schema_version":"1","document_id":result.meta["document_id"],"extraction":result.meta["extraction"],"content":result.fingerprint,"actor":actor,"model":model,"prompt_sha256":prompt_hash});
+        let f = json!({"schema_version":"1","content":result.fingerprint,"actor":actor,"model":model,"prompt_sha256":prompt_hash});
         replace(&dir.join("prompt.txt"), &raw)?;
         write(&dir.join("formation.json"), &f)?;
         Ok(f)
@@ -206,11 +257,7 @@ impl Store {
         nonempty(reviewer)?;
         let dir = self.document(id)?;
         let result = self.inspect(&dir, false)?;
-        let (f, key) = self.formation(&dir)?;
-        ensure!(
-            f["document_id"] == id && f["extraction"] == result.meta["extraction"],
-            "formation identity mismatch"
-        );
+        let (_, key) = self.formation(&dir)?;
         let r = json!({"schema_version":"1","content":result.fingerprint,"reviewer":reviewer,"formation":key});
         ensure!(
             self.fingerprint(&dir)?.as_deref() == Some(&result.fingerprint),
@@ -225,10 +272,7 @@ impl Store {
         let result = self.inspect(&proposal, false)?;
         let (f, _) = self.formation(&proposal)?;
         ensure!(
-            f["document_id"] == plan["document_id"]
-                && plan["document_id"] == result.meta["document_id"]
-                && f["extraction"] == result.meta["extraction"]
-                && f["content"] == result.fingerprint,
+            plan["document_id"] == result.meta["document_id"] && f["content"] == result.fingerprint,
             "proposal changed after record; record again"
         );
         let doc_id = string(&plan["document_id"])?;
@@ -286,8 +330,14 @@ impl Store {
         Ok(json!({"document_id":doc_id,"document":dest}))
     }
 }
+/// Whether formation `f` records content adopted as import extracted it.
+pub(super) fn formed_by_import(f: &Value) -> bool {
+    f["by"] == "import"
+}
+
 impl Store {
     /// Apply reviewed edits to the referenced original, then create a fresh extraction proposal.
+    /// When the original written is the one there, the document is `unchanged`.
     pub fn apply(&self, id: &str) -> Result<Value> {
         let inspected = self.inspect(&self.document(id)?, true)?;
         ensure!(
@@ -315,6 +365,13 @@ impl Store {
         let before = fs::read(&source)?;
         let (updated, report) = self.confirmed_export(id, &inspected)?;
         ensure!(fs::read(&source)? == before, "source changed during apply");
+        // An original written back as it was is the version adopted, so
+        // nothing is written or extracted again, as an import of it would not.
+        if updated == before {
+            return Ok(
+                json!({"state":"unchanged", "document_id":id, "source":inspected.meta["source"]["path"], "report":report}),
+            );
+        }
         replace(&source, &updated)?;
         let proposal = match self.import_original(&source, id, carry.as_ref()) {
             Ok(proposal) => proposal,
