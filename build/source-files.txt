@@ -41,6 +41,7 @@ crates/arp4-cli/src/document_structure/corrections.rs
 crates/arp4-cli/src/document_structure/edit.rs
 crates/arp4-cli/src/document_structure/grid.rs
 crates/arp4-cli/src/document_structure/inference.rs
+crates/arp4-cli/src/document_structure/inference/outline.rs
 crates/arp4-cli/src/document_structure/policy.rs
 crates/arp4-cli/src/document_structure/rebase.rs
 crates/arp4-cli/src/document_structure/relations.rs

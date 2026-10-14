@@ -653,9 +653,10 @@ fn iso_date_serial(text: &str, date1904: bool) -> Option<f64> {
 /// or formula whose four sides all show a line, drawn by the cell or by the
 /// neighbour across that side. An empty field of a ruled table is one; the
 /// edge of a frame drawn around tables shows one or two sides and is not.
-/// So are the empty cells of a field holding a value written without merging,
-/// which spills over them: lines run along its top and bottom and close it at
-/// both ends, with no line between its cells (`filled`: cells with a value).
+/// So are the empty cells of a band holding values written without merging,
+/// which spill over them, such as a name after its marker: lines run along
+/// its top and bottom and close it at both ends, with no line between its
+/// cells (`filled`: cells with a value).
 /// Single cells are joined into rectangles; the ranges are in row order.
 fn bordered_blanks(
     blanks: &[(u32, u32)],
@@ -711,24 +712,23 @@ fn bordered_blanks(
     };
     // Whether a line runs down the right edge of the cell.
     let closes = |(column, row): (u32, u32)| side((column, row), 1) || side((column + 1, row), 0);
+    let values: HashSet<_> = filled.iter().copied().collect();
+    // A cell of the band: empty or holding a value, neither merged nor covered.
+    let along = |p: (u32, u32)| {
+        (empty.contains(&p)
+            || values.contains(&p) && !covered.contains(&p) && !merged.contains_key(&p))
+            && ruled(p)
+    };
     for &(column, row) in filled {
-        if covered.contains(&(column, row))
-            || merged.contains_key(&(column, row))
-            || !ruled((column, row))
-        {
+        if !along((column, row)) {
             continue;
         }
         let mut left = column;
-        while left > 1
-            && !closes((left - 1, row))
-            && empty.contains(&(left - 1, row))
-            && ruled((left - 1, row))
-        {
+        while left > 1 && !closes((left - 1, row)) && along((left - 1, row)) {
             left -= 1;
         }
         let mut right = column;
-        while !closes((right, row)) && empty.contains(&(right + 1, row)) && ruled((right + 1, row))
-        {
+        while !closes((right, row)) && along((right + 1, row)) {
             right += 1;
         }
         let opened = if left == 1 {
@@ -737,7 +737,11 @@ fn bordered_blanks(
             closes((left - 1, row))
         };
         if opened && closes((right, row)) {
-            singles.extend((left..=right).filter(|c| *c != column).map(|c| (row, c)));
+            singles.extend(
+                (left..=right)
+                    .filter(|c| empty.contains(&(*c, row)))
+                    .map(|c| (row, c)),
+            );
         }
     }
     // Runs of single cells along a row, then runs of equal rows below each other.

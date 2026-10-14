@@ -7,6 +7,8 @@ use super::*;
 use crate::excel::coordinate;
 use std::collections::{HashMap, HashSet};
 
+mod outline;
+
 #[derive(Clone)]
 struct Cell<'a> {
     source: &'a Value,
@@ -231,6 +233,32 @@ fn components(
                     (other.0, other.2) == (left, right)
                 };
                 if (i < cells.len() && j < cells.len()) || aligned {
+                    let (r, s) = (root(&mut parent, j), root(&mut parent, i));
+                    parent[s] = r;
+                }
+            }
+        }
+        // A cell merged across columns joins the empty fields of one row that
+        // line its whole top or bottom edge, as a name merged to the end of
+        // a band under a band of fields.
+        for &i in &free {
+            let (left, top, right, bottom) = extent(i);
+            if right == left {
+                continue;
+            }
+            for y in [top.checked_sub(1), bottom.checked_add(1)]
+                .into_iter()
+                .flatten()
+            {
+                let along: Option<Vec<usize>> = (left..=right)
+                    .map(|x| {
+                        occupied.get(&(x, y)).copied().filter(|&j| {
+                            let (l, t, r, b) = extent(j);
+                            j >= cells.len() && t == y && b == y && l >= left && r <= right
+                        })
+                    })
+                    .collect();
+                for j in along.into_iter().flatten() {
                     let (r, s) = (root(&mut parent, j), root(&mut parent, i));
                     parent[s] = r;
                 }
@@ -1736,11 +1764,45 @@ fn interpret(
     // A vertically merged label groups several records. When the adjoining
     // column names each record and later columns contain numbers, both left
     // columns are row labels, even though only the first touches the edge.
+    // So does a label written only on the first record of its group, blank
+    // below, over a table of several columns of numbers, as regions over
+    // their cities in monthly figures.
+    let first_only = || {
+        let records: BTreeSet<u32> = group
+            .iter()
+            .filter(|c| body(c) && c.nonempty())
+            .map(|c| c.top)
+            .collect();
+        let at_left: Vec<&&Cell<'_>> = group
+            .iter()
+            .filter(|c| body(c) && c.left == left && c.nonempty())
+            .collect();
+        let firsts: BTreeSet<u32> = at_left.iter().map(|c| c.top).collect();
+        // Each label stands over two records or more, blank below it.
+        let grouping = at_left.iter().all(|c| c.string())
+            && firsts.iter().all(|&y| {
+                records
+                    .range(y + 1..)
+                    .next()
+                    .is_some_and(|next| !firsts.contains(next))
+            });
+        let measures: BTreeSet<u32> = group
+            .iter()
+            .filter(|c| body(c) && c.left > left + 1 && c.nonempty() && !c.string())
+            .map(|c| c.left)
+            .collect();
+        grouping
+            && firsts.len() >= 2
+            && firsts.len() < records.len()
+            && records.first() == firsts.first()
+            && measures.len() >= 2
+    };
     let nested_labels = !single
         && through == left
-        && group
+        && (group
             .iter()
             .any(|c| body(c) && c.left == left && c.bottom > c.top && c.string() && c.nonempty())
+            || first_only())
         && left
             .checked_add(1)
             .is_some_and(|next| column_all(next, &|c| c.string()))
@@ -2462,6 +2524,45 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 at += 1;
             }
         }
+        // A blank line inside a hierarchy parts it in two. The lower part goes
+        // on under the upper one when it starts deeper than the upper part's
+        // top level, within its width, and the two read as one hierarchy.
+        let mut at = 0;
+        while at + 1 < groups.len() {
+            let (a, b) = (&groups[at], &groups[at + 1]);
+            let free = |c: &Candidate| {
+                c.explicit.is_none()
+                    && c.parent.is_none()
+                    && !groups.iter().any(|other| other.parent == Some(c.key))
+            };
+            let (al, _, ar, ab) = bounds(&cells, &a.group);
+            let (bl, bt, br, _) = bounds(&cells, &b.group);
+            let gap = ab + 1;
+            let blank = !cells
+                .iter()
+                .any(|c| c.top <= gap && c.bottom >= gap && c.left <= ar && c.right >= al);
+            let joined = || {
+                let mut joined = [a.group.as_slice(), b.group.as_slice()].concat();
+                joined.sort_by_key(|&i| (cells[i].top, cells[i].left));
+                joined
+            };
+            if free(a)
+                && free(b)
+                && bt == gap + 1
+                && blank
+                && bl > al
+                && br <= ar
+                && outline::outline(&cells, &joined(), sheet_index).is_some()
+            {
+                let next = groups.remove(at + 1).group;
+                groups[at].group.extend(next);
+                groups[at]
+                    .group
+                    .sort_by_key(|&i| (cells[i].top, cells[i].left));
+            } else {
+                at += 1;
+            }
+        }
         attach_stepped_labels(&cells, &mut groups)?;
         type PrecedingTable = (
             (u32, u32, u32, u32),
@@ -2475,7 +2576,20 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
         let mut nested = vec![];
         for candidate in &groups {
             let (indices, explicit) = (&candidate.group, candidate.explicit);
-            let Some(interpreted) = interpret(&cells, indices, explicit, sheet_index)? else {
+            let free = explicit.is_none()
+                && candidate.parent.is_none()
+                && !groups
+                    .iter()
+                    .any(|other| other.parent == Some(candidate.key));
+            let hierarchy = free
+                .then(|| outline::outline(&cells, indices, sheet_index))
+                .flatten();
+            let stepped = hierarchy.is_some();
+            let interpreted = match hierarchy {
+                Some(interpreted) => Some(interpreted),
+                None => interpret(&cells, indices, explicit, sheet_index)?,
+            };
+            let Some(interpreted) = interpreted else {
                 leftovers.extend(indices);
                 preceding = None;
                 continue;
@@ -2495,6 +2609,8 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                     "Explicit table boundary from the source"
                 } else if candidate.parent.is_some() {
                     "Labels and records written within the records of another table, beside its merged cells"
+                } else if stepped {
+                    "A hierarchy of names stepped across columns, indented, numbered by level or merged down; each name heads the deeper names after it"
                 } else {
                     "Adjacent cell regions with repeated row fields; headers set apart by bold text or fill, and aligned row labels"
                 }
