@@ -80,11 +80,15 @@ fn width(c: &Cell<'_>) -> usize {
 /// rows; the last of three cells or more is a field of a record. It is a mark
 /// when it has no letter or digit, or when the same text stands so more than
 /// once; that text is a mark wherever it is written, even alone on a row.
-/// Numbers and ancestors merged down over their descendants are never marks,
-/// nor a name that stands so once, as an ancestor beside its only child.
+/// Numbers are never marks, nor ancestors merged down over their descendants
+/// unless they have no letter or digit, as a `+` merged down over the two
+/// rows of its folder, nor a name that stands so once, as an ancestor beside
+/// its only child.
 fn marks(cells: &[&Cell<'_>]) -> HashSet<(u32, u32)> {
     let numbered = numbered_column(cells);
-    let candidate = |c: &Cell<'_>| c.string() && c.bottom == c.top && Some(c.left) != numbered;
+    let symbol = |c: &Cell<'_>| !c.text().chars().any(char::is_alphanumeric);
+    let candidate =
+        |c: &Cell<'_>| c.string() && (c.bottom == c.top || symbol(c)) && Some(c.left) != numbered;
     let level = |c: &Cell<'_>| (c.left, width(c));
     let mut rows: BTreeMap<u32, Vec<&Cell<'_>>> = BTreeMap::new();
     for &c in cells {
@@ -150,18 +154,32 @@ fn unmarked<'c, 'a>(cells: &[&'c Cell<'a>]) -> Vec<&'c Cell<'a>> {
 /// Notes written on the right of the names, such as `※旧版`, as (row,
 /// column): the last cells of rows, beyond every other cell, in columns
 /// written on fewer than half of the rows. Columns written on most rows hold
-/// the fields of records instead, and then there are no notes.
-fn side_notes(cells: &[&Cell<'_>]) -> HashSet<(u32, u32)> {
+/// the fields of records instead, and then there are no notes. A value alone
+/// on its row, as on the second line of a record, ends it when it stands
+/// beyond every other cell under a heading of its own (`headed`).
+fn side_notes(cells: &[&Cell<'_>], headed: impl Fn(&Cell<'_>) -> bool) -> HashSet<(u32, u32)> {
     let mut rows: BTreeMap<u32, Vec<&Cell<'_>>> = BTreeMap::new();
     for &c in cells {
         rows.entry(c.top).or_default().push(c);
     }
+    // The rightmost cell of each column, to find what stands beyond the
+    // cells of all other columns.
+    let mut rightmost: HashMap<u32, u32> = HashMap::new();
+    for c in cells {
+        let r = rightmost.entry(c.left).or_default();
+        *r = (*r).max(c.right);
+    }
+    let beyond_others = |c: &Cell<'_>| {
+        rightmost
+            .iter()
+            .all(|(&x, &right)| x == c.left || right < c.left)
+    };
     let mut reach = 0;
     let mut ends = vec![];
     for line in rows.values_mut() {
         line.sort_by_key(|c| c.left);
         let rest = match line.as_slice() {
-            [rest @ .., end] if !rest.is_empty() => {
+            [rest @ .., end] if !rest.is_empty() || (headed(end) && beyond_others(end)) => {
                 ends.push(*end);
                 rest
             }
@@ -549,7 +567,23 @@ pub(super) fn outline(
     let read = |from: u32, path: Path| {
         let body: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.left >= from).collect();
         let named = unmarked(&body);
-        let notes = side_notes(&named);
+        // The one column of the cells under each heading, if they share one.
+        let sole: Vec<Option<u32>> = heads
+            .iter()
+            .map(|h| {
+                let mut under = body
+                    .iter()
+                    .filter(|o| o.left >= h.left && o.right <= h.right)
+                    .map(|o| o.left);
+                let first = under.next()?;
+                under.all(|x| x == first).then_some(first)
+            })
+            .collect();
+        let notes = side_notes(&named, |c| {
+            heads.iter().zip(&sole).any(|(h, &sole)| {
+                h.bottom < c.top && h.left <= c.left && h.right >= c.right && sole == Some(c.left)
+            })
+        });
         let annotated: Vec<&Cell<'_>> = named
             .iter()
             .copied()
@@ -578,17 +612,30 @@ pub(super) fn outline(
                     .min()
                     .unwrap_or(edge)
             };
-            let (left, right, names) = heads.iter().find_map(|h| {
-                let right = reach(h);
-                let under: Vec<&Cell<'_>> = body
-                    .iter()
+            let within = |left: u32, right: u32| -> Vec<&Cell<'_>> {
+                body.iter()
                     .copied()
-                    .filter(|c| c.left >= h.left && c.right <= right)
-                    .collect();
-                let under = unmarked(&under);
-                let lefts: HashSet<u32> = under.iter().map(|c| c.left).collect();
-                let indents: HashSet<usize> = under.iter().map(|c| width(c)).collect();
-                (lefts.len() >= 2 || indents.len() >= 2).then_some((h.left, right, under))
+                    .filter(|c| c.left >= left && c.right <= right)
+                    .collect()
+            };
+            let steps = |cells: &[&Cell<'_>]| {
+                let lefts: HashSet<u32> = cells.iter().map(|c| c.left).collect();
+                let indents: HashSet<usize> = cells.iter().map(|c| width(c)).collect();
+                lefts.len() >= 2 || indents.len() >= 2
+            };
+            let (left, right, names) = heads.iter().find_map(|h| {
+                let mut right = reach(h);
+                // A heading over item numbers in two forms or more and the
+                // heading over the names they number make one band, when the
+                // numbers alone give the levels.
+                if numbered_column(&within(h.left, right)).is_some()
+                    && let Some(next) = heads.iter().find(|o| o.left > right)
+                    && !steps(&unmarked(&within(next.left, reach(next))))
+                {
+                    right = reach(next);
+                }
+                let under = unmarked(&within(h.left, right));
+                steps(&under).then_some((h.left, right, under))
             })?;
             let fields_headed = body
                 .iter()
@@ -651,7 +698,12 @@ pub(super) fn outline(
             let (names, span, key, groups, notes, tree) = read(from, path)?;
             let before: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.right < from).collect();
             let (left_key, mut left_groups, fields) = labels(&before, &names, &tree);
-            if !fields.is_empty() || (key.is_some() && left_key.is_some()) {
+            // Item numbers in two forms or more give the levels of the names
+            // and label no rows.
+            let numbered = left_groups
+                .iter()
+                .any(|column| numbered_column(column).is_some());
+            if !fields.is_empty() || numbered || (key.is_some() && left_key.is_some()) {
                 return None;
             }
             left_groups.extend(groups);
@@ -691,14 +743,21 @@ pub(super) fn outline(
             .map(|(k, c)| ((c.top, c.left), k))
             .collect();
         // The deepest name on a row, merged down over it or starting there.
-        let row_name = |y: u32| -> Option<usize> {
-            names
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.top <= y && c.bottom >= y)
-                .map(|(k, _)| k)
-                .max_by_key(|&k| tree.ancestors[k].len())
-        };
+        // A row with no name of its own goes on with the record above it, as
+        // a second line of values beside a folder drawn over two rows.
+        let mut owners_by_row: BTreeMap<u32, usize> = BTreeMap::new();
+        for (k, c) in names.iter().enumerate() {
+            for y in c.top..=c.bottom {
+                let deeper = owners_by_row
+                    .get(&y)
+                    .is_none_or(|&o| tree.ancestors[k].len() >= tree.ancestors[o].len());
+                if deeper {
+                    owners_by_row.insert(y, k);
+                }
+            }
+        }
+        let row_name =
+            |y: u32| -> Option<usize> { owners_by_row.range(..=y).next_back().map(|(_, &k)| k) };
         let field = |c: &Cell<'_>| {
             span.is_some_and(|(left, right)| c.right < left || c.left > right)
                 || notes.contains(&(c.top, c.left))

@@ -208,9 +208,12 @@ const MAX_TREE_DEPTH: usize = 16;
 /// most of its cells take their key from as its `labels`, each mark as a
 /// `mark` and each other record's `parent`, the latest earlier record a cell
 /// of it names. A record none of whose cells has a group parent, as one an
-/// insertion adds, takes the parent of the record before it. A record is put
-/// under the nearest ancestor of its parent that keeps every record between
-/// them in its tree, so that the tree reads in the order of the records.
+/// insertion adds, takes the parent of the record before it. One whose cells
+/// name no earlier record takes the parent of the next record naming one
+/// before it, so that a stray record does not cut the records after it off
+/// their parents. A record is put under the nearest ancestor of its parent
+/// that keeps every record between them in its tree, so that the tree reads
+/// in the order of the records.
 fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
     let groups = &sheet["groups"];
     for element in metadata
@@ -294,6 +297,15 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
             let (mut parent, known) = proposed[i];
             if parent.is_none() && !known && i > headings {
                 parent = assigned[i - 1];
+            }
+            // A record naming no earlier record that the next record naming
+            // one passes over goes with that record, so that it does not cut
+            // the records after it off their parents.
+            if parent.is_none() && known && i > headings {
+                parent = proposed[i + 1..]
+                    .iter()
+                    .find_map(|&(p, _)| p)
+                    .filter(|&p| p < i);
             }
             // The nearest ancestor of the parent on the path to the record
             // before keeps the records between them in its tree.
@@ -983,7 +995,7 @@ pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{complete, token};
+    use super::{arrange, complete, token};
     use serde_json::{Value, json};
 
     #[test]
@@ -1037,6 +1049,56 @@ mod tests {
         assert_eq!(
             body[0]["table"]["rows"][2],
             json!({"A":"cell_r3_A","D":"cell_r3_F","G":"cell_r3_G","H":"cell_r3_H"})
+        );
+    }
+
+    #[test]
+    fn a_record_naming_no_earlier_record_does_not_cut_the_records_after_it_off() {
+        // A heading, then / with xxx under it; a record naming none, as the
+        // second line of xxx; yyy and zzz under xxx; and a second tree.
+        let records: [(u32, &str, Option<&str>); 8] = [
+            (1, "A", None),
+            (2, "A", None),
+            (3, "B", Some("r2")),
+            (4, "C", None),
+            (5, "C", Some("r3")),
+            (6, "D", Some("r5")),
+            (7, "A", None),
+            (8, "B", Some("r7")),
+        ];
+        let mut groups = serde_json::Map::new();
+        let mut rows = vec![];
+        for (y, x, parent) in records {
+            let id = format!("cell_r{y}_{x}");
+            let group = if y == 1 {
+                json!({"heading":true})
+            } else {
+                json!({"parent":parent})
+            };
+            groups.insert(id.clone(), group);
+            rows.push(json!({"id":format!("record_r{y}"),"cells":[{"id":id,"column":format!("column_{x}")}]}));
+        }
+        let sheet = json!({"groups":groups});
+        let mut metadata = json!([{"type":"table","rows":rows}]);
+        arrange(&sheet, &mut metadata).unwrap();
+        let parents: Vec<Value> = metadata[0]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["parent"].clone())
+            .collect();
+        assert_eq!(
+            parents,
+            [
+                Value::Null,
+                Value::Null,
+                json!("record_r2"),
+                json!("record_r3"),
+                json!("record_r3"),
+                json!("record_r5"),
+                Value::Null,
+                json!("record_r7"),
+            ]
         );
     }
 
