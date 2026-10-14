@@ -90,7 +90,7 @@ pub(super) fn stored(layout: &mut Value, extraction: &Value) -> Result<Vec<u8>> 
         if cfg!(debug_assertions) {
             let mut restored = sheet.clone();
             expand_tables(&mut restored["element_metadata"])?;
-            restore_metadata(&mut restored, &inherited, true)?;
+            restore_metadata(&mut restored, &inherited)?;
             ensure!(
                 resolved(&restored)? == resolved(current)?,
                 "layout of {page} cannot be read back as stored"
@@ -568,12 +568,8 @@ fn inherited_fonts(sheet: &Value, extraction: &Value) -> Result<HashMap<String, 
 /// Puts back in place what [`stored`] leaves out of the element metadata of
 /// a layout `sheet` whose rows and columns are placed: the fonts, an element
 /// without one taking the font it has from the extraction (`inherited`), and
-/// what [`elements::complete`] gives, the spans with `spans`.
-fn restore_metadata(
-    sheet: &mut Value,
-    inherited: &HashMap<String, Value>,
-    spans: bool,
-) -> Result<()> {
+/// what [`elements::complete`] gives.
+fn restore_metadata(sheet: &mut Value, inherited: &HashMap<String, Value>) -> Result<()> {
     let stored = sheet["fonts"].as_array().cloned().unwrap_or_default();
     let mut fonts = elements::Fonts::default();
     let mut metadata = sheet["element_metadata"].take();
@@ -597,7 +593,7 @@ fn restore_metadata(
         }
         Ok(())
     })?;
-    elements::complete(sheet, &mut metadata, spans)?;
+    elements::complete(sheet, &mut metadata)?;
     sheet["element_metadata"] = metadata;
     sheet["fonts"] = Value::Array(fonts.list);
     Ok(())
@@ -661,29 +657,38 @@ fn expand(layout: &mut Value) -> Result<()> {
 }
 
 /// A stored layout with its rows and columns placed under the pending
-/// `operations` of the same version, as [`load`] places them, and its element
-/// metadata complete but for spans. Its elements keep only the fonts stored.
-pub(super) fn placed(mut layout: Value, operations: &Value) -> Result<Value> {
+/// `operations` of the same version, as [`load`] places them with the
+/// `extraction` of that version, and its element metadata complete. Its
+/// elements keep only the fonts stored.
+pub(super) fn placed(mut layout: Value, extraction: &Value, operations: &Value) -> Result<Value> {
     expand(&mut layout)?;
-    let sheets: Vec<_> = layout["sheets"]
-        .as_object()
-        .context("layout sheets missing")?
-        .values()
-        .map(|sheet| json!({"name":sheet["name"]}))
-        .collect();
-    let operations = excel::parse_operations(
-        operations.as_array().map(Vec::as_slice).unwrap_or(&[]),
-        &sheets,
-    )?;
-    update(&mut layout, &operations)?;
+    place(&mut layout, extraction, operations, false)?;
+    Ok(layout)
+}
+
+/// Places the rows and columns of an expanded `layout` under the pending
+/// `operations`, with the merges and visuals the `extraction` gives under
+/// them, and completes its element metadata ([`restore_metadata`]); with
+/// `inherit`, an element without a font stored takes the font of the
+/// extraction cell it was imported from.
+fn place(layout: &mut Value, extraction: &Value, operations: &Value, inherit: bool) -> Result<()> {
+    let operated = operated_extraction(extraction, operations)?;
+    let operations = excel::parse_operations(array(operations)?, array(&operated["sheets"])?)?;
+    update(layout, &operations)?;
+    elements::geometry(layout, &operated, &operations)?;
     for sheet in layout["sheets"]
         .as_object_mut()
         .context("layout sheets missing")?
         .values_mut()
     {
-        restore_metadata(sheet, &HashMap::new(), false)?;
+        let inherited = if inherit {
+            inherited_fonts(sheet, extraction)?
+        } else {
+            HashMap::new()
+        };
+        restore_metadata(sheet, &inherited)?;
     }
-    Ok(layout)
+    Ok(())
 }
 
 pub(super) fn is_excel(extraction: &Value) -> bool {
@@ -789,19 +794,7 @@ pub(super) fn load(dir: &Path, extraction: &Value, planned: &Planned) -> Result<
         planned,
         "mappings",
     )?);
-    let operated = operated_extraction(extraction, &mappings["operations"])?;
-    let operations =
-        excel::parse_operations(array(&mappings["operations"])?, array(&operated["sheets"])?)?;
-    update(&mut ordered, &operations)?;
-    elements::geometry(&mut ordered, &operated, &operations)?;
-    for sheet in ordered["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
-        let inherited = inherited_fonts(sheet, extraction)?;
-        restore_metadata(sheet, &inherited, true)?;
-    }
+    place(&mut ordered, extraction, &mappings["operations"], true)?;
     // mappings operations are the writeback authority. Project them even when
     // authored directly; the CLI saves the resulting layout atomically and
     // apply persists it through reimport. Only the current element format is accepted.

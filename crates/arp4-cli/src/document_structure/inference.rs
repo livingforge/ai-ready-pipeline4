@@ -591,8 +591,10 @@ fn join_columns(cells: &[Cell<'_>], remaining: &mut [Group]) {
 }
 
 /// A stepped row-label column may not touch the rest of its row. Join short,
-/// bordered fragments under the same merged header when their rows already
-/// contain records to the right. A shared outer border alone does not qualify.
+/// bordered fragments under the same header when their rows already contain
+/// records to the right: the header of the first column, or one merged over
+/// columns to step across, with other columns on its left. A shared outer
+/// border alone does not qualify.
 fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<Candidate>) -> Result<()> {
     let mut candidate_headers = vec![];
     for Candidate {
@@ -602,22 +604,23 @@ fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<Candidate>) -> Res
     } in groups.iter()
     {
         if explicit.is_some() || table.len() < 4 {
-            candidate_headers.push(None);
+            candidate_headers.push(vec![]);
             continue;
         }
         let view: Vec<_> = table.iter().map(|&i| &cells[i]).collect();
         let layout = layout(&view, None)?;
-        let stub = layout.header.and_then(|header| {
+        let stubs = layout.header.map_or(vec![], |header| {
             view.iter()
-                .find(|c| {
+                .filter(|c| {
                     c.top == header.0
                         && c.bottom == header.1
-                        && c.left == layout.left
+                        && (c.left == layout.left || c.right > c.left)
                         && c.right < layout.right
                 })
                 .map(|c| (header.1, c.left, c.right, layout.bottom))
+                .collect()
         });
-        candidate_headers.push(stub);
+        candidate_headers.push(stubs);
     }
     let mut moves = vec![];
     for (source, candidate) in groups.iter().enumerate() {
@@ -634,25 +637,28 @@ fn attach_stepped_labels(cells: &[Cell<'_>], groups: &mut Vec<Candidate>) -> Res
             .iter()
             .zip(&candidate_headers)
             .enumerate()
-            .filter_map(|(target, (Candidate { group: table, .. }, header))| {
+            .filter_map(|(target, (Candidate { group: table, .. }, stubs))| {
                 if target == source {
                     return None;
                 }
-                let &(header_end, stub_left, stub_right, bottom) = header.as_ref()?;
-                let fits = fragment.iter().all(|&i| {
-                    let c = &cells[i];
-                    c.top > header_end
-                        && c.bottom <= bottom
-                        && c.left >= stub_left
-                        && c.right <= stub_right
-                        && table.iter().map(|&i| &cells[i]).any(|record| {
-                            record.top <= c.top
-                                && record.bottom >= c.top
-                                && record.left > stub_right
-                                && record.nonempty()
-                                && record.bordered()
+                let fits = stubs
+                    .iter()
+                    .any(|&(header_end, stub_left, stub_right, bottom)| {
+                        fragment.iter().all(|&i| {
+                            let c = &cells[i];
+                            c.top > header_end
+                                && c.bottom <= bottom
+                                && c.left >= stub_left
+                                && c.right <= stub_right
+                                && table.iter().map(|&i| &cells[i]).any(|record| {
+                                    record.top <= c.top
+                                        && record.bottom >= c.top
+                                        && record.left > stub_right
+                                        && record.nonempty()
+                                        && record.bordered()
+                                })
                         })
-                });
+                    });
                 fits.then_some(target)
             })
             .collect();
@@ -2585,8 +2591,9 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 .then(|| outline::outline(&cells, indices, sheet_index))
                 .flatten();
             let stepped = hierarchy.is_some();
+            let competing = hierarchy.as_ref().and_then(|h| h.competing.clone());
             let interpreted = match hierarchy {
-                Some(interpreted) => Some(interpreted),
+                Some(hierarchy) => Some(hierarchy.cells),
                 None => interpret(&cells, indices, explicit, sheet_index)?,
             };
             let Some(interpreted) = interpreted else {
@@ -2623,6 +2630,10 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 && *headings == signature
             {
                 reason.push_str(&format!(" Possible continuation of {previous_id}: matching leaf headers after one blank row; confirm whether these are one table or two."));
+            }
+            if let Some(competing) = competing {
+                reason.push(' ');
+                reason.push_str(&competing);
             }
             preceding = Some((rectangle, signature, id.clone(), explicit.is_none()));
             let element = json!({"id":id,"kind":"table","sheet":sheet["name"],"evidence":[],

@@ -585,13 +585,28 @@ pub fn read_record(path: &Path) -> Result<Value> {
     Ok(extraction)
 }
 
+/// [`read`] for the `text` of a stored extraction and the `document.yml`
+/// (`meta`) it was stored with, such as an earlier version of both.
+pub fn parse(text: &str, meta: &Value) -> Result<Value> {
+    let mut extraction = read_text(Path::new("extraction.json"), text)?;
+    attach(&mut extraction, meta);
+    expand_cells(&mut extraction)?;
+    Ok(extraction)
+}
+
+/// Puts in place the document and the original that `meta`, a
+/// `document.yml`, records.
+fn attach(extraction: &mut Value, meta: &Value) {
+    extraction[DOCUMENT] = meta[DOCUMENT].clone();
+    extraction[SOURCE] = meta[SOURCE].clone();
+}
+
 /// Puts in place the document and the original of the stored extraction at
 /// `path`: the `document_id` and `source` of the `document.yml` beside it.
 fn attach_source(path: &Path, extraction: &mut Value) -> Result<()> {
     let meta = data::read(&path.with_file_name("document.yml"), Some("document"))
         .with_context(|| format!("{} has no document.yml beside it", path.display()))?;
-    extraction[DOCUMENT] = meta[DOCUMENT].clone();
-    extraction[SOURCE] = meta[SOURCE].clone();
+    attach(extraction, &meta);
     Ok(())
 }
 

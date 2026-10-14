@@ -342,31 +342,73 @@ pub(super) fn geometry(
     Ok(())
 }
 
+/// The first column position of the logical column of each column position
+/// of a table's cells, given as (record, (row, column)) positions. A cell
+/// merged across columns (`merged`: its bottom and right by its row and
+/// column) makes the columns it spans one logical column when no record holds
+/// cells in two of them, as values written under a merged heading in any of
+/// its columns. Records holding cells in two of them keep them apart, as the
+/// columns under a heading over several headings.
+fn logical_columns(
+    cells: &[(usize, (u64, u64))],
+    merged: &BTreeMap<(u64, u64), (u64, u64)>,
+) -> BTreeMap<u64, u64> {
+    let mut logical: BTreeMap<u64, u64> = cells.iter().map(|(_, (_, x))| (*x, *x)).collect();
+    let mut records: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+    for (record, (_, x)) in cells {
+        records.entry(*record).or_default().push(*x);
+    }
+    let mut kept_apart = BTreeSet::new();
+    for (_, (y, x)) in cells {
+        let Some((_, right)) = merged.get(&(*y, *x)) else {
+            continue;
+        };
+        let joined: BTreeSet<u64> = logical.range(x..=right).map(|(_, l)| *l).collect();
+        if joined.len() < 2 || kept_apart.contains(&joined) {
+            continue;
+        }
+        if records.values().any(|columns| {
+            columns
+                .iter()
+                .filter(|x| joined.contains(&logical[x]))
+                .count()
+                >= 2
+        }) {
+            kept_apart.insert(joined);
+            continue;
+        }
+        let first = *joined.first().unwrap();
+        for l in logical.values_mut().filter(|l| joined.contains(l)) {
+            *l = first;
+        }
+    }
+    logical
+}
+
 /// Puts in place in the element `metadata` of a layout `sheet` what follows
 /// from the rest, as [`encode`] gives it: the IDs of tables and their records,
 /// by their first cell and its row, and of the blanks between elements, by the
-/// elements around them; each table cell's column, which its ID names; a
-/// table's columns, in the order of their positions;
-/// and, with `spans`, the logical rows and columns of its table that a merged
-/// cell spans, a span of one being the cell itself. The positions are those of
-/// the sheet's rows and columns, the merges its `merges`.
-pub(super) fn complete(sheet: &Value, metadata: &mut Value, spans: bool) -> Result<()> {
+/// elements around them; a table's logical columns, in the order of their
+/// positions, each named by its first column (see [`logical_columns`]); each
+/// table cell's logical column; and the logical rows and columns of its table
+/// that a merged cell spans, a span of one being the cell itself. The
+/// positions are those of the sheet's rows and columns, the merges its
+/// `merges`.
+pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
     let position = |axis: &str, id: &str, missing: u64| {
         sheet[axis][id]["position"].as_u64().unwrap_or(missing)
     };
     let mut merged = BTreeMap::new();
-    if spans {
-        for range in array(&sheet["merges"])? {
-            let (start, end) = string(range)?
-                .split_once(':')
-                .context("invalid merge range")?;
-            let (x, y) = excel::coordinate(start)?;
-            let (right, bottom) = excel::coordinate(end)?;
-            merged.insert(
-                (u64::from(y), u64::from(x)),
-                (u64::from(bottom), u64::from(right)),
-            );
-        }
+    for range in array(&sheet["merges"])? {
+        let (start, end) = string(range)?
+            .split_once(':')
+            .context("invalid merge range")?;
+        let (x, y) = excel::coordinate(start)?;
+        let (right, bottom) = excel::coordinate(end)?;
+        merged.insert(
+            (u64::from(y), u64::from(x)),
+            (u64::from(bottom), u64::from(right)),
+        );
     }
     let elements = metadata
         .as_array_mut()
@@ -376,11 +418,12 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value, spans: bool) -> Resu
             .as_array_mut()
             .context("table rows missing")?;
         let mut cells = vec![];
-        for row in rows.iter_mut() {
+        let mut names = BTreeMap::new();
+        for (record, row) in rows.iter_mut().enumerate() {
             let first = string(&row["cells"][0]["id"])?;
-            let (record, _) =
+            let (id, _) =
                 cell_axes(first).with_context(|| format!("table cell {first} names no cell"))?;
-            row["id"] = json!(token("record", &[&record]));
+            row["id"] = json!(token("record", &[&id]));
             for cell in row["cells"].as_array_mut().context("table cells missing")? {
                 let id = string(&cell["id"])?;
                 let (row, column) =
@@ -389,25 +432,29 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value, spans: bool) -> Resu
                     position("rows", &row, u64::MAX),
                     position("columns", &column, 0),
                 );
-                cell["column"] = json!(token("column", &[&column]));
-                cells.push((at, cell));
+                names.insert(at.1, token("column", &[&column]));
+                cells.push((record, at, cell));
             }
         }
-        let logical_rows: BTreeSet<u64> = cells.iter().map(|((y, _), _)| *y).collect();
-        let logical_columns: BTreeMap<u64, Value> = cells
-            .iter()
-            .map(|((_, x), cell)| (*x, json!({"id":cell["column"]})))
+        let places: Vec<_> = cells.iter().map(|(record, at, _)| (*record, *at)).collect();
+        let logical = logical_columns(&places, &merged);
+        let logical_rows: BTreeSet<u64> = cells.iter().map(|(_, (y, _), _)| *y).collect();
+        let logical_columns: BTreeMap<u64, Value> = logical
+            .values()
+            .map(|first| (*first, json!({"id":names[first]})))
             .collect();
-        for ((y, x), cell) in cells {
+        for (_, (y, x), cell) in cells {
             let cell = cell
                 .as_object_mut()
                 .context("table cell must be an object")?;
+            cell.insert("column".into(), json!(names[&logical[&x]]));
             cell.remove("row_span");
             cell.remove("column_span");
             if let Some((bottom, right)) = merged.get(&(y, x)) {
+                let spanned: BTreeSet<_> = logical.range(x..=*right).map(|(_, l)| l).collect();
                 for (key, count) in [
                     ("row_span", logical_rows.range(y..=*bottom).count()),
-                    ("column_span", logical_columns.range(x..=*right).count()),
+                    ("column_span", spanned.len()),
                 ] {
                     if count > 1 {
                         cell.insert(key.into(), json!(count));
@@ -659,7 +706,7 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
     ensure!(out.is_object(), "page must be an object");
     out["schema_version"] = json!("4");
     let mut elements = Value::Array(elements);
-    complete(sheet, &mut elements, true)?;
+    complete(sheet, &mut elements)?;
     let (body, metadata) = crate::document_body::split(&elements)?;
     out["elements"] = body;
     sheet["element_metadata"] = metadata;
@@ -724,7 +771,61 @@ pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::token;
+    use super::{complete, token};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn columns_under_a_merged_heading_are_one_unless_a_record_uses_two() {
+        // A1:C1 and D1:F1 head values written in A and F; G1:H1 heads G2 and H2.
+        let letters = ["A", "B", "C", "D", "E", "F", "G", "H"];
+        let sheet = json!({
+            "rows":(1..=3).map(|y| (format!("r{y}"), json!({"position":y}))).collect::<serde_json::Map<_, _>>(),
+            "columns":letters.iter().zip(1..).map(|(x, at)| (x.to_string(), json!({"position":at}))).collect::<serde_json::Map<_, _>>(),
+            "merges":["A1:C1", "D1:F2", "G1:H1"],
+        });
+        let record = |y: u32, columns: &[&str]| json!({"cells":columns.iter().map(|x| json!({"id":format!("cell_r{y}_{x}")})).collect::<Vec<_>>()});
+        let mut metadata = json!([{"type":"table","rows":[
+            record(1, &["A", "D", "G"]),
+            record(2, &["G", "H"]),
+            record(3, &["A", "F", "G", "H"]),
+        ]}]);
+        complete(&sheet, &mut metadata).unwrap();
+        let table = &metadata[0];
+        assert_eq!(
+            table["columns"],
+            json!([{"id":"column_A"}, {"id":"column_D"}, {"id":"column_G"}, {"id":"column_H"}])
+        );
+        let cell = |y: usize, i: usize| &table["rows"][y]["cells"][i];
+        assert_eq!(cell(2, 1)["id"], "cell_r3_F");
+        assert_eq!(cell(2, 1)["column"], "column_D");
+        assert_eq!(cell(2, 3)["column"], "column_H");
+        // A heading spans the logical columns under it.
+        assert!(cell(0, 0).get("column_span").is_none());
+        assert_eq!(cell(0, 1)["row_span"], 2);
+        assert!(cell(0, 1).get("column_span").is_none());
+        assert_eq!(cell(0, 2)["column_span"], 2);
+        let (body, _) = crate::document_body::split(
+            &metadata
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    let mut e = e.clone();
+                    for row in e["rows"].as_array_mut().unwrap() {
+                        for cell in row["cells"].as_array_mut().unwrap() {
+                            cell["value"] = cell["id"].clone();
+                        }
+                    }
+                    e
+                })
+                .collect::<Value>(),
+        )
+        .unwrap();
+        assert_eq!(
+            body[0]["table"][2],
+            json!(["cell_r3_A", "cell_r3_F", "cell_r3_G", "cell_r3_H"])
+        );
+    }
 
     #[test]
     fn readable_ids_keep_component_boundaries_and_literal_escapes_distinct() {

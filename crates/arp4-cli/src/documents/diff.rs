@@ -65,7 +65,13 @@ fn compare_files(
     after: &BTreeMap<String, DiffFile>,
 ) -> Result<Vec<Value>> {
     let mut out = vec![];
-    let names: BTreeSet<_> = before.keys().chain(after.keys()).collect();
+    // The extraction is read only to place the layouts; its changes are the
+    // original's, which re-importing reports.
+    let names: BTreeSet<_> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|name| *name != "extraction.json")
+        .collect();
     for name in names {
         let path = format!("/{name}");
         match (before.get(name), after.get(name)) {
@@ -105,8 +111,8 @@ fn semantic_changes(
         identity::LAYOUT_VERSION
     );
     let mut out = vec![];
-    let bm = value(before, "mappings.yml")?;
-    let am = value(after, "mappings.yml")?;
+    let bm = complete_mappings(value(before, "mappings.yml")?);
+    let am = complete_mappings(value(after, "mappings.yml")?);
     let source_changed = value(before, "document.yml")?["source"]["sha256"]
         != value(after, "document.yml")?["source"]["sha256"];
     // An empty history is not stored.
@@ -169,8 +175,14 @@ fn semantic_changes(
     }
     // Rows and columns are stored as their keys; place them as each version's
     // pending operations do.
-    let a = identity::placed(a, &bm["operations"])?;
-    let b = identity::placed(b, &am["operations"])?;
+    let extraction = |files: &BTreeMap<String, DiffFile>| -> Result<Value> {
+        let Some(DiffFile::Text(text)) = files.get("extraction.json") else {
+            bail!("extraction.json missing");
+        };
+        crate::extraction::parse(text, &value(files, "document.yml")?)
+    };
+    let a = identity::placed(a, &extraction(before)?, &bm["operations"])?;
+    let b = identity::placed(b, &extraction(after)?, &am["operations"])?;
     for (page, sheet) in b["sheets"].as_object().context("layout sheets missing")? {
         let previous = &a["sheets"][page];
         if previous.is_null() {
@@ -259,6 +271,7 @@ impl Store {
                 || name == "mappings.yml"
                 || name == "document.yml"
                 || name == "layout.yml"
+                || name == "extraction.json"
             {
                 out.insert(name, DiffFile::Text(fs::read_to_string(&path)?));
             } else if name.starts_with("assets/") {
@@ -342,6 +355,7 @@ impl Store {
                     || name == "mappings.yml"
                     || name == "document.yml"
                     || name == "layout.yml"
+                    || name == "extraction.json"
                 {
                     let raw = git(&["show", &format!("HEAD:{path}")])?;
                     before.insert(name.to_owned(), DiffFile::Text(String::from_utf8(raw)?));
@@ -397,6 +411,21 @@ mod performance_tests {
                         "id":"move", "kind":"move_columns", "sheet":"Sheet",
                         "at":3, "count":1, "to":1, "reason":"fixture"
                     }]})
+                    .to_string(),
+                ),
+            ),
+            (
+                "document.yml".into(),
+                DiffFile::Text(
+                    json!({"document_id":"book.xlsx","source":{"path":"docs/book.xlsx","sha256":"a".repeat(64)}})
+                        .to_string(),
+                ),
+            ),
+            (
+                "extraction.json".into(),
+                DiffFile::Text(
+                    json!({"parser":"arp4-rust/1.0.0-alpha.1;cells/1","schema_version":"2",
+                        "sheets":[{"name":"Sheet","part":"xl/worksheets/sheet1.xml","state":"visible","merges":[],"cells":[],"fonts":[],"styles":[]}]})
                     .to_string(),
                 ),
             ),

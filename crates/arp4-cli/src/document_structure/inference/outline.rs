@@ -180,6 +180,162 @@ fn side_notes(cells: &[&Cell<'_>]) -> HashSet<(u32, u32)> {
     beyond.iter().map(|c| (c.top, c.left)).collect()
 }
 
+/// Ways to read names as a hierarchy: the whole width as one tree, names
+/// under one heading with fields beside them, and a tree with notes on the
+/// right.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Path {
+    Whole,
+    Spanned,
+    Noted,
+}
+
+const PATHS: [Path; 3] = [Path::Whole, Path::Spanned, Path::Noted];
+
+/// A reading of the names from column `from` on, with the columns on its
+/// left labelling the rows.
+struct Reading<'c, 'a> {
+    from: u32,
+    path: Path,
+    names: Vec<&'c Cell<'a>>,
+    /// The columns of the names when fields stand under headings beside them.
+    span: Option<(u32, u32)>,
+    /// The column of the No of the rows.
+    key: Option<u32>,
+    /// The columns grouping the rows.
+    groups: Vec<Vec<&'c Cell<'a>>>,
+    notes: HashSet<(u32, u32)>,
+    tree: Tree,
+}
+
+impl Reading<'_, '_> {
+    /// How the reading reads the names, with `peeled` columns on the left
+    /// labelling the rows.
+    fn describe(&self, peeled: usize) -> String {
+        let way = match self.path {
+            Path::Whole => "one tree over the whole width",
+            Path::Spanned => "names under one heading with fields under the headings beside them",
+            Path::Noted => "a tree with notes on its right",
+        };
+        match peeled {
+            0 => way.to_owned(),
+            1 => format!("{way}, the first column labelling the rows"),
+            n => format!("{way}, the first {n} columns labelling the rows"),
+        }
+    }
+}
+
+/// How well a reading fits, the best least: the cells it cuts off from a
+/// heading of their own, the names it spreads over headings of several
+/// depths each, the columns it sets apart on the left, and the order of its
+/// way to read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Score {
+    cut_off: usize,
+    spread: usize,
+    peeled: usize,
+    path: usize,
+}
+
+/// The best of the scored readings, and another that reads the cells
+/// differently yet fits as well but for the order of the ways to read.
+fn choose<T: PartialEq>(scored: &[(T, Score)]) -> Option<(usize, Option<usize>)> {
+    let mut order: Vec<usize> = (0..scored.len()).collect();
+    order.sort_by_key(|&k| scored[k].1);
+    let best = *order.first()?;
+    let tie =
+        |a: Score, b: Score| (a.cut_off, a.spread, a.peeled) == (b.cut_off, b.spread, b.peeled);
+    let competing = order
+        .iter()
+        .skip(1)
+        .copied()
+        .find(|&k| tie(scored[best].1, scored[k].1) && scored[k].0 != scored[best].0);
+    Some((best, competing))
+}
+
+/// The roles and header links of a hierarchy, and another reading that fits
+/// as well, when there is one.
+pub(super) struct Outline {
+    pub(super) cells: Vec<Value>,
+    pub(super) competing: Option<String>,
+}
+
+/// The columns of `cells`, on the left of the names of `tree`, that label
+/// its rows: at most one No of the rows, one column of numbers that do not
+/// repeat, and the columns that group them (see [`grouping`]); and the other
+/// columns.
+#[allow(clippy::type_complexity)]
+fn labels<'c, 'a>(
+    cells: &[&'c Cell<'a>],
+    names: &[&Cell<'_>],
+    tree: &Tree,
+) -> (Option<u32>, Vec<Vec<&'c Cell<'a>>>, Vec<Vec<&'c Cell<'a>>>) {
+    let columns: BTreeSet<u32> = cells.iter().map(|c| c.left).collect();
+    let mut key = None;
+    let mut groups = vec![];
+    let mut others = vec![];
+    for x in columns {
+        let column: Vec<&Cell<'_>> = cells.iter().copied().filter(|c| c.left == x).collect();
+        let texts: HashSet<String> = column
+            .iter()
+            .map(|c| c.source["value"].to_string())
+            .collect();
+        let numbers = column
+            .iter()
+            .all(|c| c.bottom == c.top && numbering(c) == Some(Numbering::Parts(1)))
+            && texts.len() == column.len();
+        if numbers && key.is_none() {
+            key = Some(x);
+        } else if grouping(&column, names, tree) {
+            groups.push(column);
+        } else {
+            others.push(column);
+        }
+    }
+    (key, groups, others)
+}
+
+/// The label of row `y` in a column of labels: the one merged down over it
+/// or the nearest written above it.
+fn label<'c, 'a>(column: &[&'c Cell<'a>], y: u32) -> Option<&'c Cell<'a>> {
+    column
+        .iter()
+        .copied()
+        .filter(|c| c.top <= y)
+        .max_by_key(|c| c.top)
+}
+
+/// Whether a column on the left of a tree groups its rows, as the machine a
+/// folder tree is on: a label for every name's row, merged down over the
+/// rows, written on each of them or on the first only, and each group of
+/// rows under one label holds whole branches, every name with its
+/// ancestors. A label on every row, such as a kind of each name, that
+/// changes within a branch describes the names rather than groups them.
+fn grouping(column: &[&Cell<'_>], names: &[&Cell<'_>], tree: &Tree) -> bool {
+    let text = |y: u32| label(column, y).map(|c| c.text().trim());
+    let Some(first) = names.iter().map(|c| c.top).min() else {
+        return false;
+    };
+    let last = names.iter().map(|c| c.top).max().unwrap_or(first);
+    if text(first).is_none() {
+        return false;
+    }
+    // Each run of rows under the same label, by row.
+    let mut runs: HashMap<u32, usize> = HashMap::new();
+    let mut run = 0;
+    for y in first..=last {
+        if y > first && text(y) != text(y - 1) {
+            run += 1;
+        }
+        runs.insert(y, run);
+    }
+    names.iter().enumerate().all(|(k, c)| {
+        tree.ancestors[k]
+            .iter()
+            .all(|&p| runs[&names[p].top] == runs[&c.top])
+    })
+}
+
 /// The tree of names, as indices into the names: each name's ancestors,
 /// nearest last, and the names with children.
 struct Tree {
@@ -308,14 +464,16 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
 /// Sparse notes on the right of the names (see [`side_notes`]) belong to the
 /// name on their row and its ancestors, as fields do.
 /// When the whole width is not one tree, the names stepped under one heading
-/// of a one-row header may be, with fields under the headings on its right:
+/// of a one-row header may be, with fields under the headings on its sides:
 /// each field belongs to the name on its row and that name's ancestors.
-/// On the left of the names stands at most a No of the rows.
+/// On the left of the names stand at most a No of the rows and columns that
+/// group them (see [`labels`]), whose labels head the names and fields of
+/// their rows; the names are read as though those columns were not there.
 pub(super) fn outline(
     cells: &[Cell<'_>],
     indices: &[usize],
     sheet_index: usize,
-) -> Option<Vec<Value>> {
+) -> Option<Outline> {
     let mut group: Vec<&Cell<'_>> = indices.iter().map(|&i| &cells[i]).collect();
     group.sort_by_key(|c| (c.top, c.left));
     let top = group.first()?.top;
@@ -383,66 +541,132 @@ pub(super) fn outline(
             _ => vec![],
         }
     };
-    let notes = side_notes(&named);
-    let annotated: Vec<&Cell<'_>> = named
-        .iter()
-        .copied()
-        .filter(|c| !notes.contains(&(c.top, c.left)))
-        .collect();
-    let noted = || (!notes.is_empty()).then(|| tree(&annotated, 1)).flatten();
-    // Names stepped across columns or indents under one heading, with fields
-    // under the headings on its right. Under header rows with subheadings,
-    // columns are grouped, not stepped.
-    let spanned = || {
-        if heads
+    // The reading of the names from column `from` on, the cells on its left
+    // set apart: the names, the columns of the names and fields under their
+    // headings, the No and the groups of the rows on the left, the notes and
+    // the tree. It reads the whole width as one tree, or names under one
+    // heading with fields beside them, or a tree with notes.
+    let read = |from: u32, path: Path| {
+        let body: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.left >= from).collect();
+        let named = unmarked(&body);
+        let notes = side_notes(&named);
+        let annotated: Vec<&Cell<'_>> = named
             .iter()
-            .any(|h| h.top != body_top - 1 || h.bottom != body_top - 1)
-        {
-            return None;
-        }
-        let (left, right, names) = heads.iter().find_map(|h| {
-            let under: Vec<&Cell<'_>> = body
-                .iter()
-                .copied()
-                .filter(|c| c.left >= h.left && c.right <= h.right)
-                .collect();
-            let under = unmarked(&under);
-            let lefts: HashSet<u32> = under.iter().map(|c| c.left).collect();
-            let indents: HashSet<usize> = under.iter().map(|c| width(c)).collect();
-            (lefts.len() >= 2 || indents.len() >= 2).then_some((h.left, h.right, under))
-        })?;
-        let fields_headed = body
-            .iter()
-            .filter(|c| c.right < left || c.left > right)
-            .all(|c| {
-                let over = heading_of(c);
-                !over.is_empty() && over.iter().all(|h| h.right < left || h.left > right)
-            });
-        // On the left, only a No of the rows: one column of numbers that do
-        // not repeat. Item numbers in parts are levels, left to the table
-        // reading.
-        let before: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.right < left).collect();
-        let key = before.first().map(|c| c.left);
-        let texts: HashSet<String> = before
-            .iter()
-            .map(|c| c.source["value"].to_string())
+            .copied()
+            .filter(|c| !notes.contains(&(c.top, c.left)))
             .collect();
-        let keyed = before.iter().all(|c| {
-            Some(c.left) == key && c.bottom == c.top && numbering(c) == Some(Numbering::Parts(1))
-        }) && texts.len() == before.len();
-        let tree = (fields_headed && keyed)
-            .then(|| tree(&names, 2))
-            .flatten()?;
-        Some((names, (left, right), key, tree))
+        let noted = || (!notes.is_empty()).then(|| tree(&annotated, 1)).flatten();
+        // Names stepped across columns or indents under one heading, with
+        // fields under the headings on its sides. Under header rows with
+        // subheadings, columns are grouped, not stepped.
+        let spanned = || {
+            if heads
+                .iter()
+                .any(|h| h.top != body_top - 1 || h.bottom != body_top - 1)
+            {
+                return None;
+            }
+            // A heading reaches over the columns up to the next heading,
+            // merged over them or not, as a heading written at the start of
+            // a band.
+            let edge = group.iter().map(|c| c.right).max()?;
+            let reach = |h: &Cell<'_>| {
+                heads
+                    .iter()
+                    .filter(|o| o.left > h.right)
+                    .map(|o| o.left - 1)
+                    .min()
+                    .unwrap_or(edge)
+            };
+            let (left, right, names) = heads.iter().find_map(|h| {
+                let right = reach(h);
+                let under: Vec<&Cell<'_>> = body
+                    .iter()
+                    .copied()
+                    .filter(|c| c.left >= h.left && c.right <= right)
+                    .collect();
+                let under = unmarked(&under);
+                let lefts: HashSet<u32> = under.iter().map(|c| c.left).collect();
+                let indents: HashSet<usize> = under.iter().map(|c| width(c)).collect();
+                (lefts.len() >= 2 || indents.len() >= 2).then_some((h.left, right, under))
+            })?;
+            let fields_headed = body
+                .iter()
+                .filter(|c| c.right < left || c.left > right)
+                .all(|c| {
+                    let over = heading_of(c);
+                    !over.is_empty() && over.iter().all(|h| h.right < left || h.left > right)
+                });
+            let tree = fields_headed.then(|| tree(&names, 2)).flatten()?;
+            // On the left, the columns that label the rows (see [`labels`]);
+            // the other columns hold fields, as those on the right do. Item
+            // numbers in two forms or more are levels, left to the table
+            // reading.
+            let before: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.right < left).collect();
+            let (key, groups, fields) = labels(&before, &names, &tree);
+            // Lines indented under a value written beside its item go on
+            // with the item, as notes do, rather than group under it.
+            let stepped = names.iter().map(|c| c.left).collect::<HashSet<_>>().len() >= 2;
+            if fields
+                .iter()
+                .any(|column| numbered_column(column).is_some())
+                || (!stepped && !groups.is_empty())
+            {
+                return None;
+            }
+            Some((names, (left, right), key, groups, tree))
+        };
+        match path {
+            Path::Whole => {
+                let tree = tree(&named, 1)?;
+                Some((named.clone(), None, None, vec![], HashSet::new(), tree))
+            }
+            Path::Spanned => {
+                let (names, span, key, groups, tree) = spanned()?;
+                Some((names, Some(span), key, groups, HashSet::new(), tree))
+            }
+            Path::Noted => {
+                let tree = noted()?;
+                Some((annotated, None, None, vec![], notes, tree))
+            }
+        }
     };
-    let (names, span, key, notes, tree) = if let Some(tree) = tree(&named, 1) {
-        (named.clone(), None, None, HashSet::new(), tree)
-    } else if let Some((names, span, key, tree)) = spanned() {
-        (names, Some(span), key, HashSet::new(), tree)
-    } else {
-        let tree = noted()?;
-        (annotated, None, None, notes, tree)
-    };
+    // Columns on the left that label the rows rather than name anything, as
+    // the machine a folder tree is on, are set apart before reading the
+    // names, the fewest first, and must label the rows of the tree read.
+    let starts: Vec<u32> = body
+        .iter()
+        .map(|c| c.left)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(3)
+        .collect();
+    let readings: Vec<Reading<'_, '_>> = starts
+        .iter()
+        .flat_map(|&from| PATHS.map(|path| (from, path)))
+        .filter_map(|(from, path)| {
+            if body.iter().any(|c| c.left < from && c.right >= from) {
+                return None;
+            }
+            let (names, span, key, groups, notes, tree) = read(from, path)?;
+            let before: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.right < from).collect();
+            let (left_key, mut left_groups, fields) = labels(&before, &names, &tree);
+            if !fields.is_empty() || (key.is_some() && left_key.is_some()) {
+                return None;
+            }
+            left_groups.extend(groups);
+            Some(Reading {
+                from,
+                path,
+                names,
+                span,
+                key: key.or(left_key),
+                groups: left_groups,
+                notes,
+                tree,
+            })
+        })
+        .collect();
     let id_for = |c: &Cell<'_>| {
         format!(
             "s{}-{}",
@@ -450,73 +674,235 @@ pub(super) fn outline(
             c.source["address"].as_str().unwrap_or("")
         )
     };
-    let index: HashMap<(u32, u32), usize> = names
-        .iter()
-        .enumerate()
-        .map(|(k, c)| ((c.top, c.left), k))
-        .collect();
-    // The deepest name on a row, merged down over it or starting there.
-    let row_name = |y: u32| -> Option<usize> {
-        names
+    let assemble = |reading: &Reading<'_, '_>| -> Vec<Value> {
+        let Reading {
+            names,
+            span,
+            key,
+            groups,
+            notes,
+            tree,
+            ..
+        } = reading;
+        let (span, key) = (*span, *key);
+        let index: HashMap<(u32, u32), usize> = names
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.top <= y && c.bottom >= y)
-            .map(|(k, _)| k)
-            .max_by_key(|&k| tree.ancestors[k].len())
-    };
-    let field = |c: &Cell<'_>| {
-        span.is_some_and(|(left, right)| c.right < left || c.left > right)
-            || notes.contains(&(c.top, c.left))
-    };
-    // The No of a row labels the row, as a column of row labels does, but
-    // names nothing that the row's fields belong to.
-    let keyed = |c: &Cell<'_>| {
-        c.nonempty() && key == Some(c.left) && span.is_some_and(|(l, _)| c.right < l)
-    };
-    // Names with a note on their row head it.
-    let annotated: HashSet<usize> = notes.iter().filter_map(|&(y, _)| row_name(y)).collect();
-    let interpreted = group
-        .iter()
-        .map(|c| {
-            let headed: Vec<String> = heading_of(c).into_iter().map(&id_for).collect();
-            let (role, headers): (&str, Vec<String>) = if title(c) {
-                ("text", vec![])
-            } else if heading(c) {
-                ("column_header", headed)
-            } else if keyed(c) {
-                ("row_header", headed)
-            } else if field(c) && c.nonempty() {
-                let owner = row_name(c.top);
-                let lineage = owner
-                    .into_iter()
-                    .flat_map(|k| tree.ancestors[k].iter().copied().chain([k]));
-                // A note stands under no heading of its own.
-                let headed = if span.is_some() { headed } else { vec![] };
-                let headers = headed
-                    .into_iter()
-                    .chain(lineage.map(|p| id_for(names[p])))
-                    .collect();
-                ("data", headers)
-            } else if let Some(&k) = index.get(&(c.top, c.left)) {
-                let role = if span.is_some() || tree.parents.contains(&k) || annotated.contains(&k)
-                {
-                    "row_header"
+            .map(|(k, c)| ((c.top, c.left), k))
+            .collect();
+        // The deepest name on a row, merged down over it or starting there.
+        let row_name = |y: u32| -> Option<usize> {
+            names
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.top <= y && c.bottom >= y)
+                .map(|(k, _)| k)
+                .max_by_key(|&k| tree.ancestors[k].len())
+        };
+        let field = |c: &Cell<'_>| {
+            span.is_some_and(|(left, right)| c.right < left || c.left > right)
+                || notes.contains(&(c.top, c.left))
+        };
+        // The No of a row labels the row, as a column of row labels does, but
+        // names nothing that the row's fields belong to.
+        let keyed = |c: &Cell<'_>| c.nonempty() && !heading(c) && key == Some(c.left);
+        // A column grouping the rows labels them as an ancestor merged down over
+        // them does, by the label nearest above each row.
+        let grouped = |c: &Cell<'_>| {
+            groups
+                .iter()
+                .any(|column| column.iter().any(|g| (g.top, g.left) == (c.top, c.left)))
+        };
+        let labels = |y: u32| -> Vec<String> {
+            groups
+                .iter()
+                .filter_map(|column| label(column, y))
+                .map(&id_for)
+                .collect()
+        };
+        // Names with a field or a note on their row head it, as names with
+        // children head theirs.
+        let owners: HashSet<usize> = group
+            .iter()
+            .filter(|c| c.nonempty() && field(c) && !keyed(c) && !grouped(c))
+            .filter_map(|c| row_name(c.top))
+            .collect();
+        group
+            .iter()
+            .map(|c| {
+                let headed: Vec<String> = heading_of(c).into_iter().map(&id_for).collect();
+                let (role, headers): (&str, Vec<String>) = if title(c) {
+                    ("text", vec![])
+                } else if heading(c) {
+                    ("column_header", headed)
+                } else if keyed(c) || grouped(c) {
+                    ("row_header", headed)
+                } else if field(c) && c.nonempty() {
+                    let owner = row_name(c.top);
+                    let lineage = owner
+                        .into_iter()
+                        .flat_map(|k| tree.ancestors[k].iter().copied().chain([k]));
+                    // A note stands under the heading over its column, if any,
+                    // not the nearest one on its left.
+                    let headed = if span.is_some() {
+                        headed
+                    } else {
+                        heads
+                            .iter()
+                            .filter(|h| h.bottom < c.top && h.left <= c.left && h.right >= c.right)
+                            .map(|h| id_for(h))
+                            .collect()
+                    };
+                    let headers = headed
+                        .into_iter()
+                        .chain(labels(c.top))
+                        .chain(lineage.map(|p| id_for(names[p])))
+                        .collect();
+                    ("data", headers)
+                } else if let Some(&k) = index.get(&(c.top, c.left)) {
+                    let role = if tree.parents.contains(&k) || owners.contains(&k) {
+                        "row_header"
+                    } else {
+                        "data"
+                    };
+                    let headers = headed
+                        .into_iter()
+                        .chain(labels(c.top))
+                        .chain(tree.ancestors[k].iter().map(|&p| id_for(names[p])))
+                        .collect();
+                    (role, headers)
+                } else if c.nonempty() {
+                    ("text", vec![])
                 } else {
-                    "data"
+                    ("data", headed.into_iter().collect())
                 };
-                let headers = headed
-                    .into_iter()
-                    .chain(tree.ancestors[k].iter().map(|&p| id_for(names[p])))
-                    .collect();
-                (role, headers)
-            } else if c.nonempty() {
-                ("text", vec![])
+                json!({"id":id_for(c),"address":c.source["address"],"role":role,"headers":headers,
+                    "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
+            })
+            .collect()
+    };
+    // Each reading is scored (see [`Score`]): a heading of its own that heads
+    // no name cuts a cell off when the cell does not link to it, as machine
+    // names read as marks or notes read apart from the heading over them;
+    // names spread over headings of several depths each, as kinds in a column
+    // of their own read as the deepest names, where headings of the levels
+    // each head one depth.
+    let scored: Vec<(Vec<Value>, Score)> = readings
+        .iter()
+        .map(|reading| {
+            let interpreted = assemble(reading);
+            let naming: HashSet<String> = reading
+                .names
+                .iter()
+                .flat_map(|c| heading_of(c))
+                .map(&id_for)
+                .collect();
+            let headers: HashMap<&str, HashSet<&str>> = interpreted
+                .iter()
+                .map(|c| {
+                    let headers = c["headers"].as_array().map_or(HashSet::new(), |h| {
+                        h.iter().filter_map(Value::as_str).collect()
+                    });
+                    (c["id"].as_str().unwrap_or(""), headers)
+                })
+                .collect();
+            let cut_off = body
+                .iter()
+                .filter(|c| {
+                    let own: Vec<String> = heading_of(c).into_iter().map(&id_for).collect();
+                    !own.is_empty()
+                        && own.iter().all(|h| !naming.contains(h))
+                        && headers
+                            .get(id_for(c).as_str())
+                            .is_none_or(|linked| own.iter().all(|h| !linked.contains(h.as_str())))
+                })
+                .count();
+            let over: Vec<String> = reading
+                .names
+                .iter()
+                .map(|c| {
+                    heading_of(c)
+                        .into_iter()
+                        .map(&id_for)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            let mut depths: HashMap<&str, HashSet<usize>> = HashMap::new();
+            for (k, heading) in over.iter().enumerate() {
+                depths
+                    .entry(heading)
+                    .or_default()
+                    .insert(reading.tree.ancestors[k].len());
+            }
+            let spread = if depths.len() >= 2 {
+                over.iter()
+                    .filter(|heading| depths[heading.as_str()].len() >= 2)
+                    .count()
             } else {
-                ("data", headed.into_iter().collect())
+                0
             };
-            json!({"id":id_for(c),"address":c.source["address"],"role":role,"headers":headers,
-                "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
+            let peeled = starts.iter().position(|&x| x == reading.from).unwrap_or(0);
+            let path = PATHS.iter().position(|&p| p == reading.path).unwrap_or(0);
+            let score = Score {
+                cut_off,
+                spread,
+                peeled,
+                path,
+            };
+            (interpreted, score)
         })
         .collect();
-    Some(interpreted)
+    let (best, competing) = choose(&scored)?;
+    let competing = competing.map(|k| {
+        let differing = scored[best]
+            .0
+            .iter()
+            .zip(&scored[k].0)
+            .filter(|(a, b)| a != b)
+            .count();
+        format!(
+            "Another reading also fits, as {}, and reads {differing} cells differently; confirm which one the source means.",
+            readings[k].describe(scored[k].1.peeled)
+        )
+    });
+    Some(Outline {
+        cells: scored.into_iter().nth(best)?.0,
+        competing,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn score(cut_off: usize, spread: usize, peeled: usize, path: usize) -> Score {
+        Score {
+            cut_off,
+            spread,
+            peeled,
+            path,
+        }
+    }
+
+    #[test]
+    fn the_reading_that_fits_best_wins_whatever_its_order() {
+        let scored = [
+            ("whole", score(1, 0, 0, 0)),
+            ("spanned", score(0, 2, 0, 1)),
+            ("peeled", score(0, 0, 1, 1)),
+        ];
+        assert_eq!(choose(&scored), Some((2, None)));
+    }
+
+    #[test]
+    fn readings_that_tie_but_for_their_order_compete_when_they_differ() {
+        let scored = [("tree", score(0, 0, 0, 1)), ("fields", score(0, 0, 0, 0))];
+        assert_eq!(choose(&scored), Some((1, Some(0))));
+        let same = [("tree", score(0, 0, 0, 1)), ("tree", score(0, 0, 0, 0))];
+        assert_eq!(choose(&same), Some((1, None)));
+        let worse = [("tree", score(0, 0, 1, 0)), ("fields", score(0, 0, 0, 1))];
+        assert_eq!(choose(&worse), Some((1, None)));
+        assert_eq!(choose::<&str>(&[]), None);
+    }
 }
