@@ -153,36 +153,194 @@ pub(super) fn font(sheet: &Value, element: &Value) -> Result<Value> {
     Ok(font.clone())
 }
 
-/// The table of every table cell, as the element `metadata` of a page records
-/// it.
+/// The group of every table cell, as the element `metadata` of a page records
+/// it: its table and what [`arrange`] took from the interpretation, a cell of
+/// a heading record as a `heading`, a mark as a `mark`, the heading its
+/// column's key is from as its `label` and the row of its record's parent
+/// as its `parent`, null for none.
 fn groups(metadata: &Value) -> Result<Value> {
     let mut groups = serde_json::Map::new();
     for element in array(metadata)? {
         if element["type"] != "table" {
             continue;
         }
-        for row in array(&element["rows"])? {
+        let rows = array(&element["rows"])?;
+        let headings = element["headings"].as_u64().unwrap_or(0);
+        let mut record_rows = HashMap::new();
+        for row in rows {
+            let first = string(&row["cells"][0]["id"])?;
+            if let (Some(id), Some((axis, _))) = (row["id"].as_str(), cell_axes(first)) {
+                record_rows.insert(id, axis);
+            }
+        }
+        for (i, row) in (0..).zip(rows) {
+            let parent = row["parent"]
+                .as_str()
+                .and_then(|p| record_rows.get(p))
+                .map_or(Value::Null, |axis| json!(axis));
             for cell in array(&row["cells"])? {
-                groups.insert(
-                    string(&cell["id"])?.to_owned(),
-                    json!({"table":element["id"]}),
-                );
+                let mut group = json!({"table":element["id"]});
+                if i < headings {
+                    group["heading"] = json!(true);
+                } else {
+                    group["parent"] = parent.clone();
+                }
+                if cell["mark"] == true {
+                    group["mark"] = json!(true);
+                }
+                if let Some(label) = element["labels"][string(&cell["column"])?].as_str() {
+                    group["label"] = json!(label);
+                }
+                groups.insert(string(&cell["id"])?.to_owned(), group);
             }
         }
     }
     Ok(Value::Object(groups))
 }
 
+/// The deepest a record may lie in the tree of a table body: a deeper one is
+/// put under its ancestor at this depth.
+const MAX_TREE_DEPTH: usize = 16;
+
+/// Puts in each table of the element `metadata` of `sheet` the tree its
+/// body shows, from the `groups` of its cells: the leading records whose
+/// cells are all headings as its `headings`, by logical column the heading
+/// most of its cells take their key from as its `labels`, each mark as a
+/// `mark` and each other record's `parent`, the latest earlier record a cell
+/// of it names. A record none of whose cells has a group parent, as one an
+/// insertion adds, takes the parent of the record before it. A record is put
+/// under the nearest ancestor of its parent that keeps every record between
+/// them in its tree, so that the tree reads in the order of the records.
+fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
+    let groups = &sheet["groups"];
+    for element in metadata
+        .as_array_mut()
+        .context("element metadata missing")?
+        .iter_mut()
+        .filter(|e| e["type"] == "table")
+    {
+        let rows = element["rows"]
+            .as_array_mut()
+            .context("table rows missing")?;
+        let group = |cell: &Value| -> Result<&Value> { Ok(&groups[string(&cell["id"])?]) };
+        let mut headings = 0;
+        for row in rows.iter() {
+            let mut cells = array(&row["cells"])?.iter();
+            if !cells.all(|c| group(c).is_ok_and(|g| g["heading"] == true)) {
+                break;
+            }
+            headings += 1;
+        }
+        let mut heading_cells = HashMap::new();
+        for row in &rows[..headings] {
+            for cell in array(&row["cells"])? {
+                heading_cells.insert(string(&cell["id"])?.to_owned(), heading_cells.len());
+            }
+        }
+        let mut votes: BTreeMap<String, HashMap<String, usize>> = BTreeMap::new();
+        let mut record_index = HashMap::new();
+        for (i, row) in rows.iter().enumerate().skip(headings) {
+            let first = string(&row["cells"][0]["id"])?;
+            if let Some((axis, _)) = cell_axes(first) {
+                record_index.insert(axis, i);
+            }
+        }
+        let mut proposed: Vec<(Option<usize>, bool)> = vec![(None, true); rows.len()];
+        for (i, row) in rows.iter_mut().enumerate().skip(headings) {
+            let mut known = false;
+            for cell in row["cells"].as_array_mut().context("table cells missing")? {
+                let g = group(cell)?;
+                if g["mark"] == true {
+                    cell["mark"] = json!(true);
+                    continue;
+                }
+                if let Some(label) = g["label"]
+                    .as_str()
+                    .filter(|l| heading_cells.contains_key(*l))
+                {
+                    *votes
+                        .entry(string(&cell["column"])?.to_owned())
+                        .or_default()
+                        .entry(label.to_owned())
+                        .or_default() += 1;
+                }
+                if let Some(parent) = g.get("parent") {
+                    known = true;
+                    if let Some(&j) = parent.as_str().and_then(|p| record_index.get(p))
+                        && j < i
+                    {
+                        proposed[i].0 = proposed[i].0.max(Some(j));
+                    }
+                }
+            }
+            proposed[i].1 = known;
+        }
+        let mut labels = serde_json::Map::new();
+        for (column, counts) in votes {
+            let best = counts
+                .into_iter()
+                .max_by(|a, b| {
+                    a.1.cmp(&b.1)
+                        .then_with(|| heading_cells[&b.0].cmp(&heading_cells[&a.0]))
+                })
+                .map(|(label, _)| label);
+            if let Some(label) = best {
+                labels.insert(column, json!(label));
+            }
+        }
+        let mut assigned: Vec<Option<usize>> = vec![None; rows.len()];
+        let mut path: Vec<usize> = vec![];
+        for i in headings..rows.len() {
+            let (mut parent, known) = proposed[i];
+            if parent.is_none() && !known && i > headings {
+                parent = assigned[i - 1];
+            }
+            // The nearest ancestor of the parent on the path to the record
+            // before keeps the records between them in its tree.
+            while let Some(p) = parent {
+                if let Some(at) = path.iter().position(|&q| q == p) {
+                    path.truncate(at + 1);
+                    break;
+                }
+                parent = assigned[p];
+            }
+            if parent.is_none() {
+                path.clear();
+            }
+            if path.len() >= MAX_TREE_DEPTH {
+                path.truncate(MAX_TREE_DEPTH - 1);
+            }
+            assigned[i] = path.last().copied();
+            path.push(i);
+        }
+        let ids: Vec<Value> = rows.iter().map(|r| r["id"].clone()).collect();
+        for (row, parent) in rows.iter_mut().zip(&assigned) {
+            if let Some(p) = parent {
+                row["parent"] = ids[*p].clone();
+            }
+        }
+        if headings > 0 {
+            element["headings"] = json!(headings);
+        }
+        if !labels.is_empty() {
+            element["labels"] = Value::Object(labels);
+        }
+    }
+    Ok(())
+}
+
 /// The digest of what [`classify`] takes from the elements of a structure
-/// interpretation: each table's sheet and its cells. A layout classified from
-/// another interpretation, such as one an earlier inference made, has
-/// another.
+/// interpretation: each table's sheet and its cells with their roles and
+/// headers. A layout classified from another interpretation, such as one an
+/// earlier inference made, has another.
 pub(super) fn interpretation_digest(structure: &[Value]) -> Result<String> {
     let mut tables = vec![];
     for element in structure.iter().filter(|e| e["kind"] == "table") {
         let cells: Vec<Value> = array(&element["cells"])?
             .iter()
-            .map(|cell| json!({"id":cell["id"],"address":cell["address"]}))
+            .map(|cell| {
+                json!({"id":cell["id"],"address":cell["address"],"role":cell["role"],"headers":cell["headers"]})
+            })
             .collect();
         tables.push(json!({"sheet":element["sheet"],"cells":cells}));
     }
@@ -318,10 +476,52 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
                 continue;
             };
             let table = token("table", &[first]);
+            // The role and place of each cell of the table, by its ID in the
+            // interpretation.
+            let mut places = HashMap::new();
             for cell in cells {
-                if let Some(id) = ids.get(string(&cell["id"])?) {
-                    groups[id] = json!({"table":table});
+                let (x, y) = excel::coordinate(string(&cell["address"])?)?;
+                places.insert(string(&cell["id"])?, (cell["role"].as_str(), y, x));
+            }
+            for cell in cells {
+                let Some(id) = ids.get(string(&cell["id"])?) else {
+                    continue;
+                };
+                let own = places[string(&cell["id"])?];
+                let mut group = json!({"table":table});
+                match own.0 {
+                    Some("column_header") => group["heading"] = json!(true),
+                    Some("text") => group["mark"] = json!(true),
+                    _ => {}
                 }
+                // The nearest heading over the cell names its key, and the
+                // nearest name heading it from an earlier row its parent.
+                let mut label = None;
+                let mut parent = None;
+                for header in array(&cell["headers"])?.iter().filter_map(Value::as_str) {
+                    let (Some(&(role, y, x)), Some(at)) = (places.get(header), ids.get(header))
+                    else {
+                        continue;
+                    };
+                    match role {
+                        Some("column_header") if label.is_none_or(|(p, _)| (y, x) > p) => {
+                            label = Some(((y, x), at));
+                        }
+                        Some("row_header")
+                            if y < own.1 && parent.is_none_or(|(p, _)| (y, x) > p) =>
+                        {
+                            parent = Some(((y, x), at));
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some((_, at)) = label {
+                    group["label"] = json!(at);
+                }
+                group["parent"] = parent
+                    .and_then(|(_, at)| cell_axes(at))
+                    .map_or(Value::Null, |(row, _)| json!(row));
+                groups[id] = group;
             }
         }
         sheet["groups"] = groups;
@@ -482,6 +682,16 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The version of content pages: tables as the trees of their records.
+pub(super) const CONTENT_VERSION: &str = "5";
+
+/// The YAML of the content `page` of `layout`, as [`crate::document_body::yaml`]
+/// orders it.
+pub(super) fn page_bytes(page: &Value, layout: &Value) -> Result<Vec<u8>> {
+    let page_id = string(&page["page_id"])?;
+    crate::document_body::yaml(page, &layout["sheets"][page_id]["element_metadata"])
 }
 
 /// Encode the writer's private grid into reading-order elements, updating only
@@ -704,9 +914,10 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
     }
     let mut out = identity::copy_except(page, &[&["blocks"], &["fonts"]]);
     ensure!(out.is_object(), "page must be an object");
-    out["schema_version"] = json!("4");
+    out["schema_version"] = json!(CONTENT_VERSION);
     let mut elements = Value::Array(elements);
     complete(sheet, &mut elements)?;
+    arrange(sheet, &mut elements)?;
     let (body, metadata) = crate::document_body::split(&elements)?;
     out["elements"] = body;
     sheet["element_metadata"] = metadata;
@@ -729,8 +940,8 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
 /// permutations are value edits and cannot move the recorded identities.
 pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
     ensure!(
-        page["schema_version"] == "4",
-        "Document content must use document elements; re-import the original"
+        page["schema_version"] == CONTENT_VERSION,
+        "Document content must use the tree of table records; re-import the original"
     );
     let sheet = &layout["sheets"][string(&page["page_id"])?];
     // The body is read beside its metadata rather than joined into a copy:
@@ -740,6 +951,7 @@ pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
     super::visual_elements::validate_references(metadata, sheet)?;
     let mut out = identity::copy_except(page, &[&["elements"]]);
     ensure!(out.is_object(), "page must be an object");
+    out["schema_version"] = json!(identity::GRID_VERSION);
     out["blocks"] = json!({"extraction-notes":sheet["notes"]});
     for (block, title) in sheet["block_titles"]
         .as_object()
@@ -821,9 +1033,10 @@ mod tests {
                 .collect::<Value>(),
         )
         .unwrap();
+        // Without headings the columns name the keys: F under D1:F2 is D.
         assert_eq!(
-            body[0]["table"][2],
-            json!(["cell_r3_A", "cell_r3_F", "cell_r3_G", "cell_r3_H"])
+            body[0]["table"]["rows"][2],
+            json!({"A":"cell_r3_A","D":"cell_r3_F","G":"cell_r3_G","H":"cell_r3_H"})
         );
     }
 

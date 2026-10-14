@@ -305,7 +305,7 @@
   },
   "content": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "All source formats use value arrays (version 4); identities, table topology and source bindings live only in document-layout.",
+    "description": "All source formats use document elements (version 5). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it. Identities, table topology and source bindings live only in document-layout.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -317,7 +317,7 @@
         "type": "string"
       },
       "schema_version": {
-        "const": "4"
+        "const": "5"
       },
       "elements": {
         "type": "array",
@@ -360,16 +360,48 @@
               ],
               "properties": {
                 "table": {
-                  "type": "array",
-                  "items": {
-                    "type": "array",
-                    "items": {
-                      "type": [
-                        "string",
-                        "number",
-                        "boolean",
-                        "null"
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "rows"
+                  ],
+                  "properties": {
+                    "columns": {
+                      "description": "見出しの記録のセルの値。見出しの記録が1つなら値のリスト、複数なら記録ごとのリスト。見出しの値を変えると、その見出しを使うキーも変わる",
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean",
+                              "null"
+                            ]
+                          }
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "array",
+                            "items": {
+                              "type": [
+                                "string",
+                                "number",
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          }
+                        }
                       ]
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/node"
+                      },
+                      "description": "見出し以外の記録の木"
                     }
                   }
                 }
@@ -432,7 +464,44 @@
       "page_id",
       "title",
       "elements"
-    ]
+    ],
+    "$defs": {
+      "node": {
+        "type": "object",
+        "description": "表の1記録。キーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。値はセルの値で、キーと木の形は編集しない",
+        "properties": {
+          "marks": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "minItems": 1,
+            "description": "見出しを持たず何の見出しにもならない記録のセル（木を描く「+」など）の値。列の順"
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/node"
+            },
+            "minItems": 1,
+            "description": "この記録の名前が見出しとなる記録"
+          }
+        },
+        "additionalProperties": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    }
   },
   "document": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9433,7 +9502,7 @@
     ],
     "properties": {
       "schema_version": {
-        "const": "12"
+        "const": "13"
       },
       "sheets": {
         "type": "object",
@@ -9678,7 +9747,7 @@
                       },
                       "cells": {
                         "type": "object",
-                        "description": "数式の印かフォントを持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない",
+                        "description": "数式の印・フォント・木の印を持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない",
                         "additionalProperties": {
                           "type": "object",
                           "additionalProperties": false,
@@ -9695,8 +9764,33 @@
                               ],
                               "minimum": 0,
                               "description": "このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す"
+                            },
+                            "mark": {
+                              "const": true,
+                              "description": "本文の木で、記録の marks に置くセル（見出しを持たず何の見出しにもならないセル）"
                             }
                           }
+                        }
+                      },
+                      "headings": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "表の先頭にある見出しの記録の数。本文の columns に置く。0なら保存しない"
+                      },
+                      "labels": {
+                        "type": "object",
+                        "description": "論理列のIDごとに、本文のキーとなる見出しのセルID。見出しの記録のセルを指す。見出しのない列は保存しない",
+                        "additionalProperties": {
+                          "type": "string",
+                          "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                        }
+                      },
+                      "parents": {
+                        "type": "object",
+                        "description": "記録の行の識別IDごとに、本文の木でその記録の親となる記録の行の識別ID。最上位の記録は保存しない",
+                        "additionalProperties": {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
                         }
                       }
                     },
@@ -9704,7 +9798,7 @@
                       "type",
                       "rows"
                     ],
-                    "description": "表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない"
+                    "description": "表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない。本文の木の形（見出しの記録・キーの見出し・親・印）は取り込みと構造保存の時点の構造解釈から決めて保存する"
                   },
                   {
                     "type": "object",
@@ -10200,6 +10294,10 @@
                                         "minLength": 1
                                       }
                                     }
+                                  },
+                                  "mark": {
+                                    "const": true,
+                                    "description": "本文の木で、記録の marks に置くセル"
                                   }
                                 },
                                 "required": [
@@ -10209,12 +10307,30 @@
                                   "headers"
                                 ]
                               }
+                            },
+                            "parent": {
+                              "type": "string",
+                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
+                              "description": "本文の木でこの記録の親となる記録のID"
                             }
                           },
                           "required": [
                             "id",
                             "cells"
                           ]
+                        }
+                      },
+                      "headings": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "表の先頭にある見出しの記録の数。本文の columns の値"
+                      },
+                      "labels": {
+                        "type": "object",
+                        "description": "論理列のIDごとに、本文のキーとなる見出しのセルID",
+                        "additionalProperties": {
+                          "type": "string",
+                          "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
                         }
                       }
                     },

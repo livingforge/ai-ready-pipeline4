@@ -697,10 +697,10 @@ impl Store {
         for name in &changed {
             planned.insert(
                 name.clone(),
-                Some(serialized(
-                    Path::new(name),
-                    &elements::encode(&pages[name], &mut layout)?,
-                )?),
+                Some({
+                    let body = elements::encode(&pages[name], &mut layout)?;
+                    elements::page_bytes(&body, &layout)?
+                }),
             );
         }
         planned.insert(

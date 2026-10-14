@@ -621,14 +621,15 @@ impl Store {
                     blocks[block] = json!({"title":title,"rows":body});
                 }
             }
-            write(
+            let body = elements::encode(
+                &json!({"schema_version":identity::GRID_VERSION,"page_id":page,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
+                &mut layout,
+            )?;
+            replace(
                 &ready
                     .join("content")
                     .join(excel::filename(string(&sheet["name"])?)),
-                &elements::encode(
-                    &json!({"schema_version":"4","page_id":page,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
-                    &mut layout,
-                )?,
+                &elements::page_bytes(&body, &layout)?,
             )?;
         }
         replace(

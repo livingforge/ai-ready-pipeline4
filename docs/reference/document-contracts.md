@@ -22,7 +22,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use value arrays (version 4); identities, table topology and source bindings live only in document-layout.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 5). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it. Identities, table topology and source bindings live only in document-layout.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
 | <code>/properties/elements</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items</code> | <code>{}</code> |
 | <code>/properties/elements/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["text"],"type":"object"}</code> |
@@ -30,9 +30,15 @@
 | <code>/properties/elements/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["formula"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/1/properties/formula</code> | <code>{"type":"string"}</code> |
 | <code>/properties/elements/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["table"],"type":"object"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table</code> | <code>{"type":"array"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items</code> | <code>{"type":"array"}</code> |
-| <code>/properties/elements/items/oneOf/2/properties/table/items/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table</code> | <code>{"additionalProperties":false,"required":["rows"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/columns</code> | <code>{"description":"見出しの記録のセルの値。見出しの記録が1つなら値のリスト、複数なら記録ごとのリスト。見出しの値を変えると、その見出しを使うキーも変わる"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/0</code> | <code>{"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/0/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/1</code> | <code>{"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/1/items</code> | <code>{"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/1/items/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/rows</code> | <code>{"description":"見出し以外の記録の木","type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/rows/items</code> | <code>{"$ref":"#/$defs/node"}</code> |
 | <code>/properties/elements/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["blank"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/3/properties/blank</code> | <code>{"type":"null"}</code> |
 | <code>/properties/elements/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["image"],"type":"object"}</code> |
@@ -42,8 +48,14 @@
 | <code>/properties/elements/items/oneOf/6</code> | <code>{"additionalProperties":false,"required":["drawing"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/6/properties/drawing</code> | <code>{"type":"null"}</code> |
 | <code>/properties/page_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"5"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
+| <code>/$defs/node</code> | <code>{"description":"表の1記録。キーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。値はセルの値で、キーと木の形は編集しない","type":"object"}</code> |
+| <code>/$defs/node/properties/children</code> | <code>{"description":"この記録の名前が見出しとなる記録","minItems":1,"type":"array"}</code> |
+| <code>/$defs/node/properties/children/items</code> | <code>{"$ref":"#/$defs/node"}</code> |
+| <code>/$defs/node/properties/marks</code> | <code>{"description":"見出しを持たず何の見出しにもならない記録のセル（木を描く「+」など）の値。列の順","minItems":1,"type":"array"}</code> |
+| <code>/$defs/node/properties/marks/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/$defs/node/additionalProperties</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 
 ## document
 
@@ -103,7 +115,10 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns</code> | <code>{"type":"array"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items</code> | <code>{"additionalProperties":false,"required":["id"],"type":"object"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/columns/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/headings</code> | <code>{"description":"表の先頭にある見出しの記録の数。本文の columns の値","minimum":1,"type":"integer"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/labels</code> | <code>{"description":"論理列のIDごとに、本文のキーとなる見出しのセルID","type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/labels/additionalProperties</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"type":"array"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"additionalProperties":false,"required":["id","cells"],"type":"object"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells</code> | <code>{"type":"array"}</code> |
@@ -125,9 +140,11 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers</code> | <code>{"type":"array"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/mark</code> | <code>{"const":true,"description":"本文の木で、記録の marks に置くセル"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/role</code> | <code>{"type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/row_span</code> | <code>{"minimum":2,"type":"integer"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/parent</code> | <code>{"description":"本文の木でこの記録の親となる記録のID","pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["id","type","ref"],"type":"object"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/4/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
@@ -192,7 +209,7 @@
 | <code>/properties/history/items/oneOf/1/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"12"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"13"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","rows","columns","metadata_sha256","element_metadata"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/block_titles</code> | <code>{"description":"本文の行を持つブロックの見出し。空なら保存しない","type":"object"}</code> |
@@ -212,11 +229,17 @@
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/1/properties/type</code> | <code>{"const":"formula"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2</code> | <code>{"additionalProperties":false,"description":"前後の要素の間の空き。IDは前後の要素から決まるため保存しない","required":["type"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/2/properties/type</code> | <code>{"const":"blank"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3</code> | <code>{"additionalProperties":false,"description":"表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない","required":["type","rows"],"type":"object"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells</code> | <code>{"description":"数式の印かフォントを持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない","type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3</code> | <code>{"additionalProperties":false,"description":"表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない。本文の木の形（見出しの記録・キーの見出し・親・印）は取り込みと構造保存の時点の構造解釈から決めて保存する","required":["type","rows"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells</code> | <code>{"description":"数式の印・フォント・木の印を持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない","type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties/properties/font</code> | <code>{"description":"このシートの fonts での番号。抽出結果の同じセルのフォントと同じなら保存せず、読み込み時にそのフォントになる。null はフォントなし。documents elements-read はフォントそのものを返す","minimum":0,"type":["integer","null"]}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties/properties/formula</code> | <code>{"description":"表セルの値が数式であることを示す。値は本文にある","type":"null"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/cells/additionalProperties/properties/mark</code> | <code>{"const":true,"description":"本文の木で、記録の marks に置くセル（見出しを持たず何の見出しにもならないセル）"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/headings</code> | <code>{"description":"表の先頭にある見出しの記録の数。本文の columns に置く。0なら保存しない","minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/labels</code> | <code>{"description":"論理列のIDごとに、本文のキーとなる見出しのセルID。見出しの記録のセルを指す。見出しのない列は保存しない","type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/labels/additionalProperties</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/parents</code> | <code>{"description":"記録の行の識別IDごとに、本文の木でその記録の親となる記録の行の識別ID。最上位の記録は保存しない","type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/parents/additionalProperties</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"description":"記録行ごとに、行の識別IDとその行のセルの列の識別IDを空白で区切って並べたもの（r7 B..J、r8 B C ins-1）。セルIDは cell_&lt;行&gt;_&lt;列&gt;。A..Z は列 A から Z までの識別IDを順に並べたもの","type":"array"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*( [a-zA-Z0-9][a-zA-Z0-9_-]*(\\.\\.[A-Z]+)?)+$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |

@@ -223,7 +223,7 @@ impl Store {
             for name in inspected.page_files.values() {
                 let page = self.read_content(&dir, name, &inspected.extraction)?;
                 let body = elements::encode(&page, &mut layout)?;
-                planned.insert(name.clone(), Some(serialized(Path::new(name), &body)?));
+                planned.insert(name.clone(), Some(elements::page_bytes(&body, &layout)?));
             }
             planned.insert(
                 "layout.yml".into(),

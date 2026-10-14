@@ -9,12 +9,13 @@ use super::*;
 /// extraction and `document.yml`. The element metadata leaves out what
 /// [`elements::complete`] gives back: the IDs of tables, records and blanks,
 /// a table's columns, a table cell's column and spans. A table keeps its
-/// records as lines of row and column identities ([`stored_tables`]) and no
-/// roles or headers, which [`elements::interpret`] gives from the structure
-/// interpretation. An element keeps no font that is the font of the
+/// records as lines of row and column identities ([`stored_tables`]) and the
+/// tree its body shows (its heading records, the headings its keys are from,
+/// each record's parent and its marks), but no roles or headers, which
+/// [`elements::interpret`] gives from the structure interpretation. An element keeps no font that is the font of the
 /// extraction cell it was imported from ([`inherited_fonts`]), and empty lists
 /// and maps are left out.
-pub(super) const LAYOUT_VERSION: &str = "12";
+pub(super) const LAYOUT_VERSION: &str = "13";
 
 /// The bytes stored for `layout`, whose rows and columns have keys in
 /// `extraction`. The groups a page's encoding uses are left
@@ -66,18 +67,10 @@ pub(super) fn stored(layout: &mut Value, extraction: &Value) -> Result<Vec<u8>> 
                 .as_object_mut()
                 .context("element must be an object")?;
             match element.get("type").and_then(Value::as_str) {
+                // The records' IDs go with their rows ([`stored_tables`]).
                 Some("table") => {
                     element.remove("id");
                     element.remove("columns");
-                    for row in element
-                        .get_mut("rows")
-                        .and_then(Value::as_array_mut)
-                        .context("table rows missing")?
-                    {
-                        if let Some(row) = row.as_object_mut() {
-                            row.remove("id");
-                        }
-                    }
                 }
                 Some("blank") => {
                     element.remove("id");
@@ -333,8 +326,9 @@ fn notes(extraction: &Value) -> Value {
 /// The table elements of the element `metadata` of a page as they are stored:
 /// each record as one line naming the identity of its row and those of the
 /// columns of its cells, which make the cells' IDs (`r7 B..J`, `r8 B ins-1`),
-/// and the cells with a formula mark or a font by their IDs. [`expand_tables`]
-/// gives them back.
+/// the cells with a formula mark, a font or a tree mark by their IDs, and the
+/// row of each record's parent by the record's row. [`expand_tables`] gives
+/// them back.
 fn stored_tables(metadata: &mut Value) -> Result<()> {
     for element in metadata
         .as_array_mut()
@@ -344,6 +338,14 @@ fn stored_tables(metadata: &mut Value) -> Result<()> {
     {
         let mut lines = vec![];
         let mut marked = serde_json::Map::new();
+        let mut parents = serde_json::Map::new();
+        let mut record_rows = HashMap::new();
+        for row in array(&element["rows"])? {
+            let first = string(&row["cells"][0]["id"])?;
+            if let (Some(id), Some((axis, _))) = (row["id"].as_str(), elements::cell_axes(first)) {
+                record_rows.insert(id.to_owned(), axis);
+            }
+        }
         for row in array(&element["rows"])? {
             let mut record = None;
             let mut columns = vec![];
@@ -371,10 +373,19 @@ fn stored_tables(metadata: &mut Value) -> Result<()> {
             }
             let record = record.context("table record without cells")?;
             lines.push(json!(format!("{record} {}", column_runs(&columns)?)));
+            if let Some(parent) = row["parent"].as_str() {
+                let parent = record_rows
+                    .get(parent)
+                    .with_context(|| format!("parent {parent} is no record of the table"))?;
+                parents.insert(record, json!(parent));
+            }
         }
         element["rows"] = json!(lines);
         if !marked.is_empty() {
             element["cells"] = Value::Object(marked);
+        }
+        if !parents.is_empty() {
+            element["parents"] = Value::Object(parents);
         }
     }
     Ok(())
@@ -420,6 +431,11 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
             Some(_) => bail!("table cells must be a map"),
             None => serde_json::Map::new(),
         };
+        let mut parents = match element.remove("parents") {
+            Some(Value::Object(parents)) => parents,
+            Some(_) => bail!("table parents must be a map"),
+            None => serde_json::Map::new(),
+        };
         let mut rows = vec![];
         for line in array(element.get("rows").context("table rows missing")?)? {
             let mut items = string(line)?.split(' ');
@@ -448,10 +464,17 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
                 }
             }
             ensure!(!cells.is_empty(), "table record {record} has no cells");
-            rows.push(json!({ "cells": cells }));
+            let mut row = json!({ "cells": cells });
+            if let Some(parent) = parents.remove(record) {
+                row["parent"] = json!(elements::token("record", &[string(&parent)?]));
+            }
+            rows.push(row);
         }
         if let Some(id) = marked.keys().next() {
             bail!("table cell {id} is in no record of its table");
+        }
+        if let Some(record) = parents.keys().next() {
+            bail!("table parent of {record} is for no record of its table");
         }
         element.insert("rows".into(), Value::Array(rows));
     }
@@ -846,10 +869,14 @@ fn formula_keys(sheet: &Value, page: &str, to_runtime: bool) -> Result<BTreeMap<
         .collect()
 }
 
+/// The version of the writer's private grid pages, values by block, row and
+/// column, which content pages are encoded from and decoded to.
+pub(super) const GRID_VERSION: &str = "4";
+
 /// Translate internal grid identities to the writer coordinate keys.
 pub(super) fn grid(mut page: Value, layout: &Value, to_runtime: bool) -> Result<Value> {
     ensure!(
-        page["schema_version"] == "4",
+        page["schema_version"] == GRID_VERSION,
         "Document body requires document elements"
     );
     let page_id = string(&page["page_id"])?.to_owned();

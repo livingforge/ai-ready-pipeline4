@@ -142,10 +142,10 @@ impl Store {
             .map(|(name, page)| {
                 Ok((
                     name.clone(),
-                    Some(serialized(
-                        &dir.join(name),
-                        &elements::encode(page, &mut layout)?,
-                    )?),
+                    Some({
+                        let body = elements::encode(page, &mut layout)?;
+                        elements::page_bytes(&body, &layout)?
+                    }),
                 ))
             })
             .collect::<Result<_>>()?;

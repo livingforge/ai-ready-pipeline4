@@ -691,6 +691,9 @@ struct Layout {
     caption: bool,
     /// First and last header row.
     header: Option<(u32, u32)>,
+    /// The header row is as plain as the records ([`plain_header`]): weaker
+    /// evidence than a marked one that a table begins there.
+    plain: bool,
 }
 
 /// A repeated, numbered record key such as `TC-510`. The suffix is a value
@@ -806,6 +809,45 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
     bold_end.max(fill_end)
 }
 
+/// The last row of a heading row written as plain as its records: three or
+/// more distinct texts of one look over two or more records whose every
+/// value lies under one of them, one heading over values that are all
+/// numbers, dates or formulas. Two columns may be labels beside their values
+/// instead, and a row of marked labels between plain values is a form.
+fn plain_header(group: &[&Cell<'_>], header_top: u32) -> Option<u32> {
+    let first = valued(row(group, header_top));
+    let end = first.iter().map(|c| c.bottom).max()?;
+    let texts: BTreeSet<&str> = first.iter().map(|c| c.text().trim()).collect();
+    let looks: BTreeSet<(bool, u64)> = first.iter().map(|c| (c.bold(), c.fill())).collect();
+    if first.len() < 3
+        || looks.len() != 1
+        || !first.iter().all(|c| c.string())
+        || texts.len() != first.len()
+        || texts.contains("")
+    {
+        return None;
+    }
+    let records: Vec<_> = group
+        .iter()
+        .filter(|c| c.top > end && c.nonempty())
+        .collect();
+    let rows: BTreeSet<u32> = records.iter().map(|c| c.top).collect();
+    let under = |h: &Cell<'_>| {
+        records
+            .iter()
+            .filter(|c| h.left <= c.left && c.right <= h.right)
+            .collect::<Vec<_>>()
+    };
+    let headed = records
+        .iter()
+        .all(|c| first.iter().any(|h| h.left <= c.left && c.right <= h.right));
+    let contrast = first.iter().any(|h| {
+        let below = under(h);
+        below.len() >= 2 && below.iter().all(|c| !c.string())
+    });
+    (rows.len() >= 2 && headed && contrast).then_some(end)
+}
+
 fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
     let left = group.iter().map(|c| c.left).min().unwrap();
     let right = group.iter().map(|c| c.right).max().unwrap();
@@ -840,6 +882,11 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
         {
             header = Some((header_top, header_top));
         }
+    }
+    let mut plain = false;
+    if header.is_none() && explicit.is_none() && !single {
+        header = plain_header(group, header_top).map(|end| (header_top, end));
+        plain = header.is_some();
     }
     // Records in columns: every row starts with a marked label and nothing else is marked.
     if header.is_none() && explicit.is_none() && !single && !caption {
@@ -878,6 +925,7 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
         single,
         caption,
         header,
+        plain,
     })
 }
 
@@ -1294,7 +1342,8 @@ fn split_touching_tables(
                 return Ok(None);
             }
             let view: Vec<_> = side.iter().map(|&i| &cells[i]).collect();
-            if layout(&view, None)?.header != Some((top, top)) {
+            let side = layout(&view, None)?;
+            if side.header != Some((top, top)) || side.plain {
                 return Ok(None);
             }
             let labels = view
@@ -1532,6 +1581,7 @@ fn interpret(
         single,
         caption,
         header,
+        ..
     } = layout(&group, explicit)?;
     let nonempty = valued(group.clone());
     // Numbered prose steps have the same rectangular occupancy as a two-column
@@ -2711,6 +2761,72 @@ mod tests {
     }
     fn cell(address: &str, value: &str) -> Value {
         json!({"address":address,"value":value,"type":"string","formula":null,"style":{"bold":false,"fill":0,"border":0}})
+    }
+    fn number(address: &str, value: u32) -> Value {
+        json!({"address":address,"value":value,"type":"number","formula":null,"style":{"bold":false,"fill":0,"border":0}})
+    }
+    /// The roles of the cells of the sheet `cells` makes, by address.
+    fn roles(cells: Vec<Value>) -> BTreeMap<String, String> {
+        let extraction = json!({"sheets":[{"name":"S","cells":cells,"merges":[]}]});
+        elements(&extraction)
+            .unwrap()
+            .iter()
+            .flat_map(|e| e["cells"].as_array().unwrap().clone())
+            .map(|c| {
+                let role = c["role"].as_str().unwrap_or("").to_owned();
+                (c["address"].as_str().unwrap().to_owned(), role)
+            })
+            .collect()
+    }
+    #[test]
+    fn a_plain_row_of_texts_over_numbers_heads_its_columns() {
+        let mut cells = vec![cell("A1", "No"), cell("B1", "項目"), cell("C1", "説明")];
+        for row in 2..=4 {
+            cells.push(number(&format!("A{row}"), row - 1));
+            cells.push(cell(&format!("B{row}"), &format!("項目{row}")));
+            cells.push(cell(&format!("C{row}"), &format!("説明{row}")));
+        }
+        let found = roles(cells);
+        for heading in ["A1", "B1", "C1"] {
+            assert_eq!(found[heading], "column_header", "{found:?}");
+        }
+        assert_ne!(found["B2"], "column_header");
+    }
+    #[test]
+    fn labels_beside_values_are_no_plain_heading_row() {
+        // Two columns: each row a label and its value.
+        let mut pairs = vec![cell("A1", "項目"), cell("B1", "内容")];
+        for (row, label) in [(2, "幅"), (3, "高さ")] {
+            pairs.push(cell(&format!("A{row}"), label));
+            pairs.push(number(&format!("B{row}"), row * 10));
+        }
+        let found = roles(pairs);
+        assert!(found.values().all(|r| r != "column_header"), "{found:?}");
+        // A form: shaded labels between plain values.
+        let shaded = |address: &str, value: &str| {
+            let mut c = cell(address, value);
+            c["style"]["fill"] = json!(2);
+            c
+        };
+        let mut form = vec![];
+        for (row, labels) in [
+            (1, ["名前", "部署", "役職"]),
+            (2, ["年齢", "入社", "内線"]),
+            (3, ["身長", "体重", "血液型"]),
+        ] {
+            for (k, label) in labels.into_iter().enumerate() {
+                let label_at = format!("{}{row}", ["A", "C", "E"][k]);
+                let value_at = format!("{}{row}", ["B", "D", "F"][k]);
+                form.push(shaded(&label_at, label));
+                form.push(if row == 1 {
+                    cell(&value_at, &format!("値{k}"))
+                } else {
+                    number(&value_at, row * 10 + k as u32)
+                });
+            }
+        }
+        let found = roles(form);
+        assert!(found.values().all(|r| r != "column_header"), "{found:?}");
     }
     #[test]
     fn rows_and_covering_cells_are_those_a_scan_finds() {

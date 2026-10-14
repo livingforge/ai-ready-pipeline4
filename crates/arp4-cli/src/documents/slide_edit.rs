@@ -275,7 +275,7 @@ impl Store {
                             format!("{target} already exists; choose another --id"),
                         ));
                     }
-                    planned.insert(target.clone(), Some(serialized(Path::new(&target), &page)?));
+                    planned.insert(target.clone(), Some(elements::page_bytes(&page, &layout)?));
                     added.push(target);
                 }
             }
@@ -354,10 +354,10 @@ impl Store {
                 layout["sheets"][&page_id] = identity::initial_sheet(sheet)?;
                 identity::check_axes(&layout)?;
                 let page = elements::encode(
-                    &json!({"schema_version":"4","page_id":page_id,"title":op_id,"blocks":blocks,"fonts":fonts}),
+                    &json!({"schema_version":identity::GRID_VERSION,"page_id":page_id,"title":op_id,"blocks":blocks,"fonts":fonts}),
                     &mut layout,
                 )?;
-                planned.insert(target.clone(), Some(serialized(Path::new(&target), &page)?));
+                planned.insert(target.clone(), Some(elements::page_bytes(&page, &layout)?));
                 added.push(target);
             }
             // The slide keeps its pages; only the presentation changes.
