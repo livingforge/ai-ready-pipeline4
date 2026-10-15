@@ -64,7 +64,7 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 - 書式: `--style-from` を省くと、挿入位置の上の行を使います（Excelと同じ）。書き戻しでは、その行の空のセルを含む全セルの書式を追加行に写し、`dimension` を追加行まで広げます。
 - 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返し、何も書き込みません。同じIDで設定や値が違う場合は `operation_id_conflict` です。`--base` には `check --include-hashes` の `content` を渡します。その後に文書が変わっていれば `base_changed` で拒否します。
 - 応答: 成功時は `state`（`written`、`--dry-run` なら `planned`、再実行なら `unchanged`）、`operation`、`span`（反映後の最初と最後の行・列）、`keys`、`converted`、`neighbors`（行の操作のみ。前後にある本文の行）、`check`（書き込み後の検証状態）、`next_actions` を返します。
-- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`structural_edit_unsupported`、`validation_failed`。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`category_row_deleted`（本文の区分の値を持つ行を、区分の他の記録を残して削除する。Excelが区分の値をその行と一緒に消すため）、`structural_edit_unsupported`、`validation_failed`。
 
 `documents export` は本文YAMLの追加・削除を、管理側 `mappings.yml` の `operations` と組み合わせてExcelへ反映できます。対応する操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns` です。各操作には `id`、`sheet`、`reason`、`at`、`count` を指定し、行の追加時は必要に応じて `style_from` で書式をコピーする元の行を指定します（非表示・折りたたみはコピーしません）。追加した列はExcelと同じく左の列の書式を引き継ぐため、列の操作には `style_from` を指定できません。
 

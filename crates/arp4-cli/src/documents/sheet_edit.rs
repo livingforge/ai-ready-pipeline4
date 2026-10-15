@@ -598,8 +598,25 @@ impl Store {
             return Err(Rejection(json!({"code":"operation_id_conflict","message":format!("operation {op_id} is already recorded with other settings or values; choose another --id, or omit --id to have one generated"),"recorded":recorded[index]})).into());
         }
 
+        let deleted = deleted_content(&inspected, &sheet, &operations)?;
+        if edit.axis == Axis::Rows {
+            let cells: BTreeSet<String> = deleted
+                .iter()
+                .filter(|(page, block, _, _)| *page == sheet.page && block == "table-1")
+                .map(|(_, _, row, column)| elements::cell_id(row, column))
+                .collect();
+            let metadata = &current_layout["sheets"][&sheet.page]["element_metadata"];
+            if let Some(key) = elements::orphaned_category(metadata, &cells)? {
+                return Err(rejection(
+                    "category_row_deleted",
+                    format!(
+                        "the deletion removes the row holding category {key} while records under it remain, and Excel would drop the category's value with that row; write the category on another of its rows in Excel and re-import, or delete all of its rows"
+                    ),
+                ));
+            }
+        }
         let mut changed = BTreeSet::new();
-        for (page, block, row, column) in deleted_content(&inspected, &sheet, &operations)? {
+        for (page, block, row, column) in deleted {
             let name = inspected
                 .page_files
                 .get(&page)

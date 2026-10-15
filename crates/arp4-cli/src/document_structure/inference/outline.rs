@@ -198,6 +198,50 @@ fn side_notes(cells: &[&Cell<'_>], headed: impl Fn(&Cell<'_>) -> bool) -> HashSe
     beyond.iter().map(|c| (c.top, c.left)).collect()
 }
 
+/// Whether the first row (`heads`), written as plain as the names, heads
+/// them: its cells are text on one row, and one of them reaches over the
+/// columns the names under it step across, one name on a row, as a heading
+/// over the levels of a folder tree, merged over them or written at their
+/// start. A name stands over no names stepping in the columns after it.
+fn plain_heading(group: &[&Cell<'_>], heads: &[&Cell<'_>]) -> bool {
+    let Some(top) = heads.first().map(|h| h.top) else {
+        return false;
+    };
+    // A heading reaches over the columns up to the next heading, merged
+    // over them or not.
+    let edge = group.iter().map(|c| c.right).max().unwrap_or(0);
+    let reach = |h: &Cell<'_>| {
+        heads
+            .iter()
+            .filter(|o| o.left > h.right)
+            .map(|o| o.left - 1)
+            .min()
+            .unwrap_or(edge)
+    };
+    heads.len() >= 2
+        && heads
+            .iter()
+            .all(|h| h.string() && h.top == top && h.bottom == top)
+        && heads.iter().any(|h| {
+            let right = reach(h);
+            if right == h.left {
+                return false;
+            }
+            let mut rows: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+            for c in group.iter().filter(|c| {
+                c.top > h.bottom
+                    && c.left >= h.left
+                    && c.right <= right
+                    && c.nonempty()
+                    && c.text().chars().any(char::is_alphanumeric)
+            }) {
+                rows.entry(c.top).or_default().push(c.left);
+            }
+            let starts: BTreeSet<u32> = rows.values().flatten().copied().collect();
+            rows.len() >= 2 && starts.len() >= 2 && rows.values().all(|xs| xs.len() == 1)
+        })
+}
+
 /// Ways to read names as a hierarchy: the whole width as one tree, names
 /// under one heading with fields beside them, and a tree with notes on the
 /// right.
@@ -383,9 +427,22 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
     let columns: BTreeSet<u32> = names.iter().map(|c| c.left).collect();
     let numbered = numbered_column(names);
     // Merged down over names that start on its later rows, as an ancestor is
-    // over its descendants; records written two rows high are not.
-    let over =
-        |c: &Cell<'_>| c.bottom > c.top && names.iter().any(|o| o.top > c.top && o.top <= c.bottom);
+    // over its descendants, on the right of every cell merged down over the
+    // same rows beside it, as a folder and its only subfolder over a file;
+    // records written two rows high are not, the values of their later rows
+    // standing among their cells merged down side by side.
+    let over = |c: &Cell<'_>| {
+        let edge = names
+            .iter()
+            .filter(|m| m.top == c.top && m.bottom == c.bottom && m.left >= c.left)
+            .map(|m| m.right)
+            .max()
+            .unwrap_or(c.right);
+        c.bottom > c.top
+            && names
+                .iter()
+                .any(|o| o.top > c.top && o.top <= c.bottom && o.left > edge)
+    };
     let full: BTreeSet<u32> = columns
         .iter()
         .copied()
@@ -521,7 +578,7 @@ pub(super) fn outline(
             .filter(|c| c.top <= last && c.nonempty() && !title(c))
             .collect();
         (heads, last + 1)
-    } else if set_apart {
+    } else if set_apart || plain_heading(&group, &heads) {
         let bottom = heads.iter().map(|h| h.bottom).max()?;
         (heads, bottom + 1)
     } else {

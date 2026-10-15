@@ -11,11 +11,11 @@ use super::*;
 /// a table's columns, a table cell's column and spans. A table keeps its
 /// records as lines of row and column identities ([`stored_tables`]) and the
 /// tree its body shows (its heading records, the headings its keys are from,
-/// each record's parent and its marks), but no roles or headers, which
+/// its categories, each record's parent and its marks), but no roles or headers, which
 /// [`elements::interpret`] gives from the structure interpretation. An element keeps no font that is the font of the
 /// extraction cell it was imported from ([`inherited_fonts`]), and empty lists
 /// and maps are left out.
-pub(super) const LAYOUT_VERSION: &str = "13";
+pub(super) const LAYOUT_VERSION: &str = "14";
 
 /// The bytes stored for `layout`, whose rows and columns have keys in
 /// `extraction`. The groups a page's encoding uses are left
@@ -326,8 +326,9 @@ fn notes(extraction: &Value) -> Value {
 /// The table elements of the element `metadata` of a page as they are stored:
 /// each record as one line naming the identity of its row and those of the
 /// columns of its cells, which make the cells' IDs (`r7 B..J`, `r8 B ins-1`),
-/// the cells with a formula mark, a font or a tree mark by their IDs, and the
-/// row of each record's parent by the record's row. [`expand_tables`] gives
+/// the cells with a formula mark, a font, a tree mark or a category by their
+/// IDs, and the row of each record's parent, or the category it is in, by the
+/// record's row. [`expand_tables`] gives
 /// them back.
 fn stored_tables(metadata: &mut Value) -> Result<()> {
     for element in metadata
@@ -374,10 +375,27 @@ fn stored_tables(metadata: &mut Value) -> Result<()> {
             let record = record.context("table record without cells")?;
             lines.push(json!(format!("{record} {}", column_runs(&columns)?)));
             if let Some(parent) = row["parent"].as_str() {
-                let parent = record_rows
-                    .get(parent)
-                    .with_context(|| format!("parent {parent} is no record of the table"))?;
-                parents.insert(record, json!(parent));
+                if element["categories"].get(parent).is_some() {
+                    parents.insert(record, json!(parent));
+                } else {
+                    let parent = record_rows
+                        .get(parent)
+                        .with_context(|| format!("parent {parent} is no record of the table"))?;
+                    parents.insert(record, json!(parent));
+                }
+            }
+        }
+        if let Some(categories) = element.get_mut("categories").and_then(Value::as_object_mut) {
+            let keys: BTreeSet<String> = categories.keys().cloned().collect();
+            for entry in categories.values_mut() {
+                if let Some(parent) = entry["parent"].as_str()
+                    && !keys.contains(parent)
+                {
+                    let row = record_rows
+                        .get(parent)
+                        .with_context(|| format!("parent {parent} is no record of the table"))?;
+                    entry["parent"] = json!(row);
+                }
             }
         }
         element["rows"] = json!(lines);
@@ -436,6 +454,21 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
             Some(_) => bail!("table parents must be a map"),
             None => serde_json::Map::new(),
         };
+        let categories = match element.get_mut("categories") {
+            Some(Value::Object(categories)) => {
+                let keys: BTreeSet<String> = categories.keys().cloned().collect();
+                for entry in categories.values_mut() {
+                    if let Some(parent) = entry["parent"].as_str()
+                        && !keys.contains(parent)
+                    {
+                        entry["parent"] = json!(elements::token("record", &[parent]));
+                    }
+                }
+                keys
+            }
+            Some(_) => bail!("table categories must be a map"),
+            None => BTreeSet::new(),
+        };
         let mut rows = vec![];
         for line in array(element.get("rows").context("table rows missing")?)? {
             let mut items = string(line)?.split(' ');
@@ -466,7 +499,12 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
             ensure!(!cells.is_empty(), "table record {record} has no cells");
             let mut row = json!({ "cells": cells });
             if let Some(parent) = parents.remove(record) {
-                row["parent"] = json!(elements::token("record", &[string(&parent)?]));
+                let parent = string(&parent)?;
+                row["parent"] = if categories.contains(parent) {
+                    json!(parent)
+                } else {
+                    json!(elements::token("record", &[parent]))
+                };
             }
             rows.push(row);
         }

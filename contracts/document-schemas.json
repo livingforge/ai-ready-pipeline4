@@ -305,7 +305,7 @@
   },
   "content": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "All source formats use document elements (version 5). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it. Identities, table topology and source bindings live only in document-layout.",
+    "description": "All source formats use document elements (version 6). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -317,7 +317,7 @@
         "type": "string"
       },
       "schema_version": {
-        "const": "5"
+        "const": "6"
       },
       "elements": {
         "type": "array",
@@ -468,7 +468,7 @@
     "$defs": {
       "node": {
         "type": "object",
-        "description": "表の1記録。キーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。値はセルの値で、キーと木の形は編集しない",
+        "description": "表の1記録、または区分。記録のキーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。区分は、縦に結合するか先頭の記録の行だけに書いて複数の記録の見出しとなるセルで、記録と同じ規則のキーでその値を持ち、範囲の記録を children に持つ。区分のセルは先頭の記録のノードに置かず、区分の下の空のセルはどのノードにも置かない。値はセルの値で、キーと木の形は編集しない",
         "properties": {
           "marks": {
             "type": "array",
@@ -489,7 +489,7 @@
               "$ref": "#/$defs/node"
             },
             "minItems": 1,
-            "description": "この記録の名前が見出しとなる記録"
+            "description": "この記録の名前が見出しとなる記録。区分では、範囲の記録と内側の区分"
           }
         },
         "additionalProperties": {
@@ -9502,7 +9502,7 @@
     ],
     "properties": {
       "schema_version": {
-        "const": "13"
+        "const": "14"
       },
       "sheets": {
         "type": "object",
@@ -9747,7 +9747,7 @@
                       },
                       "cells": {
                         "type": "object",
-                        "description": "数式の印・フォント・木の印を持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない",
+                        "description": "数式の印・フォント・木の印・区分を持つセルだけを、セルIDごとに記録する。表セルの役割と見出しは保存せず、documents elements-read が構造解釈から求める。空なら保存しない",
                         "additionalProperties": {
                           "type": "object",
                           "additionalProperties": false,
@@ -9768,6 +9768,16 @@
                             "mark": {
                               "const": true,
                               "description": "本文の木で、記録の marks に置くセル（見出しを持たず何の見出しにもならないセル）"
+                            },
+                            "label": {
+                              "type": "string",
+                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
+                              "description": "本文のキーとなる見出しのセルID。列の labels と異なる見出しの下にあるセル（1列に積んだ見出しの下段の値など）だけが持つ"
+                            },
+                            "category": {
+                              "type": "string",
+                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
+                              "description": "区分の下にある空のセル（同じ列で区分のセルの下にあり、範囲の記録の行にあるもの）が、その区分のキーを持つ。本文のどのノードにも置かず、値は空のまま"
                             }
                           }
                         }
@@ -9785,12 +9795,36 @@
                           "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
                         }
                       },
+                      "categories": {
+                        "type": "object",
+                        "description": "本文の木で、記録とは別のノードにする区分。キーは区分の最初のセルのID。区分のセルはすべて範囲の先頭の記録の行にあり、区分はその記録が区分なしで入る位置（最上位、記録の子、外側の区分の子）に置く。区分がなければ保存しない",
+                        "additionalProperties": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "parent": {
+                              "type": "string",
+                              "pattern": "^([a-zA-Z0-9][a-zA-Z0-9_-]*|[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*)$",
+                              "description": "区分の親。外側の区分のキー、または記録の行の識別ID。最上位の区分は保存しない"
+                            },
+                            "cells": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                              },
+                              "minItems": 1,
+                              "description": "最初のセル以外の区分のセルのID（同じ範囲を縦に結合した説明の列など）"
+                            }
+                          }
+                        }
+                      },
                       "parents": {
                         "type": "object",
-                        "description": "記録の行の識別IDごとに、本文の木でその記録の親となる記録の行の識別ID。最上位の記録は保存しない",
+                        "description": "記録の行の識別IDごとに、本文の木でその記録の親となる記録の行の識別ID、または区分のキー（categories のキー）。最上位の記録は保存しない",
                         "additionalProperties": {
                           "type": "string",
-                          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
+                          "pattern": "^([a-zA-Z0-9][a-zA-Z0-9_-]*|[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*)$"
                         }
                       }
                     },
@@ -9798,7 +9832,7 @@
                       "type",
                       "rows"
                     ],
-                    "description": "表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない。本文の木の形（見出しの記録・キーの見出し・親・印）は取り込みと構造保存の時点の構造解釈から決めて保存する"
+                    "description": "表。表のID（最初のセル）、記録行のID（その行）、列の並び（列の位置の順）、セルの列と結合の幅は読み込み時に求め、セルの役割と見出しは構造解釈から求めるため保存しない。本文の木の形（見出しの記録・キーの見出し・区分・親・印）は取り込みと構造保存の時点の構造解釈から決めて保存する"
                   },
                   {
                     "type": "object",
@@ -10298,6 +10332,16 @@
                                   "mark": {
                                     "const": true,
                                     "description": "本文の木で、記録の marks に置くセル"
+                                  },
+                                  "label": {
+                                    "type": "string",
+                                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
+                                    "description": "本文のキーとなる見出しのセルID。列の labels と異なる見出しの下にあるセルだけが持つ"
+                                  },
+                                  "category": {
+                                    "type": "string",
+                                    "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
+                                    "description": "区分の下にある空のセルが、その区分のキーを持つ。本文のどのノードにも置かない"
                                   }
                                 },
                                 "required": [
@@ -10311,7 +10355,7 @@
                             "parent": {
                               "type": "string",
                               "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
-                              "description": "本文の木でこの記録の親となる記録のID"
+                              "description": "本文の木でこの記録の親となる記録のID、または区分のキー"
                             }
                           },
                           "required": [
@@ -10331,6 +10375,30 @@
                         "additionalProperties": {
                           "type": "string",
                           "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                        }
+                      },
+                      "categories": {
+                        "type": "object",
+                        "description": "本文の木で、記録とは別のノードにする区分。キーは区分の最初のセルのID。区分のセルはすべて範囲の先頭の記録の行にあり、区分はその記録が区分なしで入る位置（最上位、記録の子、外側の区分の子）に置く。区分がなければ保存しない",
+                        "additionalProperties": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "parent": {
+                              "type": "string",
+                              "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$",
+                              "description": "区分の親。外側の区分のキー、または記録のID。最上位の区分は保存しない"
+                            },
+                            "cells": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
+                              },
+                              "minItems": 1,
+                              "description": "最初のセル以外の区分のセルのID（同じ範囲を縦に結合した説明の列など）"
+                            }
+                          }
                         }
                       }
                     },

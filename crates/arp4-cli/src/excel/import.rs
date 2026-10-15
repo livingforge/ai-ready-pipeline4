@@ -651,12 +651,18 @@ fn iso_date_serial(text: &str, date1904: bool) -> Option<f64> {
 
 /// Empty cells and empty merged ranges drawn as boxes: ranges holding no value
 /// or formula whose four sides all show a line, drawn by the cell or by the
-/// neighbour across that side. An empty field of a ruled table is one; the
-/// edge of a frame drawn around tables shows one or two sides and is not.
+/// neighbour across that side, or three when the fourth faces no cell, as the
+/// bottom of a table's last row left open. The top and bottom of an empty cell
+/// are those of the box its column draws around it, the rows with no line
+/// between them, as a field under a heading with no line between or in a
+/// column whose rows are not ruled apart. An empty field of a ruled table is
+/// one; the edge of a frame drawn around tables shows one or two sides and is
+/// not.
 /// So are the empty cells of a band holding values written without merging,
 /// which spill over them, such as a name after its marker: lines run along
-/// its top and bottom and close it at both ends, with no line between its
-/// cells (`filled`: cells with a value).
+/// the top and bottom of its boxes, which may span rows with no line between
+/// them, and close it at one end at least, with no line between its cells
+/// (`filled`: cells with a value).
 /// Single cells are joined into rectangles; the ranges are in row order.
 fn bordered_blanks(
     blanks: &[(u32, u32)],
@@ -680,6 +686,33 @@ fn bordered_blanks(
             }
         }
     }
+    // Whether a line runs along the top, or the bottom, of the cell.
+    let over =
+        |(column, row): (u32, u32)| side((column, row), 2) || row > 1 && side((column, row - 1), 3);
+    let under = |(column, row): (u32, u32)| side((column, row), 3) || side((column, row + 1), 2);
+    let written: HashSet<(u32, u32)> = blanks.iter().chain(filled).copied().collect();
+    // The rows of the column drawn together with the cell, no line between
+    // them, as a record drawn over two rows with no line across it.
+    let column_box = |(column, row): (u32, u32)| {
+        let mut top = row;
+        while !over((column, top)) && top > 1 && written.contains(&(column, top - 1)) {
+            top -= 1;
+        }
+        let mut bottom = row;
+        while !under((column, bottom)) && written.contains(&(column, bottom + 1)) {
+            bottom += 1;
+        }
+        (top, bottom)
+    };
+    // A line above and below the cell's box, one of them maybe left out
+    // where the box faces nothing, as the bottom of a table's last row.
+    let ruled = |(column, row): (u32, u32)| {
+        let (top, bottom) = column_box((column, row));
+        let (above, below) = (over((column, top)), under((column, bottom)));
+        let open_above = top == 1 || !written.contains(&(column, top - 1));
+        let open_below = !written.contains(&(column, bottom + 1));
+        (above || below) && (above || open_above) && (below || open_below)
+    };
     let mut ranges = vec![];
     let mut singles = BTreeSet::new();
     for &start in blanks {
@@ -688,10 +721,25 @@ fn bordered_blanks(
         }
         let end = merged.get(&start).copied().unwrap_or(start);
         let ((left, top), (right, bottom)) = (start, end);
-        let closed = (side((left, top), 0) || left > 1 && side((left - 1, top), 1))
-            && (side((right, top), 1) || side((right + 1, top), 0))
-            && (side((left, top), 2) || top > 1 && side((left, top - 1), 3))
-            && (side((left, bottom), 3) || side((left, bottom + 1), 2));
+        // The top and bottom are those of the box its column draws around it,
+        // as a merged field under a heading with no line between.
+        let (top_at, bottom_at) = (column_box((left, top)).0, column_box((left, bottom)).1);
+        let drawn = [
+            side((left, top), 0) || left > 1 && side((left - 1, top), 1),
+            side((right, top), 1) || side((right + 1, top), 0),
+            over((left, top_at)),
+            under((left, bottom_at)),
+        ];
+        // Beyond each side, cells or nothing drawn: a side may be left open
+        // where it faces nothing, as the bottom of a table's last row.
+        let beyond = [
+            left > 1 && written.contains(&(left - 1, top)),
+            written.contains(&(right + 1, top)),
+            top_at > 1 && written.contains(&(left, top_at - 1)),
+            written.contains(&(left, bottom_at + 1)),
+        ];
+        let lines = drawn.iter().filter(|d| **d).count();
+        let closed = lines == 4 || lines == 3 && (0..4).all(|k| drawn[k] || !beyond[k]);
         if !closed {
             continue;
         }
@@ -706,10 +754,6 @@ fn bordered_blanks(
         .copied()
         .filter(|p| !covered.contains(p) && !merged.contains_key(p))
         .collect();
-    let ruled = |(column, row): (u32, u32)| {
-        (side((column, row), 2) || row > 1 && side((column, row - 1), 3))
-            && (side((column, row), 3) || side((column, row + 1), 2))
-    };
     // Whether a line runs down the right edge of the cell.
     let closes = |(column, row): (u32, u32)| side((column, row), 1) || side((column + 1, row), 0);
     let values: HashSet<_> = filled.iter().copied().collect();
@@ -736,7 +780,9 @@ fn bordered_blanks(
         } else {
             closes((left - 1, row))
         };
-        if opened && closes((right, row)) {
+        // A line at one end at least: a frame left open on one side still
+        // closes its bands at the other, where a row of lines alone does not.
+        if opened || closes((right, row)) {
             singles.extend(
                 (left..=right)
                     .filter(|c| empty.contains(&(*c, row)))

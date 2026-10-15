@@ -811,8 +811,8 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
 
 /// The last row of a heading row written as plain as its records: three or
 /// more distinct texts of one look over two or more records whose every
-/// value lies under one of them, one heading over values that are all
-/// numbers, dates or formulas. Two columns may be labels beside their values
+/// value lies under one of them, one heading over values, one or more, that
+/// are all numbers, dates or formulas. Two columns may be labels beside their values
 /// instead, and a row of marked labels between plain values is a form.
 fn plain_header(group: &[&Cell<'_>], header_top: u32) -> Option<u32> {
     let first = valued(row(group, header_top));
@@ -843,7 +843,7 @@ fn plain_header(group: &[&Cell<'_>], header_top: u32) -> Option<u32> {
         .all(|c| first.iter().any(|h| h.left <= c.left && c.right <= h.right));
     let contrast = first.iter().any(|h| {
         let below = under(h);
-        below.len() >= 2 && below.iter().all(|c| !c.string())
+        !below.is_empty() && below.iter().all(|c| !c.string())
     });
     (rows.len() >= 2 && headed && contrast).then_some(end)
 }
@@ -855,11 +855,27 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
     let bottom = group.iter().map(|c| c.bottom).max().unwrap();
     let single = group.iter().all(|c| c.span() == group[0].span());
     let first = row(group, top);
+    // A heading row: two cells or more, all text set apart by bold or fill,
+    // across the whole width.
+    let heading_row = |y: u32| {
+        let line = valued(row(group, y));
+        line.len() >= 2
+            && line
+                .iter()
+                .all(|c| c.string() && (c.bold() || c.fill() != 0))
+            && line.first().is_some_and(|c| c.left == left)
+            && line.last().is_some_and(|c| c.right == right)
+    };
     let caption = explicit.is_none()
         && !single
         && first.len() == 1
-        && first[0].span() == (left, right)
-        && (first[0].bold() || right > left);
+        && ((first[0].span() == (left, right) && (first[0].bold() || right > left))
+            // A bold title written in the first cell right over the heading.
+            || (first[0].left == left
+                && first[0].bold()
+                && first[0].fill() == 0
+                && first[0].string()
+                && heading_row(first[0].bottom + 1)));
     let header_top = if caption { first[0].bottom + 1 } else { top };
     let mut header = match explicit {
         Some((_, 0)) => None,
@@ -1331,6 +1347,7 @@ fn split_touching_tables(
         let (a, b): (Group, Group) = group.iter().copied().partition(|&i| cells[i].right <= seam);
         let plausible = |side: &[usize]| -> Result<Option<u32>> {
             let (l, t, r, mut bottom) = bounds(cells, side);
+            let last_value = bottom;
             // Empty boxes of the grid below a side carry it down.
             while let Some(&(_, _, _, b)) = boxes
                 .iter()
@@ -1346,11 +1363,22 @@ fn split_touching_tables(
             if side.header != Some((top, top)) || side.plain {
                 return Ok(None);
             }
+            // Labels of the records: names, on at least half of its rows, as a
+            // sparse column of notes or a column of marks such as `●` beside
+            // another table labels none.
             let labels = view
                 .iter()
-                .filter(|c| c.top > top && c.left == l && c.nonempty() && c.string())
+                .filter(|c| {
+                    c.top > top
+                        && c.left == l
+                        && c.nonempty()
+                        && c.string()
+                        && c.text().chars().any(char::is_alphanumeric)
+                })
                 .count();
-            Ok((labels >= 2).then_some(bottom))
+            // Every row it spans under its header, written or not.
+            let rows = (last_value - top) as usize;
+            Ok((labels >= 2 && labels * 2 >= rows).then_some(bottom))
         };
         if a.is_empty() || b.is_empty() {
             continue;
@@ -1741,16 +1769,18 @@ fn interpret(
         // One cell in every record, each standing under a heading of its own
         // through every header row, not under a group of columns, such as the
         // source item of a mapping.
+        // The column ends where its heading does: a value merged across the
+        // columns after it, such as a reserved row's name, does not widen it.
         let column = |x: u32| -> Option<(u32, Vec<&&Cell<'_>>)> {
             let cells = starting(x);
-            let own_heading = group.iter().any(|c| {
+            let own_heading = group.iter().find(|c| {
                 in_header(c)
                     && header.is_some_and(|(first, last)| c.top == first && c.bottom == last)
                     && c.left == x
             });
-            let right = cells.iter().map(|c| c.right).max()?;
-            (own_heading
-                && cells.len() == records.len()
+            let right = own_heading?.right;
+            cells.first()?;
+            (cells.len() == records.len()
                 && cells.iter().map(|c| c.top).collect::<BTreeSet<_>>() == records)
                 .then_some((right, cells))
         };
@@ -2157,6 +2187,71 @@ fn interpret(
         let bottom = headers.iter().map(|&i| group[i].bottom).max().unwrap_or(0);
         reach[k + 1] = reach[k].max(bottom);
     }
+    // Headings stacked in one column, one on each header row, over records
+    // written on as many lines, such as a logical name over a physical one:
+    // the k-th heading heads the k-th line of each record. A record starts
+    // on the lines where the first column holds a value.
+    let stacked: Vec<((u32, u32), Vec<usize>)> = match header {
+        Some((first, last)) if last > first => {
+            let depth = (last - first + 1) as usize;
+            let mut spans: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
+            for headers in header_rows.values() {
+                for &i in headers {
+                    spans.entry(group[i].span()).or_default().push(i);
+                }
+            }
+            let starts: Vec<u32> = group
+                .iter()
+                .filter(|c| c.left == left && c.top > last && c.nonempty())
+                .map(|c| c.top)
+                .collect();
+            let lined = starts.len() >= 2
+                && starts
+                    .iter()
+                    .all(|&y| ((y - last - 1) as usize).is_multiple_of(depth));
+            // The values under the headings look unlike them; labels of a
+            // form written as the headings are would be headings of no rows.
+            let plain = |(l, r): (u32, u32), heads: &[usize]| {
+                group
+                    .iter()
+                    .filter(|c| c.top > last && c.left >= l && c.right <= r && c.nonempty())
+                    .all(|c| {
+                        heads
+                            .iter()
+                            .all(|&i| (group[i].bold(), group[i].fill()) != (c.bold(), c.fill()))
+                    })
+            };
+            spans
+                .into_iter()
+                .filter(|(span, heads)| {
+                    lined
+                        && heads.len() == depth
+                        && heads.iter().all(|&i| group[i].top == group[i].bottom)
+                        && plain(*span, heads)
+                })
+                .map(|(span, mut heads)| {
+                    heads.sort_by_key(|&i| group[i].top);
+                    (span, heads)
+                })
+                .collect()
+        }
+        _ => vec![],
+    };
+    let stacked_line = |c: &Cell<'_>, links: &mut Vec<usize>| {
+        let Some((first, last)) = header else {
+            return;
+        };
+        if c.top <= last || c.bottom > c.top {
+            return;
+        }
+        let depth = (last - first + 1) as usize;
+        for ((l, r), heads) in &stacked {
+            if *l <= c.left && *r >= c.right {
+                let line = heads[(c.top - last - 1) as usize % depth];
+                links.retain(|i| !heads.contains(i) || *i == line);
+            }
+        }
+    };
     let mut alike: HashMap<(usize, u32, u32), Vec<usize>> = HashMap::new();
     let interpreted: Vec<_> = group
         .iter()
@@ -2175,6 +2270,7 @@ fn interpret(
                 } else {
                     header_links(c, current)
                 };
+                stacked_line(c, &mut links);
             }
             if matches!(current, "data" | "row_header") && !band(c) {
                 let mut beside: Vec<_> = label_rows.get(&c.top).cloned().unwrap_or_default();
