@@ -1,12 +1,12 @@
 # カスタムAgentによる委任
 
-`arp4 skills install --root <project> --agent codex` で、親が使うarp4スキル、操作リファレンス、委任先のカスタムAgentを配置します。Claude Codeは `--agent claude`、GitHub Copilotは `--agent github`、全形式は `--agent all` です。設定を再読込したホストで「arp4スキルを使って既存workflowを続行」と依頼します。モデル・権限・ホストの同時実行設定は変更しません。
+`arp4 skills install --root <project> --agent codex` で、親が使うarp4スキル、操作リファレンス、arp4-structure・arp4-setupスキル、委任先のカスタムAgent（構造解釈の作成・レビュー担当を含む）を配置します。Claude Codeは `--agent claude`、GitHub Copilotは `--agent github`、全形式は `--agent all` です。設定を再読込したホストで「arp4スキルを使って既存workflowを続行」と依頼します。モデル・権限・ホストの同時実行設定は変更しません。
 
 | ホスト | 親の入口 | 委任先 |
 | --- | --- | --- |
-| Codex | `.agents/skills/arp4/SKILL.md` | `.codex/agents/arp4-worker.toml`、`arp4-reviewer.toml` |
-| Claude Code | `.claude/skills/arp4/SKILL.md` | `.claude/agents/arp4-worker.md`、`arp4-reviewer.md` |
-| GitHub Copilot | `.github/skills/arp4/SKILL.md` | `.github/agents/arp4-worker.agent.md`、`arp4-reviewer.agent.md` |
+| Codex | `.agents/skills/arp4/SKILL.md` | `.codex/agents/arp4-worker.toml`、`arp4-reviewer.toml`、`arp4-structure-worker.toml`、`arp4-structure-reviewer.toml` |
+| Claude Code | `.claude/skills/arp4/SKILL.md` | `.claude/agents/arp4-worker.md`、`arp4-reviewer.md`、`arp4-structure-worker.md`、`arp4-structure-reviewer.md` |
+| GitHub Copilot | `.github/skills/arp4/SKILL.md` | `.github/agents/arp4-worker.agent.md`、`arp4-reviewer.agent.md`、`arp4-structure-worker.agent.md`、`arp4-structure-reviewer.agent.md` |
 
 親をさらにサブAgentにする階層は増やしません。親のスキルから、作成・修正担当と独立レビュー担当を直接呼びます。CLIの `handoff` は `agent` に委任先名を返します。親はホストのカスタムAgent呼出し機能でその名前を選択し、handoffと担当固有のactorを渡します。Agent定義を手作業で毎回プロンプトに貼り付ける必要はありません。
 

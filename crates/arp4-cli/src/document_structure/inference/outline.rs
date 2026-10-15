@@ -412,7 +412,8 @@ struct Tree {
 /// shares its row only with ancestors: merged down over it, in a column that
 /// names only the first of its descendants' rows, left of the column that
 /// names every row, or stepping right one column at a time under an ancestor
-/// merged down over the row. `spread` names or more must have descendants on
+/// merged down over the row or on fewer than half of the rows, as a folder
+/// beside its only file. `spread` names or more must have descendants on
 /// later rows: one for a tree alone, two for a tree beside fields, where a
 /// column of names moved once, as when the column widths change partway down
 /// a table, is no hierarchy. A value written beside its name,
@@ -448,27 +449,43 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
         .copied()
         .filter(|&x| starting(x).map(|c| c.top).collect::<BTreeSet<_>>() == rows)
         .collect();
-    let records = rows.iter().any(|&y| {
-        let line: Vec<_> = names
+    let line = |y: u32| -> Vec<&&Cell<'_>> {
+        names
             .iter()
             .filter(|c| c.top == y && !over(c) && Some(c.left) != numbered)
-            .collect();
+            .collect()
+    };
+    let stepping = |line: &[&&Cell<'_>]| {
+        line.windows(2)
+            .all(|pair| pair[0].right + 1 == pair[1].left)
+    };
+    let merged_over = |line: &[&&Cell<'_>], y: u32| {
+        line.first().is_some_and(|first| {
+            names
+                .iter()
+                .any(|m| over(m) && m.top < y && m.bottom >= y && m.right < first.left)
+        })
+    };
+    // Names stepping right one column at a time are a path of names, as a
+    // folder and its only file: under an ancestor merged down over the row,
+    // or on fewer than half of the rows, where names beside each other on
+    // most rows are the fields of records.
+    let unmerged = rows
+        .iter()
+        .filter(|&&y| {
+            let line = line(y);
+            line.len() > 1 && stepping(&line) && !merged_over(&line, y)
+        })
+        .count();
+    let records = rows.iter().any(|&y| {
+        let line = line(y);
         let named = line.iter().filter(|c| full.contains(&c.left)).count();
         let after = line
             .iter()
             .filter(|c| full.contains(&c.left))
             .map(|c| c.left)
             .min();
-        // Names stepping right one column at a time, under an ancestor merged
-        // down over the row, are a path of names, as a folder and its only file.
-        let path = line
-            .windows(2)
-            .all(|pair| pair[0].right + 1 == pair[1].left)
-            && line.first().is_some_and(|first| {
-                names
-                    .iter()
-                    .any(|m| over(m) && m.top < y && m.bottom >= y && m.right < first.left)
-            });
+        let path = stepping(&line) && (unmerged * 2 < rows.len() || merged_over(&line, y));
         named > 1
             || (named == 0 && line.len() > 1 && !path)
             || line

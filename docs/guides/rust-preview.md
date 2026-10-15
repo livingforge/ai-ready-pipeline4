@@ -82,7 +82,7 @@ arp4 documents export 基本設計.xlsx --root C:/my-project
 arp4 documents export 基本設計.xlsx --out C:/my-project/.arp/cache/export/基本設計-更新.xlsx --root C:/my-project
 ```
 
-exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本への反映は `documents apply 基本設計.xlsx --root C:/my-project` を使います。反映後は再抽出された候補を確認し、record・adoptしてください。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。
+exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本へ反映する場合は、出力を開いてレイアウトを確認し、`documents confirm-export 基本設計.xlsx --candidate <出力> --output-sha256 <reportの出力ハッシュ> --reviewer <担当> --reason <確認した範囲・結果> --layout-reviewed --root C:/my-project` で記録してから `documents apply 基本設計.xlsx --root C:/my-project` を使います。未確認の候補はapplyが拒否します。反映後は再抽出された候補を確認し、record・adoptしてください。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。
 未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・書き戻し対象外の値（結合セルの左上以外の値、数式の計算結果）の編集・署名付きブック・既存出力の上書きを拒否します。
 通常セル更新では元のZIP部品を保持し、数式がある場合はキャッシュを無効化して次回Excel起動時の再計算を指定します。
 ARPは数式を計算しません。`=...` で始まる通常セルの文字列は文字列のまま出力します。

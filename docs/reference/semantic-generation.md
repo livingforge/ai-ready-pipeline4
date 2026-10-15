@@ -22,7 +22,7 @@
 
 ## 1. 資料を固定し、文書ごとのタスクを作る
 
-Word・PPTX・PDF、および表・画像・図表候補のあるExcelは、先に [構造解釈とレビュー](../guides/document-structure.md) を完了し、captureへ `--root` と `--structure` を指定します。以下は構造解釈が不要な入力の例です。
+Word・PPTX・PDF、および表・画像・図表候補のあるExcelは、先に [構造解釈とレビュー](../guides/document-structure.md) を完了し、captureへ `--root` と `--document <文書ID>` を指定します。以下は構造解釈が不要な入力の例です。
 
 ```powershell
 arp4 spec capture --extraction extraction-a.json extraction-b.json --out input.json
@@ -91,7 +91,7 @@ arp4 spec semantic review-packet --input input.json --model assembled/model.json
 
 ワークフローでは文書別をreview、全体をglobal-reviewの段階として管理します。入力は共通の項目キーをcolumns/rowsへ、重複する引用をspan_tableへまとめた可逆形式が標準です。`review-packet --expanded` で展開形式も出せます。どちらも内容のfingerprintは同一です。文書別には使用するモジュールと関係文書の未解決事項だけを渡し、直接参照する要件・関連項目と外部根拠は依存情報として残します。カタログの `open_issue_documents` に各未解決事項の対象文書を明示します。全体共通の課題は空配列を指定し、対応の欠落は拒否します。
 
-返信は `packet`, `document`, `audits`, `findings`。auditsには実際に確認した短い出典参照と理由を記します。同じ理由で確認できた複数出典だけをグループにできます。globalではauditsは空です。findingsが残る返信、原文のレビュー漏れ、全体レビューの欠落、変更されたタスクに対する古いレビューは適用できません。
+返信は `packet`, `document`, `audits`, `findings`。auditsには実際に確認した短い出典参照と理由を記します。同じ理由で確認できた複数出典だけをグループにできます。globalではauditsは空です。変更されたタスクに対する古いレビューは拒否します。findingsが残る返信、原文のレビュー漏れ、全体レビューの欠落は保存できますが、`ready` はfalseとなりfinalizeできません。
 
 ```powershell
 arp4 spec semantic review-apply --input input.json --model assembled/model.json --catalog assembled/catalog.json --review review-a.reply.json review-b.reply.json review-global.reply.json --reviewer claude-opus-5-independent --out reviewed.json
@@ -119,7 +119,7 @@ document IDを維持して再captureします。出力のreextractだけを再�
 
 ### 局所修正とレビューの再利用
 
-`spec workflow` は最新の返信をassembleし、機械診断・レビュー指摘から局所修正タスクを作成します。`inspect` は概要を返し、`read` で本文・context・scopeを取得します。入力はreadの子pointerとpage.next_offsetを辿って取得します。修正返信は指定されたbaseハッシュと対象キーに対して検証し、対象外・重複変更・ローカル参照切れを拒否します。無変更返信では未解決のまま停止します。
+`spec workflow` は最新の返信をassembleし、機械診断・レビュー指摘から局所修正タスクを作成します。`inspect` は概要を返し、`read` で本文・context・scopeを取得します。入力はreadの全ページをpage.completeまでpage.next_commandで読み継いで取得します。子pointerは辿りません。修正返信は指定されたbaseハッシュと対象キーに対して検証し、対象外・重複変更・ローカル参照切れを拒否します。無変更返信では未解決のまま停止します。
 
 contextには対象項目と直接の参照先・参照元が使うシートの全文を残します。見出し・単位・離れた脚注・結合情報は削りません。明示的なregion計画があれば、その出典範囲と共通文脈を使います。別文書の根拠や構造変更が必要な問題は、範囲を定める作業としてdeferredに残します。
 

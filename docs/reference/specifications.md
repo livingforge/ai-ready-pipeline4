@@ -12,7 +12,7 @@ Rust CLI の `spec` はパース結果を固定化し、Agentが抽出したメ�
 
 まず `documents import` で Excel等の対応文書（UTF-8の `.txt` / `.md` / `.csv` / `.tsv` も可）を取り込みます。候補ディレクトリの `extraction.json`、または採用後の `.arp/documents/<文書ID>/extraction.json` が入力です。複数文書を同時に capture して横断的に比較します。同じ文書の更新では同じdocument_idを維持し、過去版はGitで確認します。1回のcaptureへ同じIDの異なる版を混在させないでください。
 
-Office・PDFの構造解釈の必須条件と準備は [構造解釈](../guides/document-structure.md) を参照してください。必須資料には `--root` と、読取完了・acceptedレビュー済みの `--structure` を指定します。以下の省略形は構造解釈が不要な入力用です。
+Office・PDFの構造解釈の必須条件と準備は [構造解釈](../guides/document-structure.md) を参照してください。必須資料は、読取完了・acceptedレビュー済みの構造解釈を持つ文書を `--root` と `--document <文書ID>` で指定します。以下の省略形は構造解釈が不要な入力用です。
 
 ```powershell
 arp4 spec capture --extraction path/to/extraction-a.json path/to/extraction-b.json --out input.json

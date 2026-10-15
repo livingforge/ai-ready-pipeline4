@@ -27,7 +27,7 @@ arp4 documents search-refresh --root C:/project
 ```
 
 ```json
-{"failed":[],"failed_documents":0,"indexed_at_unix":1791596348,"indexed_documents":2,"ok":true,"refreshed_documents":2,"state":"indexed"}
+{"detail":"Search reads this index until the next search-refresh. External file changes are not checked during search.","failed":[],"failed_documents":0,"indexed_at_unix":1791596348,"indexed_documents":2,"ok":true,"refreshed_documents":2,"state":"indexed"}
 ```
 
 `indexed_documents` が索引に入っている文書数、`refreshed_documents` が今回更新した文書数です。2回目以降は変わった文書だけを更新するので、すぐ終わります。
@@ -138,7 +138,7 @@ $r.page
 
 1. 識別子が大文字小文字まで完全に一致したもの
 2. 検索語全体がそのまま本文に含まれるもの
-3. 見出しに検索語が含まれるもの
+3. 検索語全体がタイトル（文書ID・シート・見出し）に含まれるもの（表の列見出しは含みません）
 4. それ以外は、一致の度合い（本文・見出し・表見出しの一致を重み付けした値）の高いもの
 
 加えて、次の調整をします。結果を消すことはなく、総件数にも含まれます。
@@ -276,11 +276,12 @@ groups:
 
 | 症状・メッセージ | 対処 |
 |---|---|
-| `search index unavailable; run documents search-refresh` | 索引がまだありません。`documents search-refresh` を実行します。索引の形式が古い場合も同じです。 |
+| `search index unavailable; run documents search-refresh` | 索引がまだありません。`documents search-refresh` を実行します。 |
+| `search index version changed; run documents search-refresh`（または `invalid search index; …`） | 索引の形式が古いか、読めません。`documents search-refresh` を実行します。 |
 | 原本を直したのに古い内容が出る | `search-refresh` をしていないか、変更した原本を採用し直していません。[結果の状態を確認する](#結果の状態を確認する)を参照してください。 |
 | 表の列見出しの語で見つからない | その表に構造解釈がありません。[表を見出し込みで探す](#表を見出し込みで探す)を参照してください。 |
 | `search revision changed; restart at offset 0 without --revision` | ページ送りの途中で索引が更新されました。`--offset` と `--revision` を外して最初から検索し直します。 |
-| `the argument '--full' cannot be used with '--limit'`（`--offset` も同様） | `--full` は全件を返すため、件数の指定とは併用できません。どちらかを外します。 |
+| `the argument '--full' cannot be used with '--limit <LIMIT>'`（指定順により逆の文言。`--offset` も同様） | `--full` は全件を返すため、件数の指定とは併用できません。どちらかを外します。 |
 | `search query must contain 1..256 characters` | 検索語が空か、長すぎます。 |
 | `ok: false` で `failed` に文書が並ぶ | 一部の文書の検証に失敗し、その文書を除いた結果が返っています。**「該当なし」と判断しないでください。** `search-refresh` を実行し、それでも失敗する場合は該当文書の状態を `documents status` で確認します。 |
 | 索引が壊れた様子がある | `documents search-refresh --rebuild` で索引を作り直します。索引は再生成できるキャッシュなので、作り直しても文書は失われません。 |

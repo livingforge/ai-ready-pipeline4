@@ -19,6 +19,8 @@
   evidence/<module>.md
   appendices/traceability.md
   appendices/change.json        現在の変更理由
+  appendices/status.json        状態集計（check の summary と同じ）
+  generated.json                生成物のハッシュ（手編集の検出に使用）
 ```
 
 先に `arp4 documents init` で `.arp/config.yml` を作成する。`--root` はリポジトリルートを指し、省略時はGit境界内で探索する。
@@ -30,7 +32,7 @@
 ## 初回登録
 
 検証済み・採番済みの抽出モデルとその `.ids.json` が必要。
-`catalog.json` では全項目の分類と機能、対応要件、関連項目、分類理由を明示する。
+`catalog.json` では全項目の分類と機能を指定する。対応要件・関連項目は省略すると空、分類理由 reason は任意で、曖昧な分類には理由を添える。
 
 ```json
 {
@@ -113,7 +115,7 @@ arp4 spec registry render
 
 修正は対象 records ファイルを entries へコピーし、修正内容と `status: proposed`, `approval: null` を設定する。
 一部フィールドだけのパッチではなく項目全体を指定する。既存IDを保つ。
-修正・廃止した項目への依存先を requirements/related から推移的に列挙し、承認済みの影響項目を proposed に戻す。
+修正・廃止した項目を requirements/related で参照する項目（依存元）を推移的に列挙し、承認済みの影響項目を proposed に戻す。修正した項目が参照する先は変更しない。
 項目の本文を自動修正したり、古い承認を自動継承したりはしない。
 
 承認は別の変更で `approve: [{"id":"REQ-000005","reason":"実際のレビュー結果"}]` と指定する。

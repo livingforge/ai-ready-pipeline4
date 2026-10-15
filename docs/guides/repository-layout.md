@@ -48,6 +48,7 @@ ARPは自動コミットしません。`work/` の実行ログ・再開情報は
 ```yaml
 schema_version: '1'
 sources: docs
+agent_read_format: toon
 ```
 
 `arp4 documents init` が `.arp/config.yml` と内部の `.gitignore` を作成します。原本の配置は `documents init --sources specifications` のように変更できます。初期化で既存の原本、AGENTS.md、エディタ設定は変更しません。
@@ -66,8 +67,8 @@ workflowの作業先は `.arp/work/workflow/<run-id>/`、既定IDはcurrentで�
 1. importで原本を抽出し、`.arp/changes/<文書ID>/` の候補のYAMLと対応表を確認・編集します。
 2. record・adopt後は `.arp/documents/<文書ID>/` を使用します。採用した候補は削除します。採用時点では未レビューで、確認後にreviewを記録します。
 3. 現在データをGitへコミットし、以後の文書差分は `documents diff --document <ID>` でHEADと比較します。候補のdiffは現在データとの比較です。
-4. YAMLの変更をreviewし、`documents export <ID>` で反映計画を確認します。
-5. `documents apply <ID>` で元ファイルへ反映し、再抽出候補を作ります。候補を確認してrecord・adoptします。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。applyだけでは再抽出内容をレビュー済みにしません。
+4. YAMLの変更をreviewし、`documents export <ID>` で反映計画を確認します。`--out` で出力し、出力を開いてレイアウトを確認したら `documents confirm-export <ID>` で記録します。
+5. `documents apply <ID>` で確認した候補を元ファイルへ反映し（未確認なら拒否）、再抽出候補を作ります。候補を確認してrecord・adoptします。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。applyだけでは再抽出内容をレビュー済みにしません。
 
 原本ハッシュが変わっていたら古い対応で書き戻しません。未対応・曖昧な対応は未反映として扱います。原本を変えずに出力する場合は `export --out <repo>/.arp/cache/export/<新規名>` を使います。
 要件・仕様の現在版は `spec registry apply --change <JSON>` で更新し、Gitへコミットします。生成した閲覧文書は `spec registry render` で `.arp/cache/registry/` に出力します。

@@ -32,7 +32,7 @@ JSON表示にする場合は `json` に変更します。設定の正式な列�
 
 モデルをCLIから起動しない場合も同じ状態管理・検証・結合処理を使います。新しい実行ディレクトリには [AGENT_BRIEF.md](AGENT_BRIEF.md) を保存します。
 
-親Agentは割当と提出確認を担当します。`handoff` の情報を担当Agentへ渡し、link・restructureを含め、担当が本文取得・判断・ファイル保存・検証・提出まで行います。親は事前に原文を読んだり、子の返信JSONを書き戻したりしません。子の完了報告は300字以内の提出結果・要判断事項・成果物パスとし、親は `receipt` の記録で確認します。詳しい分担手順は上記のAGENT_BRIEFを参照してください。
+親Agentは割当と提出確認を担当します。`handoff` の情報を担当Agentへ渡し、link・restructureを含め、担当が本文取得・判断・ファイル保存・検証・提出まで行います。親は事前に原文を読んだり、子の返信JSONを書き戻したりしません。子は成功時に報告せず（返信が必須なら「完了」のみ）、中断時だけCLIに記録されていない続行不能の理由を短く返します。親は `receipt` の記録で確認します。詳しい分担手順は上記のAGENT_BRIEFを参照してください。
 
 ```powershell
 # 親: statusから異なるtaskを選び、handoffの情報をそのまま担当へ渡す
@@ -123,7 +123,7 @@ arp4 spec workflow --run-id experiment status
 
 正常完了した場合のみ固定出力を更新し、手編集や管理対象外ファイルがあれば上書きを拒否します。
 `export` は保存された成果物ハッシュを検証して再公開します。`status` や `inspect` は固定出力を変更しません。
-補助ファイルは各実行ディレクトリの `debug/` に置きます。入力・返信などCLI引数の相対パスは起動位置が基準です。
+入力・返信などCLI引数の相対パスは起動位置が基準です。
 
 `init` と `advance` はモデルを呼ばず、次の作業までローカル処理だけを進めます。`run` は指定回数までモデルを呼び、返信の検証・修正適用・再構築・必要なレビューの選択を行います。途中で回数上限に達したら同じ `run` で続行できます。`--max-budget-usd` は**１呼び出しごと**のrunnerの停止設定で、実行全体の予算ではありません。`--max-calls` の既定値は1、修正回数の上限は実行全体の `--max-rounds`（既定値は生成CLIリファレンス参照）です。`status.round` はrepair/restructureの適用回数、`status.rounds_remaining` は実行全体の残り回数です。文書別の `repair_rounds` は計測値で、独立した予算ではありません。上限後も必要な修正確認を行い、内容の誤りなどが残れば `needs_decision` として草稿と残件を出します。`advance` の再実行では再開せず、情報を追加した `update` で再開します。品質・推論トークンの総量を保証する設定ではありません。
 
@@ -186,8 +186,9 @@ restructureは `{"defer":{"kind":"information_required","reason":"具体的な�
 |---|---|
 | `repair_no_progress` | 修正返信が抽出を変更しなかった（changesが空など） |
 | `stalled_diagnostics` | 同じ診断が3回の修正後も変わらない |
-| `unrepairable` | 自動修正・再構築の対象がない指摘だけが残った（manual_triage、ラウンド上限到達など） |
-| `round_limit` | 再構築が上限に達した文書を変更しようとした |
+| `unrepairable` | 自動修正・再構築の対象がない指摘だけが残った（manual_triageなど） |
+| `round_limit` | 実行全体の修正回数（`--max-rounds`）に達した |
+| `restructure_deferred` | restructureが `defer` で保留を返した |
 
 修正返信が一部の文書だけを変更した場合も、変更なし（`changes: []`）で返された修正タスクの指摘・診断は `--reason` の理由とともに `unresolved` に記録します。記録された指摘は対象項目が変わるまでrepairに再発行せず、`deferred` に `declined: true` で残します。項目が変わると記録は無効になり、通常の振り分けに戻ります。`update --reply` で抽出を訂正すると記録は消えます。これらの内部記録とレビューのmanual_triage等は、status・レビューcontext・draft/open-issues.jsonの `concerns` に集約して表示します。`open` は未解決、`needs_decision` は人判断待ち、`improvement` は任意改善です。同じ残件のIDと理由を引き継ぎ、unresolvedファイルにない指摘も消しません。
 
@@ -222,7 +223,7 @@ region計画のsourcesは文書の全出典をちょうど１回ずつ覆う必�
 
 `spec check`、`assemble`、`review-apply` の `coverage` には、出典ごとの `matrix` が含まれます。各行は原文文字数、引用で覆われた文字数、未覆い範囲、意味監査の有無を示します。網羅性の集計は機械判定に任せ、意味上の正しさはレビュー結果として別に扱います。
 
-この区切りは修正とレビューの両方で使います。修正は対象のregionと共通文脈だけを受け取り、別範囲が必要なら追加要求を返せます。レビューではsourcesだけを監査し、contextを監査対象に数えません。共通文脈・項目・依存先が変わると該当レビューが失効します。regionを宣言していない文書はシート単位、シート情報がない文書は全文に戻します。
+この区切りは修正とレビューの両方で使います。修正は対象のregionと共通文脈だけを受け取り、別範囲が必要なら追加要求を返せます。レビューではsourcesだけを監査し、contextを監査対象に数えません。共通文脈・項目・依存先が変わると該当レビューが失効します。regionを宣言していない文書のレビューは `--review-granularity`（既定adaptive）に従い、文書単位・シート単位（Markdownは節単位）で行います。
 
 CLI単体でも `review-packet --document doc-a --source s2 --context-source s1` を使えます。返信にはpacketの `scope` をコピーします。初回の全体の矛盾・同義語レビューは全主張を対象とし、修正確認では変更と影響範囲を確認します。
 
@@ -255,7 +256,10 @@ arp4 spec workflow --root C:/my-project run --provider claude-code --executable 
 | archive.zip | 過去の状態・旧成果物・ログの圧縮保存。ハッシュで読み取り可能 |
 | work/ | モデル実行中の一時ファイル。記録の保存・照合後に重複コピーを除去 |
 | latest/ | 正式生成成功時の設計書・モデル・台帳・分類とmanifest |
-| read-cache/ | 回答待ちタスクを `read` でページ分割した結果。タスク・採用返信・参照・表示形式・CLIのいずれかが変わると作り直し、タスクの完了後に削除。消しても次の `read` で再作成 |
+| read-cache/ | 回答待ちタスクを `read` でページ分割した結果。タスク・採用返信・参照・表示形式・CLIのいずれかが変わると作り直す。回答待ちでなくなったタスクの分は、次に `read` がページ分割するときに削除。消しても次の `read` で再作成 |
+| AGENT_BRIEF.md | 担当Agent向けの共通ブリーフ |
+| unresolved.json | 変更なしのrepair・restructureの保留など、未解決の記録 |
+| draft/ | `needs_decision` 時の草稿・報告・`open-issues.json` |
 
 毎ラウンドの草稿やバイナリコピーは生成しません。同じ内容の成果物は同じオブジェクトを参照します。成功時にはlatestへ出力し、不要になった展開済みオブジェクトを自動で圧縮保存します。途中でも次を実行できます。
 
@@ -275,15 +279,15 @@ arp4 spec workflow --root C:/my-project compact
 
 `submit` とrunnerは、スキーマ、原文引用、必須項目、参照先を検証してから受理します。修正はbaseの一時コピーで検査し、無効な返信で採用データを置き換えません。独立して検査できるスキーマ違反・項目ごとの引用違反をまとめて返します。JSONの解析や全体整合性の検査は、最初の検出で停止する場合があります。
 
-拒否されたsubmit返信と診断は履歴に残り、同じtaskへ修正返信をsubmitできます。拒否応答は `error.code: reply_validation_failed` と構造化した `error.diagnostics` で、応答の上限に収まらない分は末尾から丸ごと省いて `diagnostics_omitted` に件数を返します。保存された完全な診断は `read --pointer previous_error/diagnostics` でページ単位に読めます。`update` の検証失敗では採用状態を保存しません。`status.next_actions` と `run_id` が同じルート（`--root` と `--run-id`）での再開方法を示します。フォルダの複製やstate.jsonの手編集は必要ありません。
+拒否されたsubmit返信と診断は履歴に残り、同じtaskへ修正返信をsubmitできます。スキーマ・意味診断の拒否応答は `error.code: reply_validation_failed` と構造化した `error.diagnostics` で、応答の上限に収まらない分は末尾から丸ごと省いて `diagnostics_omitted` に件数を返します。形状・参照範囲などの検査ではdiagnosticsがなく、submitは `validation_or_provider_failure`、validate-replyは `operation_failed` と `message` を返します。保存された診断は `read --pointer previous_error`（diagnostics配列は `previous_error/diagnostics`）でページ単位に読めます。`update` の検証失敗では採用状態を保存しません。`status.next_actions` と `run_id` が同じルート（`--root` と `--run-id`）での再開方法を示します。フォルダの複製やstate.jsonの手編集は必要ありません。
 
-`status` の `tasks` は各タスクのtask_ref・段階・状態・文書と、拒否時の構造化診断だけを返し、`--limit/--offset` でページ送りします。内部ID・packet・返信のハッシュはstate.jsonと履歴にあり、応答には含めません。`next_actions` は同じ操作のタスクを1件にまとめ、`tasks` にtask_ref（先頭20件）と `count` を返します。空の `blocked`・`deferred`・`exports` などは省略します。原本由来の `notices` は同じ警告を文書一覧付きで1件にまとめます。
+`status` の `tasks` は各タスクのtask_ref・段階・状態・文書と、拒否時の構造化診断だけを返し、`--limit/--offset` でページ送りします。内部ID・packet・返信のハッシュはstate.jsonと履歴にあり、応答には含めません。`next_actions` は同じ操作のタスクを1件にまとめ、`tasks` にtask_ref（先頭20件）と `count` を返します。空の `blocked`・`exports`・`drafts` などは省略します（`deferred` はhistoryで確認します）。原本由来の `notices` は同じ警告を文書一覧付きで1件にまとめます。
 
 除外範囲と項目の根拠、または除外範囲同士が重なる返信は、個別の `validate-reply` / `submit` で `excluded_span_overlap` として拒否します。診断には文書、競合する項目・JSONパス、文字範囲を含みます。`"s26"` はそのソース全文を指すため、同じセルの記号だけを除外する場合は、根拠を記号と重ならない正確な引用に絞ってください。
 
 受理済みの抽出返信を修正する場合は、`update --reply corrected.reply.json` で修正します。未完了タスクが残っている間、`advance` は受理済み返信だけを部分適用しません。最後の返信を検証するときは他文書も含めて検査するため、診断の文書を確認してください。
 
-既存workflowへの更新は、初期化時と同じバイナリで行います。実行ファイルを差し替えると `binary_hash` の検査で更新操作が拒否されます。修正版バイナリで再検証する場合は、既存workflowを保持し、新しいworkflowへ抽出返信をインポートします。
+既存workflowへの更新は、初期化時と同じバイナリで行います。実行ファイルを差し替えると `binary_hash` の検査で、status・history・inspect・receipt・next・read・export以外の操作（validate-reply・handoffを含む）が拒否されます。修正版バイナリで再検証する場合は、既存workflowを保持し、新しいworkflowへ抽出返信をインポートします。
 
 修正のsetは完全置換に加え、スキーマに列挙した既存の末端フィールドの編集に対応します。親と末端の同時編集は拒否します。型の変更・未存在フィールドの追加は完全置換し、完成した値を検証します。
 

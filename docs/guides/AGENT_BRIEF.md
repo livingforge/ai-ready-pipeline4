@@ -39,7 +39,7 @@
 4. `/reply_template` を参考に返信JSONを作る。雛形は未作業であり、空のaudits/findingsをレビュー実施の代わりにしない。分類reasonとverificationは必要な場合だけ記載する。statementは構造化内容の言い直しなら省略できる。そこだけに含まれる役割・例外は保持する。数量・条件に記載した根拠はCLIがevidenceへ合流するので二重記述しない。追加の見出し・文脈の根拠はevidenceに残す。同じ意味・対象・条件の重複は各出典を保持して統合する。不要表現は引用範囲と理由を付けて除外し、意味不明・未処理の記述と区別する。
 5. 返信と判断理由をUTF-8ファイルに保存し、`validate-reply --task <ID> --reply reply.json` で事前検証し、`submit --task <ID> --reply reply.json --origin interactive-agent --actor <担当> --reason-file reason.txt` で提出する。短い理由は `--reason <判断理由>` でもよいが、引用符・JSON断片・改行を含む理由はファイルを使う。`--reason` と `--reason-file` は同時指定不可。返信はUTF-8 stdinの `--reply -` も使える。PowerShellのパイプはUTF-8に設定する。実際のモデル名が分かる場合だけ `--model` を付ける。
 6. 拒否時は診断と `/previous_error`・`/previous_reply`・`/draft` を確認する。下書きがあれば同じsubmitに `{"draft":"<revision>","set":{"/items/1/name":"修正値"}}` のように変更箇所だけ提出できる。既存フィールド・配列要素の削除は `remove`。CLIが結合後の返信全体を検証し、再拒否時は最新の版を返す。保持された部分は未受理で、意味的な正解の保証ではない。validate-replyは状態を保存しないため、その場の診断を使う。成功は受理可能という意味で、意味の正しさや設計書の完成の保証ではない。
-7. `receipt --task <ID>` で提出記録を確認し、親へ300字以内でtask_ref・submission_accepted・要判断事項・成果物パスを返す。原文・返信JSON・詳しい理由はファイルに残す。別taskを自分で取得しない。親がstatus/next_actionsで次の割当を決める。`next: null` は完了とは限らない。適用待ちはadvance、実行中はrecoverの案内に従う。
+7. `receipt --task <ID>` で提出記録を確認する。成功時は親へ報告せず（返信が必須なら「完了」のみ）、中断時だけCLIに記録されていない続行不能の理由を短く返す。原文・返信JSON・詳しい理由はファイルに残す。別taskを自分で取得しない。親がstatus/next_actionsで次の割当を決める。`next: null` は完了とは限らない。適用待ちはadvance、実行中はrecoverの案内に従う。
 
 ## 分担とレビュー
 
@@ -49,7 +49,7 @@
 
 提出後の結合・関連検証・repair/restructure適用はCLIが行う。state.json・objects・採番済みモデルを直接編集しない。
 
-レビューの `context.escalation` にある `findings`（既知の指摘）と `unresolved`（repairが理由付きで変更なしと返した指摘）は再報告しない。同じaction・itemsの再報告は既存記録に畳み込まれる。repairで直せない場合は `changes: []` と `--reason` で理由を返す。複数文書にまたがる指摘はrestructureへ回る。
+レビューの `context.escalation.concerns`（既知の指摘と、repairが理由付きで変更なしと返した指摘などの記録）は再報告しない。同じaction・itemsの再報告は既存記録に畳み込まれる。repairで直せない場合は `changes: []` と `--reason` で理由を返す。複数文書にまたがる指摘はrestructureへ回る。
 
 独立レビューは抽出とは別のAgent実行または人が担当する。同じAgentの自己点検を独立レビューと記録しない。数量をtext、平均をscalar、条件をunspecifiedへ変えて検証を通さない。固定語彙外の単位は `interpretation.kind=opaque_unit` と `unit_basis` で原文に結び付け、未登録の表現は `quantity_expression` として解釈待ちにする。独立レビューが未実施なら未完了として扱う。
 

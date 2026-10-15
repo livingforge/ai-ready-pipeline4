@@ -2,13 +2,13 @@
 
 コマンド・引数・既定値の一覧はコードから生成する [CLIコマンド・引数一覧](commands.md) を参照してください。以下は応答の読み方と操作上の判断基準です。
 
-`doctor.cli.response_version: 1` のCLIは、通常実行の標準出力に字下げなしのJSONを1行だけ返す。成功は終了コード0・`ok: true`、引数エラーや実行失敗は終了コード2・`ok: false`。エラーも標準出力に返し、標準エラーとの結合は不要。`--help` と `--version` の明示要求はテキストを返す。
+`doctor.cli.response_version: 1` のCLIは、通常実行の標準出力に字下げなしのJSONを1行だけ返す。`spec workflow read` の読取資料だけは `.arp/config.yml` の `agent_read_format`（既定TOON）で返す。成功は終了コード0・`ok: true`、引数エラーや実行失敗は終了コード2・`ok: false`。エラーも標準出力に返し、標準エラーとの結合は不要。`--help` と `--version` の明示要求はテキストを返す。
 
 `ok` はコマンド自体の成否。文書の採用・書き戻し可否は `state`・`blockers`・`complete` を確認する。操作の提案や状態名は権限付与を意味しない。
 
 ## 小さな応答と詳細取得
 
-`spec workflow` は進行管理と外部実行の機械向けJSONを返す。`next` / `inspect --task <ID>` は概要、`read --task <ID>` は指示・原文・文脈・返信契約の一括閲覧。readは最大48000 UTF-8 JSON bytesのページへ自動分割し、本文を省略しない。同じreadの `page.next_offset` を `--offset` に指定して続ける。個別確認だけ `--pointer <path>` で絞り込む。workflowでは `--full` を使用しない。`status: blocked`（予算切れ・実行失敗など）は `ok: false`・終了コード2。修正で解消できない指摘は停止せず、レビュー後に `status: needs_decision`（草稿を `draft/` に出力、正式exportは不可）で終わる。手順は [進行管理](../guides/semantic-workflow.md)、実行先との接続は [runner契約](../guides/semantic-runners.md) を参照。
+`spec workflow` は進行管理と外部実行の機械向けJSONを返す。`next` / `inspect --task <ID>` は概要、`read --task <ID>` は指示・原文・文脈・返信契約の一括閲覧。readは `--max-bytes`（4096〜48000、既定48000）以内の設定形式のUTF-8 bytesでページへ自動分割し、本文を省略しない。同じreadの `page.next_offset` を `--offset` に指定して続ける。個別確認だけ `--pointer <path>` で絞り込む。workflowでは `--full` を使用しない。`status: blocked`（予算切れ・実行失敗など）は `ok: false`・終了コード2。修正で解消できない指摘は停止せず、レビュー後に `status: needs_decision`（草稿を `draft/` に出力、正式exportは不可）で終わる。手順は [進行管理](../guides/semantic-workflow.md)、実行先との接続は [runner契約](../guides/semantic-runners.md) を参照。
 
 | 操作 | 既定の結果 | 詳細の取得 |
 | --- | --- | --- |
@@ -25,8 +25,9 @@
 | check / status | 全体の状態別件数・対象のページ。候補には採用済み文書と内容が同じかを示す `no_changes` を含む | 対象IDで絞る、または次ページ |
 | diff | 比較別の全変更件数・差分のページ | 次ページ、または `--out <新規パス>` |
 | export（outなし） | 全体件数・計画のページ・complete | 次ページ、必要な場合は `--full` |
-| export（outあり） | 全体件数・written・Excelとreportのパス | 保存された完全なreport |
-| apply | 原本反映結果と再抽出候補（needs_record）。出力が原本と同じなら原本を書き換えず候補も作らない `state: unchanged` | 候補を確認してrecord・adopt |
+| export（outあり） | 全体件数・`state: written`・Excelとreportのパス | 保存された完全なreport |
+| confirm-export | 確認した出力パス・ハッシュと確認記録 | apply前に必須 |
+| apply | `confirm-export` で確認した候補の原本反映結果と再抽出候補（needs_record）。未確認なら拒否。出力が原本と同じなら原本を書き換えず候補も作らない `state: unchanged` | 候補を確認してrecord・adopt |
 | schema | プロパティ名・型・必須かどうか | `--pointer <JSON Pointer>`、必要な場合は `--full` |
 | spec check | ready/blocked・種類別 summary・coverage・問題のページ | `--offset` / `--limit`、`--full`、または `--out <診断.json>` |
 | spec capture / sources / prompt / schema / render | 出力パス | render は `.report.json` も保存。手順は [設計書生成](specifications.md) |
@@ -41,9 +42,9 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 `page.next_offset` が数値なら、同じ対象・条件で `--offset <値>` を指定する。nullなら次のページはない。ページング中に対象が変化した場合は先頭から取得し直す。`--offset` が件数以上なら空ページとなる。ページングは出力のみを制限し、検証は全対象に実行する。表示外の不正な文書も失敗として全体のsummaryと終了コードに反映される。
 
-通常の応答は改行を含め最大16 KiB、各一覧項目は約2 KiB。大きなフィールドは値を切り詰めずフィールドごと省略し、`omitted_fields` にその名前を列挙する。項目の `index` は全体での0始まりの位置。オブジェクト全体を表示できない場合は `omitted: true` と元のJSONバイト数を返す。これは元データの空値やnullではない。ページが最終でも、値が省略されていれば全内容を確認したことにはならない。
+通常の応答は改行を含め最大16 KiB（workflowのread/inspect/handoff/receipt/next/validate-replyは対象外。readは `--max-bytes` で分割）、各一覧項目は約2 KiB。大きなフィールドは値を切り詰めずフィールドごと省略し、`omitted_fields` にその名前を列挙する。項目の `index` は全体での0始まりの位置。オブジェクト全体を表示できない場合は `omitted: true` と元のJSONバイト数を返す。これは元データの空値やnullではない。ページが最終でも、値が省略されていれば全内容を確認したことにはならない。
 
-完全な差分は `documents diff ... --out <新規JSONパス>` で保存でき、保存応答には `report` を返す。JSONファイルは `comparisons[].changes` 形式で、値の省略やページングはしない。`--format markdown` は `--out` との併用だけに対応する。
+完全な差分は `documents diff ... --out <新規JSONパス>` で保存でき、保存応答には `report` を返す。JSONファイルは `comparisons[].changes`（本文パス）と `comparisons[].semantic_changes`（原本位置での値変更）を持ち、値の省略やページングはしない。`--format markdown` は `--out` との併用だけに対応する。
 
 `--full` はサイズ制限とページングを解除する明示的な選択で、`--limit/--offset` とは併用できない。読み取り操作で必要な場合に使い、巨大な結果はファイルへリダイレクトする。record/review/import/adopt/exportの書き込みを、応答の再取得のために繰り返してはならない。保存された証跡・本文・reportを読む。exportの書き込み応答はページを返さず、`--out` と `--limit/--offset` の併用を拒否する。
 
@@ -64,7 +65,7 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 - 書式: `--style-from` を省くと、挿入位置の上の行を使います（Excelと同じ）。書き戻しでは、その行の空のセルを含む全セルの書式を追加行に写し、`dimension` を追加行まで広げます。
 - 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返し、何も書き込みません。同じIDで設定や値が違う場合は `operation_id_conflict` です。`--base` には `check --include-hashes` の `content` を渡します。その後に文書が変わっていれば `base_changed` で拒否します。
 - 応答: 成功時は `state`（`written`、`--dry-run` なら `planned`、再実行なら `unchanged`）、`operation`、`span`（反映後の最初と最後の行・列）、`keys`、`converted`、`neighbors`（行の操作のみ。前後にある本文の行）、`check`（書き込み後の検証状態）、`next_actions` を返します。
-- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`category_row_deleted`（本文の区分の値を持つ行を、区分の他の記録を残して削除する。Excelが区分の値をその行と一緒に消すため）、`structural_edit_unsupported`、`validation_failed`。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`category_row_deleted`（本文の区分の値を持つ行を、区分の他の記録を残して削除する。Excelが区分の値をその行と一緒に消すため）、`structural_edit_unsupported`、`invalid_reason`（空の `--reason`）、`invalid_count`（`--count` が0）、`validation_failed`。
 
 `documents export` は本文YAMLの追加・削除を、管理側 `mappings.yml` の `operations` と組み合わせてExcelへ反映できます。対応する操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns` です。各操作には `id`、`sheet`、`reason`、`at`、`count` を指定し、行の追加時は必要に応じて `style_from` で書式をコピーする元の行を指定します（非表示・折りたたみはコピーしません）。追加した列はExcelと同じく左の列の書式を引き継ぐため、列の操作には `style_from` を指定できません。
 
@@ -121,7 +122,7 @@ export は出力を読み直し、スライドとノートの順序と文字列�
 | needs_review | 採用直後、またはレビュー後に変更された。確認した担当者がreviewする |
 | imported | `import --adopt` で抽出したまま採用し、その後の編集がない。レビュー対象外（一括reviewはskipする）。編集するとneeds_review |
 | reviewed | 現在内容のレビュー記録がある |
-| blocked | blockersにsource_changed / unresolved_mappings / authority_changedがある |
+| blocked | blockersにsource_missing / source_changed / unresolved_mappings / authority_changedがある |
 | invalid | 証跡や文書構造の検証に失敗。errorを確認する |
 
 `check --require-reviewed` は未レビューでも失敗する（importedも未レビューとして扱う）。status/checkの通常実行では、needs_recordなどの作業途中の状態やblocked自体はコマンド失敗ではない。invalidは失敗する。採用した候補は削除する。別の候補が残っている場合、そのbaseと現在データが異なるためauthority_changedになる。現在の正本だけを見るなら文書IDで絞る。
@@ -130,13 +131,13 @@ export は出力を読み直し、スライドとノートの順序と文字列�
 
 workflowの返信が検証で拒否された場合、`error.draft` は未受理の下書きの版を示します。同じsubmit/validate-replyに `{"draft":"<revision>","set":{"/items/1/name":"修正値"}}` を渡すと、保持した返信に差分を結合して全体を再検証します。`remove` で既存フィールドや配列要素を削除できます。全体が通るまで受理せず、修正後も不正なら最新の下書きを保存します。`draft_conflict` は古い版・異なる版、`draft_missing` は下書きなし、`invalid_draft_patch` は差分構造・操作の不正で、これらは下書きを変更しません。詳しくは [返信の検証と提出](../guides/semantic-workflow.md#返信の検証と提出) を参照してください。
 
-エラーは `error.code/message` を持つ。コードは `invalid_arguments`（CLI引数の構文・値）、`operation_failed`（実行・前提条件）、`validation_failed`（check/statusの全体検証）。messageは診断用で、文字列一致で分岐しない。長いメッセージはUTF-8境界で最大1024バイトに制限し、`truncated: true` を返す。
+エラーは `error.code/message` を持つ。コードは `invalid_arguments`（CLI引数の構文・値）、`operation_failed`（実行・前提条件）、`validation_failed`（check/statusの全体検証）、`partial_search`（searchが不正な文書を除外した。`failed` を確認）、`search_response_too_large`（複数クエリの応答が上限を超える）。messageは診断用で、文字列一致で分岐しない。長いメッセージはUTF-8境界で最大1024バイトに制限し、`truncated: true` を返す。
 
 返信の検証失敗（workflowのvalidate-reply/submit/update）は `reply_validation_failed` で、`error.diagnostics` に診断の配列を構造化したまま返す。診断の `path` が返信内の位置、`message` が違反した規則で、返信の値そのものは短いスカラーだけ `value` に添える。応答の上限に収まらない場合は末尾の診断を丸ごと省き、省いた件数を `error.diagnostics_omitted` に返す。診断を途中で切ることはない。submitの拒否は完全な診断をタスクに保存し、`read --pointer previous_error/diagnostics` でページ単位に読める。validate-replyは保存しないため、返された分を修正して再検証する。
 
 - check/statusの一覧は `items` に返す。
-- 通常diffは平坦な `items` を返し、比較の種類は `summary` のキーで示す。種類が複数ある場合だけ各項目に `comparison` を付ける。`--full` と保存ファイルは元の階層を維持する。
-- 通常export計画の各配列は `items[].category/value` にまとめ、件数を `summary` に返す。`--full` と保存reportは元の配列を維持する。書き込み応答（`--out` あり）とapplyの `report` は件数の `summary` と `changed_parts`・`complete` だけを返し、詳細は `.report.json` にある。
+- 通常diffは平坦な `items` を返し、比較の種類は `summary` のキーで示す。種類が複数ある場合だけ各項目に `comparison` を付ける。`--full` と保存ファイルは元の階層を維持し、`semantic_changes` もそちらにだけある。
+- 通常export計画の各配列は `items[].category/value` にまとめ、件数を `summary` に返す。`--full` と保存reportは元の配列を維持する。書き込み応答（`--out` あり）とapplyの `report` は件数の `summary`・`changed_parts`・`complete` などの書き戻し情報を返し、詳細は `.report.json` にある。
 - schemaの全体は `--full` の `schema` にある。通常は `--pointer /properties/<名前>` で必要な制約だけを取得する。
 - `--format json` は既定なので省略できる。
 - import/adopt/applyの `proposal`・`document` はプロジェクトルートからの相対パス。exportの `output`・`report` は指定した `--out` のまま返す。
