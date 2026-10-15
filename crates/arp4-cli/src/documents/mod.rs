@@ -14,10 +14,12 @@ pub use sheet_edit::{Axis, EditKind, Position, SheetEdit};
 mod elements;
 mod export_confirmation;
 mod identity;
+mod image_edit;
 mod shape_edit;
 mod slide_edit;
 mod value_edit;
 mod visual_elements;
+pub use image_edit::ImageRequest;
 pub use shape_edit::ShapeRequest;
 pub use slide_edit::{SlideEdit, SlideEditKind};
 

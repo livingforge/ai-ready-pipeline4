@@ -112,6 +112,7 @@ pub fn capabilities() -> serde_json::Value {
             "excel_column_move_scope": "plain worksheets and ordinary contiguous A1 formulas; positional objects, defined names and mixed structural operations are refused",
             "excel_row_column_commands": ["rows insert", "rows delete", "columns insert", "columns delete", "columns move"],
             "excel_image_writeback": true,
+            "excel_image_commands": ["images add"],
             "word_import": true,
             "word_embedded_image_extraction": true,
             "word_field_code_extraction": true,

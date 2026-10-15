@@ -106,7 +106,7 @@
         }
       },
       "row": {"type": "integer", "minimum": 1},
-      "values": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. Null when the text is not known; unread names why. A row too long for one passage lists the pieces of this passage, without its empty cells."},
+      "values": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. unread names why a cell is unread or uncalculated; an unread cell keeps its extracted text, and is null without one, as an uncalculated formula is. A row too long for one passage lists the pieces of this passage, without its empty cells."},
       "row_context": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field"}, "description": "Row headers of other rows that head this row, such as a merged item name or a section row, outermost first."},
       "unread": {"type": "object", "minProperties": 1, "additionalProperties": {"enum": ["unreadable", "not_examined", "uncalculated"]}, "description": "Cells of the row by address without a known text: a reader could not read it or has not examined it, or a formula was saved without its result."},
       "structure_reviewed": {"type": "boolean"}

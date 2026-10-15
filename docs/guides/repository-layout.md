@@ -75,7 +75,7 @@ workflowの作業先は `.arp/work/workflow/<run-id>/`、既定IDはcurrentで�
 
 ## 契約の版
 
-製品は `1.0.0-alpha.1`、保存形式・入力・モデル・workflow状態・Agent向け契約はv1です。共有設定は `.arp/config.yml` を使用します。semantic finalizeの直接採用は `--registry --project <名称>` を使います。
+製品は `1.0.0-alpha.1`、保存形式・入力・モデル・workflow状態・Agent向け契約はv1です。共有設定は `.arp/config.yml` を使用します。semantic finalizeの直接採用は `--registry --project <名称>` を使い、実行ディレクトリから探索したプロジェクトの `.arp/registry/` に保存します。
 
 ## 対応範囲
 

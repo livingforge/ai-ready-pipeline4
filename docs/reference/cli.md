@@ -75,7 +75,7 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 構造変更のexport reportには、反映した `operations`、値の `changes`、数式の `formula_changes`（原本の位置 `cell` と出力での位置 `final_cell`）、削除された原本セルの `deleted_cells` が保存されます。全シートの数式参照・名前定義・テーブル・条件付き書式・入力規則は移動し、移動した数式のキャッシュは無効化されます。既存のDrawing XMLにある画像・図形のセルアンカーも行・列操作に追従します。
 
-PNG画像は、文書の `assets/` に置いたファイルを `add_image` 操作から追加できます。`asset` は `assets/image001.png`、`anchor.from.cell` と `anchor.to.cell` は配置範囲を指定します。画像追加後のExcelは `export --out` では `.arp/cache/export/` に生成されます。原本更新は `documents apply` を使います。画像の回転・トリミング・絶対座標・図形編集・グラフ参照の変更は未対応です。
+PNG画像は、文書の `assets/` に置いたファイルを `documents images add <文書ID> --sheet <シート> --from <左上のセル> --to <右下のセル> --asset assets/image001.png --reason <理由>` で追加します（候補は `--proposal <文書ID>`、`--id`・`--base`・`--dry-run` は行の操作と同じ）。`mappings.yml` の `operations` に次の `add_image` 操作を記録し、試し書きと `check` と同じ検証に通った場合だけ書き込みます。画像は左上のセルと一緒に移動し、大きさを保ちます。画像追加後のExcelは `export --out` では `.arp/cache/export/` に生成されます。原本更新は `documents apply` を使います。画像の回転・トリミング・絶対座標・図形編集・グラフ参照の変更は未対応です。
 
 ```yaml
 operations:

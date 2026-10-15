@@ -94,8 +94,9 @@ pub fn render(r: &Registry, out: &Path) -> Result<()> {
     }
     let destination = out;
     let parent = out.parent().context("view has no parent")?;
-    fs::create_dir_all(parent)?;
-    let stage = tempfile::tempdir_in(parent)?;
+    // The view is .arp/cache/registry: a failed render leaves no empty cache.
+    let boundary = parent.parent().context("view has no project folder")?;
+    let stage = crate::data::Stage::new_in(parent, boundary)?;
     let ready = stage.path().join("ready");
     let out = ready.as_path();
     let mut files = BTreeMap::new();

@@ -51,6 +51,7 @@ crates/arp4-cli/src/documents/elements.rs
 crates/arp4-cli/src/documents/export.rs
 crates/arp4-cli/src/documents/export_confirmation.rs
 crates/arp4-cli/src/documents/identity.rs
+crates/arp4-cli/src/documents/image_edit.rs
 crates/arp4-cli/src/documents/import.rs
 crates/arp4-cli/src/documents/inspection.rs
 crates/arp4-cli/src/documents/mapping.rs

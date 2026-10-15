@@ -482,6 +482,48 @@ pub(crate) struct ShapeLook {
     pub(crate) line_weight: Option<f64>,
 }
 #[derive(Subcommand)]
+pub(crate) enum ImageCommand {
+    /// Add a PNG picture from the document's assets folder, its corners at the
+    /// top left of two cells. Like a picture Excel inserts, it moves with its
+    /// top left cell and keeps its size.
+    Add {
+        /// Adopted document ID of an Excel workbook.
+        #[arg(required_unless_present = "proposal")]
+        document: Option<String>,
+        /// Edit the proposal of this document ID instead, before record.
+        #[arg(long, conflicts_with = "document")]
+        proposal: Option<String>,
+        /// Worksheet of the original.
+        #[arg(long)]
+        sheet: String,
+        /// Cell at the picture's top left corner, such as B2.
+        #[arg(long)]
+        from: String,
+        /// Cell at the picture's bottom right corner, right of and below --from.
+        #[arg(long)]
+        to: String,
+        /// The picture: assets/<file>.png in the document folder.
+        #[arg(long)]
+        asset: String,
+        /// Name of the picture.
+        #[arg(long)]
+        name: Option<String>,
+        /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted.
+        #[arg(long)]
+        id: Option<String>,
+        /// Why the picture is added; recorded with the operation.
+        #[arg(long)]
+        reason: String,
+        /// The content hash from check --include-hashes; the edit is refused when the
+        /// document changed since.
+        #[arg(long)]
+        base: Option<String>,
+        /// Validate and report the edit without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+#[derive(Subcommand)]
 pub(crate) enum ShapeCommand {
     /// Change the place, size, rotation, fill, line or name of a shape, picture,
     /// connector, group or table frame. Unset properties stay as they are.
@@ -791,6 +833,12 @@ pub(crate) enum DocumentCommand {
     Shapes {
         #[command(subcommand)]
         command: ShapeCommand,
+    },
+    /// Add PNG pictures to an Excel worksheet over a cell range. The operation in
+    /// mappings.yml is written after a trial write and the same validation as check.
+    Images {
+        #[command(subcommand)]
+        command: ImageCommand,
     },
     /// Record who formed a proposal, with which model and prompt. A folder ID or
     /// --all records every proposal below it that needs a record.

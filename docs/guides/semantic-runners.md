@@ -10,7 +10,7 @@
 arp4 spec workflow --root C:/my-project run --provider claude-code --executable C:/tools/claude.exe --model <モデル名> --max-calls 1 --max-budget-usd 2 --timeout 900
 ```
 
-新しい一時ディレクトリでツール・hooks・MCP・セッション保存を無効にして起動します。段階別effortと出力トークン設定を渡し、stream-jsonの成功結果だけを受け取ります。ツール呼び出しや不完全なJSONは拒否し、既定では有料の整形し直しを行いません。通常の予算は1呼び出しごとの設定です。出力上限・予算の停止動作はサービス側の実装に依存します。
+新しい一時ディレクトリでツール・hooks・MCP・セッション保存を無効にして起動します。段階別effortと出力トークン設定を渡し、stream-jsonの成功結果だけを受け取ります。ツール呼び出しや不完全なJSONは拒否し、既定では有料の整形し直しを行いません。通常の予算は1呼び出しごとの設定です。出力上限・予算の停止動作はサービス側の実装に依存します。実行記録の `usage` はClaude Codeの `modelUsage` を合計した `inputTokens`・`outputTokens` などで保存するため、`token_usage_complete` ではトークン未計測に数えます。
 
 ## 共通JSON方式の外部プログラム
 
@@ -45,12 +45,12 @@ task・context・previous_reply・draftにある識別子は、対話CLIと共�
   "protocol": 1,
   "task_id": "入力と同じタスクID",
   "reply": {"packet": "...", "document": "..."},
-  "usage": {"inputTokens": 123, "outputTokens": 45},
+  "usage": {"input_tokens": 123, "output_tokens": 45},
   "reported_cost_usd": 0.01
 }
 ```
 
-`reply` は各タスクで指定された完全な返信JSON、または後述の下書きへの差分JSONです。上記のreplyは外形の例であり、実際にはタスクが要求するitemsやaudits等が必要です。`usage` と `reported_cost_usd` は任意の実測報告で、未取得時は省略します。アダプターは失敗時に非ゼロで終了してください。内部で有料呼び出しを自動再試行しないでください。
+`reply` は各タスクで指定された完全な返信JSON、または後述の下書きへの差分JSONです。上記のreplyは外形の例であり、実際にはタスクが要求するitemsやaudits等が必要です。`usage` と `reported_cost_usd` は任意の実測報告で、未取得時は省略します。`usage` は実行記録にそのまま保存し、`input_tokens`・`output_tokens`（submitの `--usage-file` と同じキー）があるときだけ `token_usage_complete` でトークン計測済みに数えます。アダプターは失敗時に非ゼロで終了してください。内部で有料呼び出しを自動再試行しないでください。
 
 `command` は金額上限を強制できないため、`--max-budget-usd` を指定すると呼び出し前に拒否します。Claude固有のeffort・トークン上限を外部CLIへ暗黙に流用しません。アダプター側で必要な設定を実装してください。ARP4は最大呼び出し回数とタイムアウトを管理します。Windowsのタイムアウトでは子プロセスツリーの停止を試みます。外部サービスへ既に送信済みの要求の取り消しや返金は保証しません。
 

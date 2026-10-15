@@ -1941,7 +1941,7 @@
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 | <code>/properties/unread</code> | <code>{"description":"Cells of the row by address without a known text: a reader could not read it or has not examined it, or a formula was saved without its result.","minProperties":1,"type":"object"}</code> |
 | <code>/properties/unread/additionalProperties</code> | <code>{"enum":["unreadable","not_examined","uncalculated"]}</code> |
-| <code>/properties/values</code> | <code>{"description":"Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. Null when the text is not known; unread names why. A row too long for one passage lists the pieces of this passage, without its empty cells.","type":"array"}</code> |
+| <code>/properties/values</code> | <code>{"description":"Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. unread names why a cell is unread or uncalculated; an unread cell keeps its extracted text, and is null without one, as an uncalculated formula is. A row too long for one passage lists the pieces of this passage, without its empty cells.","type":"array"}</code> |
 | <code>/properties/values/items</code> | <code>{"type":["string","null"]}</code> |
 | <code>/$defs/field</code> | <code>{"additionalProperties":false,"required":["headers","text"],"type":"object"}</code> |
 | <code>/$defs/field/properties/headers</code> | <code>{"$ref":"#/$defs/headers"}</code> |

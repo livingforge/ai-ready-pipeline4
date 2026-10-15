@@ -1757,6 +1757,7 @@ Commands:
   columns          Insert or delete Excel worksheet columns, like rows
   slides           Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
   shapes           Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
+  images           Add PNG pictures to an Excel worksheet over a cell range. The operation in mappings.yml is written after a trial write and the same validation as check
   record           Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
   adopt            Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
   review           Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
@@ -3333,6 +3334,98 @@ Options:
 
       --line-weight <LINE_WEIGHT>
           Line weight in points
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents images`
+
+```text
+Add PNG pictures to an Excel worksheet over a cell range. The operation in mappings.yml is written after a trial write and the same validation as check
+
+Usage: arp4 documents images [OPTIONS] <COMMAND>
+
+Commands:
+  add   Add a PNG picture from the document's assets folder, its corners at the top left of two cells. Like a picture Excel inserts, it moves with its top left cell and keeps its size
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents images add`
+
+```text
+Add a PNG picture from the document's assets folder, its corners at the top left of two cells. Like a picture Excel inserts, it moves with its top left cell and keeps its size
+
+Usage: arp4 documents images add [OPTIONS] --sheet <SHEET> --from <FROM> --to <TO> --asset <ASSET> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in record/review/check/status/export/rows/columns output
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --from <FROM>
+          Cell at the picture's top left corner, such as B2
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --to <TO>
+          Cell at the picture's bottom right corner, right of and below --from
+
+      --asset <ASSET>
+          The picture: assets/<file>.png in the document folder
+
+      --name <NAME>
+          Name of the picture
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the picture is added; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
 
   -h, --help
           Print help

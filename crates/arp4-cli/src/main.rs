@@ -6,7 +6,8 @@ use arp4_cli::{
     data::*,
     document_source::SlidePosition,
     documents::{
-        Axis, Batch, EditKind, Position, ShapeRequest, SheetEdit, SlideEdit, SlideEditKind, Store,
+        Axis, Batch, EditKind, ImageRequest, Position, ShapeRequest, SheetEdit, SlideEdit,
+        SlideEditKind, Store,
     },
 };
 use clap::Parser;
@@ -141,6 +142,7 @@ fn run(cli: Cli) -> Result<bool> {
                     | DocumentCommand::Columns { .. }
                     | DocumentCommand::Slides { .. }
                     | DocumentCommand::Shapes { .. }
+                    | DocumentCommand::Images { .. }
                     | DocumentCommand::SearchRefresh { .. }
             );
             let _lock = if mutate {
@@ -630,6 +632,7 @@ fn run(cli: Cli) -> Result<bool> {
                 DocumentCommand::Shapes { command } => {
                     edit_shapes(&store, command, include_hashes)?
                 }
+                DocumentCommand::Images { command } => add_image(&store, command, include_hashes)?,
                 DocumentCommand::Check {
                     document,
                     proposal,
@@ -1028,6 +1031,36 @@ fn edit_shapes(store: &Store, command: ShapeCommand, include_hashes: bool) -> Re
     edit_report(store, id, proposal, result, include_hashes)
 }
 
+fn add_image(store: &Store, command: ImageCommand, include_hashes: bool) -> Result<Value> {
+    let ImageCommand::Add {
+        document,
+        proposal,
+        sheet,
+        from,
+        to,
+        asset,
+        name,
+        id,
+        reason,
+        base,
+        dry_run,
+    } = command;
+    let request = ImageRequest {
+        sheet,
+        from,
+        to,
+        asset,
+        name,
+        id,
+        reason,
+        base,
+        dry_run,
+    };
+    let (id, proposal) = edited_document(&document, &proposal);
+    let result = store.add_image(id, proposal, &request)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
 /// The document ID an edit names, and whether it names a proposal.
 fn edited_document<'a>(
     document: &'a Option<String>,
@@ -1126,6 +1159,7 @@ fn summarize_export(report: &mut Value, include_hashes: bool) -> Result<Vec<Valu
     for category in [
         "changes",
         "formula_changes",
+        "font_changes",
         "unreflected",
         "excluded",
         "omissions",

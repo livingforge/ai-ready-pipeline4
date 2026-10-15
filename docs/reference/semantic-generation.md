@@ -101,7 +101,7 @@ arp4 spec registry init --input input.json --model finalized/model.json --catalo
 arp4 spec registry render
 ```
 
-review-applyは監査を展開し、モデル・分類カタログのハッシュとcoverage matrixを `.semantic-review.json` に保存します。finalizeはこの一致とモデルの検証を確認したうえで、初回の永続IDと台帳を発行し、関連参照を変換します。`--registry --project example` を指定すると、同じ検証済みbundleから `.arp/registry/` に初回正本も作成します。先に `documents init` を実行します。この場合、別途 `registry init` は不要です。出力モデル・台帳・カタログはセットで保存します。正本への取り込みは全件提案で、承認は行いません。正本を書き込む前にbundleの既存内容と親ディレクトリを検査しますが、システム障害に対する複数出力の原子的保存ではありません。
+review-applyは監査を展開し、モデル・分類カタログのハッシュとcoverage matrixを `.semantic-review.json` に保存します。finalizeはこの一致とモデルの検証を確認したうえで、初回の永続IDと台帳を発行し、関連参照を変換します。`--registry --project example` を指定すると、同じ検証済みbundleから `.arp/registry/` に初回正本も作成します。作成先は実行ディレクトリから探索したプロジェクトで、`spec semantic --root`（読取資料の設定元）は使いません。先に `documents init` を実行します。この場合、別途 `registry init` は不要です。出力モデル・台帳・カタログはセットで保存します。正本への取り込みは全件提案で、承認は行いません。正本を書き込む前にbundleの既存内容と親ディレクトリを検査しますが、システム障害に対する複数出力の原子的保存ではありません。
 
 ## 5. 変更のあった資料だけを再処理する
 

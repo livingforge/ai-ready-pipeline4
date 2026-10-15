@@ -100,6 +100,9 @@
     "excel_element_body_version": "5",
     "excel_embedded_image_extraction": true,
     "excel_external_reimport": "unchanged grid with at most one changed cell; ambiguous structural or multi-cell correspondence is refused",
+    "excel_image_commands": [
+      "images add"
+    ],
     "excel_image_writeback": true,
     "excel_import": true,
     "excel_opaque_part_inventory": true,

@@ -137,7 +137,7 @@ pub fn save(r: &Registry, out: &Path) -> Result<()> {
         );
     }
     let destination = out;
-    let stage = tempfile::tempdir_in(parent)?;
+    let stage = crate::data::Stage::new_in(parent, parent)?;
     let ready = stage.path().join("ready");
     fs::create_dir(&ready)?;
     let out = ready.as_path();
