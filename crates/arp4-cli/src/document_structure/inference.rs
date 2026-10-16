@@ -318,27 +318,35 @@ fn side_annotations(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize
     // marks: plain text in the column just outside its first column, beside a
     // few of its records but not its first row.
     let plain = |c: &Cell<'_>| c.string() && !c.bordered() && c.fill() == 0 && !c.bold();
-    let margin = |c: &Cell<'_>| {
-        plain(c)
-            && bordered_runs
-                .get(&(c.right + 1, c.top))
-                .is_some_and(|&(top, bottom)| {
-                    let local: Vec<_> = cells
-                        .iter()
-                        .filter(|o| {
-                            o.nonempty() && o.right == c.right && o.top >= top && o.top <= bottom
-                        })
-                        .collect();
-                    c.top > top
-                        && local.iter().all(|o| plain(o) && o.top > top)
-                        && local.len() * 2 <= (bottom - top) as usize
-                })
-    };
-    cells
-        .iter()
-        .enumerate()
-        .filter(|(i, c)| !assigned.contains(i) && c.nonempty() && margin(c))
-        .map(|(i, _)| i)
+    // The cells ending in each column, in row order.
+    let mut ending = HashMap::<u32, Vec<&Cell<'_>>>::new();
+    for cell in cells.iter().filter(|c| c.nonempty()) {
+        ending.entry(cell.right).or_default().push(cell);
+    }
+    // Whether the cells of a margin column beside a bordered run are a few
+    // plain ones below its first row, by column and run.
+    let mut sparse = HashMap::<(u32, u32, u32), bool>::new();
+    let mut margins = vec![];
+    for (i, c) in cells.iter().enumerate() {
+        if assigned.contains(&i) || !c.nonempty() || !plain(c) {
+            continue;
+        }
+        let Some(&(top, bottom)) = bordered_runs.get(&(c.right + 1, c.top)) else {
+            continue;
+        };
+        let few = *sparse.entry((c.right, top, bottom)).or_insert_with(|| {
+            let column = &ending[&c.right];
+            let local = &column[column.partition_point(|o| o.top < top)
+                ..column.partition_point(|o| o.top <= bottom)];
+            local.iter().all(|o| plain(o) && o.top > top)
+                && local.len() * 2 <= (bottom - top) as usize
+        });
+        if c.top > top && few {
+            margins.push(i);
+        }
+    }
+    margins
+        .into_iter()
         .chain(
             cells
                 .iter()
@@ -1432,17 +1440,23 @@ fn stub_labels(
     body: &dyn Fn(&Cell<'_>) -> bool,
 ) -> Option<(u32, Vec<(u32, u32)>)> {
     let mut starts: BTreeMap<u32, Vec<&&Cell<'_>>> = BTreeMap::new();
+    let mut columns: BTreeMap<u32, Vec<&Cell<'_>>> = BTreeMap::new();
     for c in group.iter().filter(|c| body(c) && c.nonempty()) {
         starts.entry(c.top).or_default().push(c);
+        columns.entry(c.left).or_default().push(c);
     }
     let records: BTreeSet<u32> = starts.keys().copied().collect();
     let tall = height(group);
+    // The values of the body within the columns, in the group's order.
     let values = |left: u32, right: u32| -> Vec<&Cell<'_>> {
-        group
-            .iter()
+        let mut values: Vec<&Cell<'_>> = columns
+            .range(left..=right)
+            .flat_map(|(_, column)| column)
             .copied()
-            .filter(|c| body(c) && c.nonempty() && c.left >= left && c.right <= right)
-            .collect()
+            .filter(|c| c.right <= right)
+            .collect();
+        values.sort_by_key(|c| (c.top, c.left));
+        values
     };
     let one_each = |values: &[&Cell<'_>]| {
         let tall = height(values);
@@ -1473,7 +1487,11 @@ fn stub_labels(
     let tree = |left: u32, right: u32| {
         let mut lefts = HashSet::new();
         starts.values().all(|line| {
-            let mut names = line.iter().filter(|c| c.left >= left && c.right <= right);
+            let from = line.partition_point(|c| c.left < left);
+            let mut names = line[from..]
+                .iter()
+                .take_while(|c| c.left <= right)
+                .filter(|c| c.right <= right);
             let (Some(c), None) = (names.next(), names.next()) else {
                 return false;
             };
@@ -1490,11 +1508,22 @@ fn stub_labels(
     // Under a header of several rows, each level's heading is merged down
     // through all of them.
     let mut tree_area = None;
+    // The last heading of the run of adjoining headings from each heading,
+    // and of the run of headings merged down through the header.
+    let mut adjoined = vec![0; heads.len()];
+    let mut merged_through = vec![None; heads.len()];
+    for k in (0..heads.len()).rev() {
+        adjoined[k] = match heads.get(k + 1) {
+            Some(next) if heads[k].right.checked_add(1) == Some(next.left) => adjoined[k + 1],
+            _ => k,
+        };
+        merged_through[k] = merged_down(heads[k])
+            .then(|| merged_through.get(k + 1).copied().flatten().unwrap_or(k));
+    }
     'search: for start in 0..heads.len() {
         for end in (start + 1..heads.len()).rev() {
-            let adjoining =
-                (start..end).all(|k| heads[k].right.checked_add(1) == Some(heads[k + 1].left));
-            let level = !layered || heads[start..=end].iter().all(|c| merged_down(c));
+            let adjoining = end <= adjoined[start];
+            let level = !layered || merged_through[start].is_some_and(|last| end <= last);
             let (left, right) = (heads[start].left, heads[end].right);
             if adjoining && level && tree(left, right) {
                 areas.splice(start..=end, [(left, right, false)]);

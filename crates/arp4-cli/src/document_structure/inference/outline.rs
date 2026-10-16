@@ -48,11 +48,13 @@ fn numbering(c: &Cell<'_>) -> Option<Numbering> {
 /// The column of item numbers written in two forms or more, such as `1` and
 /// `1.1`, or `1`, `(1)` and `①`; one form alone numbers records, not levels.
 fn numbered_column(cells: &[&Cell<'_>]) -> Option<u32> {
-    let columns: BTreeSet<u32> = cells.iter().map(|c| c.left).collect();
-    let starting = |x: u32| cells.iter().filter(move |c| c.left == x);
-    columns.into_iter().find(|&x| {
-        let forms: Option<HashSet<Numbering>> = starting(x).map(|c| numbering(c)).collect();
-        starting(x).count() >= 2 && forms.is_some_and(|forms| forms.len() >= 2)
+    let mut columns: BTreeMap<u32, Vec<&Cell<'_>>> = BTreeMap::new();
+    for &c in cells {
+        columns.entry(c.left).or_default().push(c);
+    }
+    columns.into_iter().find_map(|(x, column)| {
+        let forms: Option<HashSet<Numbering>> = column.iter().map(|c| numbering(c)).collect();
+        (column.len() >= 2 && forms.is_some_and(|forms| forms.len() >= 2)).then_some(x)
     })
 }
 
@@ -94,35 +96,38 @@ fn marks(cells: &[&Cell<'_>]) -> HashSet<(u32, u32)> {
     for &c in cells {
         rows.entry(c.top).or_default().push(c);
     }
-    // Names above, each with whether it can be a parent: the last on its row,
-    // or merged down; a field of a record before another field is no parent.
-    let mut open: Vec<(&Cell<'_>, bool)> = vec![];
+    // The levels of names above, rising, each with whether it can be a
+    // parent: the last on its row, or merged down; a field of a record before
+    // another field is no parent.
+    let mut open: Vec<((u32, usize), bool)> = vec![];
     let mut cutting: Vec<&Cell<'_>> = vec![];
     for line in rows.values_mut() {
         line.sort_by_key(|c| c.left);
+        let levels: Vec<(u32, usize)> = line.iter().map(|c| level(c)).collect();
         let mut kept = vec![];
         for (k, &c) in line.iter().enumerate() {
             let cuts = candidate(c)
-                && line.get(k + 1).is_some_and(|next| {
-                    open.iter()
-                        .rev()
-                        .find(|(p, _)| level(p) < level(next))
-                        .is_some_and(|&(p, parent)| parent && level(c) <= level(p))
+                && levels.get(k + 1).is_some_and(|&next| {
+                    let below = open.partition_point(|&(p, _)| p < next);
+                    below > 0 && {
+                        let (p, parent) = open[below - 1];
+                        parent && levels[k] <= p
+                    }
                 });
             if cuts {
                 cutting.push(c);
             } else {
-                kept.push(c);
+                kept.push((c, levels[k]));
             }
         }
         // Three cells or more on a row are a record, whose last is a field.
-        let record = kept.iter().filter(|c| c.bottom == c.top).count() >= 3;
+        let record = kept.iter().filter(|(c, _)| c.bottom == c.top).count() >= 3;
         let last = kept.len();
-        for (k, c) in kept.into_iter().enumerate() {
-            while open.last().is_some_and(|(p, _)| level(p) >= level(c)) {
+        for (k, (c, level)) in kept.into_iter().enumerate() {
+            while open.last().is_some_and(|&(p, _)| p >= level) {
                 open.pop();
             }
-            open.push((c, (k + 1 == last && !record) || c.bottom > c.top));
+            open.push((level, (k + 1 == last && !record) || c.bottom > c.top));
         }
     }
     let mut counts: HashMap<&str, usize> = HashMap::new();
@@ -423,7 +428,12 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
     if names.len() < 3 {
         return None;
     }
-    let rows: BTreeSet<u32> = names.iter().map(|c| c.top).collect();
+    // The indices of the names on each row, in column order.
+    let mut on_row: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (k, c) in names.iter().enumerate() {
+        on_row.entry(c.top).or_default().push(k);
+    }
+    let rows: BTreeSet<u32> = on_row.keys().copied().collect();
     let starting = |x: u32| names.iter().filter(move |c| c.left == x);
     let columns: BTreeSet<u32> = names.iter().map(|c| c.left).collect();
     let numbered = numbered_column(names);
@@ -432,60 +442,73 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
     // same rows beside it, as a folder and its only subfolder over a file;
     // records written two rows high are not, the values of their later rows
     // standing among their cells merged down side by side.
-    let over = |c: &Cell<'_>| {
-        let edge = names
-            .iter()
-            .filter(|m| m.top == c.top && m.bottom == c.bottom && m.left >= c.left)
-            .map(|m| m.right)
-            .max()
-            .unwrap_or(c.right);
-        c.bottom > c.top
-            && names
-                .iter()
-                .any(|o| o.top > c.top && o.top <= c.bottom && o.left > edge)
-    };
+    let over: Vec<bool> = names
+        .iter()
+        .map(|c| {
+            c.bottom > c.top && {
+                let edge = on_row[&c.top]
+                    .iter()
+                    .map(|&k| names[k])
+                    .filter(|m| m.bottom == c.bottom && m.left >= c.left)
+                    .map(|m| m.right)
+                    .max()
+                    .unwrap_or(c.right);
+                on_row
+                    .range(c.top + 1..=c.bottom)
+                    .flat_map(|(_, later)| later)
+                    .any(|&k| names[k].left > edge)
+            }
+        })
+        .collect();
+    let ancestors_merged: Vec<&Cell<'_>> = names
+        .iter()
+        .zip(&over)
+        .filter(|&(_, &over)| over)
+        .map(|(&c, _)| c)
+        .collect();
     let full: BTreeSet<u32> = columns
         .iter()
         .copied()
         .filter(|&x| starting(x).map(|c| c.top).collect::<BTreeSet<_>>() == rows)
         .collect();
-    let line = |y: u32| -> Vec<&&Cell<'_>> {
-        names
-            .iter()
-            .filter(|c| c.top == y && !over(c) && Some(c.left) != numbered)
-            .collect()
-    };
-    let stepping = |line: &[&&Cell<'_>]| {
+    let lines: BTreeMap<u32, Vec<&Cell<'_>>> = on_row
+        .iter()
+        .map(|(&y, ks)| {
+            let line = ks
+                .iter()
+                .filter(|&&k| !over[k] && Some(names[k].left) != numbered)
+                .map(|&k| names[k])
+                .collect();
+            (y, line)
+        })
+        .collect();
+    let stepping = |line: &[&Cell<'_>]| {
         line.windows(2)
             .all(|pair| pair[0].right + 1 == pair[1].left)
     };
-    let merged_over = |line: &[&&Cell<'_>], y: u32| {
+    let merged_over = |line: &[&Cell<'_>], y: u32| {
         line.first().is_some_and(|first| {
-            names
+            ancestors_merged
                 .iter()
-                .any(|m| over(m) && m.top < y && m.bottom >= y && m.right < first.left)
+                .any(|m| m.top < y && m.bottom >= y && m.right < first.left)
         })
     };
     // Names stepping right one column at a time are a path of names, as a
     // folder and its only file: under an ancestor merged down over the row,
     // or on fewer than half of the rows, where names beside each other on
     // most rows are the fields of records.
-    let unmerged = rows
+    let unmerged = lines
         .iter()
-        .filter(|&&y| {
-            let line = line(y);
-            line.len() > 1 && stepping(&line) && !merged_over(&line, y)
-        })
+        .filter(|&(&y, line)| line.len() > 1 && stepping(line) && !merged_over(line, y))
         .count();
-    let records = rows.iter().any(|&y| {
-        let line = line(y);
+    let records = lines.iter().any(|(&y, line)| {
         let named = line.iter().filter(|c| full.contains(&c.left)).count();
         let after = line
             .iter()
             .filter(|c| full.contains(&c.left))
             .map(|c| c.left)
             .min();
-        let path = stepping(&line) && (unmerged * 2 < rows.len() || merged_over(&line, y));
+        let path = stepping(line) && (unmerged * 2 < rows.len() || merged_over(line, y));
         named > 1
             || (named == 0 && line.len() > 1 && !path)
             || line
@@ -512,7 +535,11 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
     let mut depth = 0;
     for &y in &rows {
         if let Some(x) = numbered
-            && let Some(form) = starting(x).find(|c| c.top == y).and_then(|c| numbering(c))
+            && let Some(form) = on_row[&y]
+                .iter()
+                .map(|&k| names[k])
+                .find(|c| c.left == x)
+                .and_then(|c| numbering(c))
         {
             depth = match form {
                 Numbering::Parts(n) if in_parts => n,
@@ -522,11 +549,7 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
         depths.insert(y, depth);
     }
     let level = |c: &Cell<'_>| (depths[&c.top], c.left, width(c));
-    let beside = |p: &Cell<'_>| {
-        names
-            .iter()
-            .any(|o| o.top == p.top && !over(o) && o.left < p.left && Some(o.left) != numbered)
-    };
+    let beside = |p: &Cell<'_>| lines[&p.top].iter().any(|o| o.left < p.left);
     // Deeper only by indent, under a value written beside its name.
     let note = |p: &Cell<'_>, c: &Cell<'_>| {
         beside(p) && (depths[&p.top], p.left) == (depths[&c.top], c.left)
@@ -633,24 +656,29 @@ pub(super) fn outline(
             _ => vec![],
         }
     };
-    // The reading of the names from column `from` on, the cells on its left
-    // set apart: the names, the columns of the names and fields under their
-    // headings, the No and the groups of the rows on the left, the notes and
-    // the tree. It reads the whole width as one tree, or names under one
-    // heading with fields beside them, or a tree with notes.
-    let read = |from: u32, path: Path| {
+    // The readings of the names from column `from` on, one for each way in
+    // `PATHS`, the cells on its left set apart: the names, the columns of the
+    // names and fields under their headings, the No and the groups of the
+    // rows on the left, the notes and the tree. They read the whole width as
+    // one tree, or names under one heading with fields beside them, or a tree
+    // with notes.
+    let read = |from: u32| {
         let body: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.left >= from).collect();
         let named = unmarked(&body);
+        let mut columns: BTreeMap<u32, Vec<&Cell<'_>>> = BTreeMap::new();
+        for &c in &body {
+            columns.entry(c.left).or_default().push(c);
+        }
         // The one column of the cells under each heading, if they share one.
         let sole: Vec<Option<u32>> = heads
             .iter()
             .map(|h| {
-                let mut under = body
-                    .iter()
-                    .filter(|o| o.left >= h.left && o.right <= h.right)
-                    .map(|o| o.left);
+                let mut under = columns
+                    .range(h.left..=h.right)
+                    .filter(|(_, column)| column.iter().any(|o| o.right <= h.right))
+                    .map(|(&x, _)| x);
                 let first = under.next()?;
-                under.all(|x| x == first).then_some(first)
+                under.next().is_none().then_some(first)
             })
             .collect();
         let notes = side_notes(&named, |c| {
@@ -737,7 +765,7 @@ pub(super) fn outline(
             }
             Some((names, (left, right), key, groups, tree))
         };
-        match path {
+        PATHS.map(|path| match path {
             Path::Whole => {
                 let tree = tree(&named, 1)?;
                 Some((named.clone(), None, None, vec![], HashSet::new(), tree))
@@ -748,9 +776,9 @@ pub(super) fn outline(
             }
             Path::Noted => {
                 let tree = noted()?;
-                Some((annotated, None, None, vec![], notes, tree))
+                Some((annotated.clone(), None, None, vec![], notes.clone(), tree))
             }
-        }
+        })
     };
     // Columns on the left that label the rows rather than name anything, as
     // the machine a folder tree is on, are set apart before reading the
@@ -764,12 +792,16 @@ pub(super) fn outline(
         .collect();
     let readings: Vec<Reading<'_, '_>> = starts
         .iter()
-        .flat_map(|&from| PATHS.map(|path| (from, path)))
-        .filter_map(|(from, path)| {
-            if body.iter().any(|c| c.left < from && c.right >= from) {
-                return None;
-            }
-            let (names, span, key, groups, notes, tree) = read(from, path)?;
+        .copied()
+        .filter(|&from| !body.iter().any(|c| c.left < from && c.right >= from))
+        .flat_map(|from| {
+            PATHS
+                .into_iter()
+                .zip(read(from))
+                .map(move |(path, read)| (from, path, read))
+        })
+        .filter_map(|(from, path, read)| {
+            let (names, span, key, groups, notes, tree) = read?;
             let before: Vec<&Cell<'_>> = body.iter().copied().filter(|c| c.right < from).collect();
             let (left_key, mut left_groups, fields) = labels(&before, &names, &tree);
             // Item numbers in two forms or more give the levels of the names

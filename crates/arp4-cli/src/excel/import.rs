@@ -691,17 +691,37 @@ fn bordered_blanks(
         |(column, row): (u32, u32)| side((column, row), 2) || row > 1 && side((column, row - 1), 3);
     let under = |(column, row): (u32, u32)| side((column, row), 3) || side((column, row + 1), 2);
     let written: HashSet<(u32, u32)> = blanks.iter().chain(filled).copied().collect();
+    // The box of each written cell: the rows of its column written one under
+    // another with no line between them, as a record drawn over two rows with
+    // no line across it.
+    let mut boxes: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
+    let mut cells: Vec<(u32, u32)> = written.iter().copied().collect();
+    cells.sort_unstable();
+    let mut start = 0;
+    for k in 1..=cells.len() {
+        let joined = cells.get(k).is_some_and(|&(column, row)| {
+            row > 1 && cells[k - 1] == (column, row - 1) && !over((column, row))
+        });
+        if !joined {
+            let span = (cells[start].1, cells[k - 1].1);
+            boxes.extend(cells[start..k].iter().map(|&p| (p, span)));
+            start = k;
+        }
+    }
     // The rows of the column drawn together with the cell, no line between
-    // them, as a record drawn over two rows with no line across it.
+    // them: its own box, or those of the written cells above and below it.
     let column_box = |(column, row): (u32, u32)| {
-        let mut top = row;
-        while !over((column, top)) && top > 1 && written.contains(&(column, top - 1)) {
-            top -= 1;
+        if let Some(&span) = boxes.get(&(column, row)) {
+            return span;
         }
-        let mut bottom = row;
-        while !under((column, bottom)) && written.contains(&(column, bottom + 1)) {
-            bottom += 1;
-        }
+        let top = (row > 1 && !over((column, row)))
+            .then(|| boxes.get(&(column, row - 1)))
+            .flatten()
+            .map_or(row, |span| span.0);
+        let bottom = (!under((column, row)))
+            .then(|| boxes.get(&(column, row + 1)))
+            .flatten()
+            .map_or(row, |span| span.1);
         (top, bottom)
     };
     // A line above and below the cell's box, one of them maybe left out
