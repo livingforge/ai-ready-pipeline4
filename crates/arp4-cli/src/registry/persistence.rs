@@ -137,7 +137,9 @@ pub fn save(r: &Registry, out: &Path) -> Result<()> {
         );
     }
     let destination = out;
-    let stage = crate::data::Stage::new_in(parent, parent)?;
+    // The registry is .arp/registry: stage it in the untracked .arp/work so a
+    // failed save leaves nothing beside the tracked registry.
+    let stage = crate::data::Stage::new_in(&parent.join("work"), parent)?;
     let ready = stage.path().join("ready");
     fs::create_dir(&ready)?;
     let out = ready.as_path();
@@ -165,7 +167,7 @@ pub fn save(r: &Registry, out: &Path) -> Result<()> {
         {
             let recovery = stage.keep();
             anyhow::bail!(
-                "installation failed: {error}; rollback failed: {restore}; recovery data: {}",
+                "registry update failed: {error}; rollback failed: {restore}; recovery data: {}",
                 recovery.display()
             );
         }

@@ -62,6 +62,7 @@ impl Workflow {
                     .iter()
                     .filter_map(|s| s["task"].as_str()),
             )
+            .chain(self.state.runs.iter().filter_map(|r| r["task"].as_str()))
             .filter(|known| known.starts_with(id))
             .collect();
         ensure!(!ids.is_empty(), "unknown task");

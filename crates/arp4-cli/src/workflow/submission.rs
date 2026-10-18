@@ -3,9 +3,9 @@ use super::*;
 impl Workflow {
     pub(super) fn validate(&self, task: &Task, value: &Value) -> Result<()> {
         obj(value)?;
-        let schema = if task.stage == Stage::Extract && value.get("request_tables").is_none() {
-            crate::semantic_contract::reply_schema()
-        } else if task.stage == Stage::Repair {
+        // Validate against the branch of the schema the task shows, so that a
+        // reply is refused with the diagnostics of the contract it was given.
+        let schema = if matches!(task.stage, Stage::Extract | Stage::Repair) {
             let full = self.reply_schema(task);
             let mut branch =
                 full["oneOf"][usize::from(value.get("request_tables").is_some())].clone();

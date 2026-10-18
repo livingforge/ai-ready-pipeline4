@@ -1886,6 +1886,8 @@ mod tests {
             at: 2,
             count: 1,
             style_from: None,
+            style_rows: 1,
+            merges: false,
         };
         let error = layout
             .restructure(&body, &[&delete], &InsertedText::new())
@@ -1903,6 +1905,8 @@ mod tests {
             at,
             count: 1,
             style_from,
+            style_rows: 1,
+            merges: false,
         };
         let body = document(&format!(
             "{}<w:tbl><w:tr>{}</w:tr><w:tr>{}</w:tr></w:tbl>{}",

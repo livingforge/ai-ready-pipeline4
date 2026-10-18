@@ -79,6 +79,60 @@ impl Workflow {
         self.save()
     }
 
+    /// Declare the cost of a provider run that reported none, such as one that
+    /// failed after the provider charged for it. A total budget refuses to run
+    /// while any prior cost is unknown; a declared cost, with who declared it
+    /// and from what, lets it count that run. A reported or declared cost is
+    /// never overwritten.
+    pub(super) fn record_run_cost(
+        &mut self,
+        task: &str,
+        run: usize,
+        measured: &Value,
+        actor: &str,
+        reason: &str,
+    ) -> Result<()> {
+        validate_usage(measured)?;
+        ensure!(run > 0, "run must be one-based");
+        ensure!(
+            measured["reported_cost_usd"].is_number(),
+            "a run takes a declared reported_cost_usd"
+        );
+        ensure!(
+            measured["usage"].as_object().is_none_or(|o| o.is_empty()),
+            "a provider run keeps the token usage its provider reported"
+        );
+        ensure!(
+            !actor.trim().is_empty() && !reason.trim().is_empty(),
+            "a declared cost requires an actor and a reason"
+        );
+        let id = self.recorded_task_id(task)?;
+        let index = self
+            .state
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r["task"] == id)
+            .nth(run - 1)
+            .map(|(i, _)| i)
+            .context("unknown provider run")?;
+        let cost = &measured["reported_cost_usd"];
+        let entry = &mut self.state.runs[index];
+        if entry["reported_cost_usd"] == *cost
+            && entry["cost_declaration"]["actor"] == actor
+            && entry["cost_declaration"]["reason"] == reason
+        {
+            return Ok(());
+        }
+        ensure!(
+            entry["reported_cost_usd"].is_null(),
+            "cost already recorded for this run"
+        );
+        entry["reported_cost_usd"] = cost.clone();
+        entry["cost_declaration"] = json!({"actor":actor,"reason":reason});
+        self.save()
+    }
+
     pub(super) fn preview_quality(&self, task: &Task, reply: &Value) -> Result<Value> {
         let input = serde_json::from_value(self.store.json(&self.state.input)?)?;
         let (candidate, original) = match task.stage {
@@ -216,7 +270,9 @@ impl Workflow {
 
     pub(super) fn reply_schema(&self, task: &Task) -> Value {
         match task.stage {
-            Stage::Extract => extraction::reply_schema(),
+            Stage::Extract => extraction::reply_schema_for(
+                task.partition.is_none() && task.incremental != Some(true),
+            ),
             Stage::Repair => patch::reply_schema(),
             Stage::Restructure => restructure::schema(),
             Stage::Link => linking::schema(),
@@ -450,13 +506,16 @@ impl Workflow {
                 row
             })
             .collect();
+        let mut numbers = BTreeMap::<String, usize>::new();
         let runs: Vec<_> = self
             .state
             .runs
             .iter()
             .map(|run| {
-                let mut row =
-                    json!({"task_ref":self.short_ref(run["task"].as_str().unwrap_or(""))});
+                let task = run["task"].as_str().unwrap_or("");
+                let number = numbers.entry(task.to_owned()).or_default();
+                *number += 1;
+                let mut row = json!({"task_ref":self.short_ref(task),"run":*number});
                 for key in [
                     "provider",
                     "model",
@@ -464,6 +523,7 @@ impl Workflow {
                     "failure_class",
                     "usage",
                     "reported_cost_usd",
+                    "cost_declaration",
                     "validation_elapsed_seconds",
                 ] {
                     if let Some(value) = run.get(key).filter(|v| !v.is_null()) {

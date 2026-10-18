@@ -190,7 +190,7 @@ pub fn validate_structure_requirements(input: &Input) -> Result<()> {
     for (document, reasons) in &input.structure_requirements {
         if !reasons.is_empty() {
             let structure = input.structures.get(document).with_context(|| format!(
-                "document {document} requires reviewed structure ({}); run spec structure init/check/review and capture with --root and --structure", reasons.join(", ")))?;
+                "document {document} requires reviewed structure ({}); run spec structure init/check/review and capture with --root and --document", reasons.join(", ")))?;
             crate::document_structure::validate_snapshot(document, structure)?;
         }
     }

@@ -86,6 +86,6 @@ task・context・previous_reply・draftにある識別子は、対話CLIと共�
 
 修正のadaptiveは通常medium、複数根拠やcomposed条件・拒否返信の修正ではhighです。low/medium/highで固定できます。restructureはextractのトークン設定とreviewのeffortを使います。
 
-`--total-budget-usd` は同じワークフローの過去の報告費用を含めて残額を計算し、呼び出し予算を残額以下に制限します。不明な過去費用は推測せず停止します。使い切った状態ではモデルを呼ばず、明示的に上限を変更したrunで続行できます。実際の課金停止は外部サービスの機構に依存します。commandでは1回予算・総予算とも指定を拒否します。
+`--total-budget-usd` は同じワークフローで `run` が呼び出したrunnerの過去の報告費用を含めて残額を計算し（対話型Agent・外部からの提出の `reported_cost_usd` は含めません）、呼び出し予算を残額以下に制限します。不明な過去費用は推測せず停止します。失敗した呼び出しなどで費用が記録されなかったrunは、請求記録などで実際の金額を確認し、`record-usage --task <ID> --run <番号> --usage-file cost.json --actor <担当> --reason <確認元>`（`cost.json` は `{"reported_cost_usd": 0.42}`）で申告すると総予算の計算に含まれます。番号はhistoryの `runs[].run` です。申告できるのは費用が未記録のrunだけで、同じ値の再送は変更せず、別の値への上書きは拒否します。申告した担当と理由はhistoryの `cost_declaration` に残ります。ARP4は申告額の正しさを確認しません。使い切った状態ではモデルを呼ばず、明示的に上限を変更したrunで続行できます。実際の課金停止は外部サービスの機構に依存します。commandでは1回予算・総予算とも指定を拒否します。
 
 明示的な `--max-retries N` は一時障害、JSON不正、返信検証違反を同じrun内で最大N回再試行します。すべてmax-callsに含みます。出力上限、予算、タイムアウト、原因不明の失敗は同じ条件で再試行しません。停止原因はfailure_classに保存し、次の呼び出しには拒否返信と診断を渡します。

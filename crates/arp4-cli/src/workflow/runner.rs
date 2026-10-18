@@ -132,7 +132,7 @@ impl Workflow {
                 let runs = &self.state.runs;
                 ensure!(
                     runs.iter().all(|r| r["reported_cost_usd"].is_number()),
-                    "unknown prior cost; inspect runs before using a total budget"
+                    "unknown prior cost; find the run in history and declare its cost with record-usage --run before using a total budget"
                 );
                 let spent: f64 = runs
                     .iter()

@@ -1,12 +1,8 @@
 use super::*;
 
+/// Groups of approved or current requirements and specifications that make
+/// the same claim with different values, compared as spec check compares them.
 pub(super) fn conflicts(r: &Registry, approved_only: bool) -> Vec<Vec<String>> {
-    let normalize = |s: &str| {
-        s.to_lowercase()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-    };
     let mut groups = BTreeMap::<_, Vec<&Entry>>::new();
     for e in r.entries.values().filter(|e| {
         matches!(e.category, Category::Requirement | Category::Specification)
@@ -17,10 +13,10 @@ pub(super) fn conflicts(r: &Registry, approved_only: bool) -> Vec<Vec<String>> {
             }
     }) {
         groups
-            .entry((
-                normalize(&e.subject),
-                normalize(&e.property),
-                normalize(e.condition.text()),
+            .entry(crate::specifications::claim_key(
+                &e.subject,
+                &e.property,
+                &e.condition,
             ))
             .or_default()
             .push(e);

@@ -87,7 +87,39 @@ impl Drop for Lock {
     }
 }
 
-pub fn install(root: &Path, agent: Agent) -> Result<usize> {
+/// What an installation wrote and what it found of earlier installations.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Installed {
+    /// Files written, the bundled files of the selected agents.
+    pub files: usize,
+    /// Files an earlier installation wrote that are no longer bundled, removed
+    /// because they were unchanged.
+    pub removed: Vec<String>,
+    /// Files an earlier installation wrote that are no longer bundled, kept
+    /// because they were edited.
+    pub kept: Vec<String>,
+}
+
+/// Whether `path` names a file in the folders installations write, under an
+/// `arp4` skill or agent. Only such a file is removed when no longer bundled,
+/// whatever the ownership record holds.
+fn installable(path: &str) -> bool {
+    [
+        ".claude/skills/",
+        ".claude/agents/",
+        ".github/skills/",
+        ".github/agents/",
+        ".agents/skills/",
+        ".codex/agents/",
+    ]
+    .iter()
+    .any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with("arp4"))
+    })
+}
+
+pub fn install(root: &Path, agent: Agent) -> Result<Installed> {
     let assets = bundled();
     let selected: Vec<_> = assets
         .into_iter()
@@ -102,9 +134,9 @@ pub fn install(root: &Path, agent: Agent) -> Result<usize> {
     install_assets(root, &selected)
 }
 
-pub fn install_assets(root: &Path, assets: &[Asset<'_>]) -> Result<usize> {
+pub fn install_assets(root: &Path, assets: &[Asset<'_>]) -> Result<Installed> {
     if assets.is_empty() {
-        return Ok(0);
+        return Ok(Installed::default());
     }
     let allowed = bundled();
     let mut names = std::collections::BTreeSet::new();
@@ -152,7 +184,32 @@ pub fn install_assets(root: &Path, assets: &[Asset<'_>]) -> Result<usize> {
             }
         }
         prior.insert(asset.path.to_owned(), skill_hash(asset.body));
-        changes.push((target, existing, asset.body.to_vec()));
+        changes.push((target, existing, Some(asset.body.to_vec())));
+    }
+    // A file an earlier installation wrote that no build bundles any more is
+    // removed when unchanged; an edit makes it the user's, and it is kept.
+    // Either way it leaves the ownership record.
+    let mut removed = Vec::new();
+    let mut kept = Vec::new();
+    let stale: Vec<String> = prior
+        .keys()
+        .filter(|path| !allowed.iter().any(|known| known.path == path.as_str()))
+        .cloned()
+        .collect();
+    for path in stale {
+        let recorded = prior.remove(&path).unwrap();
+        let target = checked(&root, &path)?;
+        if !installable(&path) || !target.is_file() {
+            continue;
+        }
+        let bytes =
+            fs::read(&target).with_context(|| format!("cannot read {}", target.display()))?;
+        if skill_hash(&bytes) == recorded {
+            changes.push((target, Some(bytes), None));
+            removed.push(path);
+        } else {
+            kept.push(path);
+        }
     }
     let mut record = serde_json::to_vec_pretty(&prior)?;
     record.push(b'\n');
@@ -161,9 +218,13 @@ pub fn install_assets(root: &Path, assets: &[Asset<'_>]) -> Result<usize> {
     } else {
         None
     };
-    changes.push((marker, old_record, record));
+    changes.push((marker, old_record, Some(record)));
     for (index, (path, _, body)) in changes.iter().enumerate() {
-        if let Err(error) = replace(path, body) {
+        let applied = match body {
+            Some(body) => replace(path, body),
+            None => fs::remove_file(path).map_err(anyhow::Error::from),
+        };
+        if let Err(error) = applied {
             let mut rollback_errors = Vec::new();
             for (previous, original, _) in changes[..index].iter().rev() {
                 let restored = match original {
@@ -180,5 +241,14 @@ pub fn install_assets(root: &Path, assets: &[Asset<'_>]) -> Result<usize> {
             bail!("installation failed: {error}; rollback errors: {rollback_errors:?}");
         }
     }
-    Ok(assets.len())
+    for (path, _, body) in &changes {
+        if body.is_none() {
+            crate::data::remove_empty_directories(path.parent().unwrap(), &root);
+        }
+    }
+    Ok(Installed {
+        files: assets.len(),
+        removed,
+        kept,
+    })
 }

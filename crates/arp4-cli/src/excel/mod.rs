@@ -268,6 +268,12 @@ pub struct StructuralOperation {
     pub at: u32,
     pub count: u32,
     pub style_from: Option<u32>,
+    /// The number of rows from `style_from` an insert_rows takes its formats
+    /// from in turn: the n-th inserted row the (n mod `style_rows`)-th of them.
+    pub style_rows: u32,
+    /// Whether the merges within the style rows are made again over each
+    /// group of inserted rows, as Excel's Insert Copied Cells does.
+    pub merges: bool,
 }
 
 #[derive(Clone, Debug)]

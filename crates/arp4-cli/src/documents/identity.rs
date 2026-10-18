@@ -907,6 +907,41 @@ fn formula_keys(sheet: &Value, page: &str, to_runtime: bool) -> Result<BTreeMap<
         .collect()
 }
 
+/// The keys a runtime page of `page` has for the place `row` and `column` of
+/// `block` of the layout `sheet`, as [`elements::Bindings`] reads the place
+/// from an element ID; None for a row or column the sheet has no identity
+/// for, as one an operation deletes.
+pub(super) fn runtime_place(
+    sheet: &Value,
+    page: &str,
+    block: &str,
+    row: &str,
+    column: &str,
+) -> Result<Option<(String, String)>> {
+    Ok(match block {
+        "table-1" => match (
+            sheet["rows"][row]["key"].as_str(),
+            sheet["columns"][column]["key"].as_str(),
+        ) {
+            (Some(row), Some(column)) => Some((row.to_owned(), column.to_owned())),
+            _ => None,
+        },
+        "formulas" => formula_keys(sheet, page, true)?
+            .remove(row)
+            .map(|key| (key, column.to_owned())),
+        _ => Some((row.to_owned(), column.to_owned())),
+    })
+}
+
+/// The identity of the row or column of the layout `sheet` whose key is `key`.
+pub(super) fn identity_of(sheet: &Value, axis: &str, key: &str) -> Option<String> {
+    sheet[axis]
+        .as_object()?
+        .iter()
+        .find(|(_, entry)| entry["key"] == key)
+        .map(|(id, _)| id.clone())
+}
+
 /// The version of the writer's private grid pages, values by block, row and
 /// column, which content pages are encoded from and decoded to.
 pub(super) const GRID_VERSION: &str = "4";
@@ -1110,6 +1145,12 @@ pub(super) fn update(layout: &mut Value, operations: &[excel::StructuralOperatio
             }
             if let Some(style_from) = operation.style_from {
                 record["style_from"] = json!(style_from);
+            }
+            if operation.style_rows > 1 {
+                record["style_rows"] = json!(operation.style_rows);
+            }
+            if operation.merges {
+                record["merges"] = json!(true);
             }
             if let Some(existing) = history.iter().find(|o| o["id"] == operation.id) {
                 ensure!(

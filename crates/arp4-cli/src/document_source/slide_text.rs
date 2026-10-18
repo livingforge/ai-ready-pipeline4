@@ -757,6 +757,8 @@ mod tests {
             at,
             count,
             style_from,
+            style_rows: 1,
+            merges: false,
         }
     }
 

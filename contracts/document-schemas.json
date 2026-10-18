@@ -3,7 +3,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": false,
-    "description": "Office・PDFの既存セルや本文文字列とフォントを、原本・本文の版と期待する旧値を照合して一括編集する。Excelは値・既存数式・テーブル列見出し・集計ラベルに対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。Word・PowerPoint・PDFは文字列のみ。fontはフォント名・サイズ・色を要素（セル・段落・図形の文字）ごとに変え、ExcelのセルとshapeでIDを指定した図形の文字、Word・PowerPointの段落・表のセルに対応。構造操作中の文書・読み取り専用のフィールド・native textは対象外。",
+    "description": "Office・PDFの既存の値・数式・本文文字列とフォントを、原本・本文の版と期待する旧値を照合して一括編集する。採用済み文書と候補（--proposal）、未適用の構造操作がある文書に使える。対象はcell（原本の抽出の番地）、shape（Excelの図形の抽出ID）、element（documents elements-readの要素ID。挿入した行・複製したスライドの値、Excelの空のセルも指定できる）のいずれかで指定する。Excelは値・既存数式・テーブル列見出し・集計ラベル・図形の文字と、原本で空のセル（表の空欄、挿入した行の未入力のセル）への値の入力に対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。空のセルのbeforeはnull。Word・PowerPoint・PDFは文字列のみ。fontはフォント名・サイズ・色を要素（セル・段落・図形の文字）ごとに変え、原本のExcelのセルと図形の文字、Word・PowerPointの段落・表のセルに対応。読み取り専用のフィールド・テキスト形式（native text）は対象外。",
     "required": [
       "schema_version",
       "base",
@@ -44,16 +44,23 @@
           "properties": {
             "sheet": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "シート名、Word・PowerPointのページ名（document、slide-N、notes-N、追加したスライドの操作ID）、PDFのページ名（page-N）"
             },
             "cell": {
               "type": "string",
-              "pattern": "^[A-Z]+[1-9][0-9]*$"
+              "pattern": "^[A-Z]+[1-9][0-9]*$",
+              "description": "原本の抽出のセル番地（extraction-readのaddress）。Excelでは値のない原本のセルも指定できる"
             },
             "shape": {
               "type": "string",
               "minLength": 1,
               "description": "Excel図形の抽出ID（<図形部品>#<cNvPr id>）。図形の文字とフォントを編集する"
+            },
+            "element": {
+              "type": "string",
+              "minLength": 1,
+              "description": "documents elements-readのelement_metadataにある要素ID（cell_r4_B、cell_<操作ID>-1_C、shape_…）。同じIDの規則で、Excelの表の空のセルや挿入した行の未入力のセルも指定できる"
             },
             "before": {
               "type": [
@@ -168,6 +175,11 @@
                 {
                   "required": [
                     "shape"
+                  ]
+                },
+                {
+                  "required": [
+                    "element"
                   ]
                 }
               ]
@@ -717,6 +729,16 @@
                   "maximum": 1048576,
                   "minimum": 1,
                   "type": "integer"
+                },
+                "style_rows": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 1048576,
+                  "description": "style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数"
+                },
+                "merges": {
+                  "const": true,
+                  "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
                 }
               },
               "required": [
@@ -2273,6 +2295,16 @@
                       "maximum": 1048576,
                       "minimum": 1,
                       "type": "integer"
+                    },
+                    "style_rows": {
+                      "type": "integer",
+                      "minimum": 2,
+                      "maximum": 1048576,
+                      "description": "style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数"
+                    },
+                    "merges": {
+                      "const": true,
+                      "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
                     }
                   },
                   "required": [
@@ -3835,6 +3867,16 @@
                       "maximum": 1048576,
                       "minimum": 1,
                       "type": "integer"
+                    },
+                    "style_rows": {
+                      "type": "integer",
+                      "minimum": 2,
+                      "maximum": 1048576,
+                      "description": "style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数"
+                    },
+                    "merges": {
+                      "const": true,
+                      "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
                     }
                   },
                   "required": [
@@ -8276,8 +8318,11 @@
         "type": "string"
       },
       "by": {
-        "const": "import",
-        "description": "The content is what import extracted from the original, adopted without forming: no actor, model or prompt."
+        "enum": [
+          "import",
+          "apply"
+        ],
+        "description": "The content is what ARP extracted from the original, adopted without forming: by import as imported, by apply as re-extracted after writing back a confirmed export. No actor, model or prompt."
       },
       "content": {
         "pattern": "^[a-f0-9]{64}$",
@@ -8668,6 +8713,16 @@
                   "maximum": 1048576,
                   "minimum": 1,
                   "type": "integer"
+                },
+                "style_rows": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 1048576,
+                  "description": "style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数"
+                },
+                "merges": {
+                  "const": true,
+                  "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
                 }
               },
               "required": [
@@ -9400,6 +9455,207 @@
         "type": "array",
         "description": "Left out when empty."
       },
+      "value_edits": {
+        "type": "array",
+        "description": "documents valuesで保存した値・フォントの編集要求の記録。保存順に、要求のactor・reasonと、値かフォントを変えたeditを持つ。現在と同じ値・フォントを与えるeditは記録しない。原本へ反映（apply）すると新しい版には引き継がない。Left out when empty.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "actor",
+            "reason",
+            "edits"
+          ],
+          "properties": {
+            "actor": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "reason": {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "edits": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "sheet"
+                ],
+                "properties": {
+                  "sheet": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "シート名、Word・PowerPointのページ名（document、slide-N、notes-N、追加したスライドの操作ID）、PDFのページ名（page-N）"
+                  },
+                  "cell": {
+                    "type": "string",
+                    "pattern": "^[A-Z]+[1-9][0-9]*$",
+                    "description": "原本の抽出のセル番地（extraction-readのaddress）。Excelでは値のない原本のセルも指定できる"
+                  },
+                  "shape": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Excel図形の抽出ID（<図形部品>#<cNvPr id>）。図形の文字とフォントを編集する"
+                  },
+                  "element": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "documents elements-readのelement_metadataにある要素ID（cell_r4_B、cell_<操作ID>-1_C、shape_…）。同じIDの規則で、Excelの表の空のセルや挿入した行の未入力のセルも指定できる"
+                  },
+                  "before": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "after": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "font": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "before",
+                      "after"
+                    ],
+                    "properties": {
+                      "before": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "description": "afterで変える項目の現在値。抽出・layoutのfontと同じ表記（\"mixed\"・nullを含む）",
+                        "properties": {
+                          "latin": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "east_asian": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "size": {
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "const": "mixed"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "after": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "description": "変える項目だけを1つの値で指定する。色を指定するとテーマ色の参照は外れる",
+                        "properties": {
+                          "latin": {
+                            "type": "string",
+                            "minLength": 1,
+                            "not": {
+                              "const": "mixed"
+                            }
+                          },
+                          "east_asian": {
+                            "type": "string",
+                            "minLength": 1,
+                            "not": {
+                              "const": "mixed"
+                            }
+                          },
+                          "size": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 4000
+                          },
+                          "color": {
+                            "type": "string",
+                            "pattern": "^([0-9A-F]{6}|auto)$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "allOf": [
+                  {
+                    "oneOf": [
+                      {
+                        "required": [
+                          "cell"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "shape"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "element"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "before",
+                          "after"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "font"
+                        ]
+                      }
+                    ]
+                  }
+                ],
+                "dependentRequired": {
+                  "before": [
+                    "after"
+                  ],
+                  "after": [
+                    "before"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
       "schema_version": {
         "const": "1"
       }
@@ -9907,6 +10163,16 @@
                   "maximum": 1048576,
                   "minimum": 1,
                   "type": "integer"
+                },
+                "style_rows": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 1048576,
+                  "description": "style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数"
+                },
+                "merges": {
+                  "const": true,
+                  "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
                 }
               },
               "required": [

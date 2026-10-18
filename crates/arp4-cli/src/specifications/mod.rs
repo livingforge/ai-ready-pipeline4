@@ -113,6 +113,21 @@ pub enum ConditionOperator {
     All,
     Any,
 }
+/// The point a claim makes: claims with the same key state the same
+/// subject, property and condition, so their values must agree. Spec checks
+/// and registry approvals compare claims by this one key.
+pub(crate) fn claim_key(
+    subject: &str,
+    property: &str,
+    condition: &Condition,
+) -> (String, String, String) {
+    (
+        validation::normalized(subject),
+        validation::normalized(property),
+        condition.comparison_key(),
+    )
+}
+
 impl Condition {
     pub(crate) fn evidence(&self) -> Option<&[Span]> {
         match self {

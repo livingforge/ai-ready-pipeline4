@@ -247,11 +247,7 @@ pub fn assess(input: &Input, model: &Model) -> Result<Report> {
             continue;
         }
         groups
-            .entry((
-                normalized(&item.subject),
-                normalized(&item.property),
-                item.condition.comparison_key(),
-            ))
+            .entry(claim_key(&item.subject, &item.property, &item.condition))
             .or_default()
             .push(item);
     }
@@ -299,13 +295,7 @@ pub fn assess(input: &Input, model: &Model) -> Result<Report> {
         );
         let group = items
             .get(decision.selected.as_str())
-            .and_then(|item| {
-                groups.get(&(
-                    normalized(&item.subject),
-                    normalized(&item.property),
-                    item.condition.comparison_key(),
-                ))
-            })
+            .and_then(|item| groups.get(&claim_key(&item.subject, &item.property, &item.condition)))
             .filter(|group| {
                 group.len() == candidates.len()
                     && group

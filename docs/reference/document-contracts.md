@@ -205,9 +205,11 @@
 | <code>/properties/history/items/oneOf/0/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/history/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/history/items/oneOf/0/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/history/items/oneOf/0/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
 | <code>/properties/history/items/oneOf/0/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/0/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
 | <code>/properties/history/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
@@ -321,9 +323,11 @@
 | <code>/properties/excel_operations/items/oneOf/0/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/excel_operations/items/oneOf/0/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/excel_operations/items/oneOf/0/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
 | <code>/properties/excel_operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","asset","anchor"],"type":"object"}</code> |
 | <code>/properties/excel_operations/items/oneOf/1/properties/anchor</code> | <code>{"additionalProperties":false,"required":["from","to"],"type":"object"}</code> |
 | <code>/properties/excel_operations/items/oneOf/1/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":["cell"],"type":"object"}</code> |
@@ -598,9 +602,11 @@
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/decisions/properties/excel_operations/items/oneOf/0/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","asset","anchor"],"type":"object"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/1/properties/anchor</code> | <code>{"type":"object"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/1/properties/asset</code> | <code>{"type":"string"}</code> |
@@ -869,9 +875,11 @@
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/0/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/0/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","name","properties"],"type":"object"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/1/properties/kind</code> | <code>{"const":"update_shape"}</code> |
@@ -1649,7 +1657,7 @@
 | --- | --- |
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","content"],"type":"object"}</code> |
 | <code>/properties/actor</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/by</code> | <code>{"const":"import","description":"The content is what import extracted from the original, adopted without forming: no actor, model or prompt."}</code> |
+| <code>/properties/by</code> | <code>{"description":"The content is what ARP extracted from the original, adopted without forming: by import as imported, by apply as re-extracted after writing back a confirmed export. No actor, model or prompt.","enum":["import","apply"]}</code> |
 | <code>/properties/content</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/model</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/prompt_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
@@ -1725,9 +1733,11 @@
 | <code>/properties/operations/items/oneOf/1/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","reason","kind","from"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/2/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/2/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1863,6 +1873,41 @@
 | <code>/properties/operations/items/oneOf/13/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/properties/value_edits</code> | <code>{"description":"documents valuesで保存した値・フォントの編集要求の記録。保存順に、要求のactor・reasonと、値かフォントを変えたeditを持つ。現在と同じ値・フォントを与えるeditは記録しない。原本へ反映（apply）すると新しい版には引き継がない。Left out when empty.","type":"array"}</code> |
+| <code>/properties/value_edits/items</code> | <code>{"additionalProperties":false,"required":["actor","reason","edits"],"type":"object"}</code> |
+| <code>/properties/value_edits/items/properties/actor</code> | <code>{"pattern":"\\S","type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items</code> | <code>{"additionalProperties":false,"dependentRequired":{"after":["before"],"before":["after"]},"required":["sheet"],"type":"object"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/after</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/before</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/cell</code> | <code>{"description":"原本の抽出のセル番地（extraction-readのaddress）。Excelでは値のない原本のセルも指定できる","pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/element</code> | <code>{"description":"documents elements-readのelement_metadataにある要素ID（cell_r4_B、cell_&lt;操作ID&gt;-1_C、shape_…）。同じIDの規則で、Excelの表の空のセルや挿入した行の未入力のセルも指定できる","minLength":1,"type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font</code> | <code>{"additionalProperties":false,"required":["before","after"],"type":"object"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/after</code> | <code>{"additionalProperties":false,"description":"変える項目だけを1つの値で指定する。色を指定するとテーマ色の参照は外れる","minProperties":1,"type":"object"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/after/properties/color</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/after/properties/east_asian</code> | <code>{"minLength":1,"not":{"const":"mixed"},"type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/after/properties/latin</code> | <code>{"minLength":1,"not":{"const":"mixed"},"type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/after/properties/size</code> | <code>{"maximum":4000,"minimum":1,"type":"number"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before</code> | <code>{"additionalProperties":false,"description":"afterで変える項目の現在値。抽出・layoutのfontと同じ表記（\"mixed\"・nullを含む）","minProperties":1,"type":"object"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/color</code> | <code>{}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/east_asian</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/latin</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size</code> | <code>{}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size/anyOf/0</code> | <code>{"type":"number"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/shape</code> | <code>{"description":"Excel図形の抽出ID（&lt;図形部品&gt;#&lt;cNvPr id&gt;）。図形の文字とフォントを編集する","minLength":1,"type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/sheet</code> | <code>{"description":"シート名、Word・PowerPointのページ名（document、slide-N、notes-N、追加したスライドの操作ID）、PDFのページ名（page-N）","minLength":1,"type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/0</code> | <code>{}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/0/oneOf/0</code> | <code>{"required":["cell"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/0/oneOf/1</code> | <code>{"required":["shape"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/0/oneOf/2</code> | <code>{"required":["element"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/1</code> | <code>{}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/1/anyOf/0</code> | <code>{"required":["before","after"]}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/allOf/1/anyOf/1</code> | <code>{"required":["font"]}</code> |
+| <code>/properties/value_edits/items/properties/reason</code> | <code>{"pattern":"\\S","type":"string"}</code> |
 
 ## project-config
 
@@ -1999,14 +2044,15 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Office・PDFの既存セルや本文文字列とフォントを、原本・本文の版と期待する旧値を照合して一括編集する。Excelは値・既存数式・テーブル列見出し・集計ラベルに対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。Word・PowerPoint・PDFは文字列のみ。fontはフォント名・サイズ・色を要素（セル・段落・図形の文字）ごとに変え、ExcelのセルとshapeでIDを指定した図形の文字、Word・PowerPointの段落・表のセルに対応。構造操作中の文書・読み取り専用のフィールド・native textは対象外。","required":["schema_version","base","source_sha256","actor","reason","edits"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Office・PDFの既存の値・数式・本文文字列とフォントを、原本・本文の版と期待する旧値を照合して一括編集する。採用済み文書と候補（--proposal）、未適用の構造操作がある文書に使える。対象はcell（原本の抽出の番地）、shape（Excelの図形の抽出ID）、element（documents elements-readの要素ID。挿入した行・複製したスライドの値、Excelの空のセルも指定できる）のいずれかで指定する。Excelは値・既存数式・テーブル列見出し・集計ラベル・図形の文字と、原本で空のセル（表の空欄、挿入した行の未入力のセル）への値の入力に対応。数式セルのbefore/afterは=付きの数式、文字列セルの=付き文字列は文字列のまま。空のセルのbeforeはnull。Word・PowerPoint・PDFは文字列のみ。fontはフォント名・サイズ・色を要素（セル・段落・図形の文字）ごとに変え、原本のExcelのセルと図形の文字、Word・PowerPointの段落・表のセルに対応。読み取り専用のフィールド・テキスト形式（native text）は対象外。","required":["schema_version","base","source_sha256","actor","reason","edits"],"type":"object"}</code> |
 | <code>/properties/actor</code> | <code>{"pattern":"\\S","type":"string"}</code> |
 | <code>/properties/base</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/edits</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/properties/edits/items</code> | <code>{"additionalProperties":false,"dependentRequired":{"after":["before"],"before":["after"]},"required":["sheet"],"type":"object"}</code> |
 | <code>/properties/edits/items/properties/after</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/edits/items/properties/before</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/edits/items/properties/cell</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/edits/items/properties/cell</code> | <code>{"description":"原本の抽出のセル番地（extraction-readのaddress）。Excelでは値のない原本のセルも指定できる","pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/edits/items/properties/element</code> | <code>{"description":"documents elements-readのelement_metadataにある要素ID（cell_r4_B、cell_&lt;操作ID&gt;-1_C、shape_…）。同じIDの規則で、Excelの表の空のセルや挿入した行の未入力のセルも指定できる","minLength":1,"type":"string"}</code> |
 | <code>/properties/edits/items/properties/font</code> | <code>{"additionalProperties":false,"required":["before","after"],"type":"object"}</code> |
 | <code>/properties/edits/items/properties/font/properties/after</code> | <code>{"additionalProperties":false,"description":"変える項目だけを1つの値で指定する。色を指定するとテーマ色の参照は外れる","minProperties":1,"type":"object"}</code> |
 | <code>/properties/edits/items/properties/font/properties/after/properties/color</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
@@ -2024,10 +2070,11 @@
 | <code>/properties/edits/items/properties/font/properties/before/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
 | <code>/properties/edits/items/properties/font/properties/before/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
 | <code>/properties/edits/items/properties/shape</code> | <code>{"description":"Excel図形の抽出ID（&lt;図形部品&gt;#&lt;cNvPr id&gt;）。図形の文字とフォントを編集する","minLength":1,"type":"string"}</code> |
-| <code>/properties/edits/items/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/edits/items/properties/sheet</code> | <code>{"description":"シート名、Word・PowerPointのページ名（document、slide-N、notes-N、追加したスライドの操作ID）、PDFのページ名（page-N）","minLength":1,"type":"string"}</code> |
 | <code>/properties/edits/items/allOf/0</code> | <code>{}</code> |
 | <code>/properties/edits/items/allOf/0/oneOf/0</code> | <code>{"required":["cell"]}</code> |
 | <code>/properties/edits/items/allOf/0/oneOf/1</code> | <code>{"required":["shape"]}</code> |
+| <code>/properties/edits/items/allOf/0/oneOf/2</code> | <code>{"required":["element"]}</code> |
 | <code>/properties/edits/items/allOf/1</code> | <code>{}</code> |
 | <code>/properties/edits/items/allOf/1/anyOf/0</code> | <code>{"required":["before","after"]}</code> |
 | <code>/properties/edits/items/allOf/1/anyOf/1</code> | <code>{"required":["font"]}</code> |

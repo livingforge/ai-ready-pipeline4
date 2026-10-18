@@ -28,7 +28,7 @@ JSON表示にする場合は `json` に変更します。設定の正式な列�
 
 操作には `next`・`inspect`・`status` が返す `task_ref`（通常8桁）を使えます。`--task` は8桁以上の一意な接頭辞を受け付け、曖昧なら拒否します。保存・監査用の64桁IDと内部ハッシュは維持します。Agent向けのpacket・base・bases・draft revisionは実行ごとの短い参照です。同じ実行のreadが返した値を使い、ハッシュ計算や別実行からの転用はしません。
 
-抽出の `validate-reply` は `valid`（返信の受理可否）に加えて `quality_check.quantity.passed` と `quality_check.quantity.diagnostics` を返します。受理可能でも数量の指摘があれば正式出力はできません。引用範囲・複数数量の指摘は候補を参照して同じタスクの返信を修正し、対応不足はvalidator_supportとして報告します。機械修正タスクにも診断の原文・候補を引き継ぎます。
+抽出の `validate-reply` は、受理できる返信なら `valid: true` に加えて `quality_check.quantity.passed` と `quality_check.quantity.diagnostics` を返します。受理できない返信は `ok: false` の `reply_validation_failed` になり、`valid: false` は返しません。受理可能でも数量の指摘があれば正式出力はできません。引用範囲・複数数量の指摘は候補を参照して同じタスクの返信を修正し、対応不足はvalidator_supportとして報告します。機械修正タスクにも診断の原文・候補を引き継ぎます。
 
 モデルをCLIから起動しない場合も同じ状態管理・検証・結合処理を使います。新しい実行ディレクトリには [AGENT_BRIEF.md](AGENT_BRIEF.md) を保存します。
 
@@ -54,7 +54,7 @@ handoffは予約を行いません。親が同じtaskの重複割当を防ぎま
 
 #### 本文とページ送り
 
-`read --task <ID>` は最大48000 UTF-8 JSON bytesのページで本文を返します。対話型Agentは12000 bytesを開始値とし、表示が省略・退避されれば上限を下げてrevisionなし・offset 0から再開します。担当IDが分かればreadから始め、next/inspectを毎回挟みません。表示加工用の一時ファイルやPython、head/tailによる切り出しは使いません。
+`read --task <ID>` は、設定した表示形式（既定TOON）で最大48000 UTF-8 bytesのページに本文を分けて返します。対話型Agentは12000 bytesを開始値とし、表示が省略・退避されれば上限を下げてrevisionなし・offset 0から再開します。担当IDが分かればreadから始め、next/inspectを毎回挟みません。表示加工用の一時ファイルやPython、head/tailによる切り出しは使いません。
 
 続きは `page.next_command.bash` / `.powershell` のサブコマンドを、同じ実行ファイルの `spec workflow` と `--root`・`--run-id` の後ろに付けて実行します。offset・revision・limit・max-bytes・選択pointerをCLIが埋め込みます。作業ディレクトリも維持してください。`page.complete: true` の最終ページではnext_commandとnext_offsetがnullになります。これは選択部分の配送完了であり、画面での読了や意味判断の完了を保証しません。個別確認のpointer読取だけで全節を読んだことにはなりません。
 
@@ -125,7 +125,7 @@ arp4 spec workflow --run-id experiment status
 `export` は保存された成果物ハッシュを検証して再公開します。`status` や `inspect` は固定出力を変更しません。
 入力・返信などCLI引数の相対パスは起動位置が基準です。
 
-`init` と `advance` はモデルを呼ばず、次の作業までローカル処理だけを進めます。`run` は指定回数までモデルを呼び、返信の検証・修正適用・再構築・必要なレビューの選択を行います。途中で回数上限に達したら同じ `run` で続行できます。`--max-budget-usd` は**１呼び出しごと**のrunnerの停止設定で、実行全体の予算ではありません。`--max-calls` の既定値は1、修正回数の上限は実行全体の `--max-rounds`（既定値は生成CLIリファレンス参照）です。`status.round` はrepair/restructureの適用回数、`status.rounds_remaining` は実行全体の残り回数です。文書別の `repair_rounds` は計測値で、独立した予算ではありません。上限後も必要な修正確認を行い、内容の誤りなどが残れば `needs_decision` として草稿と残件を出します。`advance` の再実行では再開せず、情報を追加した `update` で再開します。品質・推論トークンの総量を保証する設定ではありません。
+`init` と `advance` はモデルを呼ばず、次の作業までローカル処理だけを進めます。`run` は指定回数までモデルを呼び、返信の検証・修正適用・再構築・必要なレビューの選択を行います。途中で回数上限に達したら同じ `run` で続行できます。`--max-budget-usd` は**１呼び出しごと**のrunnerの停止設定で、実行全体の予算ではありません。`--max-calls` の既定値は1、修正回数の上限は `--max-rounds`（既定値は生成CLIリファレンス参照）です。上限は `init` または最後の `update` からのrepair/restructureの適用回数に対して数え、`update` で0に戻ります。`status.round` はその適用回数、`status.rounds_remaining` は残り回数です。文書別の `repair_rounds` は計測値で、独立した予算ではありません。上限後も必要な修正確認を行い、内容の誤りなどが残れば `needs_decision` として草稿と残件を出します。`advance` の再実行では再開せず、情報を追加した `update` で再開します。品質・推論トークンの総量を保証する設定ではありません。
 
 Markdown・テキストの参照資料（ADR、運用手順など）は `init --reference docs/adr/0008.md ...` で渡し、`update --reference` で差し替えます。参照資料は抽出の出典にはならず、レビュー・修正タスクが `read --pointer references` で読み、矛盾や用語の判断根拠として `ref:<パス>` で引用します。レビュータスクの `context.references` にも本文が入ります。
 
@@ -138,10 +138,10 @@ Markdown・テキスト・CSV・TSV自体から要件・仕様を抽出する場
 ```powershell
 arp4 spec workflow --root C:/my-project inspect --task <statusに出たID>
 arp4 spec workflow --root C:/my-project submit --task <ID> --reply reply.json
-arp4 spec workflow --root C:/my-project advance
+arp4 spec workflow --root C:/my-project status
 ```
 
-`inspect` は要求されたタスクの概要を返し、`read` で必要な入力を取得します。`submit` はpacket・対象・監査範囲等を検証し、次の処理へ進みます。既存のレビュー全体の再利用は、モデルや出典を含むpacketの完全一致で判断します。修正確認では変更のない出典の監査だけを明示的に引き継ぐ場合があります。各packetには機械的な `review_risk` と `evidence_clusters` が含まれますが、これは優先順位付けのヒントであり承認ではありません。キャッシュされたレビューでも、最後はCLIで計画上の必須監査と全体レビューの完了を検証します。既定は全出典の監査です。`init --review-plan <JSON>` で元の出典IDごとの対象外理由を指定すると、原文の処理範囲を保ったまま独立監査の対象を減らせます。計画はstatusでも確認できます。形式と部分レビューの保存については [意味抽出](../reference/semantic-generation.md) を参照してください。
+`inspect` は要求されたタスクの概要を返し、`read` で必要な入力を取得します。`submit` はpacket・対象・監査範囲等を検証し、その段階の適用まで進めます（続けて `advance` を実行する必要はありません）。既存のレビュー全体の再利用は、モデルや出典を含むpacketの完全一致で判断します。修正確認では変更のない出典の監査だけを明示的に引き継ぐ場合があります。各packetには機械的な `review_risk` と `evidence_clusters` が含まれますが、これは優先順位付けのヒントであり承認ではありません。キャッシュされたレビューでも、最後はCLIで計画上の必須監査と全体レビューの完了を検証します。既定は全出典の監査です。`init --review-plan <JSON>` で元の出典IDごとの対象外理由を指定すると、原文の処理範囲を保ったまま独立監査の対象を減らせます。計画はstatusでも確認できます。形式と部分レビューの保存については [意味抽出](../reference/semantic-generation.md) を参照してください。
 
 `--root` は `workflow` の直後、サブコマンドの前に指定します。起動した `arp4` 自身が検証・採番・描画も担当します。担当AgentにはタスクIDと作業設定を渡し、readで原文・context・scope・契約を取得します。`submit` に渡すファイルは抽出・修正・レビューの返信JSONそのものです。`status: blocked` は終了コード2を返します。
 
@@ -161,7 +161,7 @@ restructureは `{"defer":{"kind":"information_required","reason":"具体的な�
 
 対話型提出の実測usageは `submit --usage-file usage.json` で記録できます。JSON例は `{"reported_cost_usd":0.25,"usage":{"input_tokens":100,"output_tokens":20}}`。usageにはcached_input_tokens、reasoning_tokensも指定できます。未計測フィールドは省略します。費用はrunnerと対話型・外部提出の判明分を合計し、未計測はnull、部分計測はcost_complete=falseとunmeasured_callsで示します。historyに提出ごとのusageを保持します。CLI外の親Agent・未提出の準備作業は集計に含まれず、実行全体の費用上限を強制する機構ではありません。
 
-提出後に判明した実測値は `record-usage --task <ID> --submission <番号> --usage-file usage.json` で追記できます。タスク内の提出番号はreceiptとhistoryに表示され、拒否された提出も別番号です。完了・retired後も追記可能です。同一値の再送は加算せず、異なる既存値への上書きは拒否します。担当再利用時は累計をそのまま複数提出へ付けず、提出間の差分を記録します。`token_usage_complete` と `unmeasured_token_calls` は入出力トークンの記録状況で、金額の完全性とは独立しています。完了時のprovenance.jsonは公開時点のスナップショットであり、事後計測はhistoryで確認します。形式は[計測・残件の契約](../reference/workflow-reports.md)を参照してください。
+提出後に判明した実測値は `record-usage --task <ID> --submission <番号> --usage-file usage.json` で追記できます。タスク内の提出番号はreceiptとhistoryに表示され、拒否された提出も別番号です。完了・retired後も追記可能です。同一値の再送は加算せず、異なる既存値への上書きは拒否します。担当再利用時は累計をそのまま複数提出へ付けず、提出間の差分を記録します。runnerの呼び出しで費用が記録されなかった場合の申告は [AI実行先との接続](semantic-runners.md) の総予算を参照してください。`token_usage_complete` と `unmeasured_token_calls` は入出力トークンの記録状況で、金額の完全性とは独立しています。完了時のprovenance.jsonは公開時点のスナップショットであり、事後計測はhistoryで確認します。形式は[計測・残件の契約](../reference/workflow-reports.md)を参照してください。
 
 - フィールド修正可能な機械診断と構造化レビュー指摘だけを修正タスクに送ります。
 - 同じ原文を使う対象はまとめ、対象項目と直接の関連項目・原文の範囲だけを渡します。
@@ -187,10 +187,10 @@ restructureは `{"defer":{"kind":"information_required","reason":"具体的な�
 | `repair_no_progress` | 修正返信が抽出を変更しなかった（changesが空など） |
 | `stalled_diagnostics` | 同じ診断が3回の修正後も変わらない |
 | `unrepairable` | 自動修正・再構築の対象がない指摘だけが残った（manual_triageなど） |
-| `round_limit` | 実行全体の修正回数（`--max-rounds`）に達した |
+| `round_limit` | `init` または最後の `update` からの修正回数が `--max-rounds` に達した |
 | `restructure_deferred` | restructureが `defer` で保留を返した |
 
-修正返信が一部の文書だけを変更した場合も、変更なし（`changes: []`）で返された修正タスクの指摘・診断は `--reason` の理由とともに `unresolved` に記録します。記録された指摘は対象項目が変わるまでrepairに再発行せず、`deferred` に `declined: true` で残します。項目が変わると記録は無効になり、通常の振り分けに戻ります。`update --reply` で抽出を訂正すると記録は消えます。これらの内部記録とレビューのmanual_triage等は、status・レビューcontext・draft/open-issues.jsonの `concerns` に集約して表示します。`open` は未解決、`needs_decision` は人判断待ち、`improvement` は任意改善です。同じ残件のIDと理由を引き継ぎ、unresolvedファイルにない指摘も消しません。
+修正返信が一部の文書だけを変更した場合も、変更なし（`changes: []`）で返された修正タスクの指摘・診断は `--reason` の理由とともに `unresolved` に記録します。記録された指摘は対象項目が変わるまでrepairに再発行せず、`deferred` に `declined: true` で残します。項目が変わると記録は無効になり、通常の振り分けに戻ります。`update` を実行すると、`--input`・`--reply`・`--reference` のどれで更新しても、この記録・レビュー指摘・escalation・修正回数は消えます。完了済みのレビューのうち、指摘なし（`improvement` だけの場合を含む）のものはpacketが変わらなければ再利用します。これらの内部記録とレビューのmanual_triage等は、status・レビューcontext・draft/open-issues.jsonの `concerns` に集約して表示します。`open` は未解決、`needs_decision` は人判断待ち、`improvement` は任意改善です。同じ残件のIDと理由を引き継ぎ、unresolvedファイルにない指摘も消しません。
 
 複数文書にまたがる `field_repair` 指摘（表紙・改訂履歴のmodule統一など）は、文書単位のrepairでは宣言されていないmoduleを使えないため、`cross_document_finding` として `restructure` タスクへ回します。
 
@@ -292,7 +292,7 @@ arp4 spec workflow --root C:/my-project compact
 修正のsetは完全置換に加え、スキーマに列挙した既存の末端フィールドの編集に対応します。親と末端の同時編集は拒否します。型の変更・未存在フィールドの追加は完全置換し、完成した値を検証します。
 
 ```json
-{"base":"現在のbaseハッシュ","changes":[{"key":"limit","set":{"/value/unit_basis":{"source":"s70","quote":"件"}}}]}
+{"base":"<readが返したbase>","changes":[{"key":"limit","set":{"/value/unit_basis":{"source":"s70","quote":"件"}}}]}
 ```
 
 ## 初回抽出の分割と共通語彙

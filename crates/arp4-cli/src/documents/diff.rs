@@ -127,9 +127,19 @@ fn semantic_changes(
                 || (source_changed
                     && bm["operations"].as_array().is_some_and(|pending| {
                         pending.iter().any(|old| {
-                            ["id", "kind", "sheet", "at", "count", "to", "style_from"]
-                                .iter()
-                                .all(|key| old[*key] == o[*key])
+                            [
+                                "id",
+                                "kind",
+                                "sheet",
+                                "at",
+                                "count",
+                                "to",
+                                "style_from",
+                                "style_rows",
+                                "merges",
+                            ]
+                            .iter()
+                            .all(|key| old[*key] == o[*key])
                                 && !am["operations"].as_array().is_some_and(|remaining| {
                                     remaining.iter().any(|entry| entry["id"] == old["id"])
                                 })

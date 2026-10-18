@@ -178,7 +178,7 @@ mod visual_performance_tests {
         let empty = json!([]);
         let merges = Merges::new(&empty).unwrap();
         let started = Instant::now();
-        extend(&mut element, "s1-", true, 200, 201, 10, &merges).unwrap();
+        extend(&mut element, "s1-", true, (200, 1), 201, 10, &merges).unwrap();
         black_box(&element);
         eprintln!(
             "extend_100_ms={:.2}",
@@ -225,6 +225,8 @@ mod visual_performance_tests {
                 at: 101 + i,
                 count: 1,
                 style_from: None,
+                style_rows: 1,
+                merges: false,
             })
             .collect();
         let started = Instant::now();
@@ -490,7 +492,21 @@ pub(super) fn carry(
                 template
             };
             let existing = element.cells.len();
-            extend(element, &prefix, rows, template, at, count, &merges)?;
+            // Style rows a group of new rows takes in turn stand together.
+            let height = if rows && style_in {
+                operation.style_rows.max(1)
+            } else {
+                1
+            };
+            extend(
+                element,
+                &prefix,
+                rows,
+                (template, height),
+                at,
+                count,
+                &merges,
+            )?;
             if let Some(skip) = reserved.get(element.value["id"].as_str().unwrap_or("")) {
                 let mut index = 0;
                 let mut kept = Ok(());
@@ -742,6 +758,19 @@ pub(super) fn carry(
     let mut regions = vec![];
     for region in source_regions {
         let id = string(&region["id"])?;
+        let used = referenced_regions.contains(id);
+        // An image of a visual not on a sheet shows that picture, so it holds
+        // for as long as the visual citing it is carried with its reading.
+        if region.get("sheet").is_none() {
+            if used {
+                let mut region = region.clone();
+                region["source_sha256"] = after["source"]["sha256"].clone();
+                regions.push(region);
+            } else {
+                affected.push(json!({"kind":"region","id":id,"reason":"removed"}));
+            }
+            continue;
+        }
         let moved_to = moved_range(
             string(&region["sheet"])?,
             string(&region["range"])?,
@@ -749,7 +778,6 @@ pub(super) fn carry(
             &before_coordinates,
             &after_coordinates,
         )?;
-        let used = referenced_regions.contains(id);
         if let Some(range) = moved_to {
             let mut region = region.clone();
             region["range"] = json!(range);
@@ -1280,7 +1308,7 @@ fn extend(
     element: &mut Element,
     prefix: &str,
     rows: bool,
-    template: u32,
+    (template, height): (u32, u32),
     at: u32,
     count: u32,
     merges: &Merges<'_>,
@@ -1307,6 +1335,7 @@ fn extend(
         .collect::<Result<_>>()?;
     let mut new_cells = vec![];
     for new_line in at..at + count {
+        let template = template + (new_line - at) % height;
         for (position, cells) in &by_position {
             let Some((_, &index)) = cells.range(..=template).next_back() else {
                 continue;
@@ -1324,13 +1353,17 @@ fn extend(
                     address(new_line, across(header_point, rows), rows)?
                 );
                 let header_address = string(&header_cell.value["address"])?;
-                let covered = merges
-                    .hiding(&address(new_line, across(header_point, rows), rows)?)?
-                    .is_some_and(|merge| merge.split(':').next() == Some(header_address));
-                let link = if covered || header_cell.value["role"] == across_kind {
-                    id.to_owned()
-                } else {
-                    own
+                // A header across the lines stays. The new line's own cell
+                // heads it, unless a merge hides that cell: then the merge's
+                // first cell does, the header itself when it is that merge's,
+                // as a merge copied over the new lines is the new header.
+                let hiding =
+                    merges.hiding(&address(new_line, across(header_point, rows), rows)?)?;
+                let link = match hiding.and_then(|merge| merge.split(':').next()) {
+                    _ if header_cell.value["role"] == across_kind => id.to_owned(),
+                    Some(first) if first == header_address => id.to_owned(),
+                    Some(first) => format!("{prefix}{first}"),
+                    None => own,
                 };
                 if !headers.contains(&json!(link)) {
                     headers.push(json!(link));

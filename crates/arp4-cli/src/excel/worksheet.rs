@@ -7,6 +7,31 @@ pub(super) struct RowOutput {
 }
 
 #[cfg(test)]
+mod cell_rendering {
+    use super::*;
+
+    #[test]
+    fn a_cell_holding_only_a_format_takes_a_value_and_keeps_its_format() {
+        let sheet = format!(
+            r#"<worksheet xmlns="{NS}"><sheetData><row r="2"><c r="B2" s="3"/><c r="C2" s="4" /></row></sheetData></worksheet>"#
+        );
+        let doc = Document::parse(&sheet).unwrap();
+        let cells: Vec<_> = doc
+            .descendants()
+            .filter(|n| n.has_tag_name((NS, "c")))
+            .collect();
+        for (cell, address, style) in [(cells[0], "B2", "3"), (cells[1], "C2", "4")] {
+            let rendered =
+                render_cell(&sheet, cell, address, &json!(12), &BTreeMap::new()).unwrap();
+            assert_eq!(
+                rendered,
+                format!(r#"<c r="{address}" s="{style}" t="n"><v>12</v></c>"#)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod efficiency_measurement {
     use super::*;
     use std::{hint::black_box, time::Instant};
@@ -21,6 +46,8 @@ mod efficiency_measurement {
             at: 1,
             count: 4_000,
             style_from: None,
+            style_rows: 1,
+            merges: false,
         };
         let operations = [&operation];
         let start = Instant::now();
@@ -62,6 +89,8 @@ mod efficiency_measurement {
                     at,
                     count,
                     style_from: None,
+                    style_rows: 1,
+                    merges: false,
                 });
                 length = if insertion {
                     length + count
@@ -115,6 +144,8 @@ mod efficiency_measurement {
             at: 1,
             count: 500_000,
             style_from: None,
+            style_rows: 1,
+            merges: false,
         };
         let start = Instant::now();
         for _ in 0..10 {
@@ -158,6 +189,8 @@ mod efficiency_measurement {
                             at: first_at,
                             count: 2,
                             style_from: None,
+                            style_rows: 1,
+                            merges: false,
                         };
                         let second = StructuralOperation {
                             id: "second".into(),
@@ -166,6 +199,8 @@ mod efficiency_measurement {
                             at: second_at,
                             count: 2,
                             style_from: None,
+                            style_rows: 1,
+                            merges: false,
                         };
                         let operations = [&first, &second];
                         let expected = (1..=8).find(|&index| {
@@ -294,9 +329,11 @@ pub(super) fn render_cell(
         .context("invalid cell tag")?;
     let prefix = tag.strip_suffix('c').context("invalid cell tag")?;
     let mut opening = remove_xml_attribute(opening, "t")?;
+    // A cell holding only a format closes itself: `<c r="B2" s="3"/>`.
     opening = opening
-        .trim_end_matches('/')
         .trim_end_matches('>')
+        .trim_end_matches('/')
+        .trim_end()
         .to_owned();
     opening = replace_xml_attribute(&format!("{opening}>"), "r", address)?;
     opening = opening.trim_end_matches('>').to_owned();
@@ -827,6 +864,57 @@ const CONTAINERS: [(&str, &str, usize); 12] = [
     (X14, "sparklines", 1),
     (X14, "sparklineGroups", 0),
 ];
+
+/// The worksheet `text` with the merged `ranges` added: into its mergeCells,
+/// or into new mergeCells where the worksheet's schema places them.
+pub(super) fn add_merges(text: &str, ranges: &[String]) -> Result<String> {
+    /// The worksheet members mergeCells follows, in order.
+    const BEFORE: [&str; 9] = [
+        "sheetData",
+        "sheetCalcPr",
+        "sheetProtection",
+        "protectedRanges",
+        "scenarios",
+        "autoFilter",
+        "sortState",
+        "dataConsolidate",
+        "customSheetViews",
+    ];
+    let doc = xml(text.as_bytes())?;
+    let root = doc.root_element();
+    let prefix = element_tag(&text[root.range()])?
+        .strip_suffix("worksheet")
+        .context("invalid worksheet tag")?;
+    let cells: String = ranges
+        .iter()
+        .map(|range| format!(r#"<{prefix}mergeCell ref="{}"/>"#, xml_attr(range)))
+        .collect();
+    let mut out = text.to_owned();
+    match child(root, "mergeCells") {
+        Some(merges) if !text[merges.range()].ends_with("/>") => {
+            let raw = &text[merges.range()];
+            let close = merges.range().start + raw.rfind("</").context("invalid mergeCells")?;
+            out.insert_str(close, &cells);
+        }
+        Some(merges) => {
+            out.replace_range(
+                merges.range(),
+                &format!(r#"<{prefix}mergeCells count="0">{cells}</{prefix}mergeCells>"#),
+            );
+        }
+        None => {
+            let after = root
+                .children()
+                .rfind(|node| BEFORE.iter().any(|name| node.has_tag_name((NS, *name))))
+                .context("worksheet without sheetData")?;
+            out.insert_str(
+                after.range().end,
+                &format!(r#"<{prefix}mergeCells count="0">{cells}</{prefix}mergeCells>"#),
+            );
+        }
+    }
+    tidy_containers(out)
+}
 
 /// Removes emptied containers (then emptied extensions) and refreshes counts.
 fn tidy_containers(mut text: String) -> Result<String> {

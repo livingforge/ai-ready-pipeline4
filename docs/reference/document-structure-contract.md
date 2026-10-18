@@ -169,14 +169,14 @@
 | <code>/$defs/reading/properties/method</code> | <code>{"enum":["parser","vision","human"]}</code> |
 | <code>/$defs/reading/properties/model</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/reading/properties/reason</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/region</code> | <code>{"additionalProperties":false,"required":["id","sheet","range","image","image_sha256","source_sha256","bbox"],"type":"object"}</code> |
+| <code>/$defs/region</code> | <code>{"additionalProperties":false,"dependentRequired":{"range":["sheet"],"sheet":["range"]},"required":["id","image","image_sha256","source_sha256","bbox"],"type":"object"}</code> |
 | <code>/$defs/region/properties/bbox</code> | <code>{"maxItems":4,"minItems":4,"type":"array"}</code> |
 | <code>/$defs/region/properties/bbox/items</code> | <code>{"maximum":1,"minimum":0,"type":"number"}</code> |
 | <code>/$defs/region/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/region/properties/image</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/region/properties/image_sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/region/properties/range</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/region/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
+| <code>/$defs/region/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name","description":"Sheet whose range the image shows. Omitted, with range, only for an image of a visual that is not on a sheet, such as a Word picture."}</code> |
 | <code>/$defs/region/properties/source_sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/sheet_name</code> | <code>{"description":"Worksheet name exactly as stored in the workbook, including leading or trailing spaces.","minLength":1,"type":"string"}</code> |
 | <code>/$defs/source_path</code> | <code>{"description":"Repository-relative original document path exactly as stored, including leading spaces in path segments.","minLength":1,"type":"string"}</code> |

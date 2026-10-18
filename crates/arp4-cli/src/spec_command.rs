@@ -276,7 +276,11 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
                         serde_json::from_value(read(&ledger_path, None)?)?;
                     let catalog: registry::Catalog = serde_json::from_value(read(&catalog, None)?)?;
                     let report = registry::preflight(&input, &model, &ledger, &catalog, &project)?;
-                    output.emit(report.clone(), report["ready"] == true);
+                    let ready = report["ready"] == true;
+                    output.emit(report, ready);
+                    if !ready {
+                        return Ok(false);
+                    }
                 }
                 RegistryCommand::Apply { change, input } => {
                     let r = registry::apply(

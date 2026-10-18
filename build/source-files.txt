@@ -56,6 +56,8 @@ crates/arp4-cli/src/documents/import.rs
 crates/arp4-cli/src/documents/inspection.rs
 crates/arp4-cli/src/documents/mapping.rs
 crates/arp4-cli/src/documents/mod.rs
+crates/arp4-cli/src/documents/operation_edit.rs
+crates/arp4-cli/src/documents/render.rs
 crates/arp4-cli/src/documents/search/analyzer.rs
 crates/arp4-cli/src/documents/search/corpus.rs
 crates/arp4-cli/src/documents/search/mod.rs
@@ -93,7 +95,9 @@ crates/arp4-cli/src/main.rs
 crates/arp4-cli/src/native_text.rs
 crates/arp4-cli/src/ocr.rs
 crates/arp4-cli/src/office_com.rs
+crates/arp4-cli/src/office_pdf.rs
 crates/arp4-cli/src/office_worker.rs
+crates/arp4-cli/src/pdf_render.rs
 crates/arp4-cli/src/project.rs
 crates/arp4-cli/src/registry/mod.rs
 crates/arp4-cli/src/registry/mutation.rs
@@ -180,7 +184,6 @@ surface/agents/arp4-structure-worker/description.txt
 surface/agents/arp4-worker/body.md
 surface/agents/arp4-worker/description.txt
 surface/agents/common.md
-surface/manifest.yaml
 surface/prompts/semantic-review.md
 surface/prompts/semantic.md
 surface/prompts/specifications.md

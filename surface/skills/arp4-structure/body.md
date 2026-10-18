@@ -1,11 +1,11 @@
 # ARPの構造解釈と画像照合
 
-原本の表・本文・図・画像をまとめて確認し、意味抽出に渡す構造解釈を整える。文書の値や書式を直す依頼、要件・仕様の抽出は別の作業とする。操作の詳細と契約は利用環境の `arp4 spec structure --help`、`arp4 documents structure-read --help`、`arp4 spec structure schema`、`arp4 spec structure read` から取得する。ARPのソースリポジトリで作業する場合は `docs/guides/document-structure.md` も参照できる。
+原本の表・本文・図・画像をまとめて確認し、意味抽出に渡す構造解釈を整える。文書の値や書式を直す依頼、要件・仕様の抽出は別の作業とする。操作の詳細と契約は利用環境の `arp4 spec structure --help`、`arp4 documents structure-read --help`、`arp4 spec structure schema --out <契約JSON>`（編集要求の契約は `--edit` を付ける）、`arp4 spec structure read --extraction <抽出JSON> --structure <整理YAML>` の出力から取得する。ARPのソースリポジトリで作業する場合は `docs/guides/document-structure.md` も参照できる。
 
 ## 進め方
 
 1. 対象文書と作業ルートを確定し、採用済み文書は `documents structure-read <文書ID> --out <整理YAML>`、単独の抽出結果は `spec structure init --extraction <抽出JSON> --out <整理YAML>` で作業ビューを用意する。原本・抽出結果の版と既存の解釈・レビュー状態を確認する。
-2. `spec structure read` で原文セル、表の推定、図形、OCR、検証済み画像パスを読む。各シートで表と本文の境界、見出し・単位・注記、図形群、画像を対象にする。OCRの精度確認対象となる画像は空結果・unavailableを含めてすべて実際に開く。表や図の見た目が必要な箇所は原本または `render`・`region` で得た画像を開く。Excel以外の画像は利用者が用意した原本由来PNGを `region` に登録する。
+2. `spec structure read` で原文セル、表の推定、図形、OCR、検証済み画像パスを読む。各シートで表と本文の境界、見出し・単位・注記、図形群、画像を対象にする。OCRの精度確認対象となる画像は空結果・unavailableを含めてすべて実際に開く。表や図の見た目が必要な箇所は原本または `render`・`region` で得た画像を開く。Excel以外の画像は利用者が用意した原本由来PNGを `region` に登録する（シートを持たないWordの画像などのvisualは `--range` を省く）。
 3. `arp4-structure-worker` に構造解釈の作成・修正を担当させる。`spec structure schema --edit --out <編集契約JSON>` で入力契約を取得し、`read` の `revision` と変更するelement・visualの完全な項目を編集要求に入れ、`spec structure edit --extraction <抽出JSON> --structure <整理YAML> --input <編集要求JSON>` で反映する。分割・統合は削除と追加を一つの要求へまとめる。必要なら `--dry-run` で差分を確認し、版が変わったら再readする。整理YAML・mappings・抽出結果は直接編集しない。変更後に `spec structure check` を実行し、未確認箇所と判断理由を報告させる。作成担当はレビューを記録しない。
 4. 作成に参加していない `arp4-structure-reviewer` に原本・画像と整理結果の照合を担当させる。指摘があれば作成担当へ戻して再確認する。実際に確認した範囲が受理条件を満たす場合だけ `spec structure review --decision accepted` を記録する。
 5. 採用済み文書または候補への反映が依頼範囲に含まれる場合、レビュー済みビューを `documents structure-save` で保存する。本文の要素分割と位置対応も更新される。本文の値を保持し、未適用の行列操作がある場合は先に適用する。後続の意味抽出が必要なら、その後に `spec capture` を実行する。構造変更後は以前のcaptureや進行中workflowへ自動反映されないため、再captureして更新する。

@@ -58,12 +58,15 @@ fn run(cli: Cli) -> Result<bool> {
                         | DocumentCommand::Status { .. }
                         | DocumentCommand::Check { .. }
                         | DocumentCommand::Search { .. }
+                        | DocumentCommand::Operations {
+                            command: OperationCommand::List { .. }
+                        }
                         | DocumentCommand::Diff { out: None, .. }
                         | DocumentCommand::Export { out: None, .. },
                     ..
                 }
             ),
-            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, search, diff without --out, or export without --out"
+            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, search, operations list, diff without --out, or export without --out"
         );
     }
     match cli.command {
@@ -80,8 +83,15 @@ fn run(cli: Cli) -> Result<bool> {
         Command::Skills {
             command: SkillCommand::Install { root, agent },
         } => {
-            let files = arp4_cli::skills::install(&root, agent)?;
-            output.emit(json!({"state":if files == 0 {"skipped"} else {"installed"},"files":files,"root":root}), true);
+            let installed = arp4_cli::skills::install(&root, agent)?;
+            let mut result = json!({"state":if installed.files == 0 {"skipped"} else {"installed"},"files":installed.files,"root":root});
+            if !installed.removed.is_empty() {
+                result["removed"] = json!(installed.removed);
+            }
+            if !installed.kept.is_empty() {
+                result["kept_edited"] = json!(installed.kept);
+            }
+            output.emit(result, true);
         }
         Command::Documents {
             root,
@@ -130,6 +140,7 @@ fn run(cli: Cli) -> Result<bool> {
                 DocumentCommand::Init { .. }
                     | DocumentCommand::Import { .. }
                     | DocumentCommand::Remove { .. }
+                    | DocumentCommand::Discard { .. }
                     | DocumentCommand::Record { .. }
                     | DocumentCommand::Adopt { .. }
                     | DocumentCommand::Review { .. }
@@ -137,6 +148,9 @@ fn run(cli: Cli) -> Result<bool> {
                     | DocumentCommand::Apply { .. }
                     | DocumentCommand::ConfirmExport { .. }
                     | DocumentCommand::Values { .. }
+                    | DocumentCommand::Operations {
+                        command: OperationCommand::Remove { .. }
+                    }
                     | DocumentCommand::StructureSave { .. }
                     | DocumentCommand::Rows { .. }
                     | DocumentCommand::Columns { .. }
@@ -323,12 +337,65 @@ fn run(cli: Cli) -> Result<bool> {
                 )?,
                 DocumentCommand::Values {
                     document,
+                    proposal,
                     input,
                     dry_run,
                 } => {
-                    let request = read(&input, Some("value-edits"))?;
-                    let mut result = store.edit_values(&document, &request, dry_run)?;
-                    omit_hashes(&mut result, &["content"], include_hashes);
+                    let (id, proposal) = edited_document(&document, &proposal);
+                    let request = request_file(&input)?;
+                    let result = store.edit_values(id, proposal, &request, dry_run)?;
+                    edit_report(&store, id, proposal, result, include_hashes)?
+                }
+                DocumentCommand::Operations { command } => match command {
+                    OperationCommand::List { document, proposal } => {
+                        let (id, proposal) = edited_document(&document, &proposal);
+                        let operations = store.operations(id, proposal)?;
+                        let mut result = output.page(operations);
+                        result["document_id"] = json!(id);
+                        if proposal {
+                            result["proposal"] = json!(true);
+                        }
+                        result
+                    }
+                    OperationCommand::Remove {
+                        document,
+                        proposal,
+                        id,
+                        base,
+                        dry_run,
+                    } => {
+                        let (document, proposal) = edited_document(&document, &proposal);
+                        let result = store.remove_operation(
+                            document,
+                            proposal,
+                            &id,
+                            base.as_deref(),
+                            dry_run,
+                        )?;
+                        edit_report(&store, document, proposal, result, include_hashes)?
+                    }
+                },
+                DocumentCommand::Render {
+                    document,
+                    candidate,
+                    out,
+                    sheet,
+                    range,
+                    page,
+                    timeout,
+                } => {
+                    let mut result = store.render_candidate(
+                        &document,
+                        &candidate,
+                        &out,
+                        arp4_cli::documents::RenderPlace {
+                            sheet: sheet.as_deref(),
+                            range: range.as_deref(),
+                            page,
+                        },
+                        timeout,
+                    )?;
+                    omit_hashes(&mut result, &["output_sha256"], include_hashes);
                     result
                 }
                 DocumentCommand::Import {
@@ -525,12 +592,8 @@ fn run(cli: Cli) -> Result<bool> {
                     result["state"] = json!("reviewed");
                     result
                 }
-                DocumentCommand::Export {
-                    document,
-                    out,
-                    engine,
-                } => {
-                    let mut result = store.export(&document, out.as_deref(), &engine)?;
+                DocumentCommand::Export { document, out } => {
+                    let mut result = store.export(&document, out.as_deref())?;
                     if !output.full {
                         let items = summarize_export(&mut result, include_hashes)?;
                         if out.is_none() {
@@ -731,9 +794,13 @@ fn row_edit(command: RowCommand) -> Result<(EditTarget, SheetEdit)> {
             place,
             count,
             style_from,
+            merges,
             values,
         } => {
-            let kind = insert_kind(place, count, style_from, values)?;
+            let mut kind = insert_kind(place, count, style_from, values)?;
+            if let EditKind::Insert { merges: copy, .. } = &mut kind {
+                *copy = merges;
+            }
             (target, kind)
         }
         RowCommand::Delete {
@@ -820,6 +887,7 @@ fn insert_kind(
         position,
         count,
         style_from,
+        merges: false,
         values,
     })
 }
@@ -1164,6 +1232,7 @@ fn summarize_export(report: &mut Value, include_hashes: bool) -> Result<Vec<Valu
         "excluded",
         "omissions",
         "operations",
+        "value_edits",
         "deleted_cells",
     ] {
         let values = report
@@ -1300,7 +1369,7 @@ fn emit_status(
         if state == "invalid" || (require_reviewed && row["reviewed"] != true) {
             ok = false;
         }
-        omit_hashes(row, &["content"], include_hashes);
+        omit_hashes(row, &["content", "source_sha256"], include_hashes);
         if !output.full && row["state"] != "invalid" {
             let pending = row["pending"].as_u64().unwrap_or(0);
             let blocked = row["state"] == "blocked";
@@ -1323,6 +1392,24 @@ fn emit_status(
     }
     output.emit(result, ok);
     Ok(ok)
+}
+
+/// The request a command reads from the file `path`, or from standard input
+/// for `-`: JSON for a .json file, otherwise YAML (of which JSON is a part).
+fn request_file(path: &std::path::Path) -> Result<Value> {
+    let (text, json) = if path.as_os_str() == "-" {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+        (text, false)
+    } else {
+        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        (text, path.extension().is_some_and(|e| e == "json"))
+    };
+    // Windows PowerShell 5.1 writes UTF-8 files with a byte order mark.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    parse(text, json).map_err(|error| {
+        anyhow::Error::new(Rejection(json!({"code":"invalid_request","message":format!("{} is not valid YAML or JSON: {error:#}", path.display())})))
+    })
 }
 
 /// The passwords read with --password-stdin: one per line, without the line
@@ -1370,6 +1457,23 @@ fn main() -> std::process::ExitCode {
             .nth(2)
             .ok_or_else(|| anyhow::anyhow!("Office unprotect request path missing"))
             .and_then(|path| arp4_cli::rights_management::worker(std::path::Path::new(&path)));
+        return match outcome {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
+    #[cfg(windows)]
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--internal-office-pdf")
+    {
+        let outcome = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("Office PDF request path missing"))
+            .and_then(|path| arp4_cli::office_pdf::worker(std::path::Path::new(&path)));
         return match outcome {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {

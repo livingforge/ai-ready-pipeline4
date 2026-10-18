@@ -184,10 +184,11 @@ impl Store {
             Some("formation"),
         )?;
         let key = hash(&encoded(&f));
-        if formed_by_import(&f) {
+        if formed_by_arp(&f) {
             ensure!(
                 !dir.join("prompt.txt").exists(),
-                "prompt.txt beside a formation by import"
+                "prompt.txt beside a formation by {}",
+                f["by"].as_str().unwrap_or_default()
             );
         } else {
             ensure!(
@@ -199,8 +200,9 @@ impl Store {
     }
     /// Why the adopted document of `id` keeps what it holds against a new
     /// import: `reviewed` when it has a review, `edited` when its content is not
-    /// what import made of its original. None when there is no adopted document,
-    /// or it holds what import made, so adopting a new import loses nothing.
+    /// what import or apply extracted from its original. None when there is no
+    /// adopted document, or it holds what was extracted, so adopting a new
+    /// import loses nothing.
     pub(super) fn kept_from_import(&self, id: &str) -> Result<Option<&'static str>> {
         let dir = self.document(id)?;
         if !dir.join("document.yml").is_file() {
@@ -211,7 +213,7 @@ impl Store {
         }
         let (f, _) = self.formation(&dir)?;
         Ok(
-            if formed_by_import(&f) && self.fingerprint(&dir)?.as_deref() == f["content"].as_str() {
+            if formed_by_arp(&f) && self.fingerprint(&dir)?.as_deref() == f["content"].as_str() {
                 None
             } else {
                 Some("edited")
@@ -335,8 +337,15 @@ pub(super) fn formed_by_import(f: &Value) -> bool {
     f["by"] == "import"
 }
 
+/// Whether formation `f` records content ARP extracted, by import or by
+/// apply, rather than formed by an actor with a model and prompt.
+fn formed_by_arp(f: &Value) -> bool {
+    f["by"].is_string()
+}
+
 impl Store {
-    /// Apply reviewed edits to the referenced original, then create a fresh extraction proposal.
+    /// Apply reviewed edits to the referenced original, then create a fresh
+    /// extraction proposal, recorded as formed by apply.
     /// When the original written is the one there, the document is `unchanged`.
     pub fn apply(&self, id: &str) -> Result<Value> {
         let inspected = self.inspect(&self.document(id)?, true)?;
@@ -384,7 +393,15 @@ impl Store {
                 return Err(error);
             }
         };
-        let mut result = json!({"state":"needs_record", "document_id":id, "source":inspected.meta["source"]["path"], "proposal":proposal["proposal"], "report":report});
+        // Nobody formed the new extraction: it is recorded as formed by apply,
+        // ready to adopt, unless its content is changed before.
+        let dir = self.proposal(id)?;
+        let formed = self.inspect(&dir, false)?;
+        write(
+            &dir.join("formation.json"),
+            &json!({"schema_version":"1","content":formed.fingerprint,"by":"apply"}),
+        )?;
+        let mut result = json!({"state":"ready_to_adopt", "document_id":id, "source":inspected.meta["source"]["path"], "proposal":proposal["proposal"], "report":report});
         if let Some(structure) = proposal.get("structure") {
             result["structure"] = structure.clone();
         }

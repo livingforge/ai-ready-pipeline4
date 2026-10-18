@@ -293,7 +293,7 @@ Options:
 ```text
 Register an existing PNG region on an element or visual; does not render Excel
 
-Usage: arp4 spec structure region [OPTIONS] --extraction <EXTRACTION> --structure <STRUCTURE> --element <ELEMENT> --id <ID> --image <IMAGE> --range <RANGE>
+Usage: arp4 spec structure region [OPTIONS] --extraction <EXTRACTION> --structure <STRUCTURE> --element <ELEMENT> --id <ID> --image <IMAGE>
 
 Options:
       --extraction <EXTRACTION>
@@ -326,7 +326,7 @@ Options:
           Repository-relative PNG path; keep evidence outside disposable work/cache directories
 
       --range <RANGE>
-
+          Cell range the image shows. Required for an element or a visual on a sheet; omitted for a visual not on a sheet, such as a Word picture
 
       --bbox <BBOX> <BBOX> <BBOX> <BBOX>
           Normalized x,y,width,height in the supplied full image
@@ -426,7 +426,7 @@ Commands:
   read            Read the complete task, automatically traversing nested data in bounded pages. Start without --pointer. Continue with page.next_command for your shell, keeping the same executable and workflow root/run-id prefix until page.complete
   validate-reply  Check a complete reply or draft correction without saving artifacts or history
   history         Inspect provider calls and external intervention history
-  record-usage    Attach measured deltas to one external submission, including a retired task. Existing measurements may be repeated identically, but never overwritten or added twice
+  record-usage    Attach measured deltas to one external submission, including a retired task, or the cost of a provider run that recorded none. Existing measurements may be repeated identically, but never overwritten or added twice
   advance
   inspect
   submit          Submit a complete reply or a revision-bound draft correction; validate the whole result
@@ -705,9 +705,9 @@ Options:
 ## `arp4 spec workflow record-usage`
 
 ```text
-Attach measured deltas to one external submission, including a retired task. Existing measurements may be repeated identically, but never overwritten or added twice
+Attach measured deltas to one external submission, including a retired task, or the cost of a provider run that recorded none. Existing measurements may be repeated identically, but never overwritten or added twice
 
-Usage: arp4 spec workflow record-usage [OPTIONS] --task <TASK> --submission <SUBMISSION> --usage-file <USAGE_FILE>
+Usage: arp4 spec workflow record-usage [OPTIONS] --task <TASK> --usage-file <USAGE_FILE>
 
 Options:
       --full
@@ -725,8 +725,17 @@ Options:
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
 
+      --run <RUN>
+          One-based provider run number within the task, as shown by history. Only a run without a reported cost takes one; give --actor and --reason
+
       --usage-file <USAGE_FILE>
           Same measured usage JSON as submit --usage-file; no agent lifetime totals
+
+      --actor <ACTOR>
+          Who declares the cost of a provider run
+
+      --reason <REASON>
+          Where the declared cost comes from, such as the provider's billing record
 
   -h, --help
           Print help
@@ -1742,8 +1751,8 @@ Options:
 Usage: arp4 documents [OPTIONS] <COMMAND>
 
 Commands:
-  schema
-  init
+  schema           Print a JSON contract by name, as a list of its properties; --pointer selects one node and --full prints all of it. An unknown name lists the contracts
+  init             Make the project's .arp folder and configuration
   import           Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
   remove           Remove the documents at or below an ID whose originals were moved, renamed or deleted
   discard          Discard one proposal, leaving the original and adopted document untouched
@@ -1755,19 +1764,21 @@ Commands:
   structure-save   Save structure corrections; remove a managed work/structure view on success
   rows             Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
   columns          Insert or delete Excel worksheet columns, like rows
-  slides           Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+  slides           Copy, add, delete, move, hide or show PowerPoint slides. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
   shapes           Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
   images           Add PNG pictures to an Excel worksheet over a cell range. The operation in mappings.yml is written after a trial write and the same validation as check
   record           Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
   adopt            Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
   review           Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
-  diff
-  apply            Apply the exact export candidate whose layout was confirmed, then re-extract
+  diff             Show what changed: a proposal against its adopted document, or with --document an adopted document against the version Git's HEAD holds
+  apply            Write the exact export candidate whose layout was confirmed to the original, then re-extract it as a proposal formed by apply, ready to adopt
   confirm-export   Record a human layout review of an exported candidate and its exact hash
-  values           Edit existing Office/PDF text or Excel values, formulas and table labels using the value-edits contract, before structural operations
-  export
-  check
-  status
+  values           Edit values, formulas, table labels, shape texts and fonts of Office and PDF content, and give values to empty Excel cells, as the value-edits contract describes (documents schema value-edits). Targets are cells of the extraction or element IDs of elements-read, so the values of rows and slides operations insert are edited too. Every edit is checked, and written by the original's writer to a scratch file, before any is saved; the request is recorded with the content
+  export           Without --out, plan the export of a reviewed document: what it writes to its original and what it leaves out. With --out, write the original with the edits to a new file and its report beside it
+  render           Render a page of an exported candidate to a PNG image, to look at it before confirm-export: an Excel sheet or range, a Word or PDF page, or a PowerPoint slide. Needs Windows and desktop Office (Excel; Word or PowerPoint for their documents); PDF pages are rendered by Windows
+  operations       List or take back pending row, column, slide, shape and image operations
+  check            Check documents and proposals as edits leave them: their state, and the blockers or error keeping each from the next step. --include-hashes adds the content hash and the original's SHA-256 that value edits are based on
+  status           The state of documents and proposals, like check
   help             Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1778,7 +1789,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1793,11 +1804,13 @@ Options:
 ## `arp4 documents schema`
 
 ```text
+Print a JSON contract by name, as a list of its properties; --pointer selects one node and --full prints all of it. An unknown name lists the contracts
+
 Usage: arp4 documents schema [OPTIONS] <KIND>
 
 Arguments:
   <KIND>
-
+          The contract, e.g. value-edits, document-elements or mappings
 
 Options:
       --full
@@ -1810,7 +1823,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1825,6 +1838,8 @@ Options:
 ## `arp4 documents init`
 
 ```text
+Make the project's .arp folder and configuration
+
 Usage: arp4 documents init [OPTIONS]
 
 Options:
@@ -1835,10 +1850,12 @@ Options:
 
 
       --sources <SOURCES>
+          Folder holding the originals, relative to the project root
+
           [default: docs]
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1872,7 +1889,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1909,7 +1926,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1940,7 +1957,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -1974,7 +1991,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2013,7 +2030,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2047,7 +2064,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2084,7 +2101,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2121,7 +2138,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2158,7 +2175,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2193,7 +2210,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2227,7 +2244,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2260,7 +2277,10 @@ Options:
           Number of rows; defaults to the number of --values items, or 1
 
       --style-from <STYLE_FROM>
-          Original row whose formatting the new rows take; defaults to the row above them, as in Excel
+          Original row whose formatting the new rows take; defaults to the row above them, as in Excel. Excel rows `9:10` are taken in turn by each group of new rows, as a form laid out over two rows
+
+      --merges
+          Excel only: make the merges within the style rows (--style-from, by default the row above) again over each group of new rows, as Excel's Insert Copied Cells does
 
       --values <VALUES>
           YAML or JSON file, or - for stdin: a list with one object per new row, keyed by column letter, e.g. [{B: "8", C: 2025/11/21}]. Values take the type of the column (the --style-from row, or the nearest value above)
@@ -2291,7 +2311,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2347,7 +2367,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2381,7 +2401,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2442,7 +2462,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2503,7 +2523,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2541,7 +2561,7 @@ Options:
 ## `arp4 documents slides`
 
 ```text
-Insert a copy of a PowerPoint slide or delete a slide. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+Copy, add, delete, move, hide or show PowerPoint slides. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
 
 Usage: arp4 documents slides [OPTIONS] <COMMAND>
 
@@ -2562,7 +2582,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2599,7 +2619,7 @@ Options:
           Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2654,7 +2674,7 @@ Options:
           Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2709,7 +2729,7 @@ Options:
           Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2758,7 +2778,7 @@ Options:
           Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2813,7 +2833,7 @@ Options:
           Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2862,7 +2882,7 @@ Options:
           Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. An inserted slide is named by it. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2910,7 +2930,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -2944,7 +2964,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3023,7 +3043,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3105,7 +3125,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3157,7 +3177,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3230,7 +3250,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3285,7 +3305,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3358,7 +3378,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3392,7 +3412,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3456,7 +3476,7 @@ Options:
           List the documents this would take and those it skips, without writing
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3508,7 +3528,7 @@ Options:
           List the documents this would take and those it skips, without writing
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3551,7 +3571,7 @@ Options:
           List the documents this would take and those it skips, without writing
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3575,15 +3595,17 @@ Options:
 ## `arp4 documents diff`
 
 ```text
+Show what changed: a proposal against its adopted document, or with --document an adopted document against the version Git's HEAD holds
+
 Usage: arp4 documents diff [OPTIONS] [PROPOSAL]
 
 Arguments:
   [PROPOSAL]
-
+          Document ID whose proposal is compared
 
 Options:
       --document <DOCUMENT>
-
+          Compare this adopted document with Git's HEAD instead
 
       --full
           Return all details (not supported by spec workflow; use read pagination there)
@@ -3592,11 +3614,13 @@ Options:
 
 
       --format <FORMAT>
+          Format of the --out file; standard output is JSON
+
           [default: json]
           [possible values: json, markdown]
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3605,7 +3629,7 @@ Options:
           Zero-based item offset (default: 0); use page.next_offset for the next page
 
       --out <OUT>
-
+          Save the complete differences to this new file
 
   -h, --help
           Print help
@@ -3614,7 +3638,7 @@ Options:
 ## `arp4 documents apply`
 
 ```text
-Apply the exact export candidate whose layout was confirmed, then re-extract
+Write the exact export candidate whose layout was confirmed to the original, then re-extract it as a proposal formed by apply, ready to adopt
 
 Usage: arp4 documents apply [OPTIONS] <DOCUMENT>
 
@@ -3630,7 +3654,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3655,7 +3679,7 @@ Arguments:
 
 Options:
       --candidate <CANDIDATE>
-
+          The exported file that was opened and checked
 
       --full
           Return all details (not supported by spec workflow; use read pagination there)
@@ -3664,22 +3688,22 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
       --output-sha256 <OUTPUT_SHA256>
-
+          output_sha256 of the candidate's export report
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
 
       --reviewer <REVIEWER>
-
+          Who looked at the candidate
 
       --reason <REASON>
-
+          What was looked at, and what was found
 
       --layout-reviewed
           Open the candidate and check changed cells and surrounding layout first
@@ -3691,32 +3715,35 @@ Options:
 ## `arp4 documents values`
 
 ```text
-Edit existing Office/PDF text or Excel values, formulas and table labels using the value-edits contract, before structural operations
+Edit values, formulas, table labels, shape texts and fonts of Office and PDF content, and give values to empty Excel cells, as the value-edits contract describes (documents schema value-edits). Targets are cells of the extraction or element IDs of elements-read, so the values of rows and slides operations insert are edited too. Every edit is checked, and written by the original's writer to a scratch file, before any is saved; the request is recorded with the content
 
-Usage: arp4 documents values [OPTIONS] --input <INPUT> <DOCUMENT>
+Usage: arp4 documents values [OPTIONS] --input <INPUT> [DOCUMENT]
 
 Arguments:
-  <DOCUMENT>
-
+  [DOCUMENT]
+          Adopted document ID
 
 Options:
       --full
           Return all details (not supported by spec workflow; use read pagination there)
 
-      --input <INPUT>
-
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
 
       --root <ROOT>
 
 
-      --dry-run
-
-
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --input <INPUT>
+          The value-edits request, a JSON or YAML file, or - for stdin. Its base and source_sha256 come from check --include-hashes
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
+
+      --dry-run
+          Validate and report the edits without writing
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
@@ -3728,6 +3755,8 @@ Options:
 ## `arp4 documents export`
 
 ```text
+Without --out, plan the export of a reviewed document: what it writes to its original and what it leaves out. With --out, write the original with the edits to a new file and its report beside it
+
 Usage: arp4 documents export [OPTIONS] <DOCUMENT>
 
 Arguments:
@@ -3739,16 +3768,13 @@ Options:
           Return all details (not supported by spec workflow; use read pagination there)
 
       --out <OUT>
-
+          New file inside .arp/cache/export, with the original's extension
 
       --root <ROOT>
 
 
-      --engine <ENGINE>
-          [default: auto]
-
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
@@ -3760,9 +3786,173 @@ Options:
           Print help
 ```
 
+## `arp4 documents render`
+
+```text
+Render a page of an exported candidate to a PNG image, to look at it before confirm-export: an Excel sheet or range, a Word or PDF page, or a PowerPoint slide. Needs Windows and desktop Office (Excel; Word or PowerPoint for their documents); PDF pages are rendered by Windows
+
+Usage: arp4 documents render [OPTIONS] --candidate <CANDIDATE> --out <OUT> <DOCUMENT>
+
+Arguments:
+  <DOCUMENT>
+
+
+Options:
+      --candidate <CANDIDATE>
+          The exported file, beside its .report.json
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --out <OUT>
+          New PNG file to write
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --sheet <SHEET>
+          Excel worksheet to render
+
+      --range <RANGE>
+          Excel A1 range; the sheet's used range when omitted
+
+      --page <PAGE>
+          Page of a Word or PDF document, or slide of a presentation in the candidate's order, from 1
+
+          [default: 1]
+
+      --timeout <TIMEOUT>
+          Seconds to wait for Office
+
+          [default: 120]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents operations`
+
+```text
+List or take back pending row, column, slide, shape and image operations
+
+Usage: arp4 documents operations [OPTIONS] <COMMAND>
+
+Commands:
+  list    List the pending row, column, slide, shape and image operations of an adopted document or proposal, in the order apply writes them
+  remove  Take back a pending operation with what it did to the content: the values of rows, columns and slides it inserted leave the content, and those it deleted come back as the original holds them. Refused while another operation depends on it (a later row, column or image operation of the same sheet, or one naming what it added); take those back first
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents operations list`
+
+```text
+List the pending row, column, slide, shape and image operations of an adopted document or proposal, in the order apply writes them
+
+Usage: arp4 documents operations list [OPTIONS] [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          List the operations of the proposal of this document ID instead
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents operations remove`
+
+```text
+Take back a pending operation with what it did to the content: the values of rows, columns and slides it inserted leave the content, and those it deleted come back as the original holds them. Refused while another operation depends on it (a later row, column or image operation of the same sheet, or one naming what it added); take those back first
+
+Usage: arp4 documents operations remove [OPTIONS] --id <ID> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --id <ID>
+          ID of the operation, as operations list gives it
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --base <BASE>
+          The content hash from check --include-hashes; the removal is refused when the document changed since
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --dry-run
+          Validate and report the removal without writing
+
+  -h, --help
+          Print help
+```
+
 ## `arp4 documents check`
 
 ```text
+Check documents and proposals as edits leave them: their state, and the blockers or error keeping each from the next step. --include-hashes adds the content hash and the original's SHA-256 that value edits are based on
+
 Usage: arp4 documents check [OPTIONS] [DOCUMENT]
 
 Arguments:
@@ -3780,13 +3970,13 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
       --require-reviewed
-
+          Fail unless the documents are reviewed
 
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
@@ -3798,6 +3988,8 @@ Options:
 ## `arp4 documents status`
 
 ```text
+The state of documents and proposals, like check
+
 Usage: arp4 documents status [OPTIONS] [DOCUMENT]
 
 Arguments:
@@ -3815,7 +4007,7 @@ Options:
 
 
       --include-hashes
-          Include verification hashes in record/review/check/status/export/rows/columns output
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
 
       --limit <LIMIT>
           Maximum items per page (default: 20)

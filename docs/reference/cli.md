@@ -27,14 +27,17 @@
 | export（outなし） | 全体件数・計画のページ・complete | 次ページ、必要な場合は `--full` |
 | export（outあり） | 全体件数・`state: written`・Excelとreportのパス | 保存された完全なreport |
 | confirm-export | 確認した出力パス・ハッシュと確認記録 | apply前に必須 |
-| apply | `confirm-export` で確認した候補の原本反映結果と再抽出候補（needs_record）。未確認なら拒否。出力が原本と同じなら原本を書き換えず候補も作らない `state: unchanged` | 候補を確認してrecord・adopt |
+| apply | `confirm-export` で確認した候補の原本反映結果と再抽出候補（applyによる成形として記録され `ready_to_adopt`）。未確認なら拒否。出力が原本と同じなら原本を書き換えず候補も作らない `state: unchanged` | 候補をdiffで確認してadopt |
+| values | `state`（`written`・`planned`・`unchanged`）、edit数、空のセルへの入力数 `new_cells`、書き戻し処理の試し書きの `verification`、`check`、`next_actions` | 拒否は `error.code` と `error.edit`・`error.target` |
+| operations list / remove | 未適用の操作のページ / 取り消した `operation` と本文の変化（`removed_values`・`restored_values`・`reapplied_edits`・`removed_pages`・`restored_pages`）、`check` | 依存する操作は `error.dependents` |
+| render | 描画した画像のパス・幅・高さ、Excelはシート・範囲、他はページと全ページ数 `pages`、候補の `output_sha256`（`--include-hashes`） | 画像を開いて確認し、confirm-exportを記録する |
 | schema | プロパティ名・型・必須かどうか | `--pointer <JSON Pointer>`、必要な場合は `--full` |
 | spec check | ready/blocked・種類別 summary・coverage・問題のページ | `--offset` / `--limit`、`--full`、または `--out <診断.json>` |
 | spec capture / sources / prompt / schema / render | 出力パス | render は `.report.json` も保存。手順は [設計書生成](specifications.md) |
 | spec semantic packet / assemble / review-packet / review-apply / finalize / changes | タスク、モデル、分類、監査、採番、変更範囲 | [意味判断に絞った生成](semantic-generation.md)。assembleの成功とreadyは別。finalizeは初回専用 |
-| spec registry preflight | 正本初回登録の読み取り専用ゲート検査 | `init` 前の拒否理由確認 |
+| spec registry preflight | 正本初回登録の読み取り専用ゲート検査 | `init` 前の拒否理由確認。`ready: false` は `ok: false`・終了コード2 |
 
-check/status/diff/export計画/schemaの一覧は `items` と `page` を返す。既定は最大20件、`--limit 1..100` で調整できる。`summary` は全件を集計する。実際のページサイズはバイト制限によってさらに小さくなる。
+check/status/diff/export計画/schema/operations listの一覧は `items` と `page` を返す。既定は最大20件、`--limit 1..100` で調整できる。`summary` は全件を集計する。実際のページサイズはバイト制限によってさらに小さくなる。
 
 ```json
 {"items":[],"ok":true,"page":{"next_offset":null,"offset":0,"returned":0,"total":0},"summary":{}}
@@ -42,34 +45,35 @@ check/status/diff/export計画/schemaの一覧は `items` と `page` を返す�
 
 `page.next_offset` が数値なら、同じ対象・条件で `--offset <値>` を指定する。nullなら次のページはない。ページング中に対象が変化した場合は先頭から取得し直す。`--offset` が件数以上なら空ページとなる。ページングは出力のみを制限し、検証は全対象に実行する。表示外の不正な文書も失敗として全体のsummaryと終了コードに反映される。
 
-通常の応答は改行を含め最大16 KiB（workflowのread/inspect/handoff/receipt/next/validate-replyは対象外。readは `--max-bytes` で分割）、各一覧項目は約2 KiB。大きなフィールドは値を切り詰めずフィールドごと省略し、`omitted_fields` にその名前を列挙する。項目の `index` は全体での0始まりの位置。オブジェクト全体を表示できない場合は `omitted: true` と元のJSONバイト数を返す。これは元データの空値やnullではない。ページが最終でも、値が省略されていれば全内容を確認したことにはならない。
+通常の応答は改行を含め最大16 KiB（workflowのread/inspect/handoff/receipt/next/validate-replyと `spec structure` の各コマンドは対象外。readは `--max-bytes` で分割）、各一覧項目は約2 KiB。大きなフィールドは値を切り詰めずフィールドごと省略し、`omitted_fields` にその名前を列挙する。項目の `index` は全体での0始まりの位置。オブジェクト全体を表示できない場合は `omitted: true` と元のJSONバイト数を返す。これは元データの空値やnullではない。ページが最終でも、値が省略されていれば全内容を確認したことにはならない。
 
 完全な差分は `documents diff ... --out <新規JSONパス>` で保存でき、保存応答には `report` を返す。JSONファイルは `comparisons[].changes`（本文パス）と `comparisons[].semantic_changes`（原本位置での値変更）を持ち、値の省略やページングはしない。`--format markdown` は `--out` との併用だけに対応する。
 
 `--full` はサイズ制限とページングを解除する明示的な選択で、`--limit/--offset` とは併用できない。読み取り操作で必要な場合に使い、巨大な結果はファイルへリダイレクトする。record/review/import/adopt/exportの書き込みを、応答の再取得のために繰り返してはならない。保存された証跡・本文・reportを読む。exportの書き込み応答はページを返さず、`--out` と `--limit/--offset` の併用を拒否する。
 
-`--include-hashes` はrecord/review/check/status/export/rows/columnsに検証ハッシュを含める。`--full` とは独立しており、完全な検証情報が必要なら両方を指定する。diffのハッシュで表された変更は差分そのものとして維持される。保存形式と検証に用いる完全なSHA-256は変更しない。
+`--include-hashes` はrecord/review/check/status/export/values/rows/columns/renderに検証ハッシュを含める。check/statusでは本文の `content` と原本の `source_sha256` を返し、どちらも `documents values` の要求の `base`・`source_sha256` に使う。`--full` とは独立しており、完全な検証情報が必要なら両方を指定する。diffのハッシュで表された変更は差分そのものとして維持される。保存形式と検証に用いる完全なSHA-256は変更しない。
 
 ## 行・列の構造変更
 
 行・列の追加と削除は `documents rows insert|delete` と `documents columns insert|delete` で行います。Word文書とPowerPoint文書では `documents rows` が表の外の段落と表の行を追加・削除します（`--sheet` はWordでは `document` などのパーツ名、PowerPointでは `slide-N`・`notes-N` または追加したスライドの操作ID、行は本文YAMLの `rN`）。PowerPointの新しい段落は、書式元（`--style-from`、既定は上の行）の段落と同じ図形に入ります。対象は採用済み文書（文書ID）または候補（`--proposal <文書ID>`）です。1回の実行で、次の手順をまとめて処理します。
 
 - `mappings.yml` の `operations` への操作の追記
-- 追加分の値の、本文への `<操作ID>-<番号>` キーでの書き込み
+- 追加分の値の本文への書き込み（追加した行・列の識別IDは `<操作ID>-<番号>`）
 - 削除される原本セルの値の、本文からの除去
 
 書き込む前に、変更後の状態を `check` と同じ検証にかけます。VBA を含むブックなど export が拒否する条件も確かめます。拒否した場合は何も書き込みません。文書フォルダは検証済みのコピーと rename で入れ替えるため、途中で失敗しても `mappings.yml` と本文が食い違ったまま残ることはありません。
 
 - 位置: `--after` / `--before` には、原本シートの行番号（`15` または `r15`）、列名（`C`）、先に挿入した行・列のキー（`<操作ID>-<番号>`）、または `last`（値のある最後の行・列）を指定します。行番号は原本シートの番号のままで、記録済みの操作による移動を考慮した `at` はCLIが計算します。値のある最後の行・列より後ろの番号や、記録済みの操作で削除された行・列は `invalid_position` で拒否します。
 - 値: `--values` には、1行（列）につき1オブジェクトのリストを YAML または JSON で渡します（ファイル、または `-` で標準入力）。行は列名、列は `r<行番号>` がキーです。`--count` を省くと項目数が使われ、両方を指定して数が合わなければ `count_mismatch` になります。行の値は、同じ列の既存値の型に揃えます。基準は `--style-from` の行の値で、空ならその上で最も近い値です。文字列の列の数値は文字列に、日付書式の列の `YYYY/MM/DD` や `YYYY-MM-DD` はシリアル値にします。揃えられない値は `value_type_mismatch` で拒否します。変換した値は応答の `converted` に返します。追加する列の値は、渡したまま保存します。
-- 書式: `--style-from` を省くと、挿入位置の上の行を使います（Excelと同じ）。書き戻しでは、その行の空のセルを含む全セルの書式を追加行に写し、`dimension` を追加行まで広げます。
+- 書式: `--style-from` を省くと、挿入位置の上の行を使います（Excelと同じ）。書き戻しでは、その行の空のセルを含む全セルの書式を追加行に写し、`dimension` を追加行まで広げます。Excelでは `--style-from 9:10` のように範囲を指定すると、追加行は組ごとにその行を順に書式元にします（行数は組の倍数でなければ `invalid_count`）。操作には `style_from` と `style_rows` を記録します。
+- 結合: `--merges`（Excelのみ）を付けると、書式元の行の内側にある結合を、追加行の各組の同じ位置にも作ります（Excelの「コピーしたセルの挿入」と同じ。操作の `merges: true`）。付けない場合はExcelの行挿入と同じく、結合は作りません。写した結合の左上以外への値は `merged_non_anchor` で拒否し、写す結合が既存の結合（挿入で広がった結合を含む）と重なる場合は検証で拒否します。後の操作は写した結合も他の結合と同じく移動します。
 - 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返し、何も書き込みません。同じIDで設定や値が違う場合は `operation_id_conflict` です。`--base` には `check --include-hashes` の `content` を渡します。その後に文書が変わっていれば `base_changed` で拒否します。
 - 応答: 成功時は `state`（`written`、`--dry-run` なら `planned`、再実行なら `unchanged`）、`operation`、`span`（反映後の最初と最後の行・列）、`keys`、`converted`、`neighbors`（行の操作のみ。前後にある本文の行）、`check`（書き込み後の検証状態）、`next_actions` を返します。
 - エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`category_row_deleted`（本文の区分の値を持つ行を、区分の他の記録を残して削除する。Excelが区分の値をその行と一緒に消すため）、`structural_edit_unsupported`、`invalid_reason`（空の `--reason`）、`invalid_count`（`--count` が0）、`validation_failed`。
 
-`documents export` は本文YAMLの追加・削除を、管理側 `mappings.yml` の `operations` と組み合わせてExcelへ反映できます。対応する操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns` です。各操作には `id`、`sheet`、`reason`、`at`、`count` を指定し、行の追加時は必要に応じて `style_from` で書式をコピーする元の行を指定します（非表示・折りたたみはコピーしません）。追加した列はExcelと同じく左の列の書式を引き継ぐため、列の操作には `style_from` を指定できません。
+`documents export` は、`mappings.yml` の `operations` に記録した行・列の操作と本文の値を組み合わせてExcelへ反映します。行・列の操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns`、`move_columns`（移動先 `to` も持つ）で、`documents rows|columns` が記録します。各操作は `id`、`sheet`、`reason`、`at`、`count` を持ち、行の追加では `style_from` に書式をコピーする元の行を記録します（非表示・折りたたみはコピーしません）。追加した列はExcelと同じく左の列の書式を引き継ぐため、列の操作は `style_from` を持ちません。
 
-操作で追加する行・列は、本文の `blocks.<block>.rows` に `<操作ID>-<番号>`（番号は1から `count` まで）のキーで書きます。`id: add` の `insert_rows` で追加した1行目は `add-1: {B: 新項目}`、`insert_columns` で追加した列の値は既存行の `r3: {add-1: 値}` のように書きます。既存の行 `r<number>` と列の英字は原本の位置を指し、操作後も変わらないため、追加した行・列と同じキーにはなりません。CLIはこのキーから挿入操作を特定してmapping entryを再生成します。削除時は本文から対象の行・列を削除し、対応するdelete操作を残します。操作のない追加・削除、原本で値のないセルへの書き込み、操作の範囲外の番号、追加した行と列が交わるセルは検証で拒否します。
+追加した行・列の識別IDは `<操作ID>-<番号>`（番号は1から `count` まで）で、`--after` / `--before` の位置や応答の `keys` に使います。本文は表を記録の木として持ち、追加した行は見出しをキーにした記録のノードとして入ります。行番号・列名・識別IDは本文のキーになりません。本文の記録・列の数や木の形を手で変えると検証で拒否するため、行・列の追加・削除は必ず `documents rows|columns` で行い、削除した行・列の値の除去も同じコマンドに任せます。追加した行と列が交わるセルへの書き込みは検証で拒否します。
 
 結合範囲の内側への挿入は、Excelと同じく結合を広げます。広がった結合の左上以外になるセルはExcelに表示されないため、そこへの書き込みは検証と書き戻しで拒否します。値は結合の左上に書くか、結合の外に行・列を追加してください。
 
@@ -89,19 +93,41 @@ operations:
       to: {cell: F15}
 ```
 
+## 値の編集
+
+採用済み文書（文書ID）または候補（`--proposal <文書ID>`）の値・数式・図形の文字・フォントは `documents values <文書ID> --input <要求ファイル>` で変えます。要求は `documents schema value-edits` の契約に従うJSONまたはYAML（`-` で標準入力）で、`check --include-hashes` の `content` を `base`、`source_sha256` をそのまま入れます。各editは `sheet` と、`cell`（`extraction-read` の出力の原本の番地）・`shape`（Excelの図形の抽出ID）・`element`（`elements-read` の出力の要素ID）のいずれかで対象を指定し、値は `before`（期待する現在値。値のないセルは `null`）と `after`、フォントは `font: {before, after}` で書きます。
+
+- 未適用の行・列・スライドの操作があっても編集できます。挿入した行・複製したスライドの値は `element`（`cell_<操作ID>-1_C` など）で指定します。
+- Excelでは原本で空のセルにも値を入れられます。表の空欄・挿入した行の未入力のセルは同じ規則の要素ID、原本の範囲の空のセルは番地で指定し、表の範囲の内側なら表の記録に、外なら本文の要素になります。シートの行・列の範囲外、結合の左上以外のセルは拒否します。
+- 全editを未適用の操作とともに文書形式ごとの書き戻し処理で試し書きし、1件でも拒否されれば何も保存しません。成功した要求のactor・reason・editsは `mappings.yml` の `value_edits` に記録し、exportのreportにも載せます。同じ値を指定し直した要求は `unchanged` で、記録しません。
+- エラーコード: `invalid_request`、`invalid_document`、`base_changed`、`source_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets`）、`target_not_found`、`not_editable`、`duplicate_target`、`before_mismatch`（`error.current`）、`value_type_mismatch`、`font_unsupported`、`validation_failed`、`writeback_refused`。editを特定できる拒否は `error.edit`（`edits` の添字）と `error.target` を持ちます。`writeback_refused` では、32件以内の要求なら単独でも拒否されるeditの添字を `error.edits` に返します。
+
+## 操作の取り消し
+
+`documents operations list <文書ID>`（候補は `--proposal`）は未適用の操作を記録順に返します。`documents operations remove <文書ID> --id <操作ID> [--base <content>] [--dry-run]` は操作を本文への影響とともに取り消し、`check` と同じ検証に通った場合だけ書き込みます。
+
+- 挿入（`insert_rows`・`insert_columns`・`insert_slide`・`add_slide`）を取り消すと、追加した行・列の値とページを本文から除き、それを対象にした `value_edits` の記録も除きます。
+- 削除（`delete_rows`・`delete_columns`・`delete_slide`）を取り消すと、削除した行・列・スライドの値を原本の抽出の値で戻し、表の所属は構造解釈から戻します。戻した値を対象にした `value_edits` の記録（値・フォントの編集）は記録順に当て直し、件数を `reapplied_edits` に返します。記録の変更前が戻した値と一致しない編集は当て直しません。スライドの削除で一緒に取り除かれた行の操作も戻りません。
+- その他の操作（列の移動、スライドの移動・表示、図形・画像の操作）は操作だけを取り除きます。
+- 同じシートで後に記録した行・列・画像の操作、または取り消す操作が追加したスライド・図形を指す操作があれば `operation_has_dependents`（`error.dependents`）で拒否します。後の操作から取り消してください。存在しない操作IDは `operation_not_found`（`error.operations`）です。
+
+## export候補の描画
+
+`documents render <文書ID> --candidate <exportの出力> --out <新規PNG>` は、export が書いた候補（隣に `.report.json` があり、そのハッシュと一致するもの）のページをPNGに描画します。Excelは `--sheet`（必須）と `--range`（省略時は使用範囲）をExcelで（report が `requires_excel_recalculation` の候補は全再計算してから。応答の `recalculated`）、WordとPowerPointはOfficeが保存したPDFの `--page`（スライドは非表示のものも含めた候補での順序）を、PDFはその `--page` をWindowsで描画します。WindowsとデスクトップOffice（Excel、Word・PowerPointの文書ではそのアプリ）が必要です。描画は確認の材料であり、画像を開いて実際に確認した範囲だけを `confirm-export` に記録します。
+
 ## スライドの追加・削除
 
-PowerPoint文書のスライドは `documents slides insert|delete` で追加・削除します。行の操作と同じく、採用済み文書（文書ID）または候補（`--proposal <文書ID>`）を対象に、`mappings.yml` の `operations` への追記と本文のページの追加・削除を1回の実行で行い、`check` と同じ検証と export の事前確認に通った場合だけ書き込みます。
+PowerPoint文書のスライドは `documents slides insert|delete` で複製・削除します。レイアウトからの追加（`slides add`）、移動（`slides move`）、表示・非表示（`slides hide|show`）、図形の変更（`documents shapes`）の引数は [CLIコマンド・引数一覧](commands.md) と[操作リファレンス](../../surface/skills/arp4/references/operations.md)を参照してください。行の操作と同じく、採用済み文書（文書ID）または候補（`--proposal <文書ID>`）を対象に、`mappings.yml` の `operations` への追記と本文のページの追加・削除を1回の実行で行い、`check` と同じ検証と export の事前確認に通った場合だけ書き込みます。
 
-- 追加: `documents slides insert <文書ID> --from <スライド> --after|--before <スライド>` は、`--from` のスライドを PowerPoint の「スライドの複製」と同じく複製して、指定した位置に置きます。追加したスライドの名前は操作ID（`--id`、省略時は `add-slide-<番号>`）です。本文には `content/<操作ID>.yml` を作り、複製元のページの現在の値（編集済みの値を含む）を写します。複製元にノートがあれば、ノートも複製して `content/notes-<操作ID>.yml` を作ります。追加したスライドの文字は、このページの `rN/A` を通常どおり編集して書き戻します。
-- 削除: `documents slides delete <文書ID> --slide slide-<番号>` は、原本のスライドを、そのノートと本文のページとともに削除します。追加したスライドは削除せず、それを追加した操作を取り除いてください。
+- 追加: `documents slides insert <文書ID> --from <スライド> --after|--before <スライド> --reason <理由>` は、`--from` のスライドを PowerPoint の「スライドの複製」と同じく複製して、指定した位置に置きます。追加したスライドの名前は操作ID（`--id`、省略時は `add-slide-<番号>`）です。本文には `content/<操作ID>.yml` を作り、複製元のページの現在の値（編集済みの値を含む）を写します。複製元にノートがあれば、ノートも複製して `content/notes-<操作ID>.yml` を作ります。追加したスライドの文字は、`documents values` で `sheet` に操作ID、`element` に `documents elements-read` のそのページの要素IDを指定して変えます。行の操作を記録したスライドは複製元にできません（`invalid_slide`）。先に複製してから行を追加・削除するか、`documents operations remove` でその操作を取り除いてください。
+- 削除: `documents slides delete <文書ID> --slide slide-<番号> --reason <理由>` は、原本のスライドを、そのノートと本文のページとともに削除します。そのスライドとノートに記録した行の操作も取り除き、応答の `dropped_operations` に操作IDを返します。追加したスライドは削除せず、それを追加した操作を `documents operations remove` で取り除いてください。
 - スライドの指定: 原本のスライドは `slide-<番号>`（原本での番号）、追加したスライドは操作IDで指定します。番号は操作後も変わりません。操作は記録順に適用し、先の操作で削除したスライドや後の操作で追加するスライドは指定できません。最後の1枚は削除できません。
 - 複製する部品: レイアウト・マスター・画像・動画・ハイパーリンク先は元のスライドと共有し、グラフ（埋め込みブックを含む）・SmartArt・埋め込みオブジェクト・ノートなどそのスライドだけの部品は新しい名前で複製します。コメントは元のスライドへのレビューのため複製しません。セクションは隣のスライドと同じセクションに入ります。
 - 削除する部品: スライドとそのスライドからしか参照されない部品（ノート・グラフ・コメント等）を取り除き、セクション・目的別スライドショー・アウトライン表示の一覧からも外します。
 - 拒否: 他のスライドのハイパーリンクや動作設定から参照されているスライドの削除と、目的別スライドショーが空になる削除は `structural_edit_unsupported` で拒否します。リンクを PowerPoint で外してから削除してください。操作IDがスライド名・ノート名と重なる場合、数字だけの場合、存在しないスライドを指定した場合は `invalid_slide` です。
 - 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返します。同じIDで設定が違う場合は `operation_id_conflict` です。`--base` と `--dry-run` は行の操作と同じです。
 - 応答: 成功時は `state`、`operation`、`added_pages`・`removed_pages`（追加・削除した本文ファイル）、`slides`（操作後のスライドの順序）、`check`、`next_actions` を返します。
-- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`（PowerPoint以外の文書）、`source_changed`、`invalid_reason`、`invalid_operation_id`、`operation_id_conflict`、`invalid_slide`、`page_exists`、`structural_edit_unsupported`、`validation_failed`。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`（PowerPoint以外の文書）、`source_changed`、`invalid_reason`、`invalid_operation_id`、`operation_id_conflict`、`invalid_slide`、`invalid_layout`（`slides add` の `--layout` がレイアウトにない、または同名が複数）、`page_exists`、`structural_edit_unsupported`、`validation_failed`。
 
 記録される操作は次の形です。`insert_slide` は `after` と `before` のどちらか一方を持ちます。
 

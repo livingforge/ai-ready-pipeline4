@@ -1,8 +1,10 @@
 //! Format adapters for the reviewed document workflow.
 //!
 //! The existing mapping contract uses sheets/cells. For text formats these are
-//! logical text containers and A1, A2, ... are stable text-run ordinals, not
-//! physical spreadsheet coordinates. `part` identifies the original container.
+//! logical text containers, not physical spreadsheet coordinates: Word and
+//! PowerPoint lay paragraphs and table rows out as rows and table columns as
+//! columns, and PDF numbers its text runs A1, A2, ... `part` identifies the
+//! original container.
 //! Native text carries original byte/line positions within the hashed revision;
 //! its derived views are read-only and edits happen in the original file.
 use crate::{data::*, excel::Workbook};

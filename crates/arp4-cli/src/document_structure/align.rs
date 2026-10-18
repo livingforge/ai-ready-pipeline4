@@ -430,6 +430,8 @@ fn to_operations(
                         at: cursor,
                         count: 1,
                         style_from: None,
+                        style_rows: 1,
+                        merges: false,
                     });
                 }
             }
@@ -444,6 +446,8 @@ fn to_operations(
                         at: cursor,
                         count: 1,
                         style_from: if rows { above } else { None },
+                        style_rows: 1,
+                        merges: false,
                     });
                 }
                 cursor += 1;

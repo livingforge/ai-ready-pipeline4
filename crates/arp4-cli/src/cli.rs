@@ -29,7 +29,8 @@ pub(crate) enum Command {
     Documents {
         #[arg(long, global = true)]
         root: Option<PathBuf>,
-        /// Include verification hashes in record/review/check/status/export/rows/columns output.
+        /// Include verification hashes in output: the content hash and the original's
+        /// SHA-256 in check and status, and those of edits, reviews and exports.
         #[arg(long, global = true)]
         include_hashes: bool,
         #[command(subcommand)]
@@ -327,9 +328,15 @@ pub(crate) enum RowCommand {
         #[arg(long)]
         count: Option<u32>,
         /// Original row whose formatting the new rows take; defaults to the row
-        /// above them, as in Excel.
+        /// above them, as in Excel. Excel rows `9:10` are taken in turn by each
+        /// group of new rows, as a form laid out over two rows.
         #[arg(long)]
         style_from: Option<String>,
+        /// Excel only: make the merges within the style rows (--style-from, by
+        /// default the row above) again over each group of new rows, as Excel's
+        /// Insert Copied Cells does.
+        #[arg(long)]
+        merges: bool,
         /// YAML or JSON file, or - for stdin: a list with one object per new row,
         /// keyed by column letter, e.g. [{B: "8", C: 2025/11/21}]. Values take the
         /// type of the column (the --style-from row, or the nearest value above).
@@ -704,15 +711,77 @@ pub(crate) struct Targets {
     #[arg(long)]
     pub expect: Option<PathBuf>,
 }
+/// A contract `documents schema` prints, refused with the list of contracts.
+fn schema_kind(kind: &str) -> Result<String, String> {
+    let schemas = arp4_cli::schemas();
+    if schemas.get(kind).is_some() {
+        return Ok(kind.to_owned());
+    }
+    let kinds: Vec<&String> = schemas
+        .as_object()
+        .map(|s| s.keys().collect())
+        .unwrap_or_default();
+    Err(format!(
+        "unknown contract {kind}; the contracts are {}",
+        kinds
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+#[derive(Subcommand)]
+pub(crate) enum OperationCommand {
+    /// List the pending row, column, slide, shape and image operations of an
+    /// adopted document or proposal, in the order apply writes them.
+    List {
+        /// Adopted document ID.
+        #[arg(required_unless_present = "proposal")]
+        document: Option<String>,
+        /// List the operations of the proposal of this document ID instead.
+        #[arg(long, conflicts_with = "document")]
+        proposal: Option<String>,
+    },
+    /// Take back a pending operation with what it did to the content: the
+    /// values of rows, columns and slides it inserted leave the content, and
+    /// those it deleted come back as the original holds them. Refused while
+    /// another operation depends on it (a later row, column or image operation
+    /// of the same sheet, or one naming what it added); take those back first.
+    Remove {
+        /// Adopted document ID.
+        #[arg(required_unless_present = "proposal")]
+        document: Option<String>,
+        /// Edit the proposal of this document ID instead, before record.
+        #[arg(long, conflicts_with = "document")]
+        proposal: Option<String>,
+        /// ID of the operation, as operations list gives it.
+        #[arg(long)]
+        id: String,
+        /// The content hash from check --include-hashes; the removal is refused
+        /// when the document changed since.
+        #[arg(long)]
+        base: Option<String>,
+        /// Validate and report the removal without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
 #[derive(Subcommand)]
 pub(crate) enum DocumentCommand {
+    /// Print a JSON contract by name, as a list of its properties; --pointer
+    /// selects one node and --full prints all of it. An unknown name lists the
+    /// contracts.
     Schema {
+        /// The contract, e.g. value-edits, document-elements or mappings.
+        #[arg(value_parser = schema_kind)]
         kind: String,
         /// Select a schema node using a JSON Pointer, e.g. /properties/entries/items.
         #[arg(long)]
         pointer: Option<String>,
     },
+    /// Make the project's .arp folder and configuration.
     Init {
+        /// Folder holding the originals, relative to the project root.
         #[arg(long, default_value = "docs")]
         sources: String,
     },
@@ -819,7 +888,7 @@ pub(crate) enum DocumentCommand {
         #[command(subcommand)]
         command: ColumnCommand,
     },
-    /// Insert a copy of a PowerPoint slide or delete a slide. The operation in
+    /// Copy, add, delete, move, hide or show PowerPoint slides. The operation in
     /// mappings.yml and the content pages it adds or removes are written
     /// together, after the same validation as check.
     Slides {
@@ -866,56 +935,118 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         reviewer: String,
     },
+    /// Show what changed: a proposal against its adopted document, or with
+    /// --document an adopted document against the version Git's HEAD holds.
     Diff {
+        /// Document ID whose proposal is compared.
         #[arg(conflicts_with = "document")]
         proposal: Option<String>,
+        /// Compare this adopted document with Git's HEAD instead.
         #[arg(long)]
         document: Option<String>,
+        /// Format of the --out file; standard output is JSON.
         #[arg(long, value_enum, default_value = "json")]
         format: Format,
+        /// Save the complete differences to this new file.
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Apply the exact export candidate whose layout was confirmed, then re-extract.
+    /// Write the exact export candidate whose layout was confirmed to the
+    /// original, then re-extract it as a proposal formed by apply, ready to adopt.
     Apply { document: String },
     /// Record a human layout review of an exported candidate and its exact hash.
     ConfirmExport {
         document: String,
+        /// The exported file that was opened and checked.
         #[arg(long)]
         candidate: PathBuf,
+        /// output_sha256 of the candidate's export report.
         #[arg(long)]
         output_sha256: String,
+        /// Who looked at the candidate.
         #[arg(long)]
         reviewer: String,
+        /// What was looked at, and what was found.
         #[arg(long)]
         reason: String,
         /// Open the candidate and check changed cells and surrounding layout first.
         #[arg(long)]
         layout_reviewed: bool,
     },
-    /// Edit existing Office/PDF text or Excel values, formulas and table labels
-    /// using the value-edits contract, before structural operations.
+    /// Edit values, formulas, table labels, shape texts and fonts of Office and
+    /// PDF content, and give values to empty Excel cells, as the value-edits
+    /// contract describes (documents schema value-edits). Targets are cells of
+    /// the extraction or element IDs of elements-read, so the values of rows
+    /// and slides operations insert are edited too. Every edit is checked, and
+    /// written by the original's writer to a scratch file, before any is saved;
+    /// the request is recorded with the content.
     Values {
-        document: String,
+        /// Adopted document ID.
+        #[arg(required_unless_present = "proposal")]
+        document: Option<String>,
+        /// Edit the proposal of this document ID instead, before record.
+        #[arg(long, conflicts_with = "document")]
+        proposal: Option<String>,
+        /// The value-edits request, a JSON or YAML file, or - for stdin. Its
+        /// base and source_sha256 come from check --include-hashes.
         #[arg(long)]
         input: PathBuf,
+        /// Validate and report the edits without writing.
         #[arg(long)]
         dry_run: bool,
     },
+    /// Without --out, plan the export of a reviewed document: what it writes
+    /// to its original and what it leaves out. With --out, write the original
+    /// with the edits to a new file and its report beside it.
     Export {
         document: String,
+        /// New file inside .arp/cache/export, with the original's extension.
         #[arg(long)]
         out: Option<PathBuf>,
-        #[arg(long, default_value = "auto")]
-        engine: String,
     },
+    /// Render a page of an exported candidate to a PNG image, to look at it
+    /// before confirm-export: an Excel sheet or range, a Word or PDF page, or
+    /// a PowerPoint slide. Needs Windows and desktop Office (Excel; Word or
+    /// PowerPoint for their documents); PDF pages are rendered by Windows.
+    Render {
+        document: String,
+        /// The exported file, beside its .report.json.
+        #[arg(long)]
+        candidate: PathBuf,
+        /// New PNG file to write.
+        #[arg(long)]
+        out: PathBuf,
+        /// Excel worksheet to render.
+        #[arg(long)]
+        sheet: Option<String>,
+        /// Excel A1 range; the sheet's used range when omitted.
+        #[arg(long)]
+        range: Option<String>,
+        /// Page of a Word or PDF document, or slide of a presentation in the
+        /// candidate's order, from 1.
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+        /// Seconds to wait for Office.
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
+    /// List or take back pending row, column, slide, shape and image operations.
+    Operations {
+        #[command(subcommand)]
+        command: OperationCommand,
+    },
+    /// Check documents and proposals as edits leave them: their state, and the
+    /// blockers or error keeping each from the next step. --include-hashes adds
+    /// the content hash and the original's SHA-256 that value edits are based on.
     Check {
         document: Option<String>,
         #[arg(long, conflicts_with = "document")]
         proposal: Option<String>,
+        /// Fail unless the documents are reviewed.
         #[arg(long)]
         require_reviewed: bool,
     },
+    /// The state of documents and proposals, like check.
     Status {
         document: Option<String>,
         #[arg(long, conflicts_with = "document")]

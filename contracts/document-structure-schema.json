@@ -113,9 +113,12 @@
     "graph_sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
     "region": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "sheet", "range", "image", "image_sha256", "source_sha256", "bbox"],
+      "required": ["id", "image", "image_sha256", "source_sha256", "bbox"],
+      "dependentRequired": {"sheet": ["range"], "range": ["sheet"]},
       "properties": {
-        "id": {"$ref": "#/$defs/text"}, "sheet": {"$ref": "#/$defs/sheet_name"}, "range": {"$ref": "#/$defs/text"},
+        "id": {"$ref": "#/$defs/text"},
+        "sheet": {"$ref": "#/$defs/sheet_name", "description": "Sheet whose range the image shows. Omitted, with range, only for an image of a visual that is not on a sheet, such as a Word picture."},
+        "range": {"$ref": "#/$defs/text"},
         "image": {"$ref": "#/$defs/text"}, "image_sha256": {"$ref": "#/$defs/hash"}, "source_sha256": {"$ref": "#/$defs/hash"},
         "bbox": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}
       }

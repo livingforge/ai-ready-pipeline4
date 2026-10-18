@@ -162,8 +162,9 @@ fn identifier(text: &str, start: usize, end: usize) -> Option<(QuantityExemption
         .last()
         .map_or(start, |(i, _)| i);
     let prefix = text[head..start].to_ascii_lowercase();
-    // "x4" is a multiplier, not a name.
-    if !prefix.chars().any(|c| c.is_ascii_alphabetic()) || prefix == "x" {
+    // "x4" is a multiplier, not a name; "x64" and "x86" name CPU architectures.
+    let architecture = prefix == "x" && matches!(&text[start..end], "64" | "86");
+    if !prefix.chars().any(|c| c.is_ascii_alphabetic()) || (prefix == "x" && !architecture) {
         return None;
     }
     let tail = end

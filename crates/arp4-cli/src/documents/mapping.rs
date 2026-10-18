@@ -564,6 +564,7 @@ pub(super) fn regenerate_mappings(
     }
     let mut generated = vec![];
     let mut generated_fields = BTreeSet::new();
+    let workbook = identity::is_excel(extraction);
     for ((page, block), values) in positions {
         let sheet = page_sheet(extraction, page)?;
         for ((row, column), value) in values {
@@ -597,6 +598,18 @@ pub(super) fn regenerate_mappings(
                 (Some(_), Some(_)) => bail!(
                     "{row}/{column}: a cell in both an inserted row and an inserted column cannot be written"
                 ),
+                // A value given to a cell of the workbook that holds none.
+                (None, None)
+                    if workbook
+                        && block == "table-1"
+                        && excel::column_number(column).is_ok()
+                        && row
+                            .strip_prefix('r')
+                            .and_then(|number| number.parse::<u32>().ok())
+                            .is_some_and(|number| number > 0 && format!("r{number}") == row) =>
+                {
+                    json!({"sheet":sheet,"cell":format!("{column}{}", &row[1..])})
+                }
                 (None, None) => bail!(
                     "{row}/{column} is not a cell of the original: edit only cells that hold a value, and name new rows and columns <operation ID>-<n> after the insert_rows or insert_columns operation that adds them"
                 ),
@@ -609,11 +622,16 @@ pub(super) fn regenerate_mappings(
                 suffix += 1;
             }
             generated_fields.insert(field.clone());
+            let reason = if target.get("cell").is_some() {
+                "value of a cell the original leaves empty"
+            } else {
+                "structural content generated mapping"
+            };
             generated.push(Entry::Json(json!({
                 "page":page,
                 "block":block,
                 "field":field,
-                "reason":"structural content generated mapping",
+                "reason":reason,
                 "target":target,
                 "writeback":"cell",
                 "position":{"row":row,"column":column,"type":kind(value)}
@@ -630,7 +648,7 @@ pub(super) fn regenerate_mappings(
 }
 
 /// The lists of mappings.yml, left out when empty.
-const LISTS: [&str; 3] = ["entries", "omissions", "operations"];
+const LISTS: [&str; 4] = ["entries", "omissions", "operations", "value_edits"];
 
 /// Stored `mappings` with the empty lists [`stored_mappings`] leaves out in
 /// place. A correction journal left out is made again by inspection.

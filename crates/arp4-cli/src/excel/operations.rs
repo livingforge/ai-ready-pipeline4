@@ -156,6 +156,22 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
                 "style_from outside bounds"
             );
         }
+        let style_rows = u32::try_from(value["style_rows"].as_u64().unwrap_or(1))?;
+        let merges = value["merges"].as_bool().unwrap_or(false);
+        if style_rows != 1 || merges {
+            let style_from = style_from.context("style_rows and merges need style_from")?;
+            ensure!(
+                style_rows >= 1
+                    && style_from
+                        .checked_add(style_rows - 1)
+                        .is_some_and(|last| last <= limit),
+                "style rows outside bounds"
+            );
+            ensure!(
+                count % style_rows == 0,
+                "an insert_rows taking {style_rows} style rows inserts a multiple of {style_rows} rows"
+            );
+        }
         operations.push(StructuralOperation {
             id,
             sheet,
@@ -163,6 +179,8 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
             at,
             count,
             style_from,
+            style_rows,
+            merges,
         });
     }
     Ok(operations)

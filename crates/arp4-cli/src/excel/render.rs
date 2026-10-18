@@ -4,11 +4,16 @@ use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
+/// Renders `range` of `sheet` of the workbook `source` to PNG with desktop
+/// Excel. With `recalculate`, the formulas are calculated first, as Excel
+/// does opening a workbook whose saved results are stale; otherwise the
+/// results the workbook holds are drawn.
 pub fn render(
     source: &Path,
     sheet: &str,
     range: Option<&str>,
     timeout: u64,
+    recalculate: bool,
 ) -> Result<(Vec<u8>, Value)> {
     ensure!(
         cfg!(windows),
@@ -28,7 +33,7 @@ pub fn render(
     fs::write(
         &request_path,
         encoded(
-            &json!({"source":source,"sheet":sheet,"range":range,"output":output,"result":result_path,"lock_wait_seconds":timeout / 2}),
+            &json!({"source":source,"sheet":sheet,"range":range,"output":output,"result":result_path,"lock_wait_seconds":timeout / 2,"recalculate":recalculate}),
         ),
     )?;
     let log = stage.path().join("stderr.txt");

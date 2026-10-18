@@ -53,7 +53,7 @@ OCR結果とLLM補正結果は構造解釈の参考情報であり、原本か�
 
 まず `spec structure read` の `drawings` を読みます。図形の文字・形状・位置・明示された接続先を簡潔に返し、空の任意項目は省きます。位置はセル座標と必要なEMUオフセットで示し、グループ内の変換は保持します。接続先IDだけで意味上の指揮命令・処理順序までは断定しません。詳細な原本情報は抽出JSONに保持し、整理YAMLへ転記する必要はありません。
 
-埋め込み画像はimportで保存されたファイルをそのまま使用します。ExcelとPPTXではファイル名を文書内の初出順に `image-001.png` のように付け、同じ内容の画像は共有します。Wordでは `word/media/` の画像部品ごとに部品名順の連番を付けます。SHA-256は抽出JSONに検証用として保持します。readは抽出JSONと同じディレクトリの `assets/` にあるファイルのハッシュを検証し、絶対パスを返します。`drawings` の `image_id` を `image_paths` の `id` と対応させ、`path` を画像閲覧機能で開きます。`image_paths` はハッシュを表示せず、配置ごとの `source`・シート・位置を返します。同じ画像を複数箇所に配置した場合、IDとパスは共通で、sourceは配置ごとに異なります。登録済み領域の画像IDは `region-<領域ID>` です。画像IDはこの文書の読取結果内の識別子で、再取り込みをまたぐ識別や根拠の参照には使いません。visualのevidenceには、そのvisualのsourcesにある画像のsource参照を指定します。撮影し直したり、画像のためだけにregionを作ったりする必要はありません。抽出JSONを移動する場合はassetsも一緒に保持します。形式によって画像閲覧機能が対応しない場合は、表示できる形式へ変換したPNGをregionに登録します。
+埋め込み画像はimportで保存されたファイルをそのまま使用します。ExcelとPPTXではファイル名を文書内の初出順に `image-001.png` のように付け、同じ内容の画像は共有します。Wordでは `word/media/` の画像部品ごとに部品名順の連番を付けます。SHA-256は抽出JSONに検証用として保持します。readは抽出JSONと同じディレクトリの `assets/` にあるファイルのハッシュを検証し、絶対パスを返します。`drawings` の `image_id` を `image_paths` の `id` と対応させ、`path` を画像閲覧機能で開きます。`image_paths` はハッシュを表示せず、配置ごとの `source`・シート・位置を返します。同じ画像を複数箇所に配置した場合、IDとパスは共通で、sourceは配置ごとに異なります。登録済み領域の画像IDは `region-<領域ID>` です。画像IDはこの文書の読取結果内の識別子で、再取り込みをまたぐ識別や根拠の参照には使いません。visualのevidenceには、そのvisualのsourcesにある画像のsource参照を指定します。撮影し直したり、画像のためだけにregionを作ったりする必要はありません。抽出JSONを移動する場合はassetsも一緒に保持します。形式によって画像閲覧機能が対応しない場合は、表示できる形式へ変換したPNGをregionに登録します。シートを持たないvisual（Wordの画像や、DrawingMLにないExcelの画像 `asset-N`）では `--range` を省きます（下記）。
 
 図形の組合せや画像内の関係を整理できる場合は、visualに任意の `graph` を追加します。nodesは対象、edgesはfromからtoへの名前付きの関係です。ノード・関係のsourcesは、そのvisualの原本参照またはevidenceを指します。図形から読み取った関係と画像から解釈した関係はreadingに根拠を記録します。visionは実際の画像閲覧とvisualのevidenceを必要とします。OCRの文字列だけから線の接続や階層を推測しません。関係の循環や自己参照は図の内容として許し、存在しないノードや別visualの出典参照は拒否します。
 
@@ -97,7 +97,7 @@ arp4 spec structure --root C:/project render --extraction C:/project/.arp/docume
 
 対象シートは指定したelementまたはvisualのsheetから決まります。`--range` を省略すると、elementはシートのUsedRange、visualは参照図形のセルアンカーを囲む範囲を使います。oneCellAnchor・absoluteAnchorなどセル範囲を確定できないvisualではrangeを明示します。回転・はみ出しや周囲の説明がある場合も、必要な範囲を明示して確認します。画像を自動縮小して読めなくすることはせず、8192px/辺または3200万画素の上限を超える範囲は拒否します。その場合はセル範囲を分割し、異なるidとimageで取得します。非表示シートは表示状態を変更せず拒否します。UsedRangeの外の図形や画像まで必要なら、それを含むセル範囲を明示してください。これは範囲の描画であり、埋め込み画像ファイルを個別に抽出する機能ではありません。
 
-応答の `image_path` をAgentの画像閲覧機能で開きます。`rendering` にExcelのバージョン、実際のセル範囲、画像サイズを返します。描画・登録しただけではvision読取やレビュー完了にはならず、既存レビューはpendingになります。対話型Agentは必要な範囲のrender→画像確認→整理YAML修正→check/review→structure-save→documents review→captureを実施できます。
+応答の `image_path` をAgentの画像閲覧機能で開きます。`rendering` にExcelのバージョン、実際のセル範囲、画像サイズを返します。描画・登録しただけではvision読取やレビュー完了にはならず、既存レビューはpendingになります。対話型Agentは必要な範囲のrender→画像確認→`spec structure edit` による修正→check/review→structure-save→documents review→captureを実施できます。
 
 ExcelのCopyPictureを使うため、**実行時にWindowsのクリップボードが画像に置き換わります**。クリップボードの履歴・同期や監視アプリが開いている間はコピー・貼り付けが失敗するため、その失敗は間隔をあけて数回やり直します。ARP同士の描画はセッション内で排他し、先の描画がクリップボードを使い終わるまで、タイムアウトの半分を上限に待ちます。既存のユーザーのExcelプロセスは使わず、専用プロセスを作成します。VBAとイベント、外部リンク更新、自動計算を抑制し、Excel 4.0マクロシートや外部データ接続を持つブックは拒否します。標準タイムアウトは120秒で、COM呼び出しが停止した場合も、隔離済みExcelをヘルパーとともに終了します。無人サービス環境でのOffice動作や、保護・パスワード付きブックは保証しません。
 
@@ -109,6 +109,8 @@ arp4 spec structure --root C:/project read --extraction C:/project/.arp/document
 ```
 
 `range` と `bbox` は同じ領域を指します。bboxは渡す画像全体を基準にしたx,y,width,height（0〜1）です。切り抜きPNGを渡すなら、そのPNG内の座標を指定します。regionコマンドは画像のハッシュと現在の原本ハッシュを登録し、指定elementのevidenceへ追加します。画像は `.arp/work/` や `.arp/cache/` に置かず、原本・整理YAMLとともに保持してください。
+
+シートを持たないvisual（Wordの画像など）は表示する範囲を持たないため、`--range` を省いて登録します（`--element asset-0 --id picture --image evidence/picture.png`）。登録した領域は `sheet`・`range` を持たず、そのvisualのevidenceにだけ使えます。シート上のelement・visualでは `--range` が必須で、シートを持たないvisualに `--range` を指定すると拒否します。再取り込みでは、その領域を根拠にするvisualが読取とともに引き継がれる間（画像が変わらない間）だけ領域も引き継ぎます。
 
 `read` は整理結果、原文セル、簡潔な図形情報、ハッシュを検証済みのローカル画像パスを返します。登録領域にはbboxも付けます。画像閲覧機能を持つ対話型Agentはそのパスを画像として開き、原文セルと比較します。JSONにパスがあるだけでは画像を見たことになりません。画像を見た場合だけreading.methodをvisionにし、actor・判明しているmodel・判断理由を記録します。画像閲覧できない実行環境では未確認として残します。既存のsemantic自動runnerへ画像バイトを自動添付する機能はありません。
 
@@ -182,6 +184,6 @@ arp4 documents structure-save order.xlsx --proposal --root C:/project --input C:
 
 シート名・シート構成が変わった場合など引き継げないときは、応答の `structure.reasons` に `not carried:` と理由を示し、修正記録をそのまま候補へ写します。この場合は再生時にセル番地で照合し、新しいセルを周りの要素に加える処理も行いません（旧版と新版の対応が分からないため）。構造が機械推定どおりだった要素は新版で推定し直し、読取記録は先頭セルが変わっていなければ戻します。同じ番地のセルが残る修正要素はまとまりを保ち、内容が変わったセルは `text_state: not_examined` に戻します。セルがなくなった要素や旧版の画像領域に依存する要素は新版の機械推定に戻します。この結果は `documents status` の `structure_conflicts` と、`documents structure-read --proposal` の応答の `interpretation.conflicts`（要素・図形・読取記録・セルごとのIDと理由）で確認します。
 
-`documents elements-read` が返す表の役割・見出しは、`structure-read` や検索と同じく、現在のARPでその都度再生した構造解釈から求めます。表と本文の区分（どのセルがどの表に入るか）と表の木の形（見出しの記録、キーとなる見出し、記録の親、`marks` に置くセル）は本文の形を決めるため、取り込みか構造保存の時点の構造解釈のまま `layout.yml` に保存し、その解釈の要約（`structure_sha256`。表のセルとその役割・見出し関係から求める）を残します。ARPの更新で表の推定が変わると区分や木が食い違い、再生した構造解釈で表に入らないセルの役割は `unassigned` になります。そのため、`documents status` は再生した構造解釈の要約と比べて、異なれば `structure_outdated: true` を返します。`structure-read` の出力をそのまま `structure-save` で保存し直すと揃います。
+`documents elements-read` が返す表の役割・見出しは、`structure-read` や検索と同じく、現在のARPでその都度再生した構造解釈から求めます。表と本文の区分（どのセルがどの表に入るか）と表の木の形（見出しの記録、キーとなる見出し、区分、記録の親、`marks` に置くセル）は本文の形を決めるため、取り込みか構造保存の時点の構造解釈のまま `layout.yml` に保存し、その解釈の要約（`structure_sha256`。表のセルとその役割・見出し関係から求める）を残します。ARPの更新で表の推定が変わると区分や木が食い違い、再生した構造解釈で表に入らないセルの役割は `unassigned` になります。そのため、`documents status` は再生した構造解釈の要約と比べて、異なれば `structure_outdated: true` を返します。`structure-read` の出力をそのまま `structure-save` で保存し直すと揃います。
 
 契約の全フィールドは[生成リファレンス](../reference/document-structure-contract.md)、コマンド引数は[CLIリファレンス](../reference/commands.md)を参照してください。図・画像の自動要素分解、Word/PDF/PPTXの物理的な領域モデル、画像だけの文字からの出典生成は未対応です。

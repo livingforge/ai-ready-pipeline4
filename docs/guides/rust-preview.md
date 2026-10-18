@@ -36,7 +36,7 @@ arp4 documents diff $candidate.document_id --root C:/my-project
 ```
 
 `$candidate.proposal` の `content/<シート名>.yml` をAgentまたは人が原本と照合して成形します。
-本文の値は `elements` にあり、原本との対応は別の `layout.yml` に保存します。値の型と要素・表の形を保って編集します。
+本文の値は `elements` にあり、原本との対応は別の `layout.yml` に保存します。値は `documents values --proposal $candidate.document_id --input <要求ファイル>` で変え、本文YAML・`layout.yml`・`mappings.yml` は直接編集しません（要求の形は [CLI応答仕様](../reference/cli.md) の「値の編集」）。
 行・列を追加または削除する場合は、`documents rows` / `documents columns` を使います。`mappings.yml` の構造操作、本文と `layout.yml` の位置対応を、1回の実行でまとめて書き込みます（仕様は [CLI応答仕様](../reference/cli.md) の「行・列の構造変更」）。
 
 ```powershell
@@ -45,7 +45,7 @@ Set-Content -Encoding utf8 row.yml '- {B: "8", C: 2025/11/21, E: 仕様, F: 課�
 arp4 documents rows insert --proposal $candidate.document_id --sheet 課題一覧 --after last --id add-issue8 --reason 課題No.8を追加 --values row.yml --dry-run --root C:/my-project
 arp4 documents rows insert --proposal $candidate.document_id --sheet 課題一覧 --after last --id add-issue8 --reason 課題No.8を追加 --values row.yml --root C:/my-project
 ```
-PowerPointのスライドは `documents slides insert --from slide-1 --after slide-2 --id <操作ID>` で複製し、`documents slides delete --slide slide-3` で削除します。複製したスライドの本文は `content/<操作ID>.yml` に作られます（仕様は [CLI応答仕様](../reference/cli.md) の「スライドの追加・削除」）。
+PowerPointのスライドは `documents slides insert --from slide-1 --after slide-2 --id <操作ID>` で複製し、`documents slides delete --slide slide-3` で削除します。複製したスライドの本文は `content/<操作ID>.yml` に作られ、その文字も `documents values` で変えます（仕様は [CLI応答仕様](../reference/cli.md) の「スライドの追加・削除」）。記録した操作は `documents operations list` で確認し、`documents operations remove --id <操作ID>` で取り消せます。
 
 機械生成した候補をLLMの成形済みとみなさず、実際に成形した後に作業のモデル・担当・プロンプトを記録してください。
 
@@ -72,7 +72,7 @@ arp4 documents adopt --all --expect adopt-plan.json --root C:/my-project
 同じ `--prompt` を全件に記録するため、全件で実際に同じ成形・確認を行った場合だけまとめて記録してください。
 
 採用後の本文・管理情報は `.arp/documents/基本設計.xlsx/` に集約します。原本は `docs/基本設計.xlsx` を相対パスで参照し、コピーを保存しません。原本と `.arp/` の共有データをGitへコミットしてから `diff --document` でHEADと比較します。
-本文の既存セル値を同じ型で編集した後は、以下の順に確認します。
+本文の値を `documents values 基本設計.xlsx --input <要求ファイル>` で編集した後は、以下の順に確認します。
 
 ```powershell
 arp4 documents check 基本設計.xlsx --root C:/my-project
@@ -82,7 +82,7 @@ arp4 documents export 基本設計.xlsx --root C:/my-project
 arp4 documents export 基本設計.xlsx --out C:/my-project/.arp/cache/export/基本設計-更新.xlsx --root C:/my-project
 ```
 
-exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本へ反映する場合は、出力を開いてレイアウトを確認し、`documents confirm-export 基本設計.xlsx --candidate <出力> --output-sha256 <reportの出力ハッシュ> --reviewer <担当> --reason <確認した範囲・結果> --layout-reviewed --root C:/my-project` で記録してから `documents apply 基本設計.xlsx --root C:/my-project` を使います。未確認の候補はapplyが拒否します。反映後は再抽出された候補を確認し、record・adoptしてください。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。
+exportの `--out` 省略時は反映計画だけを出力します。出力時は新しいExcelと `.report.json` を作成します。原本へ反映する場合は、出力を開くか `documents render 基本設計.xlsx --candidate <出力> --sheet <シート> --out <新規PNG>` で描画した画像を開いてレイアウトを確認し、`documents confirm-export 基本設計.xlsx --candidate <出力> --output-sha256 <reportの出力ハッシュ> --reviewer <担当> --reason <確認した範囲・結果> --layout-reviewed --root C:/my-project` で記録してから `documents apply 基本設計.xlsx --root C:/my-project` を使います。未確認の候補はapplyが拒否します。反映後の再抽出された候補はapplyによる成形として記録されるので、確認してadoptしてください。出力が原本と同じなら原本を書き換えず候補も作らず、`unchanged` を返します。
 未レビュー・原本更新・未確定の対応・型違い・数式セルへの値上書き・書き戻し対象外の値（結合セルの左上以外の値、数式の計算結果）の編集・署名付きブック・既存出力の上書きを拒否します。
 通常セル更新では元のZIP部品を保持し、数式がある場合はキャッシュを無効化して次回Excel起動時の再計算を指定します。
 ARPは数式を計算しません。`=...` で始まる通常セルの文字列は文字列のまま出力します。
@@ -101,6 +101,7 @@ CLIは既定でAgent向けJSONを返します。成否・ページ送り・詳�
 スキル・参照ファイル・カスタムAgentをホスト別の場所へ導入します。Codexも選択できます。配置と委任の手順は [カスタムAgentによる委任](custom-agents.md) を参照してください。
 `.arp/installed-skills.json` に導入したファイルのハッシュを保存します。
 利用者が編集したファイルがある場合は、全配布ファイルの更新前に停止します。CRLFとLFの差だけなら編集とみなしません。
+以前の導入で書き込み、現在の配布物に含まれなくなったファイルは、編集されていなければ削除し（空になったフォルダも削除）、応答の `removed` に示します。編集されていれば残して `kept_edited` に示します。どちらも `.arp/installed-skills.json` の記録から外します。対象は各ホストのスキル・Agentフォルダにある `arp4` で始まるものだけです。
 同時に複数のスキル導入処理を実行できないようロックします。強制終了後にロックが残った場合は、
 他の導入処理がないこととファイルの状態を確認してから `.arp/rust-skills-install.lock` を取り除きます。
 更新中の外部編集は避けてください。

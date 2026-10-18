@@ -183,9 +183,17 @@ impl<'a> ComputedRanges<'a> {
     }
 }
 /// The sheet's merged ranges as the written workbook keeps them after
-/// `operations`: an insertion inside a merge grows it, like Excel.
+/// `operations`: an insertion inside a merge grows it, like Excel, and an
+/// insertion copying the merges of its style rows makes them again.
 pub fn merges_after(sheet: &Value, operations: &[StructuralOperation]) -> Result<Value> {
     let own = sheet_operations(string(&sheet["name"])?, operations);
+    if own.iter().any(|operation| operation.merges) {
+        let mut state = MergeState::new(sheet)?;
+        for operation in own {
+            state.apply(operation)?;
+        }
+        return state.visible();
+    }
     let mut merges = vec![];
     for merge in array(&sheet["merges"])? {
         if let Some(mapped) = map_merge(Area::parse(string(merge)?)?, &own)? {
@@ -195,30 +203,117 @@ pub fn merges_after(sheet: &Value, operations: &[StructuralOperation]) -> Result
     Ok(Value::Array(merges))
 }
 
+/// The merges insertions copy from their style rows, where `operations`
+/// leave them, as A1 ranges.
+pub fn copied_merges(sheet: &Value, operations: &[StructuralOperation]) -> Result<Vec<String>> {
+    let mut state = MergeState::new(sheet)?;
+    for operation in sheet_operations(string(&sheet["name"])?, operations) {
+        state.apply(operation)?;
+    }
+    state.copies()
+}
+
+/// Whether two areas share a cell; a missing span is the whole sheet.
+fn overlap(a: Area, b: Area) -> bool {
+    let meet = |x: Option<(u32, u32)>, y: Option<(u32, u32)>| match (x, y) {
+        (Some((a1, a2)), Some((b1, b2))) => a1 <= b2 && b1 <= a2,
+        _ => true,
+    };
+    meet(a.rows, b.rows) && meet(a.columns, b.columns)
+}
+
+/// Whether an area is one cell, which Excel keeps as no merge.
+fn single(area: Area) -> bool {
+    area.columns.is_some_and(|(a, b)| a == b) && area.rows.is_some_and(|(a, b)| a == b)
+}
+
 /// Keeps merge coordinates current as structural operations are applied in
 /// order. Singleton areas remain internally so each operation is applied to
-/// the same ranges as prefix recalculation.
+/// the same ranges as prefix recalculation. An insertion copying the merges
+/// of its style rows adds them over each group of rows it inserts.
 pub(crate) struct MergeState {
     areas: Vec<Area>,
+    /// Which of `areas` an insertion copied from its style rows.
+    copied: Vec<bool>,
+    /// The merges of the original sheet, which style rows name.
+    originals: Vec<Area>,
+    /// The operations applied so far.
+    done: Vec<StructuralOperation>,
 }
 
 impl MergeState {
     pub(crate) fn new(sheet: &Value) -> Result<Self> {
-        let areas = array(&sheet["merges"])?
+        let areas: Vec<Area> = array(&sheet["merges"])?
             .iter()
             .map(|merge| Area::parse(string(merge)?))
             .collect::<Result<_>>()?;
-        Ok(Self { areas })
+        Ok(Self {
+            copied: vec![false; areas.len()],
+            originals: areas.clone(),
+            areas,
+            done: vec![],
+        })
     }
 
     pub(crate) fn apply(&mut self, operation: &StructuralOperation) -> Result<()> {
-        let mut next = Vec::with_capacity(self.areas.len());
-        for &area in &self.areas {
+        let mut areas = Vec::with_capacity(self.areas.len());
+        let mut copied = Vec::with_capacity(self.areas.len());
+        for (&area, &copy) in self.areas.iter().zip(&self.copied) {
             if let Some(mapped) = map_area(area, &[operation])? {
-                next.push(mapped);
+                areas.push(mapped);
+                copied.push(copy);
             }
         }
-        self.areas = next;
+        if operation.merges && operation.kind == OperationKind::InsertRows {
+            let from = operation
+                .style_from
+                .context("merges are copied from style rows")?;
+            let height = operation.style_rows.max(1);
+            let done: Vec<&StructuralOperation> = self.done.iter().collect();
+            // The merges within the style rows, where the operations before
+            // place their columns, with their first and last style row.
+            let mut template = vec![];
+            for &original in &self.originals {
+                let Some((top, bottom)) = original.rows else {
+                    continue;
+                };
+                if single(original) || top < from || bottom > from + height - 1 {
+                    continue;
+                }
+                let current = map_area(original, &done)?.with_context(|| {
+                    format!(
+                        "operation {} copies the merges of rows an earlier operation deletes",
+                        operation.id
+                    )
+                })?;
+                template.push((current.columns, top, bottom));
+            }
+            for group in 0..operation.count / height {
+                for &(columns, top, bottom) in &template {
+                    let first = operation.at + group * height + (top - from);
+                    let area = Area {
+                        columns,
+                        rows: Some((first, first + (bottom - top))),
+                    };
+                    if let Some(&other) = areas
+                        .iter()
+                        .find(|&&other| !single(other) && overlap(area, other))
+                    {
+                        bail!(
+                            "operation {} would merge {} over the merged range {}; insert the rows outside that merge",
+                            operation.id,
+                            area.render()?,
+                            other.render()?
+                        );
+                    }
+                    areas.push(area);
+                    copied.push(true);
+                }
+            }
+        }
+        self.areas = areas;
+        self.copied = copied;
+        self.done.push(operation.clone());
         Ok(())
     }
 
@@ -226,13 +321,20 @@ impl MergeState {
         Ok(Value::Array(
             self.areas
                 .iter()
-                .filter(|area| {
-                    !(area.columns.is_some_and(|(a, b)| a == b)
-                        && area.rows.is_some_and(|(a, b)| a == b))
-                })
+                .filter(|area| !single(**area))
                 .map(|area| area.render().map(|range| json!(range)))
                 .collect::<Result<_>>()?,
         ))
+    }
+
+    /// The merges insertions copied, where the operations so far leave them.
+    fn copies(&self) -> Result<Vec<String>> {
+        self.areas
+            .iter()
+            .zip(&self.copied)
+            .filter(|(area, copy)| **copy && !single(**area))
+            .map(|(area, _)| area.render())
+            .collect()
     }
 }
 pub fn column_number(name: &str) -> Result<u32> {
@@ -510,6 +612,8 @@ mod tests {
             at,
             count,
             style_from: None,
+            style_rows: 1,
+            merges: false,
         })
         .collect();
         let mut state = MergeState::new(&sheet).unwrap();
@@ -520,6 +624,45 @@ mod tests {
                 merges_after(&sheet, &operations[..=index]).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn an_insertion_copies_the_merges_of_its_style_rows_over_each_group() {
+        // A form laid out over rows 3 and 4: a name merged down both, a
+        // label merged across each.
+        let sheet = json!({"name":"S","merges":["A3:A4","B3:C3","B4:C4","E1:F1"]});
+        let operation = |id: &str, at, count, style_from, style_rows, merges| StructuralOperation {
+            id: id.into(),
+            sheet: "S".into(),
+            kind: OperationKind::InsertRows,
+            at,
+            count,
+            style_from,
+            style_rows,
+            merges,
+        };
+        let copy = operation("copy", 5, 4, Some(3), 2, true);
+        // A later insertion above moves the copies with the originals.
+        let later = operation("later", 2, 1, None, 1, false);
+        assert_eq!(
+            copied_merges(&sheet, std::slice::from_ref(&copy)).unwrap(),
+            ["A5:A6", "B5:C5", "B6:C6", "A7:A8", "B7:C7", "B8:C8"]
+        );
+        assert_eq!(
+            copied_merges(&sheet, &[copy.clone(), later.clone()]).unwrap(),
+            ["A6:A7", "B6:C6", "B7:C7", "A8:A9", "B8:C8", "B9:C9"]
+        );
+        let merges = merges_after(&sheet, &[copy, later]).unwrap();
+        assert!(merges.as_array().unwrap().contains(&json!("A4:A5")));
+        // Rows inserted inside a merge grow it; a copy over its columns
+        // would overlap it.
+        let sheet = json!({"name":"S","merges":["A2:B2","A3:A4"]});
+        let inside = operation("inside", 4, 1, Some(2), 1, true);
+        let error = merges_after(&sheet, &[inside]).unwrap_err().to_string();
+        assert!(
+            error.contains("A4:B4 over the merged range A3:A5"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -539,6 +682,8 @@ mod tests {
             at,
             count,
             style_from: None,
+            style_rows: 1,
+            merges: false,
         })
         .collect::<Vec<_>>();
         for row in 1..20 {

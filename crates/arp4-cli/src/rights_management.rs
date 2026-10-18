@@ -19,14 +19,14 @@ const LABEL_REFUSED: &str = "Office refused to remove the sensitivity label; the
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Application {
+pub(crate) enum Application {
     Excel,
     Word,
     PowerPoint,
 }
 
 impl Application {
-    fn of(format: &str) -> Result<Self> {
+    pub(crate) fn of(format: &str) -> Result<Self> {
         Ok(if EXCEL_FORMATS.contains(&format) {
             Self::Excel
         } else if WORD_FORMATS.contains(&format) {
@@ -38,7 +38,7 @@ impl Application {
         })
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Excel => "Excel",
             Self::Word => "Word",
@@ -165,7 +165,7 @@ fn unprotect(document: &impl Protected, output: &Path) -> Result<Vec<String>> {
 pub use office::worker;
 
 #[cfg(windows)]
-mod office {
+pub(crate) mod office {
     use super::*;
     use crate::office_com::{Apartment, Arg, call, get, isolated_application, method, prop, put};
     use windows::Win32::System::Com::IDispatch;
@@ -264,7 +264,11 @@ mod office {
         Ok(())
     }
 
-    fn open(application: &IDispatch, kind: Application, source: &str) -> Result<IDispatch> {
+    pub(crate) fn open(
+        application: &IDispatch,
+        kind: Application,
+        source: &str,
+    ) -> Result<IDispatch> {
         put(application, "AutomationSecurity", Arg::Int(3))?;
         match kind {
             Application::Excel => {
@@ -328,7 +332,7 @@ mod office {
         }
     }
 
-    fn close(document: &IDispatch, kind: Application) {
+    pub(crate) fn close(document: &IDispatch, kind: Application) {
         let _ = match kind {
             Application::Excel => call(document, "Close", vec![Arg::Bool(false)]),
             // wdDoNotSaveChanges

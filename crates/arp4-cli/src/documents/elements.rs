@@ -865,28 +865,26 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
         .values_mut()
     {
         let mut groups = json!({});
-        let positions = |axis: &str| -> Result<BTreeMap<u64, String>> {
+        // Cells are matched by the keys their rows and columns have in the
+        // extraction, which pending operations leave as they are.
+        let identities = |axis: &str| -> Result<HashMap<String, String>> {
             sheet[axis]
                 .as_object()
                 .context("layout axis missing")?
                 .iter()
-                .map(|(id, e)| {
-                    Ok((
-                        e["position"].as_u64().context("position missing")?,
-                        id.clone(),
-                    ))
-                })
+                .map(|(id, e)| Ok((string(&e["key"])?.to_owned(), id.clone())))
                 .collect()
         };
-        let rows = positions("rows")?;
-        let columns = positions("columns")?;
+        let rows = identities("rows")?;
+        let columns = identities("columns")?;
         let mut ids = BTreeMap::new();
         for element in structure.iter().filter(|e| e["sheet"] == sheet["name"]) {
             for cell in array(&element["cells"])? {
                 let (column, row) = excel::coordinate(string(&cell["address"])?)?;
-                if let (Some(row), Some(column)) =
-                    (rows.get(&u64::from(row)), columns.get(&u64::from(column)))
-                {
+                if let (Some(row), Some(column)) = (
+                    rows.get(&format!("r{row}")),
+                    columns.get(&excel::column_name(column)?),
+                ) {
                     ids.insert(string(&cell["id"])?.to_owned(), cell_id(row, column));
                 }
             }
@@ -1006,6 +1004,110 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
             }
         }
         sheet["groups"] = groups;
+    }
+    Ok(())
+}
+
+/// Puts each cell of `cells`, given a value the page's element metadata
+/// holds none for, in the innermost table of the layout `sheet` whose cells
+/// are around it, as an insertion's cells go: a cell of a record joins its
+/// record, a heading of the leading records as a heading. The groups the
+/// next [`encode`] arranges the page with are those of the metadata and these.
+pub(super) fn adopt_cells(sheet: &mut Value, cells: &[String]) -> Result<()> {
+    if sheet.get("groups").is_none() {
+        sheet["groups"] = groups(&sheet["element_metadata"])?;
+    }
+    let position = |sheet: &Value, id: &str| -> Option<(u64, u64)> {
+        let (row, column) = cell_axes(id)?;
+        Some((
+            sheet["rows"][&row]["position"].as_u64()?,
+            sheet["columns"][&column]["position"].as_u64()?,
+        ))
+    };
+    let mut bounds: BTreeMap<String, (u64, u64, u64, u64)> = BTreeMap::new();
+    for (id, group) in sheet["groups"].as_object().context("groups missing")? {
+        let (Some(table), Some((y, x))) = (group["table"].as_str(), position(sheet, id)) else {
+            continue;
+        };
+        let b = bounds.entry(table.to_owned()).or_insert((y, x, y, x));
+        b.0 = b.0.min(y);
+        b.1 = b.1.min(x);
+        b.2 = b.2.max(y);
+        b.3 = b.3.max(x);
+    }
+    for id in cells {
+        if !sheet["groups"][id].is_null() {
+            continue;
+        }
+        let Some((y, x)) = position(sheet, id) else {
+            continue;
+        };
+        let area = |b: &(u64, u64, u64, u64)| (b.2 - b.0 + 1) * (b.3 - b.1 + 1);
+        let around: Vec<_> = bounds
+            .iter()
+            .filter(|(_, b)| b.0 <= y && y <= b.2 && b.1 <= x && x <= b.3)
+            .collect();
+        let smallest = around.iter().map(|(_, b)| area(b)).min();
+        let candidates: Vec<_> = around
+            .into_iter()
+            .filter(|(_, b)| Some(area(b)) == smallest)
+            .collect();
+        let [(table, _)] = candidates.as_slice() else {
+            continue;
+        };
+        let (row, _) = cell_axes(id).context("cell ID")?;
+        // The other cells of its record, in the same table.
+        let record: Vec<&Value> = sheet["groups"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(other, group)| {
+                group["table"] == table.as_str() && cell_axes(other).is_some_and(|(r, _)| r == row)
+            })
+            .map(|(_, group)| group)
+            .collect();
+        let mut group = json!({"table":table});
+        if !record.is_empty() && record.iter().all(|g| g["heading"] == true) {
+            group["heading"] = json!(true);
+        } else if let Some(first) = record.first() {
+            for key in ["parent", "within"] {
+                if let Some(value) = first.get(key) {
+                    group[key] = value.clone();
+                }
+            }
+        }
+        sheet["groups"][id] = group;
+    }
+    Ok(())
+}
+
+/// Puts in the groups of the layout `sheet` the groups that `classified`,
+/// the same sheet classified from the interpretation, gives the cells `ids`
+/// coming back to the page, as when an operation deleting them is taken
+/// back. A table the sheet holds other cells of keeps the ID the sheet gives
+/// it.
+pub(super) fn restore_groups(sheet: &mut Value, classified: &Value, ids: &[String]) -> Result<()> {
+    if sheet.get("groups").is_none() {
+        sheet["groups"] = groups(&sheet["element_metadata"])?;
+    }
+    let mut names: HashMap<&str, String> = HashMap::new();
+    for (id, group) in classified["groups"].as_object().into_iter().flatten() {
+        if let (Some(table), Some(current)) = (
+            group["table"].as_str(),
+            sheet["groups"][id]["table"].as_str(),
+        ) {
+            names.entry(table).or_insert_with(|| current.to_owned());
+        }
+    }
+    for id in ids {
+        let mut group = classified["groups"][id].clone();
+        if group.is_null() {
+            continue;
+        }
+        if let Some(name) = group["table"].as_str().and_then(|table| names.get(table)) {
+            group["table"] = json!(name);
+        }
+        sheet["groups"][id] = group;
     }
     Ok(())
 }
@@ -1337,7 +1439,7 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
 
 /// The version of content pages: tables as the trees of their records and
 /// categories.
-pub(super) const CONTENT_VERSION: &str = "6";
+pub(crate) const CONTENT_VERSION: &str = "6";
 
 /// The YAML of the content `page` of `layout`, as [`crate::document_body::yaml`]
 /// orders it.

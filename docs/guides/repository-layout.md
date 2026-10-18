@@ -75,7 +75,7 @@ workflowの作業先は `.arp/work/workflow/<run-id>/`、既定IDはcurrentで�
 
 ## 契約の版
 
-製品は `1.0.0-alpha.1`、保存形式・入力・モデル・workflow状態・Agent向け契約はv1です。共有設定は `.arp/config.yml` を使用します。semantic finalizeの直接採用は `--registry --project <名称>` を使い、実行ディレクトリから探索したプロジェクトの `.arp/registry/` に保存します。
+製品は `1.0.0-alpha.1` です。各保存形式の版は契約の `schema_version` が正本で、本文（`content`）は6、`layout.yml`（`document-layout`）は14、抽出結果（`extraction`）は2、構造解釈の修正記録は2、ほかの保存形式・入力・モデル・workflow状態・Agent向け契約は1です。一覧は [文書保存形式の契約](../reference/document-contracts.md) を参照してください。共有設定は `.arp/config.yml` を使用します。semantic finalizeの直接採用は `--registry --project <名称>` を使い、実行ディレクトリから探索したプロジェクトの `.arp/registry/` に保存します。
 
 ## 対応範囲
 

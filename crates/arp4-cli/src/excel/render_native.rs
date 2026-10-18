@@ -28,6 +28,11 @@ struct Request {
     result: String,
     /// How long to wait for another render to finish with the clipboard.
     lock_wait_seconds: u64,
+    /// Whether the formulas are calculated before the range is drawn, as
+    /// Excel does opening a workbook whose results ARP left out; otherwise
+    /// the results saved in the workbook are drawn.
+    #[serde(default)]
+    recalculate: bool,
 }
 
 struct RenderMutex(Handle);
@@ -157,6 +162,9 @@ fn render_with_excel(excel: &IDispatch, request: &Request) -> Result<()> {
             Arg::Bool(false),
         ],
     )?;
+    if request.recalculate {
+        call(excel, "CalculateFull", vec![])?;
+    }
     let outcome = render_range(excel, &scratch, &source, request);
     let _ = call(&source, "Close", vec![Arg::Bool(false)]);
     let _ = call(&scratch, "Close", vec![Arg::Bool(false)]);

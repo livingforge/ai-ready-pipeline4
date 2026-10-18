@@ -63,7 +63,7 @@ impl Workflow {
         }
         let mut docs = BTreeSet::new();
         for path in replies {
-            let reply = read(&path)?;
+            let reply = command::read_reply(&path)?;
             let input = serde_json::from_value(self.store.json(&self.state.input)?)?;
             let packet = crate::semantic::packet(&input, s(&reply["document"])?)?;
             let reply =
@@ -105,13 +105,17 @@ impl Workflow {
             }
         }
         // An update can interrupt a review batch. Preserve completed clean reviews
-        // even when another task in that batch has not been submitted yet.
+        // even when another task in that batch has not been submitted yet. A
+        // review with only improvements is clean, as review reuse counts it.
         for task in &before.tasks {
             if task.state == TaskState::Complete
                 && (task.stage == Stage::Review || task.stage == Stage::GlobalReview)
             {
                 let reply = self.artifact(&task.reply)?;
-                if arr(&reply["findings"])?.is_empty() {
+                if arr(&reply["findings"])?
+                    .iter()
+                    .all(|f| f["action"] == "improvement")
+                {
                     self.state.reviews[s(&reply["packet"])?] = json!(task.reply);
                 }
             }

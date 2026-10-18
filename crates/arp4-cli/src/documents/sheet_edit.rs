@@ -26,8 +26,12 @@ pub enum EditKind {
     Insert {
         position: Position,
         count: Option<u32>,
-        /// Rows only: the original row whose formatting the new rows take.
+        /// Rows only: the original row whose formatting the new rows take, or
+        /// rows (`9:10`) they take in turn.
         style_from: Option<String>,
+        /// Rows only: make the merges within the style rows again over each
+        /// group of new rows.
+        merges: bool,
         /// One object per inserted row (keyed by column) or column (keyed by row).
         values: Option<Value>,
     },
@@ -566,6 +570,14 @@ impl Store {
         let book = Source::open(&source)?;
         let date1904 = matches!(&book, Source::Excel(workbook) if workbook.date1904);
         let plan = plan(&sheet, edit, &op_id, date1904)?;
+        if laid_out
+            && (plan.operation.get("style_rows").is_some() || plan.operation["merges"] == true)
+        {
+            return Err(rejection(
+                "unsupported_format",
+                "style rows taken in turn and copied merges apply to Excel worksheets; a Word or PowerPoint row takes the format of one row",
+            ));
+        }
 
         // Inspection already resolved page IDs to files. Only read pages this
         // operation may change or needs for its preview.
@@ -882,6 +894,7 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
             position,
             count,
             style_from,
+            merges,
             values,
         } => {
             let (spec, after) = match position {
@@ -902,9 +915,33 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
                     ));
                 }
             };
+            // The style rows a group of new rows takes in turn.
+            let (style_spec, style_rows) = match style_from.as_deref().map(|s| s.split_once(':')) {
+                Some(Some((first, last))) if rows => {
+                    let row = |spec: &str| match sheet.parse(spec, true) {
+                        Ok(Anchor::Original(row)) => Ok(row),
+                        _ => Err(rejection(
+                            "invalid_position",
+                            format!(
+                                "--style-from {spec}: name rows of the original sheet (9:10 or r9:r10)"
+                            ),
+                        )),
+                    };
+                    let (first, last) = (row(first)?, row(last)?);
+                    ensure!(
+                        last >= first,
+                        rejection(
+                            "invalid_position",
+                            "--style-from names its first row first (9:10)"
+                        )
+                    );
+                    (Some(first.to_string()), last - first + 1)
+                }
+                _ => (style_from.clone(), 1),
+            };
             let count = match (count, values.len()) {
                 (Some(count), 0) => *count,
-                (None, 0) => 1,
+                (None, 0) => style_rows,
                 (None, n) => u32::try_from(n)?,
                 (Some(count), n) if *count as usize == n => *count,
                 (Some(count), n) => {
@@ -918,10 +955,19 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
                 count >= 1,
                 rejection("invalid_count", "--count must be at least 1")
             );
+            ensure!(
+                count % style_rows == 0,
+                rejection(
+                    "invalid_count",
+                    format!(
+                        "the new rows take the {style_rows} style rows in turn, so insert a multiple of {style_rows} rows"
+                    )
+                )
+            );
             operation["at"] = json!(at);
             operation["count"] = json!(count);
             let style = if rows {
-                match style_from {
+                match &style_spec {
                     Some(spec) => match sheet.parse(spec, true)? {
                         Anchor::Original(row) => Some(row),
                         _ => {
@@ -935,10 +981,10 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
                 }
             } else {
                 ensure!(
-                    style_from.is_none(),
+                    style_from.is_none() && !merges,
                     rejection(
                         "invalid_arguments",
-                        "--style-from applies to rows; inserted columns take the format of the column to their left, as in Excel"
+                        "--style-from and --merges apply to rows; inserted columns take the format of the column to their left, as in Excel"
                     )
                 );
                 None
@@ -946,9 +992,27 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
             if let Some(row) = style {
                 operation["style_from"] = json!(row);
             }
-            // A new row's values take the types of their columns. A new column
-            // is new data, so its values stay as given.
-            let reference_row = if rows { style } else { None };
+            if style_rows > 1 {
+                operation["style_rows"] = json!(style_rows);
+            }
+            if *merges {
+                ensure!(
+                    style.is_some(),
+                    rejection(
+                        "invalid_arguments",
+                        "--merges copies the merges of the style rows, and no row is above the new ones; name them with --style-from"
+                    )
+                );
+                operation["merges"] = json!(true);
+            }
+            // A new row's values take the types of their columns, as the style
+            // row it takes holds them. A new column is new data, so its values
+            // stay as given.
+            let reference_row = |index: usize| {
+                style
+                    .filter(|_| rows)
+                    .map(|row| row + u32::try_from(index).unwrap_or(0) % style_rows)
+            };
             for (index, item) in values.iter().enumerate() {
                 let key = format!("{id}-{}", index + 1);
                 let Some(item) = item.as_object() else {
@@ -978,7 +1042,8 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
                                 ),
                             ));
                         }
-                        let reference = reference_row.and_then(|row| sheet.reference(number, row));
+                        let reference =
+                            reference_row(index).and_then(|row| sheet.reference(number, row));
                         (key.clone(), column, reference)
                     } else {
                         let row = name
@@ -1204,6 +1269,8 @@ mod tests {
             at: 900_001,
             count: 1,
             style_from: None,
+            style_rows: 1,
+            merges: false,
         }];
         let sheet = Sheet {
             name: "S",

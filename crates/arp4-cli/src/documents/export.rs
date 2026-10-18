@@ -1,24 +1,45 @@
 use super::*;
 
+/// What the content of a document writes back to its original: the values,
+/// shape texts and formulas that differ from the extraction, the fonts that
+/// differ from the original's, the entries left out or unresolved, the cells
+/// the operations delete, and the image assets the operations add.
+pub(super) struct Writeback {
+    pub(super) changes: Vec<Value>,
+    pub(super) formulas: Vec<Value>,
+    pub(super) fonts: Vec<Value>,
+    pub(super) excluded: Vec<Value>,
+    pub(super) pending: Vec<Value>,
+    pub(super) deleted_cells: Vec<Value>,
+    pub(super) assets: BTreeMap<String, Vec<u8>>,
+}
+
+impl Writeback {
+    /// The edits `patch` writes to the original.
+    pub(super) fn edits<'a>(
+        &'a self,
+        result: &'a Inspection,
+    ) -> Result<crate::document_source::Edits<'a>> {
+        Ok(crate::document_source::Edits {
+            operations: array(&result.mappings["operations"])?,
+            changes: &self.changes,
+            formulas: &self.formulas,
+            fonts: &self.fonts,
+            assets: &self.assets,
+        })
+    }
+}
+
 impl Store {
-    pub fn export(&self, id: &str, output: Option<&Path>, engine: &str) -> Result<Value> {
-        let dir = self.document(id)?;
-        let result = self.inspect(&dir, true)?;
-        ensure!(
-            result.source_current,
-            "source changed/missing; re-import before export"
-        );
-        let source = under(&self.root, string(&result.meta["source"]["path"])?)?;
-        let book = Source::open(&source)?;
-        ensure!(
-            book.parser() != "native-text/1",
-            "text documents use direct editing; edit the original and re-import with the same document ID (export/apply is not supported)"
-        );
-        ensure!(
-            engine == "auto" || engine == book.engine(),
-            "unsupported export engine for source format; use auto or {}",
-            book.engine()
-        );
+    /// The [`Writeback`] of the inspected document in `dir`, whose original
+    /// `book` holds. Row, column and slide operations its original cannot take
+    /// are refused here, before any output is written.
+    pub(super) fn writeback(
+        &self,
+        dir: &Path,
+        result: &Inspection,
+        book: &Source,
+    ) -> Result<Writeback> {
         // Inserted slides are written like pages of the original they copy.
         let operated = operated_extraction(&result.extraction, &result.mappings["operations"])?;
         let operations = excel::parse_operations(
@@ -39,8 +60,6 @@ impl Store {
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
         };
-        // Report unsupported row/column and slide edits in the plan, before any
-        // output is written.
         book.ensure_row_edits_supported(&operations, array(&result.mappings["operations"])?)?;
         book.ensure_slide_edits_supported(array(&result.mappings["operations"])?)?;
         let image_operations = excel::parse_image_operations(
@@ -58,7 +77,7 @@ impl Store {
                     .filter_map(|o| o.asset().map(str::to_owned)),
             )
             .collect();
-        let image_assets = self.image_assets(&dir, &assets)?;
+        let image_assets = self.image_assets(dir, &assets)?;
         let mut changes = vec![];
         let mut formulas = vec![];
         let mut excluded = vec![];
@@ -125,12 +144,15 @@ impl Store {
                     let new = &result.values[&key(e)?];
                     match mapping_target(&e["target"])?.context("cell writeback requires target")? {
                         MappingTarget::Cell { sheet, cell } => {
-                            let old = cells.get(&(sheet, cell)).context("missing cell")?;
-                            if old["value"] != *new
+                            // A cell the original leaves empty is none of the extraction's.
+                            let old = cells
+                                .get(&(sheet, cell))
+                                .map_or(&Value::Null, |old| &old["value"]);
+                            if *old != *new
                                 && let Some(mapped) =
                                     excel::map_coordinate(sheet, cell, sheet_operations(sheet))?
                             {
-                                changes.push(json!({"sheet":sheet,"cell":mapped,"source_cell":cell,"before":old["value"],"after":new,"field":e["field"]}));
+                                changes.push(json!({"sheet":sheet,"cell":mapped,"source_cell":cell,"before":old,"after":new,"field":e["field"]}));
                             }
                         }
                         MappingTarget::InsertionRow {
@@ -219,11 +241,36 @@ impl Store {
             }
         }
         fonts.sort_by(|a, b| a["field"].as_str().cmp(&b["field"].as_str()));
-        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":changes,"formula_changes":formulas,"font_changes":fonts,"unreflected":pending,"excluded":excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"deleted_cells":deleted_cells,"engine":book.engine(),"complete":pending.is_empty(),"written":false});
+        Ok(Writeback {
+            changes,
+            formulas,
+            fonts,
+            excluded,
+            pending,
+            deleted_cells,
+            assets: image_assets,
+        })
+    }
+
+    pub fn export(&self, id: &str, output: Option<&Path>) -> Result<Value> {
+        let dir = self.document(id)?;
+        let result = self.inspect(&dir, true)?;
+        ensure!(
+            result.source_current,
+            "source changed/missing; re-import before export"
+        );
+        let source = under(&self.root, string(&result.meta["source"]["path"])?)?;
+        let book = Source::open(&source)?;
+        ensure!(
+            book.parser() != "native-text/1",
+            "text documents use direct editing; edit the original and re-import with the same document ID (export/apply is not supported)"
+        );
+        let plan = self.writeback(&dir, &result, &book)?;
+        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":plan.changes,"formula_changes":plan.formulas,"font_changes":plan.fonts,"unreflected":plan.pending,"excluded":plan.excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"value_edits":result.mappings["value_edits"],"deleted_cells":plan.deleted_cells,"engine":book.engine(),"complete":plan.pending.is_empty(),"written":false});
         let Some(output) = output else {
             return Ok(report);
         };
-        ensure!(pending.is_empty(), "unresolved writeback mappings");
+        ensure!(plan.pending.is_empty(), "unresolved writeback mappings");
         let output = if output.is_absolute() {
             output.to_owned()
         } else {
@@ -253,16 +300,7 @@ impl Store {
             "result.{}",
             source.extension().unwrap().to_string_lossy()
         ));
-        let info = book.patch(
-            &staged,
-            &crate::document_source::Edits {
-                operations: array(&result.mappings["operations"])?,
-                changes: &changes,
-                formulas: &formulas,
-                fonts: &fonts,
-                assets: &image_assets,
-            },
-        )?;
+        let info = book.patch(&staged, &plan.edits(&result)?)?;
         for (k, v) in info.as_object().unwrap() {
             report[k] = v.clone()
         }
@@ -311,6 +349,8 @@ mod efficiency_tests {
                 at: 400 + index * 4,
                 count: 1,
                 style_from: None,
+                style_rows: 1,
+                merges: false,
             })
             .collect();
         let addresses: Vec<_> = (1..=1000)

@@ -2,9 +2,18 @@
 use super::*;
 
 pub fn reply_schema() -> Value {
+    reply_schema_for(false)
+}
+
+/// The reply schema of an extraction task. A partition or an incremental
+/// scope leaves relationships to the linking stage; a whole document may
+/// give its local links.
+pub fn reply_schema_for(links: bool) -> Value {
     let mut full = crate::semantic_contract::reply_schema();
-    for field in ["requirements", "related"] {
-        full["$defs"]["classification"]["properties"][field]["maxItems"] = json!(0);
+    if !links {
+        for field in ["requirements", "related"] {
+            full["$defs"]["classification"]["properties"][field]["maxItems"] = json!(0);
+        }
     }
     let defs = full.as_object_mut().unwrap().remove("$defs").unwrap();
     json!({"$defs":defs,"oneOf":[full,{"type":"object","additionalProperties":false,"required":["packet","document","request_tables","reason"],"properties":{

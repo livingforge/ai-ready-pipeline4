@@ -585,46 +585,7 @@ impl Store {
         )?;
         for (i, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
             let page = format!("sheet-{}", i + 1);
-            let mut rows = json!({});
-            let mut formulas = json!({});
-            let mut fonts = json!({});
-            for c in array(&sheet["cells"])? {
-                let address = string(&c["address"])?;
-                let (_, row) = excel::coordinate(address)?;
-                let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
-                rows[&format!("r{row}")][column] = c["value"].clone();
-                let font = crate::extraction::font(sheet, c)?;
-                if c["type"] == "formula" {
-                    let f = string(&c["id"])?;
-                    formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));
-                    if !font.is_null() {
-                        fonts["formulas"][f]["formula"] = font.clone();
-                    }
-                } else if !font.is_null() {
-                    fonts["table-1"][&format!("r{row}")][column] = font.clone();
-                }
-            }
-            let mut shapes = json!({});
-            for (key, drawing) in shape_texts(sheet)? {
-                shapes[&key]["text"] = drawing["text"].clone();
-                if let Some(font) = drawing.get("font") {
-                    fonts["shapes"][&key]["text"] = font.clone();
-                }
-            }
-            let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":&note}});
-            for (block, title, body) in [
-                ("table-1", "本文", rows),
-                ("formulas", "数式原文", formulas),
-                ("shapes", "図形の文字", shapes),
-            ] {
-                if body.as_object().is_some_and(|o| !o.is_empty()) {
-                    blocks[block] = json!({"title":title,"rows":body});
-                }
-            }
-            let body = elements::encode(
-                &json!({"schema_version":identity::GRID_VERSION,"page_id":page,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
-                &mut layout,
-            )?;
+            let body = elements::encode(&initial_page(sheet, &page, &json!(note))?, &mut layout)?;
             replace(
                 &ready
                     .join("content")
@@ -682,6 +643,50 @@ impl Store {
         }
         Ok(result)
     }
+}
+
+/// The grid page of `page` that import makes of the extraction `sheet`: its
+/// values, formulas, shape texts and fonts, with the extraction's `note`.
+pub(super) fn initial_page(sheet: &Value, page: &str, note: &Value) -> Result<Value> {
+    let mut rows = json!({});
+    let mut formulas = json!({});
+    let mut fonts = json!({});
+    for c in array(&sheet["cells"])? {
+        let address = string(&c["address"])?;
+        let (_, row) = excel::coordinate(address)?;
+        let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
+        rows[&format!("r{row}")][column] = c["value"].clone();
+        let font = crate::extraction::font(sheet, c)?;
+        if c["type"] == "formula" {
+            let f = string(&c["id"])?;
+            formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));
+            if !font.is_null() {
+                fonts["formulas"][f]["formula"] = font.clone();
+            }
+        } else if !font.is_null() {
+            fonts["table-1"][&format!("r{row}")][column] = font.clone();
+        }
+    }
+    let mut shapes = json!({});
+    for (key, drawing) in shape_texts(sheet)? {
+        shapes[&key]["text"] = drawing["text"].clone();
+        if let Some(font) = drawing.get("font") {
+            fonts["shapes"][&key]["text"] = font.clone();
+        }
+    }
+    let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":note}});
+    for (block, title, body) in [
+        ("table-1", "本文", rows),
+        ("formulas", "数式原文", formulas),
+        ("shapes", "図形の文字", shapes),
+    ] {
+        if body.as_object().is_some_and(|o| !o.is_empty()) {
+            blocks[block] = json!({"title":title,"rows":body});
+        }
+    }
+    Ok(
+        json!({"schema_version":identity::GRID_VERSION,"page_id":page,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
+    )
 }
 
 /// What the import of a new version of an original carries the interpretation

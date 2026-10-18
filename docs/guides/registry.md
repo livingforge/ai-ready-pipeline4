@@ -68,7 +68,7 @@ arp4 spec registry render
 arp4 spec registry preflight --input input-all.json --model model.json --catalog catalog.json --project kotonoha
 ```
 
-`preflight` はモデル検証、ID台帳、分類キー、分類メタデータ、正本importの各ゲートを個別に返す。`registry init` は最初の不整合で停止するため、既存の自動処理や運用確認では `preflight` の結果を保存する。
+`preflight` はモデル検証（`model_validation`）、ID台帳（`identity_ledger`）、プロジェクト名（`project`）、分類メタデータ（`catalog_actor`・`catalog_reason`）、分類キー（`classification_keys`）の各ゲートを個別に返す。正本import（`registry_import`）のゲートは、ほかのゲートがすべて通ったときだけ実行して結果に加える。いずれかのゲートが通らなければ `ready: false`・`ok: false`・終了コード2を返す。`registry init` は最初の不整合で停止するため、既存の自動処理や運用確認では `preflight` の結果を保存する。
 
 保存先は `.arp/registry/` に固定する。初期状態は全件 proposed（提案）。AI監査や元の ready を承認に転用しない。
 既存の verification は原文照合手順として保持し、実装受入条件 acceptance は別に記述する。
@@ -121,7 +121,7 @@ arp4 spec registry render
 承認は別の変更で `approve: [{"id":"REQ-000005","reason":"実際のレビュー結果"}]` と指定する。
 要件・仕様には非空の acceptance が必要。リンク先も承認済みである必要がある（同じ変更での同時承認は可能）。
 仮定の条件が残る項目は承認できない。受入条件の妥当性やレビューの実施自体は機械では証明しない。
-対象・属性・条件を正規化した同一論点の値の不一致は conflict_candidates として表示し、矛盾する項目の同時承認を拒否する。
+対象・属性・条件を正規化した同一論点の値の不一致は conflict_candidates として表示し、矛盾する項目の同時承認を拒否する。論点と値の比べ方は `spec check` と同じ（[仕様モデル](../reference/specifications.md)）で、連続する空白と大文字小文字だけを正規化し、composed 条件は根拠の引用で比べる。
 意味上の同義語や条件の包含関係まで推論するものではない。
 未解決事項は `resolve_issues: {"既存の課題文":"確認者と確認結果を含む解決理由"}` で解決を記録する。
 `add_issues` で新たな課題を登録すると、既存の承認済み項目を再確認待ちへ戻す。
@@ -138,5 +138,5 @@ arp4 spec registry render
 - `render` は固定キャッシュを再生成する。生成物が手編集されている場合や管理外ファイルがある場合は拒否する。
 - 参照されなくなった抽出入力は現在版から削除する。過去の根拠は過去のGitコミットで確認する。
 - 原本の変更は自動で要件・仕様に反映しない。再取込し、影響項目の根拠・値・関係を明示的に更新する。
-- registryの変更をOfficeへ自動変換する機能はない。対応文書のYAMLに変更案を作り、review後の `documents apply` で原本へ反映する。
+- registryの変更をOfficeへ自動変換する機能はない。対応文書のYAMLに変更案を作り、review→export→出力を開いた表示確認→`documents confirm-export`→`documents apply` の順で原本へ反映する（[文書操作と対応範囲](documents.md)）。
 - 要件・仕様間の関連と分類、状態は管理する。コード・テストとの自動対応や設計図の更新は対象外。

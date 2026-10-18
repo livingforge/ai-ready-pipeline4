@@ -93,6 +93,21 @@ impl Workbook {
         Ok(false)
     }
 
+    /// Whether one of `changes` gives a value to a cell holding none, which
+    /// the worksheet may not have: one whose `before` is null names a cell
+    /// the workbook holds no value in, created as Excel creates it.
+    fn writes_new_cells(&self, changes: &[Value]) -> Result<bool> {
+        let cells = cells_by_address(self);
+        for change in changes {
+            if change.get("before").is_some_and(Value::is_null)
+                && !cells.contains_key(&(string(&change["sheet"])?, string(&change["cell"])?))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Whether any cell holds a formula, whose cached result a change can make stale.
     fn has_formulas(&self) -> bool {
         self.cells
@@ -273,43 +288,11 @@ impl Workbook {
                     )?,
                     "non-edited worksheet content changed: {part}"
                 );
-                let before_text = std::str::from_utf8(&self.parts[part])?;
-                let after_text = std::str::from_utf8(after)?;
-                let before_doc = xml(before_text.as_bytes())?;
-                let after_doc = xml(after_text.as_bytes())?;
-                let after_cells: BTreeMap<_, _> = after_doc
-                    .descendants()
-                    .filter(|node| node.has_tag_name((NS, "c")))
-                    .map(|cell| (cell.attribute("r").unwrap_or(""), cell))
-                    .collect();
-                for cell in before_doc.descendants().filter(|node| {
-                    node.has_tag_name((NS, "c"))
-                        && values.contains(node.attribute("r").unwrap_or(""))
-                }) {
-                    let address = cell.attribute("r").context("missing cell address")?;
-                    let written = *after_cells
-                        .get(address)
-                        .context("edited cell disappeared")?;
-                    ensure!(
-                        super::text_edit::run_properties(cell, before_text, &self.parts)?
-                            == super::text_edit::run_properties(written, after_text, &self.parts)?,
-                        "rich text run properties changed: {part}!{address}"
-                    );
-                }
+                self.ensure_runs_kept(part, after, &values)?;
             }
         }
         write_archive(&self.raw, destination, &patched)?;
-        let reread = Workbook::open(destination)?;
-        ensure!(
-            reread.parts.len() == self.parts.len(),
-            "Excel package parts changed unexpectedly"
-        );
-        for (part, before) in &self.parts {
-            ensure!(
-                reread.parts.get(part) == Some(patched.get(part).unwrap_or(before)),
-                "Excel package preservation failed: {part}"
-            );
-        }
+        self.ensure_package_kept(destination, &patched)?;
         ensure_read_back(destination, changes, formulas, shapes, &[])?;
         Ok(
             json!({"changed_parts":patched.keys().collect::<Vec<_>>(),"requires_excel_recalculation":recalc,"non_edit_preservation_verified":true,"layout_review_required":true}),
@@ -350,8 +333,13 @@ impl Workbook {
             .cloned()
             .partition(|change| change.get("shape").is_some());
         let changes = changes.as_slice();
-        // A table's header and totals labels are written with its definition.
-        if operation_values.is_empty() && assets.is_empty() && !self.writes_table_labels(changes)? {
+        // A table's header and totals labels are written with its definition,
+        // and a new cell into its row.
+        if operation_values.is_empty()
+            && assets.is_empty()
+            && !self.writes_table_labels(changes)?
+            && !self.writes_new_cells(changes)?
+        {
             return self.patch_scalar(destination, changes, formulas, &shapes);
         }
         let operations = parse_operations(operation_values, &self.sheets)?;
@@ -423,6 +411,12 @@ impl Workbook {
         }
         let labels = LabelEdits::new(&self.parts, &self.sheets, &operations, &change_map)?;
         let structural = !operations.is_empty();
+        // Without operations, labels or images only new cells are written; like
+        // scalar writes, they are proved to leave everything else as it was.
+        let preserving = !structural
+            && labels.parts.is_empty()
+            && labels.renamed.is_empty()
+            && image_operations.is_empty();
         // Renamed table columns rename structured references in every formula.
         let rewriting = structural || !labels.renamed.is_empty();
         let recalc =
@@ -556,10 +550,13 @@ impl Workbook {
                         &operations,
                     )?;
                     let (_, row) = coordinate(&address)?;
-                    let template = operation
+                    // The style rows are taken in turn.
+                    let style_from = operation
                         .style_from
-                        .and_then(|number| original_rows.get(&number).copied());
-                    if let Some(style_from) = operation.style_from {
+                        .map(|number| number + offset % operation.style_rows.max(1));
+                    let template =
+                        style_from.and_then(|number| original_rows.get(&number).copied());
+                    if let Some(style_from) = style_from {
                         formats.template(row, style_from);
                     }
                     rows.push(new_row(template, row, &prefix));
@@ -656,6 +653,10 @@ impl Workbook {
             if rewriting {
                 result = rewrite_sheet_references(&result, name, &moves, true)?;
             }
+            let copies = copied_merges(sheet, &operations)?;
+            if !copies.is_empty() {
+                result = add_merges(&result, &copies)?;
+            }
             if let Some(used) = used {
                 result = cover_dimension(&result, used)?;
             }
@@ -710,13 +711,119 @@ impl Workbook {
             patched.insert("xl/workbook.xml".into(), result.into_bytes());
         }
         apply_shape_texts(&self.parts, &mut patched, &shapes)?;
+        if preserving {
+            self.ensure_new_cells_only(&patched, changes, &formula_edits, recalc)?;
+        }
         write_archive_without(&self.raw, destination, &patched, &removed)?;
+        if preserving {
+            self.ensure_package_kept(destination, &patched)?;
+        }
         ensure_read_back(destination, changes, formulas, &shapes, &operations)?;
-        Ok(json!({
+        let mut report = json!({
             "changed_parts": patched.keys().collect::<Vec<_>>(),
             "requires_excel_recalculation": recalc,
             "layout_review_required": true,
-        }))
+        });
+        if preserving {
+            report["non_edit_preservation_verified"] = json!(true);
+        }
+        Ok(report)
+    }
+
+    /// Each patched worksheet differs from the original only in the cells
+    /// `changes` write, the rows created for new cells and the used range.
+    fn ensure_new_cells_only(
+        &self,
+        patched: &BTreeMap<String, Vec<u8>>,
+        changes: &[Value],
+        formula_edits: &BTreeMap<String, BTreeMap<String, String>>,
+        recalc: bool,
+    ) -> Result<()> {
+        let cells = cells_by_address(self);
+        for sheet in &self.sheets {
+            let name = string(&sheet["name"])?;
+            let part = string(&sheet["part"])?;
+            let Some(after) = patched.get(part) else {
+                continue;
+            };
+            let mut values = BTreeSet::new();
+            let mut created = BTreeSet::new();
+            for change in changes.iter().filter(|change| change["sheet"] == name) {
+                let cell = string(&change["cell"])?;
+                if cells.contains_key(&(name, cell)) {
+                    values.insert(cell);
+                } else {
+                    created.insert(cell);
+                }
+            }
+            let formulas: BTreeSet<_> = formula_edits
+                .get(name)
+                .into_iter()
+                .flat_map(|v| v.keys().map(String::as_str))
+                .collect();
+            let before = std::str::from_utf8(&self.parts[part])?;
+            let edits = WorksheetEdits {
+                values: &values,
+                formulas: &formulas,
+                created: &created,
+                rows: &row_numbers(before)?,
+                recalc,
+            };
+            ensure!(
+                edits.preserved(before)? == edits.preserved(std::str::from_utf8(after)?)?,
+                "non-edited worksheet content changed: {part}"
+            );
+            self.ensure_runs_kept(part, after, &values)?;
+        }
+        Ok(())
+    }
+
+    /// The run formats of each edited cell in `values` are those of the original.
+    fn ensure_runs_kept(&self, part: &str, after: &[u8], values: &BTreeSet<&str>) -> Result<()> {
+        let before_text = std::str::from_utf8(&self.parts[part])?;
+        let after_text = std::str::from_utf8(after)?;
+        let before_doc = xml(before_text.as_bytes())?;
+        let after_doc = xml(after_text.as_bytes())?;
+        let after_cells: BTreeMap<_, _> = after_doc
+            .descendants()
+            .filter(|node| node.has_tag_name((NS, "c")))
+            .map(|cell| (cell.attribute("r").unwrap_or(""), cell))
+            .collect();
+        for cell in before_doc.descendants().filter(|node| {
+            node.has_tag_name((NS, "c")) && values.contains(node.attribute("r").unwrap_or(""))
+        }) {
+            let address = cell.attribute("r").context("missing cell address")?;
+            let written = *after_cells
+                .get(address)
+                .context("edited cell disappeared")?;
+            ensure!(
+                super::text_edit::run_properties(cell, before_text, &self.parts)?
+                    == super::text_edit::run_properties(written, after_text, &self.parts)?,
+                "rich text run properties changed: {part}!{address}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The package written at `destination` holds the same parts, each with
+    /// the original bytes unless `patched` replaced it.
+    fn ensure_package_kept(
+        &self,
+        destination: &Path,
+        patched: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<()> {
+        let reread = Workbook::open(destination)?;
+        ensure!(
+            reread.parts.len() == self.parts.len(),
+            "Excel package parts changed unexpectedly"
+        );
+        for (part, before) in &self.parts {
+            ensure!(
+                reread.parts.get(part) == Some(patched.get(part).unwrap_or(before)),
+                "Excel package preservation failed: {part}"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -760,6 +867,103 @@ fn worksheet_invariants(
         }
     }
     splice(original, edits, "worksheet invariants")
+}
+
+/// The numbers of the rows the worksheet `text` holds.
+fn row_numbers(text: &str) -> Result<BTreeSet<u32>> {
+    xml(text.as_bytes())?
+        .descendants()
+        .filter(|node| {
+            node.has_tag_name((NS, "row"))
+                && node
+                    .parent()
+                    .is_some_and(|p| p.has_tag_name((NS, "sheetData")))
+        })
+        .map(|row| Ok(row.attribute("r").context("missing row number")?.parse()?))
+        .collect()
+}
+
+/// What writing cells without operations may change in a worksheet: the
+/// values of the original cells in `values`, the formulas in `formulas`, the
+/// cells in `created`, rows that are not among the original `rows`, the
+/// recorded used range and, when `recalc`, formula caches.
+struct WorksheetEdits<'a> {
+    values: &'a BTreeSet<&'a str>,
+    formulas: &'a BTreeSet<&'a str>,
+    created: &'a BTreeSet<&'a str>,
+    rows: &'a BTreeSet<u32>,
+    recalc: bool,
+}
+
+impl WorksheetEdits<'_> {
+    /// The worksheet `text` as a tree without what the edits may change. A
+    /// row written `<row/>` compares equal to the same row with an end tag,
+    /// which it takes when a new cell joins it.
+    fn preserved(&self, text: &str) -> Result<String> {
+        let doc = xml(text.as_bytes())?;
+        let mut out = String::new();
+        self.render(doc.root_element(), &mut out)?;
+        Ok(out)
+    }
+
+    fn render(&self, node: Node<'_, '_>, out: &mut String) -> Result<()> {
+        use std::fmt::Write as _;
+        if node.is_text() {
+            write!(out, "{:?}", node.text().unwrap_or(""))?;
+            return Ok(());
+        }
+        if !node.is_element() || self.skipped(node)? {
+            return Ok(());
+        }
+        let address = node.attribute("r").unwrap_or("");
+        let attributes: BTreeMap<_, _> = node
+            .attributes()
+            .filter(|a| {
+                !(a.namespace().is_none()
+                    && (node.has_tag_name((NS, "dimension")) && a.name() == "ref"
+                        || node.has_tag_name((NS, "c"))
+                            && self.values.contains(address)
+                            && a.name() == "t"))
+            })
+            .map(|a| ((a.namespace().unwrap_or(""), a.name()), a.value()))
+            .collect();
+        let name = node.tag_name();
+        write!(
+            out,
+            "<{}|{}{attributes:?}>",
+            name.namespace().unwrap_or(""),
+            name.name()
+        )?;
+        for child in node.children() {
+            self.render(child, out)?;
+        }
+        out.push_str("</>");
+        Ok(())
+    }
+
+    fn skipped(&self, node: Node<'_, '_>) -> Result<bool> {
+        if node.has_tag_name((NS, "c")) {
+            return Ok(self.created.contains(node.attribute("r").unwrap_or("")));
+        }
+        if node.has_tag_name((NS, "row"))
+            && node
+                .parent()
+                .is_some_and(|p| p.has_tag_name((NS, "sheetData")))
+        {
+            let number = node.attribute("r").context("missing row number")?.parse()?;
+            return Ok(!self.rows.contains(&number));
+        }
+        let Some(cell) = node.parent().filter(|p| p.has_tag_name((NS, "c"))) else {
+            return Ok(false);
+        };
+        let address = cell.attribute("r").unwrap_or("");
+        let value = self.values.contains(address);
+        let formula = self.formulas.contains(address);
+        Ok(node.has_tag_name((NS, "v"))
+            && (value || formula || self.recalc && child(cell, "f").is_some())
+            || value && node.has_tag_name((NS, "is"))
+            || formula && node.has_tag_name((NS, "f")))
+    }
 }
 
 /// Each cell of `book` by sheet name and address, so that checking many
@@ -942,20 +1146,19 @@ fn ensure_read_back(
 }
 
 /// Asks Excel to recalculate every formula, since the cached results ARP
-/// removed or left behind are stale. The workbook's own calculation settings
-/// (iteration for intended circular references, precision as displayed, manual
-/// mode, R1C1 display) stay as they are.
+/// removed or left behind are stale. `fullCalcOnLoad` asks for one full
+/// calculation when Excel opens the book; `forceFullCalc` would make every
+/// later calculation full as well, so it is not set. The workbook's own
+/// calculation settings (iteration for intended circular references,
+/// precision as displayed, manual mode, R1C1 display, its own forceFullCalc)
+/// stay as they are.
 pub(super) fn request_full_calculation(original: &str) -> Result<String> {
     let doc = xml(original.as_bytes())?;
     let root = doc.root_element();
     let mut result = original.to_owned();
     if let Some(old) = child(root, "calcPr") {
         let (opening, _) = xml_opening(&original[old.range()])?;
-        let replacement = set_xml_attribute(
-            &set_xml_attribute(opening, "fullCalcOnLoad", "1")?,
-            "forceFullCalc",
-            "1",
-        )?;
+        let replacement = set_xml_attribute(opening, "fullCalcOnLoad", "1")?;
         let start = old.range().start;
         result.replace_range(start..start + opening.len(), &replacement);
     } else {
@@ -984,10 +1187,7 @@ pub(super) fn request_full_calculation(original: &str) -> Result<String> {
             .map(|node| node.range().start)
             .or_else(|| original.rfind("</"))
             .context("invalid workbook")?;
-        result.insert_str(
-            pos,
-            &format!("<{prefix}calcPr fullCalcOnLoad=\"1\" forceFullCalc=\"1\"/>"),
-        );
+        result.insert_str(pos, &format!("<{prefix}calcPr fullCalcOnLoad=\"1\"/>"));
     }
     Ok(result)
 }
@@ -1127,6 +1327,47 @@ mod preservation_tests {
                 baseline,
                 worksheet_invariants(&before.replace(from, to), &values, &BTreeSet::new(), true)
                     .unwrap(),
+                "{from}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_cell_projection_ignores_only_written_cells_rows_and_used_range() {
+        let before = format!(
+            r#"<worksheet xmlns="{NS}"><dimension ref="A1:B2"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>old</t></is></c><c r="B1"><v>5</v></c></row><row r="2" ht="30"/></sheetData></worksheet>"#
+        );
+        let values = BTreeSet::from(["A1"]);
+        let created = BTreeSet::from(["C2", "A3"]);
+        let rows = row_numbers(&before).unwrap();
+        let edits = WorksheetEdits {
+            values: &values,
+            formulas: &BTreeSet::new(),
+            created: &created,
+            rows: &rows,
+            recalc: false,
+        };
+        let baseline = edits.preserved(&before).unwrap();
+        let written = before
+            .replace("A1:B2", "A1:C3")
+            .replace("<is><t>old</t></is>", "<v>1</v>")
+            .replace(
+                r#"<row r="2" ht="30"/>"#,
+                r#"<row r="2" ht="30"><c r="C2"><v>2</v></c></row><row r="3"><c r="A3"><v>3</v></c></row>"#,
+            );
+        assert_eq!(baseline, edits.preserved(&written).unwrap());
+        for (from, to) in [
+            ("<v>5</v>", "<v>6</v>"),
+            (r#"ht="30""#, r#"ht="31""#),
+            (r#"<row r="2" ht="30"><c r="C2"><v>2</v></c></row>"#, ""),
+            (
+                r#"<c r="C2"><v>2</v></c>"#,
+                r#"<c r="B2"><v>2</v></c><c r="C2"><v>2</v></c>"#,
+            ),
+        ] {
+            assert_ne!(
+                baseline,
+                edits.preserved(&written.replace(from, to)).unwrap(),
                 "{from}"
             );
         }

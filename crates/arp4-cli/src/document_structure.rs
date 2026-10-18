@@ -1,6 +1,6 @@
 //! Read-only interpretations of Office/PDF text and visual objects. Never used by writeback.
 use crate::data::{array, encoded, hash, immutable, read, string, under, write};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use std::{
@@ -213,8 +213,10 @@ pub enum StructureCommand {
         /// Repository-relative PNG path; keep evidence outside disposable work/cache directories.
         #[arg(long)]
         image: String,
+        /// Cell range the image shows. Required for an element or a visual on a
+        /// sheet; omitted for a visual not on a sheet, such as a Word picture.
         #[arg(long)]
-        range: String,
+        range: Option<String>,
         /// Normalized x,y,width,height in the supplied full image.
         #[arg(long, value_delimiter = ',', num_args = 4, default_value = "0,0,1,1")]
         bbox: Vec<f64>,
@@ -385,11 +387,12 @@ fn validate_hashed(
     for r in array(&value["regions"])? {
         let id = string(&r["id"])?;
         ensure!(regions.insert(id, r).is_none(), "duplicate region ID");
-        ensure!(
-            sheets.contains_key(string(&r["sheet"])?),
-            "unknown region sheet"
-        );
-        range(string(&r["range"])?)?;
+        // A region without a sheet is an image of a visual not on a sheet; the
+        // visual checks bind it, and no element can use it.
+        if let Some(sheet) = r.get("sheet") {
+            ensure!(sheets.contains_key(string(sheet)?), "unknown region sheet");
+            range(string(&r["range"])?)?;
+        }
         ensure!(
             r["source_sha256"] == value["source"]["sha256"],
             "image region belongs to another original version"
@@ -601,6 +604,7 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
                 string(&e["sheet"])?,
                 cell_range.as_deref(),
                 timeout,
+                false,
             )?;
             let actual_range = string(&rendering["range"])?;
             range(actual_range)?;
@@ -695,10 +699,22 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
                 .iter_mut()
                 .find(|e| e["id"] == element)
                 .context("unknown element")?;
-            let sheet = e["sheet"].clone();
+            // A visual not on a sheet (a Word picture) has no range to show:
+            // its region is an image of the picture itself.
+            let place = match (&e["sheet"], cell_range) {
+                (Value::Null, None) => None,
+                (Value::Null, Some(_)) => bail!("{element} is not on a sheet; omit --range"),
+                (_, None) => bail!("--range is required for {element}, which is on a sheet"),
+                (sheet, Some(cell_range)) => Some((sheet.clone(), cell_range)),
+            };
             e["evidence"].as_array_mut().unwrap().push(json!(id));
-            let source_hash = value["source"]["sha256"].clone();
-            value["regions"].as_array_mut().unwrap().push(json!({"id":id,"sheet":sheet,"range":cell_range,"image":image,"image_sha256":image_hash,"source_sha256":source_hash,"bbox":bbox}));
+            let mut region = json!({"id":id,"image":image,"image_sha256":image_hash,
+                "source_sha256":value["source"]["sha256"],"bbox":bbox});
+            if let Some((sheet, cell_range)) = place {
+                region["sheet"] = sheet;
+                region["range"] = json!(cell_range);
+            }
+            value["regions"].as_array_mut().unwrap().push(region);
             value["review"] = json!({"status":"pending"});
             let report = validate(root, &ext, &value)?;
             write(&structure, &value)?;
@@ -799,7 +815,7 @@ pub fn attach(
 pub fn sheet_context(value: &Value, sheet: &str) -> Value {
     json!({"document":value["document"],"source":value["source"],"review":value["review"],
         "elements":value["elements"].as_array().unwrap().iter().filter(|e| e["sheet"] == sheet).collect::<Vec<_>>(),
-        "regions":value["regions"].as_array().unwrap().iter().filter(|r| r["sheet"] == sheet).collect::<Vec<_>>(),
+        "regions":value["regions"].as_array().unwrap().iter().filter(|r| r["sheet"].is_null() || r["sheet"] == sheet).collect::<Vec<_>>(),
         "visuals":value["visuals"].as_array().unwrap().iter().filter(|v| v["sheet"].is_null() || v["sheet"] == sheet).collect::<Vec<_>>()})
 }
 

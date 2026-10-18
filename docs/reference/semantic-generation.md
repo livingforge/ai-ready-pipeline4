@@ -59,7 +59,7 @@ arp4 spec workflow --root C:/my-project run --provider claude-code --executable 
     "key": "lock", "name": "失敗上限", "section": "process",
     "subject": "ログイン", "property": "失敗上限",
     "condition": {"basis": "unspecified"},
-    "value": {"kind": "quantity", "amount": 5, "unit": "回", "comparison": "lte", "semantics": "scalar", "basis": "s1"},
+    "value": {"kind": "quantity", "amount": 5, "unit": "回", "comparison": "lte", "semantics": "scalar", "basis": "s1", "interpretation": {"kind": "canonical"}},
     "statement": "失敗の上限は5回", "verification": "失敗上限の設定が5回であることを照合",
     "evidence": ["s1"],
     "classification": {"category": "specification", "module": "login", "requirements": [], "related": [], "reason": "具体的な境界値。目的の要件は資料に未記載"}
@@ -119,20 +119,21 @@ document IDを維持して再captureします。出力のreextractだけを再�
 
 ### 局所修正とレビューの再利用
 
-`spec workflow` は最新の返信をassembleし、機械診断・レビュー指摘から局所修正タスクを作成します。`inspect` は概要を返し、`read` で本文・context・scopeを取得します。入力はreadの全ページをpage.completeまでpage.next_commandで読み継いで取得します。子pointerは辿りません。修正返信は指定されたbaseハッシュと対象キーに対して検証し、対象外・重複変更・ローカル参照切れを拒否します。無変更返信では未解決のまま停止します。
+`spec workflow` は最新の返信をassembleし、機械診断・レビュー指摘から局所修正タスクを作成します。`inspect` は概要を返し、`read` で本文・context・scopeを取得します。入力はreadの全ページをpage.completeまでpage.next_commandで読み継いで取得します。子pointerは辿りません。修正返信は指定されたbaseハッシュと対象キーに対して検証し、対象外・重複変更・ローカル参照切れを拒否します。抽出を変更しない返信は、残りを忠実には直せないという回答として扱い、workflowは停止せずに残った指摘を独立レビューへ回します（`escalation.reason: repair_no_progress`）。
 
-contextには対象項目と直接の参照先・参照元が使うシートの全文を残します。見出し・単位・離れた脚注・結合情報は削りません。明示的なregion計画があれば、その出典範囲と共通文脈を使います。別文書の根拠や構造変更が必要な問題は、範囲を定める作業としてdeferredに残します。
+contextには対象項目と直接の参照先・参照元が使うシートの全文を残します。見出し・単位・離れた脚注・結合情報は削りません。明示的なregion計画があれば、その出典範囲と共通文脈を使います。別文書の根拠や関係をまたぐ問題は `external_context_required` として局所修正から外し、範囲を定めたrestructureタスク（`scoped_restructure`）へ回します。
 
-不足するシートが必要なら、修正の代わりに `{"base":"対象のハッシュ","request_tables":[2],"reason":"別シートの注記が必要"}` を返せます。表番号はcontextのavailable_tablesから選びます。ワークフローは要求を検証して新しいタスクを作り、追加要求を修正として適用しません。
+不足するシートが必要なら、修正の代わりに `{"base":"<readが返したbase>","request_tables":[2],"reason":"別シートの注記が必要"}` を返せます。表番号はcontextのavailable_tablesから選びます。ワークフローは要求を検証して新しいタスクを作り、追加要求を修正として適用しません。
 
 ```powershell
 arp4 spec workflow --root C:/my-project status
 arp4 spec workflow --root C:/my-project inspect --task <ID>
 arp4 spec workflow --root C:/my-project submit --task <ID> --reply repair.reply.json
-arp4 spec workflow --root C:/my-project advance
 ```
 
-修正後はレビューpacketの完全一致を確認し、指摘なし・監査完了の保存済み返信だけを完了済みタスクとして再利用します。変更されたシートや依存先に対応するレビュー、全体の主張が変わった場合のglobalレビューはやり直します。未取得の必須レビューは新しいタスクになります。最終的に計画上の必須監査と全体レビューの完了を検証します。
+`submit` は受理後にその段階の適用まで進めるため、続けて `advance` を実行する必要はありません。
+
+修正後はレビューpacketの完全一致を確認し、指摘なし（`improvement` だけの場合を含む）・監査完了の保存済み返信だけを完了済みタスクとして再利用します。変更されたシートや依存先に対応するレビュー、全体の主張が変わった場合のglobalレビューはやり直します。未取得の必須レビューは新しいタスクになります。最終的に計画上の必須監査と全体レビューの完了を検証します。
 
 個別操作でもシート単位のレビュータスクを生成できます。
 

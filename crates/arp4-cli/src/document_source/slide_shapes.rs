@@ -410,6 +410,22 @@ const FILLS: [&str; 6] = [
     "grpFill",
 ];
 
+/// Whether the fill `color` (`RRGGBB`, or `none`) is dark enough for light
+/// text: its relative luminance is below a half.
+fn dark(color: &str) -> bool {
+    let channel = |at: usize| {
+        u8::from_str_radix(color.get(at..at + 2).unwrap_or("FF"), 16).map_or(1.0, |v| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    };
+    color != "none" && 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4) < 0.5
+}
+
 fn fill_xml(prefix: &str, color: &str) -> String {
     if color == "none" {
         format!("<{prefix}noFill/>")
@@ -851,7 +867,15 @@ pub(super) fn slide_edits(
                     spec.push_str(&format!("<a:ln{weight}>{color}</a:ln>"));
                 }
                 // New shapes take PowerPoint's default shape style: accent fill,
-                // darker outline and light text; a text box has none.
+                // darker outline and light text; a text box has none. Light text
+                // goes with a dark fill only: without a fill or on a light one
+                // the text takes the slide's text colour, so that it shows.
+                let text_color = match properties.fill.as_deref() {
+                    _ if shape_type == "line" => "tx1",
+                    None => "lt1",
+                    Some(fill) if dark(fill) => "lt1",
+                    Some(_) => "tx1",
+                };
                 let style = if shape_type == "textbox" {
                     String::new()
                 } else {
@@ -859,7 +883,7 @@ pub(super) fn slide_edits(
                         "<{prefix}style><a:lnRef idx=\"{}\"><a:schemeClr val=\"accent1\"><a:shade val=\"50000\"/></a:schemeClr></a:lnRef><a:fillRef idx=\"{}\"><a:schemeClr val=\"accent1\"/></a:fillRef><a:effectRef idx=\"0\"><a:schemeClr val=\"accent1\"/></a:effectRef><a:fontRef idx=\"minor\"><a:schemeClr val=\"{}\"/></a:fontRef></{prefix}style>",
                         if shape_type == "line" { 1 } else { 2 },
                         if shape_type == "line" { 0 } else { 1 },
-                        if shape_type == "line" { "tx1" } else { "lt1" },
+                        text_color,
                     )
                 };
                 let body = if shape_type == "line" {
@@ -1258,4 +1282,24 @@ pub(super) fn ensure_read_back(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dark;
+
+    #[test]
+    fn light_text_goes_on_dark_fills_only() {
+        for (fill, expected) in [
+            ("1F4E79", true),
+            ("FF0000", true),
+            ("4472C4", true),
+            ("FFFFFF", false),
+            ("FFFF00", false),
+            ("D9D9D9", false),
+            ("none", false),
+        ] {
+            assert_eq!(dark(fill), expected, "{fill}");
+        }
+    }
 }

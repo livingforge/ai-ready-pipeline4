@@ -108,17 +108,28 @@ pub enum WorkflowCommand {
     },
     /// Inspect provider calls and external intervention history.
     History,
-    /// Attach measured deltas to one external submission, including a retired task.
+    /// Attach measured deltas to one external submission, including a retired task,
+    /// or the cost of a provider run that recorded none.
     /// Existing measurements may be repeated identically, but never overwritten or added twice.
     RecordUsage {
         #[arg(long)]
         task: String,
         /// One-based submission number within the task, as shown by history/receipt.
-        #[arg(long)]
-        submission: usize,
+        #[arg(long, required_unless_present = "run", conflicts_with = "run")]
+        submission: Option<usize>,
+        /// One-based provider run number within the task, as shown by history.
+        /// Only a run without a reported cost takes one; give --actor and --reason.
+        #[arg(long, requires_all = ["actor", "reason"])]
+        run: Option<usize>,
         /// Same measured usage JSON as submit --usage-file; no agent lifetime totals.
         #[arg(long)]
         usage_file: PathBuf,
+        /// Who declares the cost of a provider run.
+        #[arg(long, requires = "run")]
+        actor: Option<String>,
+        /// Where the declared cost comes from, such as the provider's billing record.
+        #[arg(long, requires = "run")]
+        reason: Option<String>,
     },
     Advance,
     Inspect {
@@ -232,7 +243,7 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
         }
         let mut replies = Map::new();
         for path in reply {
-            let v = read(&path)?;
+            let v = read_reply(&path)?;
             ensure!(
                 replies
                     .insert(s(&v["document"])?.to_owned(), json!(store.put_json(&v)?))
@@ -365,9 +376,21 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
         WorkflowCommand::RecordUsage {
             task,
             submission,
+            run,
             usage_file,
+            actor,
+            reason,
         } => {
-            flow.record_usage(&task, submission, &read(&usage_file)?)?;
+            let measured = read(&usage_file)?;
+            match (submission, run, actor, reason) {
+                (Some(submission), _, _, _) => flow.record_usage(&task, submission, &measured)?,
+                (None, Some(run), Some(actor), Some(reason)) => {
+                    flow.record_run_cost(&task, run, &measured, &actor, &reason)?
+                }
+                _ => anyhow::bail!(
+                    "record-usage requires --submission, or --run with --actor and --reason"
+                ),
+            }
             flow.history()
         }
         WorkflowCommand::Advance => flow.advance(),

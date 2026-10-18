@@ -12,7 +12,9 @@ pub mod fonts;
 pub mod native_text;
 pub mod ocr;
 mod office_com;
+pub mod office_pdf;
 mod office_worker;
+pub mod pdf_render;
 pub mod project;
 pub mod registry;
 pub mod rights_management;
@@ -65,7 +67,10 @@ pub fn capabilities() -> serde_json::Value {
             "excel_screenshot_rendering": true,
             "excel_screenshot_engine": "excel-com (Windows with desktop Microsoft Excel)",
             "documents_workflow": true,
-            "documents_typed_value_edits": "Office/PDF existing cells and text; Excel scalar values, existing formulas, table labels and shape text; exact base and old value; before structural operations",
+            "documents_typed_value_edits": "Office/PDF cells and text of adopted documents and proposals, named by extraction address or element ID, including rows and slides pending operations insert; Excel scalar values, existing formulas, table labels, shape text and values for empty cells; exact base and old value; refusals name the edit; requests recorded in mappings",
+            "documents_operation_removal": "documents operations list|remove takes back a pending row, column, slide, shape or image operation with its content changes; refused while later operations depend on it",
+            "documents_candidate_rendering": "documents render draws an export candidate to PNG: Excel sheets and ranges by Excel, Word and PowerPoint pages through PDF saved by Office, PDF pages by Windows",
+            "documents_apply_formation": "apply records the re-extracted proposal as formed by apply, ready to adopt",
             "document_fonts": "effective latin and East Asian font names, size in points and RRGGBB color per cell, paragraph and shape text, resolved through styles and themes; mixed when runs differ; PDF strings read-only (font name without subset prefix, size on the page, device colors)",
             "documents_font_edits": "Excel cells (one font name for latin and East Asian text) and shape text, Word paragraphs and table cells (sizes in half points), PowerPoint paragraphs and table cells (RRGGBB colors) through documents values; exact base and old font properties",
             "documents_apply_export_confirmation": "human layout review bound to exact candidate and report hashes",
@@ -106,7 +111,7 @@ pub fn capabilities() -> serde_json::Value {
             "excel_table_structure_inference": true,
             "excel_writeback": true,
             "excel_structural_writeback": true,
-            "excel_element_body_version": "5",
+            "excel_element_body_version": documents::CONTENT_VERSION,
             "excel_body_model": "reading-order elements, each table the tree of its records keyed by its headings; identities, topology, formula kinds and physical bindings in layout.yml",
             "excel_external_reimport": "unchanged grid with at most one changed cell; ambiguous structural or multi-cell correspondence is refused",
             "excel_column_move_scope": "plain worksheets and ordinary contiguous A1 formulas; positional objects, defined names and mixed structural operations are refused",

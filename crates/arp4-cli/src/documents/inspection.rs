@@ -53,12 +53,9 @@ impl Store {
         );
         let extraction = crate::extraction::read_record(&metadata.join("extraction.json"))?;
         let axes = identity::stored_axes(dir, planned)?;
+        // The extraction takes its document and original from this document.yml
+        // when it is read; the extraction key above ties it to the file.
         let layout = identity::load(dir, &extraction, planned)?;
-        ensure!(
-            meta["source"] == extraction["source"]
-                && meta["document_id"] == extraction["document_id"],
-            "document/extraction mismatch"
-        );
         let original = self.original(string(&meta["source"]["path"])?)?;
         let source_missing = original.is_none();
         let source_current = original
@@ -443,7 +440,7 @@ impl Store {
             };
             Ok(
                 json!({"document_id":r.meta["document_id"],"directory":dir,"reviewed":r.reviewed,
-                "source_current":r.source_current,"content":r.fingerprint,"pending":pending,
+                "source_current":r.source_current,"content":r.fingerprint,"source_sha256":r.meta["source"]["sha256"],"pending":pending,
                 "structure_ready":report.as_ref().is_some_and(|report| report["ready"] == true),
                 "structure_conflicts":report.as_ref().map(|report| report["conflicts"].as_array().map(Vec::len).unwrap_or(0)),
                 "structure_outdated":structure_outdated,
@@ -495,6 +492,10 @@ fn validate_coverage(
             );
         }
     }
+    let sheet_names: HashSet<&str> = array(&extraction["sheets"])?
+        .iter()
+        .map(|sheet| string(&sheet["name"]))
+        .collect::<Result<_>>()?;
     let mut actual = HashSet::new();
     // New table column names by sheet and cell, checked for duplicates below.
     let mut header_edits = HashMap::new();
@@ -521,14 +522,24 @@ fn validate_coverage(
         let mapped_target = e.target()?;
         if let Some(MappingTarget::Cell { sheet, cell }) = mapped_target {
             let pair = (sheet, cell);
-            ensure!(cells.contains_key(&pair), "missing Excel target");
-            if native_text && let Some(value) = values.get(&k) {
+            if cells.contains_key(&pair) {
+                if native_text && let Some(value) = values.get(&k) {
+                    ensure!(
+                        *value == cells[&pair]["value"],
+                        "text content is a read-only derived view; edit the original and re-import with the same document ID"
+                    );
+                }
+                covered_cells.insert(pair);
+            } else {
+                // A workbook cell holding nothing in the original takes a value.
                 ensure!(
-                    *value == cells[&pair]["value"],
-                    "text content is a read-only derived view; edit the original and re-import with the same document ID"
+                    !text_format
+                        && e.writeback()? == "cell"
+                        && sheet_names.contains(sheet)
+                        && excel::coordinate(cell).is_ok(),
+                    "missing Excel target"
                 );
             }
-            covered_cells.insert(pair);
         }
         match e.writeback()? {
             "excluded" => {
@@ -561,18 +572,22 @@ fn validate_coverage(
                 );
                 let destination = match mapped_target.context("cell writeback requires target")? {
                     MappingTarget::Cell { sheet, cell } => {
-                        let source = cells.get(&(sheet, cell)).context("missing target")?;
-                        ensure!(
-                            source["type"] != "formula" && source["type"] != "error",
-                            "formula/error cell cannot be overwritten"
-                        );
-                        ensure!(
-                            value.is_null()
-                                || source["type"] == kind(value)
-                                || source["type"] == "null",
-                            "Excel target type mismatch"
-                        );
-                        if !text_format && *value != source["value"] {
+                        // A cell the original leaves empty holds no value or type.
+                        let source = cells.get(&(sheet, cell));
+                        if let Some(source) = source {
+                            ensure!(
+                                source["type"] != "formula" && source["type"] != "error",
+                                "formula/error cell cannot be overwritten"
+                            );
+                            ensure!(
+                                value.is_null()
+                                    || source["type"] == kind(value)
+                                    || source["type"] == "null",
+                                "Excel target type mismatch"
+                            );
+                        }
+                        let original = source.map_or(&Value::Null, |source| &source["value"]);
+                        if !text_format && value != original {
                             let (column, row) = excel::coordinate(cell)?;
                             let book_sheet = array(&extraction["sheets"])?
                                 .iter()

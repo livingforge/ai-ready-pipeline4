@@ -63,7 +63,7 @@ impl Store {
                 && report["output_sha256"] == output_sha256,
             "export candidate hash differs from the reviewed output"
         );
-        let plan = self.export(id, None, "auto")?;
+        let plan = self.export(id, None)?;
         for field in [
             "changes",
             "formula_changes",
