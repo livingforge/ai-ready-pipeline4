@@ -11,7 +11,7 @@
 | 表と本文の区分、複数図形の関係、画像OCRを原本と照合して整理 | [arp4-structure](../arp4-structure/SKILL.md) |
 | 既存workflowの再開・抽出・レビュー・修正 | [workflowの進行管理](references/orchestration.md)。同じroot・run-idのstatus --summaryから再開する |
 | 採番済みの要件・仕様の更新・承認 | [操作リファレンス](references/operations.md) の「正本の継続保守」 |
-| ARP実行ファイルの導入・更新が必要 | [arp4-setup](../arp4-setup/SKILL.md) |
+| ARP実行ファイルの導入・更新が必要 | ARPソースの `docs/guides/install.md`。ソースの場所は利用者に確認する |
 
 参照資料は必要な節だけを読む。原本操作や台帳保守だけなら、workflowの担当Agentを起動する必要はない。
 

@@ -432,6 +432,7 @@ fn to_operations(
                         style_from: None,
                         style_rows: 1,
                         merges: false,
+                        vba_unchanged: false,
                     });
                 }
             }
@@ -448,6 +449,7 @@ fn to_operations(
                         style_from: if rows { above } else { None },
                         style_rows: 1,
                         merges: false,
+                        vba_unchanged: false,
                     });
                 }
                 cursor += 1;

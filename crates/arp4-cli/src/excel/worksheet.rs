@@ -48,6 +48,7 @@ mod efficiency_measurement {
             style_from: None,
             style_rows: 1,
             merges: false,
+            vba_unchanged: false,
         };
         let operations = [&operation];
         let start = Instant::now();
@@ -91,6 +92,7 @@ mod efficiency_measurement {
                     style_from: None,
                     style_rows: 1,
                     merges: false,
+                    vba_unchanged: false,
                 });
                 length = if insertion {
                     length + count
@@ -146,6 +148,7 @@ mod efficiency_measurement {
             style_from: None,
             style_rows: 1,
             merges: false,
+            vba_unchanged: false,
         };
         let start = Instant::now();
         for _ in 0..10 {
@@ -191,6 +194,7 @@ mod efficiency_measurement {
                             style_from: None,
                             style_rows: 1,
                             merges: false,
+                            vba_unchanged: false,
                         };
                         let second = StructuralOperation {
                             id: "second".into(),
@@ -201,6 +205,7 @@ mod efficiency_measurement {
                             style_from: None,
                             style_rows: 1,
                             merges: false,
+                            vba_unchanged: false,
                         };
                         let operations = [&first, &second];
                         let expected = (1..=8).find(|&index| {

@@ -328,6 +328,7 @@
 | <code>/properties/excel_operations/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/excel_operations/items/oneOf/0/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
+| <code>/properties/excel_operations/items/oneOf/0/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
 | <code>/properties/excel_operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","asset","anchor"],"type":"object"}</code> |
 | <code>/properties/excel_operations/items/oneOf/1/properties/anchor</code> | <code>{"additionalProperties":false,"required":["from","to"],"type":"object"}</code> |
 | <code>/properties/excel_operations/items/oneOf/1/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":["cell"],"type":"object"}</code> |
@@ -558,6 +559,7 @@
 | <code>/properties/excel_operations/items/oneOf/7/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/7/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/excel_operations/items/oneOf/7/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/excel_operations/items/oneOf/7/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
 | <code>/properties/move</code> | <code>{"type":"object"}</code> |
 | <code>/properties/move/additionalProperties</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/remove</code> | <code>{"type":"object"}</code> |
@@ -880,6 +882,7 @@
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/0/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/0/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","name","properties"],"type":"object"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/1/properties/kind</code> | <code>{"const":"update_shape"}</code> |
@@ -1108,6 +1111,7 @@
 | <code>/properties/mappings/properties/operations/items/oneOf/8/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/8/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/8/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/8/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
 | <code>/properties/mappings/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/mappings/properties/tables</code> | <code>{"type":"array"}</code> |
 | <code>/properties/mappings/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["page","block","columns","references"],"type":"object"}</code> |
@@ -1738,6 +1742,7 @@
 | <code>/properties/operations/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
 | <code>/properties/operations/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","reason","kind","from"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/2/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/2/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1872,6 +1877,7 @@
 | <code>/properties/operations/items/oneOf/13/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/13/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/value_edits</code> | <code>{"description":"documents valuesで保存した値・フォントの編集要求の記録。保存順に、要求のactor・reasonと、値かフォントを変えたeditを持つ。現在と同じ値・フォントを与えるeditは記録しない。原本へ反映（apply）すると新しい版には引き継がない。Left out when empty.","type":"array"}</code> |
 | <code>/properties/value_edits/items</code> | <code>{"additionalProperties":false,"required":["actor","reason","edits"],"type":"object"}</code> |

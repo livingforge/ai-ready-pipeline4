@@ -38,6 +38,8 @@ mod render;
 #[cfg(windows)]
 mod render_native;
 mod text_edit;
+mod vba;
+pub use vba::VbaNotUpdated;
 mod writeback;
 pub use render::render;
 #[cfg(windows)]
@@ -274,6 +276,9 @@ pub struct StructuralOperation {
     /// Whether the merges within the style rows are made again over each
     /// group of inserted rows, as Excel's Insert Copied Cells does.
     pub merges: bool,
+    /// Whether the person editing accepted that the workbook's VBA code keeps
+    /// the cell addresses it holds: ARP, like Excel, does not rewrite them.
+    pub vba_unchanged: bool,
 }
 
 #[derive(Clone, Debug)]

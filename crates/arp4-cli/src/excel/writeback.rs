@@ -39,7 +39,10 @@ impl Workbook {
     }
 
     /// Package features unsupported by structural writeback. Table and pivot
-    /// ranges are checked by relocation itself when the writeback runs.
+    /// ranges are checked by relocation itself when the writeback runs. A VBA
+    /// project keeps the addresses in its code, so operations on a workbook
+    /// with one need `vba_unchanged`; without it they fail with
+    /// [`VbaNotUpdated`] once nothing else refuses them.
     pub(super) fn ensure_structural_parts_supported(
         &self,
         operations: &[StructuralOperation],
@@ -48,12 +51,20 @@ impl Workbook {
             return Ok(());
         }
         let mut reasons = vec![];
-        if self
-            .parts
-            .keys()
-            .any(|name| name.to_ascii_lowercase().ends_with("vbaproject.bin"))
-        {
-            reasons.push("VBA project (cell addresses in macro code cannot be updated)".to_owned());
+        let unaccepted: Vec<String> = if self.has_vba_project() {
+            operations
+                .iter()
+                .filter(|o| !o.vba_unchanged)
+                .map(|o| o.id.clone())
+                .collect()
+        } else {
+            vec![]
+        };
+        if !unaccepted.is_empty() {
+            reasons.push(
+                "VBA project (cell addresses in macro code are not updated; accepted with --vba-unchanged)"
+                    .to_owned(),
+            );
         }
         for sheet in &self.skipped_sheets {
             let kind = string(&sheet["kind"])?;
@@ -70,6 +81,12 @@ impl Workbook {
             reasons.push(
                 "ActiveX controls (their linked cells can be held in binary parts)".to_owned(),
             );
+        }
+        if reasons.len() == 1 && !unaccepted.is_empty() {
+            return Err(VbaNotUpdated {
+                operations: unaccepted,
+            }
+            .into());
         }
         ensure!(
             reasons.is_empty(),

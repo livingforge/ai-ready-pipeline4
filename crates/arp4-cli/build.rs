@@ -27,7 +27,7 @@ fn main() {
         ("github", ".github/skills"),
         ("codex", ".agents/skills"),
     ] {
-        for skill in ["arp4", "arp4-setup", "arp4-structure"] {
+        for skill in ["arp4", "arp4-structure"] {
             let dir = root.join("surface/skills").join(skill);
             println!("cargo:rerun-if-changed={}", dir.display());
             let read = |name: &str| read(&dir.join(name));

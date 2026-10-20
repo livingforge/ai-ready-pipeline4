@@ -614,6 +614,7 @@ mod tests {
             style_from: None,
             style_rows: 1,
             merges: false,
+            vba_unchanged: false,
         })
         .collect();
         let mut state = MergeState::new(&sheet).unwrap();
@@ -640,6 +641,7 @@ mod tests {
             style_from,
             style_rows,
             merges,
+            vba_unchanged: false,
         };
         let copy = operation("copy", 5, 4, Some(3), 2, true);
         // A later insertion above moves the copies with the originals.
@@ -684,6 +686,7 @@ mod tests {
             style_from: None,
             style_rows: 1,
             merges: false,
+            vba_unchanged: false,
         })
         .collect::<Vec<_>>();
         for row in 1..20 {

@@ -141,6 +141,7 @@ dependencies = [
  "clap",
  "csv",
  "dunce",
+ "encoding_rs",
  "flate2",
  "jsonschema",
  "lopdf",

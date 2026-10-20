@@ -1,6 +1,6 @@
 # ソースからの導入と基本操作
 
-Windows／Linux でソースをビルドして使う試験版です。Rust と OS のビルドツールを準備し、ソース ZIP の展開先または固定版のチェックアウトで実行します。前提環境・Agent 経由の導入・更新の手順は [導入原稿](../../surface/skills/arp4-setup/body.md) を参照してください。
+Windows／Linux でソースをビルドして使う試験版です。Rust と OS のビルドツールを準備し、ソース ZIP の展開先または固定版のチェックアウトで実行します。前提環境・Agent 経由の導入・更新の手順は [導入手順](install.md) を参照してください。
 
 ```text
 cargo install --path crates/arp4-cli --locked

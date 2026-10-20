@@ -85,6 +85,7 @@ crates/arp4-cli/src/excel/render_native.rs
 crates/arp4-cli/src/excel/sheet_objects.rs
 crates/arp4-cli/src/excel/table_labels.rs
 crates/arp4-cli/src/excel/text_edit.rs
+crates/arp4-cli/src/excel/vba.rs
 crates/arp4-cli/src/excel/visuals.rs
 crates/arp4-cli/src/excel/worksheet.rs
 crates/arp4-cli/src/excel/writeback.rs
@@ -156,6 +157,7 @@ docs/guides/document-search.md
 docs/guides/document-search-manual.md
 docs/guides/document-structure.md
 docs/guides/documents.md
+docs/guides/install.md
 docs/guides/registry.md
 docs/guides/repository-layout.md
 docs/guides/rust-preview.md
@@ -187,11 +189,6 @@ surface/agents/common.md
 surface/prompts/semantic-review.md
 surface/prompts/semantic.md
 surface/prompts/specifications.md
-surface/skills/arp4-setup/body.md
-surface/skills/arp4-setup/frontmatter.claude.yaml
-surface/skills/arp4-setup/frontmatter.codex.yaml
-surface/skills/arp4-setup/frontmatter.common.yaml
-surface/skills/arp4-setup/frontmatter.github.yaml
 surface/skills/arp4-structure/body.md
 surface/skills/arp4-structure/frontmatter.claude.yaml
 surface/skills/arp4-structure/frontmatter.codex.yaml

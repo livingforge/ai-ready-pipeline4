@@ -895,6 +895,7 @@ mod tests {
             style_from: None,
             style_rows: 1,
             merges: false,
+            vba_unchanged: false,
         }
     }
 

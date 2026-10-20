@@ -1,6 +1,6 @@
 # カスタムAgentによる委任
 
-`arp4 skills install --root <project> --agent codex` で、親が使うarp4スキル、操作リファレンス、arp4-structure・arp4-setupスキル、委任先のカスタムAgent（構造解釈の作成・レビュー担当を含む）を配置します。Claude Codeは `--agent claude`、GitHub Copilotは `--agent github`、全形式は `--agent all` です。設定を再読込したホストで「arp4スキルを使って既存workflowを続行」と依頼します。モデル・権限・ホストの同時実行設定は変更しません。
+`arp4 skills install --root <project> --agent codex` で、親が使うarp4スキル、操作リファレンス、arp4-structureスキル、委任先のカスタムAgent（構造解釈の作成・レビュー担当を含む）を配置します。Claude Codeは `--agent claude`、GitHub Copilotは `--agent github`、全形式は `--agent all` です。設定を再読込したホストで「arp4スキルを使って既存workflowを続行」と依頼します。モデル・権限・ホストの同時実行設定は変更しません。
 
 | ホスト | 親の入口 | 委任先 |
 | --- | --- | --- |
@@ -19,7 +19,6 @@
 | `surface/skills/arp4/body.md` | 用途別の入口、親と担当の責務 |
 | `surface/skills/arp4/references/orchestration.md` | workflow実行時の割当・再利用・独立性・完了判断、必要時の計測 |
 | `surface/skills/arp4/references/operations.md` | 原本・設計書・台帳の操作手順とCLI応答の読み方 |
-| `surface/skills/arp4-setup/body.md` | 利用環境の導入・更新 |
 | `surface/agents/*/body.md` | 各担当の判断基準と担当範囲 |
 | `surface/agents/common.md` | handoffからの読取・検証・提出・結果報告 |
 

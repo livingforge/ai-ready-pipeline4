@@ -55,6 +55,9 @@ pub struct SheetEdit {
     /// The content fingerprint the edit was planned against.
     pub base: Option<String>,
     pub dry_run: bool,
+    /// The person editing accepted that the workbook's VBA code keeps the
+    /// cell addresses it holds.
+    pub vba_unchanged: bool,
 }
 
 pub(super) fn rejection(code: &str, message: impl Into<String>) -> anyhow::Error {
@@ -568,6 +571,13 @@ impl Store {
         };
         let source = under(&self.root, string(&inspected.meta["source"]["path"])?)?;
         let book = Source::open(&source)?;
+        let vba = book.vba_report();
+        if edit.vba_unchanged && vba.is_none() {
+            return Err(rejection(
+                "invalid_arguments",
+                "--vba-unchanged accepts that a workbook's VBA code keeps its cell addresses; this document has no VBA project",
+            ));
+        }
         let date1904 = matches!(&book, Source::Excel(workbook) if workbook.date1904);
         let plan = plan(&sheet, edit, &op_id, date1904)?;
         if laid_out
@@ -737,7 +747,16 @@ impl Store {
             Some(identity::stored(&mut layout, extraction)?),
         );
         book.ensure_row_edits_supported(&operations, array(&mappings["operations"])?)
-            .map_err(|error| rejection("structural_edit_unsupported", format!("{error:#}")))?;
+            .map_err(|error| {
+                if error.downcast_ref::<excel::VbaNotUpdated>().is_some() {
+                    Rejection(
+                        json!({"code":"vba_not_updated","message":format!("{error:#}"),"vba":vba}),
+                    )
+                    .into()
+                } else {
+                    rejection("structural_edit_unsupported", format!("{error:#}"))
+                }
+            })?;
         let result = self
             .inspect_with(&dir, false, &planned)
             .map_err(|error| rejection("validation_failed", format!("{error:#}")))?;
@@ -757,6 +776,9 @@ impl Store {
         }
         if !plan.warnings.is_empty() {
             report["warnings"] = json!(plan.warnings);
+        }
+        if edit.vba_unchanged {
+            report["vba"] = json!(vba);
         }
         if edit.axis == Axis::Rows {
             report["neighbors"] = neighbors(
@@ -846,6 +868,9 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
         (EditKind::Move { .. }, true) => bail!("row moves are unsupported"),
     };
     let mut operation = json!({"id":id,"kind":kind,"sheet":sheet.name,"reason":edit.reason});
+    if edit.vba_unchanged {
+        operation["vba_unchanged"] = json!(true);
+    }
     let mut additions = vec![];
     let mut conversions = vec![];
     let mut warnings = vec![];
@@ -1271,6 +1296,7 @@ mod tests {
             style_from: None,
             style_rows: 1,
             merges: false,
+            vba_unchanged: false,
         }];
         let sheet = Sheet {
             name: "S",

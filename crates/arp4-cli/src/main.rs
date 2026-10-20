@@ -901,6 +901,7 @@ fn sheet_edit(target: &EditTarget, axis: Axis, kind: EditKind) -> SheetEdit {
         reason: target.reason.clone(),
         base: target.base.clone(),
         dry_run: target.dry_run,
+        vba_unchanged: target.vba_unchanged,
     }
 }
 

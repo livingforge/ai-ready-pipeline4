@@ -17,7 +17,7 @@ arp4 documents init --root <project>
 
 `<project>` は、文書を管理するプロジェクトのパスに置き換えます。`skills install` は、標準では Codex・Claude Code・GitHub Copilot 向けのスキルをまとめて導入します。いずれか一つだけ導入する場合は、`--agent codex`、`--agent claude`、`--agent github` のいずれかを付けます。
 
-AI エージェントに導入を任せる場合は、[セットアップ手順](surface/skills/arp4-setup/body.md) を渡してください。必要なツールや PATH の設定、更新方法もそこに記載しています。導入後の使い方は [基本操作ガイド](docs/guides/rust-preview.md) を参照してください。
+AI エージェントに導入を任せる場合は、[セットアップ手順](docs/guides/install.md) を渡してください。必要なツールや PATH の設定、更新方法もそこに記載しています。導入後の使い方は [基本操作ガイド](docs/guides/rust-preview.md) を参照してください。
 
 ソース ZIP には、ビルドと利用に必要なファイルだけが入っています。同梱ファイルの一覧は `build/source-files.txt`、梱包時のコミットと未コミットの変更の有無は `SOURCE.txt`、各ファイルの SHA-256 値は `SHA256SUMS` で確認できます。開発・検証用の資料を読む場合は、`SOURCE.txt` に記されたコミットのリポジトリを参照してください。
 

@@ -573,6 +573,15 @@ impl Source {
         }
     }
 
+    /// The VBA project of a workbook and the lines of its code that may name
+    /// cells; `None` for other documents and workbooks without one.
+    pub fn vba_report(&self) -> Option<Value> {
+        match self {
+            Self::Excel(book) => book.vba_report(),
+            Self::Text(_) => None,
+        }
+    }
+
     /// Rejects row/column `operations` this document cannot take, before any
     /// output is written: Excel refuses what it cannot move, and Word and
     /// PowerPoint what they cannot copy or remove (text boxes, section breaks,

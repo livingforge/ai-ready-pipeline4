@@ -2267,6 +2267,9 @@ Options:
       --dry-run
           Validate and report the edit without writing
 
+      --vba-unchanged
+          Excel workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
       --after <AFTER>
           Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
 
@@ -2333,6 +2336,9 @@ Options:
 
       --dry-run
           Validate and report the edit without writing
+
+      --vba-unchanged
+          Excel workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
 
       --from <FROM>
           First row to delete: a number of the original sheet (15 or r15)
@@ -2424,6 +2430,9 @@ Options:
       --dry-run
           Validate and report the edit without writing
 
+      --vba-unchanged
+          Excel workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
       --after <AFTER>
           Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
 
@@ -2485,6 +2494,9 @@ Options:
       --dry-run
           Validate and report the edit without writing
 
+      --vba-unchanged
+          Excel workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
       --after <AFTER>
           Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
 
@@ -2545,6 +2557,9 @@ Options:
 
       --dry-run
           Validate and report the edit without writing
+
+      --vba-unchanged
+          Excel workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
 
       --from <FROM>
           First column to delete: letters of the original sheet (C)

@@ -739,6 +739,10 @@
                 "merges": {
                   "const": true,
                   "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
+                },
+                "vba_unchanged": {
+                  "const": true,
+                  "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows|columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"
                 }
               },
               "required": [
@@ -2070,6 +2074,10 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 16384
+                },
+                "vba_unchanged": {
+                  "const": true,
+                  "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows|columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"
                 }
               },
               "required": [
@@ -3877,6 +3885,10 @@
                     "merges": {
                       "const": true,
                       "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
+                    },
+                    "vba_unchanged": {
+                      "const": true,
+                      "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows|columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"
                     }
                   },
                   "required": [
@@ -5193,6 +5205,10 @@
                       "type": "integer",
                       "minimum": 1,
                       "maximum": 16384
+                    },
+                    "vba_unchanged": {
+                      "const": true,
+                      "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows|columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"
                     }
                   },
                   "required": [
@@ -8723,6 +8739,10 @@
                 "merges": {
                   "const": true,
                   "description": "書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"
+                },
+                "vba_unchanged": {
+                  "const": true,
+                  "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows|columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"
                 }
               },
               "required": [
@@ -9437,6 +9457,10 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 16384
+                },
+                "vba_unchanged": {
+                  "const": true,
+                  "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows|columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"
                 }
               },
               "required": [

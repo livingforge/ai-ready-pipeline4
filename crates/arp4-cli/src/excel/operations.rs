@@ -181,6 +181,7 @@ pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<Struct
             style_from,
             style_rows,
             merges,
+            vba_unchanged: value["vba_unchanged"].as_bool().unwrap_or(false),
         });
     }
     Ok(operations)

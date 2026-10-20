@@ -302,6 +302,12 @@ pub(crate) struct EditTarget {
     /// Validate and report the edit without writing.
     #[arg(long)]
     pub(crate) dry_run: bool,
+    /// Excel workbooks with a VBA project: accept that the edit leaves the
+    /// cell addresses in the VBA code as they are, as Excel does. Give it only
+    /// after a person checked the macros against the lines vba_not_updated
+    /// lists; it is recorded with the operation.
+    #[arg(long)]
+    pub(crate) vba_unchanged: bool,
 }
 /// Where inserted rows or columns go.
 #[derive(clap::Args)]

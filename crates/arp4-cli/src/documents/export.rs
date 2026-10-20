@@ -267,6 +267,14 @@ impl Store {
         );
         let plan = self.writeback(&dir, &result, &book)?;
         let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":plan.changes,"formula_changes":plan.formulas,"font_changes":plan.fonts,"unreflected":plan.pending,"excluded":plan.excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"value_edits":result.mappings["value_edits"],"deleted_cells":plan.deleted_cells,"engine":book.engine(),"complete":plan.pending.is_empty(),"written":false});
+        // The macros to check on the candidate: their addresses stay put
+        // while the operations move the cells.
+        if array(&result.mappings["operations"])?
+            .iter()
+            .any(|o| o["vba_unchanged"] == true)
+        {
+            report["vba"] = json!(book.vba_report());
+        }
         let Some(output) = output else {
             return Ok(report);
         };
@@ -351,6 +359,7 @@ mod efficiency_tests {
                 style_from: None,
                 style_rows: 1,
                 merges: false,
+                vba_unchanged: false,
             })
             .collect();
         let addresses: Vec<_> = (1..=1000)

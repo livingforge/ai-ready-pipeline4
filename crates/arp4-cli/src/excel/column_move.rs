@@ -66,9 +66,8 @@ impl Workbook {
                 || p.starts_with("xl/charts/")
                 || p.starts_with("xl/comments")
                 || p.starts_with("xl/threadedComments/")
-                || p.starts_with("xl/activeX/")
-                || p.ends_with("vbaProject.bin")),
-            "column move with positional objects, macros or calculation chain is unsupported; edit in Excel"
+                || p.starts_with("xl/activeX/")),
+            "column move with positional objects or calculation chain is unsupported; edit in Excel"
         );
         let doc = xml(&self.parts["xl/workbook.xml"])?;
         ensure!(

@@ -61,15 +61,15 @@ check/status/diff/export計画/schema/operations listの一覧は `items` と `p
 - 追加分の値の本文への書き込み（追加した行・列の識別IDは `<操作ID>-<番号>`）
 - 削除される原本セルの値の、本文からの除去
 
-書き込む前に、変更後の状態を `check` と同じ検証にかけます。VBA を含むブックなど export が拒否する条件も確かめます。拒否した場合は何も書き込みません。文書フォルダは検証済みのコピーと rename で入れ替えるため、途中で失敗しても `mappings.yml` と本文が食い違ったまま残ることはありません。
+書き込む前に、変更後の状態を `check` と同じ検証にかけます。ActiveX コントロールを含むブックなど export が拒否する条件も確かめます。VBA プロジェクトを持つブックは、VBA コード内のセル番地を書き換えないことを了承する `--vba-unchanged` がなければ `vba_not_updated` で拒否します（[Office・PDF文書](../guides/documents.md)）。拒否した場合は何も書き込みません。文書フォルダは検証済みのコピーと rename で入れ替えるため、途中で失敗しても `mappings.yml` と本文が食い違ったまま残ることはありません。
 
 - 位置: `--after` / `--before` には、原本シートの行番号（`15` または `r15`）、列名（`C`）、先に挿入した行・列のキー（`<操作ID>-<番号>`）、または `last`（値のある最後の行・列）を指定します。行番号は原本シートの番号のままで、記録済みの操作による移動を考慮した `at` はCLIが計算します。値のある最後の行・列より後ろの番号や、記録済みの操作で削除された行・列は `invalid_position` で拒否します。
 - 値: `--values` には、1行（列）につき1オブジェクトのリストを YAML または JSON で渡します（ファイル、または `-` で標準入力）。行は列名、列は `r<行番号>` がキーです。`--count` を省くと項目数が使われ、両方を指定して数が合わなければ `count_mismatch` になります。行の値は、同じ列の既存値の型に揃えます。基準は `--style-from` の行の値で、空ならその上で最も近い値です。文字列の列の数値は文字列に、日付書式の列の `YYYY/MM/DD` や `YYYY-MM-DD` はシリアル値にします。揃えられない値は `value_type_mismatch` で拒否します。変換した値は応答の `converted` に返します。追加する列の値は、渡したまま保存します。
 - 書式: `--style-from` を省くと、挿入位置の上の行を使います（Excelと同じ）。書き戻しでは、その行の空のセルを含む全セルの書式を追加行に写し、`dimension` を追加行まで広げます。Excelでは `--style-from 9:10` のように範囲を指定すると、追加行は組ごとにその行を順に書式元にします（行数は組の倍数でなければ `invalid_count`）。操作には `style_from` と `style_rows` を記録します。
 - 結合: `--merges`（Excelのみ）を付けると、書式元の行の内側にある結合を、追加行の各組の同じ位置にも作ります（Excelの「コピーしたセルの挿入」と同じ。操作の `merges: true`）。付けない場合はExcelの行挿入と同じく、結合は作りません。写した結合の左上以外への値は `merged_non_anchor` で拒否し、写す結合が既存の結合（挿入で広がった結合を含む）と重なる場合は検証で拒否します。後の操作は写した結合も他の結合と同じく移動します。
 - 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返し、何も書き込みません。同じIDで設定や値が違う場合は `operation_id_conflict` です。`--base` には `check --include-hashes` の `content` を渡します。その後に文書が変わっていれば `base_changed` で拒否します。
-- 応答: 成功時は `state`（`written`、`--dry-run` なら `planned`、再実行なら `unchanged`）、`operation`、`span`（反映後の最初と最後の行・列）、`keys`、`converted`、`neighbors`（行の操作のみ。前後にある本文の行）、`check`（書き込み後の検証状態）、`next_actions` を返します。
-- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`category_row_deleted`（本文の区分の値を持つ行を、区分の他の記録を残して削除する。Excelが区分の値をその行と一緒に消すため）、`structural_edit_unsupported`、`invalid_reason`（空の `--reason`）、`invalid_count`（`--count` が0）、`validation_failed`。
+- 応答: 成功時は `state`（`written`、`--dry-run` なら `planned`、再実行なら `unchanged`）、`operation`、`span`（反映後の最初と最後の行・列）、`keys`、`converted`、`vba`（`--vba-unchanged` を指定したとき）、`neighbors`（行の操作のみ。前後にある本文の行）、`check`（書き込み後の検証状態）、`next_actions` を返します。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`、`sheet_not_found`（`error.sheets` にシート名の一覧）、`source_changed`、`invalid_operation_id`、`operation_id_conflict`、`invalid_position`、`count_mismatch`、`invalid_values`、`value_type_mismatch`、`merged_non_anchor`、`category_row_deleted`（本文の区分の値を持つ行を、区分の他の記録を残して削除する。Excelが区分の値をその行と一緒に消すため）、`structural_edit_unsupported`、`vba_not_updated`（VBAプロジェクトを持つブックで `--vba-unchanged` がない。`error.vba` にセルを指している可能性のあるコード行）、`invalid_arguments`（VBAプロジェクトのない文書への `--vba-unchanged` 等）、`invalid_reason`（空の `--reason`）、`invalid_count`（`--count` が0）、`validation_failed`。
 
 `documents export` は、`mappings.yml` の `operations` に記録した行・列の操作と本文の値を組み合わせてExcelへ反映します。行・列の操作は `insert_rows`、`delete_rows`、`insert_columns`、`delete_columns`、`move_columns`（移動先 `to` も持つ）で、`documents rows|columns` が記録します。各操作は `id`、`sheet`、`reason`、`at`、`count` を持ち、行の追加では `style_from` に書式をコピーする元の行を記録します（非表示・折りたたみはコピーしません）。追加した列はExcelと同じく左の列の書式を引き継ぐため、列の操作は `style_from` を持ちません。
 
@@ -77,7 +77,7 @@ check/status/diff/export計画/schema/operations listの一覧は `items` と `p
 
 結合範囲の内側への挿入は、Excelと同じく結合を広げます。広がった結合の左上以外になるセルはExcelに表示されないため、そこへの書き込みは検証と書き戻しで拒否します。値は結合の左上に書くか、結合の外に行・列を追加してください。
 
-構造変更のexport reportには、反映した `operations`、値の `changes`、数式の `formula_changes`（原本の位置 `cell` と出力での位置 `final_cell`）、削除された原本セルの `deleted_cells` が保存されます。全シートの数式参照・名前定義・テーブル・条件付き書式・入力規則は移動し、移動した数式のキャッシュは無効化されます。既存のDrawing XMLにある画像・図形のセルアンカーも行・列操作に追従します。
+構造変更のexport reportには、反映した `operations`、値の `changes`、数式の `formula_changes`（原本の位置 `cell` と出力での位置 `final_cell`）、削除された原本セルの `deleted_cells` が保存されます。`vba_unchanged` の操作があれば、VBAのコード行の一覧 `vba` も保存されます。全シートの数式参照・名前定義・テーブル・条件付き書式・入力規則は移動し、移動した数式のキャッシュは無効化されます。既存のDrawing XMLにある画像・図形のセルアンカーも行・列操作に追従します。
 
 PNG画像は、文書の `assets/` に置いたファイルを `documents images add <文書ID> --sheet <シート> --from <左上のセル> --to <右下のセル> --asset assets/image001.png --reason <理由>` で追加します（候補は `--proposal <文書ID>`、`--id`・`--base`・`--dry-run` は行の操作と同じ）。`mappings.yml` の `operations` に次の `add_image` 操作を記録し、試し書きと `check` と同じ検証に通った場合だけ書き込みます。画像は左上のセルと一緒に移動し、大きさを保ちます。画像追加後のExcelは `export --out` では `.arp/cache/export/` に生成されます。原本更新は `documents apply` を使います。画像の回転・トリミング・絶対座標・図形編集・グラフ参照の変更は未対応です。
 
