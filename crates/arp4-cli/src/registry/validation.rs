@@ -33,17 +33,81 @@ pub(super) fn conflicts(r: &Registry, approved_only: bool) -> Vec<Vec<String>> {
         .map(|g| g.iter().map(|e| e.id.clone()).collect())
         .collect()
 }
+/// The sources the evidence and the condition of the record `e` quote, by
+/// ID: those its evidence snapshots hold for it.
+pub(super) fn cited(e: &Entry) -> BTreeSet<&str> {
+    let mut needed: BTreeSet<_> = e
+        .evidence
+        .iter()
+        .map(|ev| ev.span.source.as_str())
+        .collect();
+    if let Some(evidence) = e.condition.evidence() {
+        needed.extend(evidence.iter().map(|s| s.source.as_str()));
+    }
+    needed
+}
 pub fn fingerprint(r: &Registry) -> Result<String> {
     Ok(hash(&bytes(&r.manifest)?))
 }
 
+/// The evidence snapshots of a registry read as inputs, and those of them
+/// known to be filed under the hash of their contents. A command that
+/// validates a registry, changes it and validates it again reads each
+/// snapshot once: the snapshots grow with the changes, and a change keeps
+/// the ones it does not drop as they are.
+#[derive(Default)]
+pub(super) struct Snapshots {
+    inputs: BTreeMap<String, spec::Input>,
+    verified: BTreeSet<String>,
+}
+
+impl Snapshots {
+    /// Reads the snapshots of `r` not read yet, failing on the first in
+    /// order that is no input, and lets go of those `r` no longer holds. Each
+    /// one read is also hashed, and verified if filed under its hash; one that
+    /// is not fails where [`check`] compares them.
+    fn read(&mut self, r: &Registry) -> Result<()> {
+        self.inputs.retain(|key, _| r.inputs.contains_key(key));
+        self.verified.retain(|key| r.inputs.contains_key(key));
+        let unread: Vec<(&String, &Value)> = r
+            .inputs
+            .iter()
+            .filter(|(key, _)| !self.inputs.contains_key(*key))
+            .collect();
+        // Read on several threads: a snapshot holds every source of a capture.
+        let read = crate::data::in_order(&unread, |(key, value)| {
+            let input = spec::Input::deserialize(*value)?;
+            Ok::<_, anyhow::Error>((input, hash(&encoded(value)) == **key))
+        });
+        for ((key, _), read) in unread.into_iter().zip(read) {
+            let (input, verified) = read?;
+            self.inputs.insert(key.clone(), input);
+            if verified {
+                self.verified.insert(key.clone());
+            }
+        }
+        Ok(())
+    }
+}
+
 pub fn validate(r: &Registry) -> Result<()> {
+    validate_with(r, &mut Snapshots::default())
+}
+
+/// [`validate`] with the snapshots already read in `snapshots`, which must
+/// be those of the registry `r` was made from with their contents unchanged;
+/// the verified ones are not hashed again. Once `r` is valid, all its
+/// snapshots are verified.
+pub(super) fn validate_with(r: &Registry, snapshots: &mut Snapshots) -> Result<()> {
+    snapshots.read(r)?;
+    check(r, snapshots)?;
+    snapshots.verified = r.inputs.keys().cloned().collect();
+    Ok(())
+}
+
+fn check(r: &Registry, snapshots: &Snapshots) -> Result<()> {
     let m = &r.manifest;
-    let inputs = r
-        .inputs
-        .iter()
-        .map(|(k, v)| Ok((k.clone(), serde_json::from_value::<spec::Input>(v.clone())?)))
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    let inputs = &snapshots.inputs;
     let source_index: BTreeMap<&str, BTreeMap<&str, &spec::Source>> = inputs
         .iter()
         .map(|(snapshot, input)| {
@@ -88,7 +152,7 @@ pub fn validate(r: &Registry) -> Result<()> {
     ensure!(m.records.keys().eq(r.entries.keys()), "record set mismatch");
     for (key, input) in &r.inputs {
         ensure!(
-            hash(&encoded(input)) == *key,
+            snapshots.verified.contains(key) || hash(&encoded(input)) == *key,
             "evidence fingerprint mismatch"
         );
     }
@@ -236,14 +300,7 @@ pub fn validate(r: &Registry) -> Result<()> {
         // Newly authored decisions without source evidence are explicitly distinguished by rationale.
         if !e.evidence.is_empty() {
             let mut sources = BTreeMap::new();
-            let mut needed: BTreeSet<_> = e
-                .evidence
-                .iter()
-                .map(|ev| ev.span.source.as_str())
-                .collect();
-            if let Some(evidence) = e.condition.evidence() {
-                needed.extend(evidence.iter().map(|s| s.source.as_str()));
-            }
+            let needed = cited(e);
             for snapshot in e
                 .evidence
                 .iter()
@@ -275,6 +332,7 @@ pub fn validate(r: &Registry) -> Result<()> {
                 warnings: vec![],
                 structures: BTreeMap::new(),
                 structure_requirements: BTreeMap::new(),
+                merges: BTreeMap::new(),
             };
             let model: spec::Model = serde_json::from_value(
                 json!({"schema_version":1,"input_hash":hash(&bytes(&input)?),"items":[{

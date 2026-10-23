@@ -35,6 +35,9 @@ pub struct Store {
     /// names its content, so the value is the one a new parse would return; one
     /// command otherwise parses the same input, packet and replies many times.
     parsed: std::cell::RefCell<(usize, std::collections::HashMap<String, Value>)>,
+    /// The names in `archive.zip`, read once in this process instead of for
+    /// every artifact put; compaction replaces them.
+    archived: std::cell::RefCell<Option<std::collections::BTreeSet<String>>>,
 }
 
 impl Store {
@@ -81,6 +84,7 @@ impl Store {
             _lock: lock,
             preview: None,
             parsed: Default::default(),
+            archived: Default::default(),
         })
     }
     pub fn preview(&mut self) {
@@ -126,23 +130,27 @@ impl Store {
             return Ok(digest);
         }
         let path = self.path(&digest)?;
-        let archive = self.managed("archive.zip")?;
-        let archived = if archive.exists() {
-            let mut zip = zip::ZipArchive::new(File::open(archive)?)?;
-            match zip.by_name(&digest) {
-                Ok(_) => true,
-                Err(zip::result::ZipError::FileNotFound) => false,
-                Err(e) => return Err(e.into()),
-            }
-        } else {
-            false
-        };
-        if path.exists() || archived {
+        if path.exists() || self.is_archived(&digest)? {
             ensure!(self.get(&digest)? == bytes, "artifact collision");
         } else {
             atomic(&path, bytes)?;
         }
         Ok(digest)
+    }
+    fn is_archived(&self, digest: &str) -> Result<bool> {
+        let mut archived = self.archived.borrow_mut();
+        if archived.is_none() {
+            let archive = self.managed("archive.zip")?;
+            *archived = Some(if archive.exists() {
+                zip::ZipArchive::new(File::open(archive)?)?
+                    .file_names()
+                    .map(str::to_owned)
+                    .collect()
+            } else {
+                Default::default()
+            });
+        }
+        Ok(archived.as_ref().unwrap().contains(digest))
     }
     pub fn put_json(&self, v: &Value) -> Result<String> {
         self.put(&encode(v))
@@ -167,16 +175,15 @@ impl Store {
     pub fn load(&self) -> Result<Value> {
         super::read(&self.managed("state.json")?)
     }
-    pub fn save(&self, state: &mut Value) -> Result<()> {
+    /// Writes `state` over the current state. Only the current state is kept:
+    /// a copy of each earlier one grew with the state times its saves.
+    pub fn save(&self, state: &Value) -> Result<()> {
         let path = self.managed("state.json")?;
-        if path.exists() {
-            let previous = fs::read(&path)?;
-            if previous == encode(state) {
-                return Ok(());
-            }
-            state["previous"] = json!(self.put(&previous)?);
+        let bytes = encode(state);
+        if path.exists() && fs::read(&path)? == bytes {
+            return Ok(());
         }
-        atomic(&path, &encode(state))
+        atomic(&path, &bytes)
     }
     pub fn compact(&self, live: &BTreeSet<String>) -> Result<Value> {
         let objects = self.managed("objects")?;
@@ -237,6 +244,7 @@ impl Store {
             }
         }
         temp.persist(&path)?;
+        *self.archived.borrow_mut() = Some(known);
         for (digest, bytes) in &candidates {
             let path = self.path(digest)?;
             ensure!(
@@ -302,21 +310,23 @@ mod tests {
         Store::open_waiting(dir.path(), false, std::time::Duration::from_millis(200)).unwrap();
     }
     #[test]
-    fn deduplicates_archives_and_preserves_history() {
+    fn deduplicates_archives_and_keeps_only_the_current_state() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         let one = store.put(&b"old source".repeat(100)).unwrap();
         let two = store.put(b"current").unwrap();
         assert_eq!(store.put(&b"old source".repeat(100)).unwrap(), one);
-        store.save(&mut json!({"input":one})).unwrap();
-        let mut state = json!({"input":two});
-        store.save(&mut state).unwrap();
-        let previous = state["previous"].as_str().unwrap();
+        store.save(&json!({"input":one})).unwrap();
+        let state = json!({"input":two});
+        store.save(&state).unwrap();
+        // Saving stores no copy of the state it replaces.
+        assert_eq!(store.load().unwrap(), state);
+        let objects = || fs::read_dir(dir.path().join("objects")).map_or(0, |d| d.count());
+        assert_eq!(objects(), 2);
         let live = BTreeSet::from([two.clone()]);
         let report = store.compact(&live).unwrap();
-        assert!(report["archived_objects"].as_u64().unwrap() >= 2);
+        assert_eq!(report["archived_objects"], 1);
         assert_eq!(store.get(&one).unwrap(), b"old source".repeat(100));
-        assert_eq!(store.json(previous).unwrap(), json!({"input":one}));
         assert_eq!(store.put(&b"old source".repeat(100)).unwrap(), one);
         assert!(!store.path(&one).unwrap().exists());
         assert!(store.path(&two).unwrap().exists());

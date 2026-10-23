@@ -234,10 +234,22 @@ impl Store {
             !dir.join("formation.json").exists(),
             "proposal already recorded; adopt it"
         );
-        let result = self.inspect(&dir, false)?;
-        let f = json!({"schema_version":"1","content":result.fingerprint,"by":"import"});
+        // Only what adoption reads of the inspection is kept, and the proposal
+        // is adopted on it rather than inspected again: the formation written
+        // here is no part of what inspection reads of a proposal.
+        let (document_id, fingerprint, source_current) = {
+            let (inspected, _) = self.inspect_records(&dir, false, false)?;
+            (
+                inspected.meta["document_id"].clone(),
+                inspected.fingerprint,
+                inspected.source_current,
+            )
+        };
+        let f = json!({"schema_version":"1","content":fingerprint,"by":"import"});
         write(&dir.join("formation.json"), &f)?;
-        let mut adopted = self.adopt(id)?;
+        let plan = read(&dir.join("proposal.json"), Some("proposal"))?;
+        let mut adopted =
+            self.adopt_inspected(&dir, &plan, &document_id, &fingerprint, source_current)?;
         if adopted.get("state").is_none() {
             adopted["state"] = json!("imported");
         }
@@ -247,7 +259,7 @@ impl Store {
         nonempty(model)?;
         nonempty(actor)?;
         let dir = self.proposal(id)?;
-        let result = self.inspect(&dir, false)?;
+        let (result, _) = self.inspect_records(&dir, false, false)?;
         let raw = fs::read(prompt)?;
         let prompt_hash = hash(&raw);
         let f = json!({"schema_version":"1","content":result.fingerprint,"actor":actor,"model":model,"prompt_sha256":prompt_hash});
@@ -258,7 +270,7 @@ impl Store {
     pub fn review(&self, id: &str, reviewer: &str) -> Result<Value> {
         nonempty(reviewer)?;
         let dir = self.document(id)?;
-        let result = self.inspect(&dir, false)?;
+        let (result, _) = self.inspect_records(&dir, false, false)?;
         let (_, key) = self.formation(&dir)?;
         let r = json!({"schema_version":"1","content":result.fingerprint,"reviewer":reviewer,"formation":key});
         ensure!(
@@ -271,10 +283,29 @@ impl Store {
     pub fn adopt(&self, id: &str) -> Result<Value> {
         let proposal = self.proposal(id)?;
         let plan = read(&proposal.join("proposal.json"), Some("proposal"))?;
-        let result = self.inspect(&proposal, false)?;
-        let (f, _) = self.formation(&proposal)?;
+        let (result, _) = self.inspect_records(&proposal, false, false)?;
+        self.adopt_inspected(
+            &proposal,
+            &plan,
+            &result.meta["document_id"],
+            &result.fingerprint,
+            result.source_current,
+        )
+    }
+    /// Adopts `proposal`, whose `plan` is its proposal.json, on what its
+    /// inspection found: the `document_id` it records, the `fingerprint` of its
+    /// content and whether its original is the one extracted.
+    fn adopt_inspected(
+        &self,
+        proposal: &Path,
+        plan: &Value,
+        document_id: &Value,
+        fingerprint: &str,
+        source_current: bool,
+    ) -> Result<Value> {
+        let (f, _) = self.formation(proposal)?;
         ensure!(
-            plan["document_id"] == result.meta["document_id"] && f["content"] == result.fingerprint,
+            plan["document_id"] == *document_id && f["content"] == fingerprint,
             "proposal changed after record; record again"
         );
         let doc_id = string(&plan["document_id"])?;
@@ -283,12 +314,9 @@ impl Store {
             self.fingerprint(&current)? == plan["base"].as_str().map(str::to_owned),
             "authority changed since import"
         );
-        ensure!(
-            result.source_current,
-            "source changed; re-import before adoption"
-        );
-        if self.fingerprint(&current)?.as_deref() == Some(&result.fingerprint) {
-            fs::remove_dir_all(&proposal)?;
+        ensure!(source_current, "source changed; re-import before adoption");
+        if self.fingerprint(&current)?.as_deref() == Some(fingerprint) {
+            fs::remove_dir_all(proposal)?;
             remove_empty_directories(proposal.parent().unwrap(), &self.arp);
             return Ok(
                 json!({"state":"skipped","reason":"no_changes","document_id":doc_id,"document":current}),
@@ -299,7 +327,7 @@ impl Store {
         let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
         let ready = stage.path().join("ready");
         fs::create_dir(&ready)?;
-        for (name, path) in self.logical(&proposal)? {
+        for (name, path) in self.logical(proposal)? {
             if ["proposal.json", "review.json"].contains(&name.as_str()) {
                 continue;
             }
@@ -307,7 +335,7 @@ impl Store {
         }
         ensure!(
             self.fingerprint(&current)? == plan["base"].as_str().map(str::to_owned)
-                && self.fingerprint(&proposal)?.as_deref() == Some(&result.fingerprint),
+                && self.fingerprint(proposal)?.as_deref() == Some(fingerprint),
             "document changed during adoption"
         );
         let backup = stage.path().join("previous");
@@ -327,7 +355,7 @@ impl Store {
             return Err(error.into());
         }
         // Only the adopted current document survives. Git owns its prior versions.
-        fs::remove_dir_all(&proposal)?;
+        fs::remove_dir_all(proposal)?;
         remove_empty_directories(proposal.parent().unwrap(), &self.arp);
         Ok(json!({"document_id":doc_id,"document":dest}))
     }
@@ -364,7 +392,7 @@ impl Store {
                 structure,
                 operations: excel::parse_operations(
                     array(&inspected.mappings["operations"])?,
-                    array(&inspected.extraction["sheets"])?,
+                    &inspected.extraction.sheets,
                 )?,
                 extraction: inspected.extraction.clone(),
                 carrier: crate::document_structure::Carrier::Apply,
@@ -396,7 +424,7 @@ impl Store {
         // Nobody formed the new extraction: it is recorded as formed by apply,
         // ready to adopt, unless its content is changed before.
         let dir = self.proposal(id)?;
-        let formed = self.inspect(&dir, false)?;
+        let (formed, _) = self.inspect_records(&dir, false, false)?;
         write(
             &dir.join("formation.json"),
             &json!({"schema_version":"1","content":formed.fingerprint,"by":"apply"}),

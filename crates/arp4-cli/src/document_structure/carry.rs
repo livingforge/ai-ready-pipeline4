@@ -39,7 +39,9 @@ mod visual_performance_tests {
         let drawings: Vec<_> = (0..800)
             .map(|i| json!({"kind":"picture","text":format!("picture {i}")}))
             .collect();
-        let before = json!({"source":{"path":"docs/images.xlsx"},"sheets":[{"name":"S","drawings":drawings}],"assets":[]});
+        let before = crate::extraction::sample(
+            json!({"source":{"path":"docs/images.xlsx"},"sheets":[{"name":"S","drawings":drawings}],"assets":[]}),
+        );
         let structure = json!({"visuals":policy::visuals(&before).unwrap()});
         let mut elapsed = Vec::new();
         for _ in 0..5 {
@@ -108,18 +110,15 @@ mod visual_performance_tests {
         let values: Vec<_> = (1..=2_000)
             .flat_map(|row| (1..=10).map(move |column| cell(column, row)))
             .collect();
-        let sheet = json!({"name":"S"});
-        let indexed_cells: BTreeMap<_, _> = values
+        let extraction = crate::extraction::sample(json!({"sheets":[{"name":"S","cells":values
             .iter()
-            .map(|value| {
-                (
-                    (
-                        "S".to_owned(),
-                        string(&value["address"]).unwrap().to_owned(),
-                    ),
-                    (&sheet, value),
-                )
-            })
+            .map(|value| json!({"address":value["address"],"value":value["value"]}))
+            .collect::<Vec<_>>()}]}));
+        let sheet = &extraction.sheets[0];
+        let indexed_cells: BTreeMap<_, _> = sheet
+            .cells
+            .iter()
+            .map(|cell| (("S".to_owned(), cell.address.to_string()), (sheet, cell)))
             .collect();
         let started = Instant::now();
         let coordinate_cells = coordinate_cells(&indexed_cells).unwrap();
@@ -277,15 +276,12 @@ fn content((sheet, cell): SourceCell<'_>) -> Result<Value> {
 }
 
 /// The cells of each sheet by address, with the sheet they are on.
-fn sheet_cells(extraction: &Value) -> Result<BTreeMap<(String, String), SourceCell<'_>>> {
+fn sheet_cells(extraction: &Extraction) -> Result<BTreeMap<(String, String), SourceCell<'_>>> {
     let mut cells = BTreeMap::new();
-    for sheet in array(&extraction["sheets"])? {
+    for sheet in &extraction.sheets {
         let name = string(&sheet["name"])?;
-        for cell in array(&sheet["cells"])? {
-            cells.insert(
-                (name.to_owned(), string(&cell["address"])?.to_owned()),
-                (sheet, cell),
-            );
+        for cell in &sheet.cells {
+            cells.insert((name.to_owned(), cell.address.to_string()), (sheet, cell));
         }
     }
     Ok(cells)
@@ -314,25 +310,29 @@ fn coordinate_cells<'a>(
 /// journal for `after` and the record of what was carried.
 pub(super) fn carry(
     root: &Path,
-    structure: &Value,
-    before: &Value,
-    after: &Value,
+    structure: &Structure,
+    before: &Extraction,
+    after: &Extraction,
     operations: &[StructuralOperation],
     carrier: Carrier,
     axes: &super::grid::Axes,
 ) -> Result<(Value, Value)> {
-    let sheets = array(&before["sheets"])?;
-    let names: Vec<&str> = sheets
+    let names: Vec<&str> = before
+        .sheets
         .iter()
         .map(|s| s["name"].as_str().unwrap_or(""))
         .collect();
-    let after_names: Vec<&str> = array(&after["sheets"])?
+    let after_names: Vec<&str> = after
+        .sheets
         .iter()
         .map(|s| s["name"].as_str().unwrap_or(""))
         .collect();
     ensure!(names == after_names, "the sheets changed");
+    // Carried as JSON: an interpretation is carried only onto a changed
+    // original, as apply and a re-import of an edited original do.
+    let structure = &structure.to_value();
     let reviewed = structure["review"]["status"] == "accepted"
-        && structure["review"]["content_hash"] == content_hash(structure);
+        && structure["review"]["content_hash"] == json_content_hash(structure);
     let mut reasons: Vec<String> = vec![];
     let mut moved = 0usize;
     let mut changed = 0usize;
@@ -358,9 +358,10 @@ pub(super) fn carry(
         })
         .collect();
 
-    let mut merge_states = sheets
+    let mut merge_states = before
+        .sheets
         .iter()
-        .map(MergeState::new)
+        .map(|sheet| MergeState::new(&sheet.fields))
         .collect::<Result<Vec<_>>>()?;
 
     for (index, operation) in operations.iter().enumerate() {
@@ -601,7 +602,10 @@ pub(super) fn carry(
 
     // New cells join the element around them, so a correction also holds
     // for what the new version adds inside it.
-    let inferred = inference::elements(after)?;
+    let inferred: Vec<Value> = inference::elements(after)?
+        .iter()
+        .map(super::Element::to_value)
+        .collect();
     let joined = join_new_cells(&mut elements, &inferred, &mut owned)?;
     if !joined.is_empty() {
         reasons.push(format!(
@@ -805,8 +809,9 @@ pub(super) fn carry(
     let after_hash = crate::extraction::hash(after)?;
     let mut result = json!({"schema_version":1,"document":after["document_id"],
         "source":{"path":after["source"]["path"],"sha256":after["source"]["sha256"]},
-        "extraction_hash":after_hash,"regions":regions,"elements":carried,"visuals":visuals,
+        "extraction_hash":after_hash,"regions":regions,"visuals":visuals,
         "review":{"status":"pending"}});
+    result["elements"] = Value::Array(carried);
     if changed > 0 {
         reasons.push(format!(
             "{changed} cells changed in value; check that their elements still read them right"
@@ -824,7 +829,7 @@ pub(super) fn carry(
         "not_reviewed"
     } else if reasons.is_empty() {
         let mut review = structure["review"].clone();
-        review["content_hash"] = json!(content_hash(&result));
+        review["content_hash"] = json!(json_content_hash(&result));
         result["review"] = review;
         "kept"
     } else {
@@ -833,7 +838,7 @@ pub(super) fn carry(
     let mut journal = corrections::record(root, after, &result, axes)?;
     let (replayed, _) = rebase::rebase(root, &journal, after, &after_hash, true, axes)?;
     ensure!(
-        replayed == result,
+        replayed.to_value() == result,
         "the carried interpretation does not replay from its corrections"
     );
     let ids: Vec<&str> = operations.iter().map(|o| o.id.as_str()).collect();
@@ -1102,8 +1107,8 @@ fn identity(object: &Value) -> Value {
 /// edited and matches none is reported to be read again.
 fn carry_visuals(
     structure: &Value,
-    before: &Value,
-    after: &Value,
+    before: &Extraction,
+    after: &Extraction,
     reasons: &mut Vec<String>,
     affected: &mut Vec<Value>,
 ) -> Result<Vec<Value>> {
@@ -1111,7 +1116,7 @@ fn carry_visuals(
         order: std::collections::VecDeque<usize>,
         by_id: BTreeMap<String, std::collections::VecDeque<usize>>,
     }
-    let shows = |extraction: &Value, visual: &Value| -> Option<Vec<Value>> {
+    let shows = |extraction: &Extraction, visual: &Value| -> Option<Vec<Value>> {
         visual["sources"]
             .as_array()?
             .iter()
@@ -1388,20 +1393,20 @@ mod tests {
 
     #[test]
     fn indexed_region_compares_only_its_sheet_and_range() {
-        let before_doc = json!({"sheets":[
+        let before_doc = crate::extraction::sample(json!({"sheets":[
             {"name":"S","cells":[
                 {"address":"A1","value":"same"},
                 {"address":"B2","value":"same"},
                 {"address":"C3","value":"outside"}]},
             {"name":"Other","cells":[{"address":"A1","value":"before"}]}
-        ]});
-        let after_doc = json!({"sheets":[
+        ]}));
+        let after_doc = crate::extraction::sample(json!({"sheets":[
             {"name":"S","cells":[
                 {"address":"A1","value":"same"},
                 {"address":"B2","value":"same"},
                 {"address":"C3","value":"changed"}]},
             {"name":"Other","cells":[{"address":"A1","value":"after"}]}
-        ]});
+        ]}));
         let before = coordinate_cells(&sheet_cells(&before_doc).unwrap()).unwrap();
         let after = coordinate_cells(&sheet_cells(&after_doc).unwrap()).unwrap();
         assert_eq!(

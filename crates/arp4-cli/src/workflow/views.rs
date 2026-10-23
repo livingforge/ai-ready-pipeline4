@@ -3,8 +3,8 @@ use super::*;
 impl Workflow {
     /// Agent-facing task row: the short reference, progress fields and structured
     /// diagnostics. Artifact digests and the escaped error text stay in state.json.
-    pub(super) fn task_view(&self, task: &Task) -> Value {
-        let mut view = json!({"task_ref":self.short_id(task),"stage":task.stage,"state":task.state,
+    pub(super) fn task_view(&self, task: &Task, refs: &TaskRefs<'_>) -> Value {
+        let mut view = json!({"task_ref":refs.short(&task.id),"stage":task.stage,"state":task.state,
             "document":task.document,"partition":task.partition,"failure_class":task.failure_class,
             "retry_reason":task.retry_reason,"diagnostics":task.diagnostics});
         view.as_object_mut()
@@ -13,11 +13,12 @@ impl Workflow {
         view
     }
     pub(super) fn status(&self) -> Result<Value> {
+        let refs = TaskRefs::new(&self.state.tasks);
         let tasks: Vec<_> = self
             .state
             .tasks
             .iter()
-            .map(|task| self.task_view(task))
+            .map(|task| self.task_view(task, &refs))
             .collect();
         let rounds_remaining = self.state.max_rounds.saturating_sub(self.state.round);
         let escalation = if self.state.escalation["reason"].is_null() {
@@ -38,6 +39,37 @@ impl Workflow {
                     || value.as_array().is_some_and(Vec::is_empty)
                     || value.as_object().is_some_and(Map::is_empty))
         });
+        Ok(status)
+    }
+    /// [`Workflow::status`], or with `summary` [`Workflow::status_summary`],
+    /// kept in the run for the commands paging through it: a page lists some
+    /// of the tasks, but its concerns, quality and provenance are made from
+    /// the whole state. Kept while the program, the run and the state, by the
+    /// digest `state` of its encoding, are the same.
+    pub(super) fn kept_status(&self, summary: bool, state: &str) -> Result<Value> {
+        let path = self.store.managed(if summary {
+            "status-cache/summary.json"
+        } else {
+            "status-cache/full.json"
+        })?;
+        let key = hash(&encode(&json!({"program":crate::data::program()?,
+            "run":self.store.root,"state":state})));
+        if let Some(mut saved) = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .filter(|saved| saved["key"] == key)
+        {
+            return Ok(saved["status"].take());
+        }
+        let status = if summary {
+            self.status_summary()?
+        } else {
+            self.status()?
+        };
+        // A run that cannot keep it makes the next page again.
+        let _ = serde_json::to_vec(&json!({"key":key,"status":status}))
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::data::replace_cache(&path, &bytes));
         Ok(status)
     }
     /// Progress and decisions remain visible; detailed diagnostics are read by

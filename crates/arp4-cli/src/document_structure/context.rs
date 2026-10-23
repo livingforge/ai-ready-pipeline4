@@ -42,7 +42,7 @@ fn position(drawing: &Value) -> Value {
 
 pub(super) fn assets(
     extraction_path: &Path,
-    ext: &Value,
+    ext: &Extraction,
 ) -> Result<BTreeMap<String, (PathBuf, String)>> {
     let extraction_path = dunce::canonicalize(extraction_path)?;
     let parent = extraction_path
@@ -72,7 +72,7 @@ pub(super) fn assets(
 pub(super) fn read(
     root: &Path,
     extraction_path: &Path,
-    ext: &Value,
+    ext: &Extraction,
     report: &mut Value,
 ) -> Result<()> {
     let assets = assets(extraction_path, ext)?;
@@ -92,7 +92,7 @@ pub(super) fn read(
         Ok(json!({"id":format!("region-{}",string(&r["id"])?),"region":r["id"],"path":image_path(root,string(&r["image"])?)?,"bbox":r["bbox"]}))
     }).collect::<Result<Vec<_>>>()?;
     let mut drawings = vec![];
-    for (si, sheet) in array(&ext["sheets"])?.iter().enumerate() {
+    for (si, sheet) in ext.sheets.iter().enumerate() {
         for (di, drawing) in sheet["drawings"]
             .as_array()
             .into_iter()
@@ -157,7 +157,7 @@ pub(super) fn read(
     report["image_paths"] = json!(images);
     // Each cell with its font and style in place, as agents read it.
     report["original_cells"] = Value::Array(
-        array(&ext["sheets"])?
+        ext.sheets
             .iter()
             .map(crate::extraction::sheet_view)
             .collect::<Result<_>>()?,
@@ -170,7 +170,7 @@ pub(super) fn read(
 
 /// Cell envelope for a whole diagram, retaining the shared anchor of grouped shapes.
 /// One-cell and absolute anchors need an explicit range because size is in EMU.
-pub(super) fn visual_range(ext: &Value, visual: &Value) -> Result<String> {
+pub(super) fn visual_range(ext: &Extraction, visual: &Value) -> Result<String> {
     let mut min = (u32::MAX, u32::MAX);
     let mut max = (0, 0);
     for source in array(&visual["sources"])? {
@@ -207,11 +207,12 @@ mod tests {
     fn compact_context_keeps_explicit_connections_and_group_transforms() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("extraction.json");
-        let ext = json!({"assets":[],"sheets":[{"name":"S","cells":[],"drawings":[
+        let value = json!({"assets":[],"sheets":[{"name":"S","cells":[],"drawings":[
             {"id":"drawing#1","kind":"group","anchor":{"kind":"absoluteAnchor","pos":{"x":"10","y":"20"},"ext":{"cx":"100","cy":"200"}},"transform":{"chOff":{"x":"1","y":"2"}}},
             {"id":"drawing#2","kind":"connector","group":"drawing#1","anchor":{"kind":"twoCellAnchor","from":{"col":2,"row":4,"colOff":200},"to":{"col":6,"row":8}},"connections":[{"end":"stCxn","target":"drawing#3","site":"0","basis":"explicit"},{"end":"endCxn","target":"drawing#4","site":"1","basis":"explicit"}]}
         ]}]});
-        write(&path, &ext).unwrap();
+        write(&path, &value).unwrap();
+        let ext = crate::extraction::sample(value);
         let mut report = json!({"structure":{"regions":[]}});
         read(dir.path(), &path, &ext, &mut report).unwrap();
         let group = &report["drawings"][0];
@@ -235,15 +236,16 @@ mod tests {
 
     #[test]
     fn diagram_range_encloses_cell_anchors_without_swapping_rows_and_columns() {
-        let mut ext = json!({"sheets":[{"name":"S","merges":[],"drawings":[
-            {"anchor":{"kind":"twoCellAnchor","from":{"col":1,"row":4},"to":{"col":5,"row":8}}},
-            {"anchor":{"kind":"twoCellAnchor","from":{"col":3,"row":2},"to":{"col":7,"row":11}}}
-        ]}]});
+        let mut ext =
+            crate::extraction::sample(json!({"sheets":[{"name":"S","merges":[],"drawings":[
+                {"anchor":{"kind":"twoCellAnchor","from":{"col":1,"row":4},"to":{"col":5,"row":8}}},
+                {"anchor":{"kind":"twoCellAnchor","from":{"col":3,"row":2},"to":{"col":7,"row":11}}}
+            ]}]}));
         let visual = json!({"sheet":"S","sources":["/sheets/0/drawings/0","/sheets/0/drawings/1"]});
         assert_eq!(visual_range(&ext, &visual).unwrap(), "B3:H12");
-        ext["sheets"][0]["drawings"][1]["anchor"]["kind"] = json!("oneCellAnchor");
+        ext.sheets[0]["drawings"][1]["anchor"]["kind"] = json!("oneCellAnchor");
         assert!(visual_range(&ext, &visual).is_err());
-        ext["sheets"][0]["drawings"][1]["anchor"]["kind"] = json!("absoluteAnchor");
+        ext.sheets[0]["drawings"][1]["anchor"]["kind"] = json!("absoluteAnchor");
         assert!(visual_range(&ext, &visual).is_err());
         assert_eq!(
             point(&json!({"col":2,"row":4,"colOff":200,"rowOff":0})).unwrap(),

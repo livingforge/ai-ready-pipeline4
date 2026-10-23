@@ -8,6 +8,7 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
         warnings: vec![],
         structures: BTreeMap::new(),
         structure_requirements: BTreeMap::new(),
+        merges: BTreeMap::new(),
     };
     for path in paths {
         let source_count = input.sources.len();
@@ -63,18 +64,31 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
                 }
             }
         }
-        for (si, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
-            let mut cells = array(&sheet["cells"])?
+        for (si, sheet) in extraction.sheets.iter().enumerate() {
+            let merges: Vec<String> = array(&sheet["merges"])?
+                .iter()
+                .map(|v| Ok(string(v)?.to_owned()))
+                .collect::<Result<_>>()?;
+            if !merges.is_empty() {
+                input
+                    .merges
+                    .entry(document.to_owned())
+                    .or_default()
+                    .insert(string(&sheet["name"])?.to_owned(), merges);
+            }
+            let mut cells = sheet
+                .cells
                 .iter()
                 .enumerate()
-                .map(|(i, c)| Ok((crate::excel::coordinate(string(&c["address"])?)?, i, c)))
+                .map(|(i, c)| Ok((crate::excel::coordinate(&c.address)?, i, c)))
                 .collect::<Result<Vec<_>>>()?;
             cells.sort_by_key(|((column, row), _, _)| (*row, *column));
             for ((column, row), ci, cell) in cells {
-                for key in ["value", "formula"] {
+                let formula = cell.formula.as_deref().map_or(Value::Null, |f| json!(f));
+                for (key, value) in [("value", &cell.value), ("formula", &formula)] {
                     let start = input.sources.len();
                     walk(
-                        &cell[key],
+                        value,
                         format!("/sheets/{si}/cells/{ci}/{key}"),
                         document,
                         &mut input.sources,
@@ -82,16 +96,13 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
                     for source in &mut input.sources[start..] {
                         source.context = Some(CellContext {
                             sheet: string(&sheet["name"])?.into(),
-                            cell: string(&cell["address"])?.into(),
+                            cell: cell.address.to_string(),
                             row,
                             column,
-                            merges: array(&sheet["merges"])?
-                                .iter()
-                                .map(|v| Ok(string(v)?.to_owned()))
-                                .collect::<Result<_>>()?,
-                            number_format: string(&cell["number_format"])?.into(),
+                            number_format: cell.number_format.to_string(),
                             position: cell
-                                .get("position")
+                                .position
+                                .as_deref()
                                 .map(|p| serde_json::from_value(p.clone()))
                                 .transpose()?,
                         });
@@ -158,6 +169,13 @@ pub fn load_input(path: &std::path::Path) -> Result<Input> {
             "unknown structure document"
         );
         crate::document_structure::validate_snapshot(document, structure)?;
+    }
+    for (document, sheets) in &input.merges {
+        ensure!(
+            input.revisions.contains_key(document)
+                && sheets.values().all(|merges| !merges.is_empty()),
+            "unknown merge document or empty merge list"
+        );
     }
     for s in &input.sources {
         ensure!(

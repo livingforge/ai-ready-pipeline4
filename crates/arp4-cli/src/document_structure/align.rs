@@ -26,11 +26,14 @@ enum Step {
 /// The row and column operations that turn the sheets of `before` into those
 /// of `after`, in the order `carry` applies them: each position is where it
 /// lies after the operations before it.
-pub(super) fn operations(before: &Value, after: &Value) -> Result<Vec<StructuralOperation>> {
-    let old_sheets = array(&before["sheets"])?;
-    let new_sheets = array(&after["sheets"])?;
+pub(super) fn operations(
+    before: &Extraction,
+    after: &Extraction,
+) -> Result<Vec<StructuralOperation>> {
+    let old_sheets = &before.sheets;
+    let new_sheets = &after.sheets;
     let names =
-        |sheets: &[Value]| -> Vec<Value> { sheets.iter().map(|s| s["name"].clone()).collect() };
+        |sheets: &[Sheet]| -> Vec<Value> { sheets.iter().map(|s| s["name"].clone()).collect() };
     ensure!(names(old_sheets) == names(new_sheets), "the sheets changed");
     let mut operations = vec![];
     for (index, (old, new)) in old_sheets.iter().zip(new_sheets).enumerate() {
@@ -87,15 +90,18 @@ pub(super) fn operations(before: &Value, after: &Value) -> Result<Vec<Structural
 
 /// Each cell's value by (row, column), without the style or the formula text
 /// that moving a row rewrites.
-fn cells(sheet: &Value) -> Result<BTreeMap<(u32, u32), String>> {
+fn cells(sheet: &Sheet) -> Result<BTreeMap<(u32, u32), String>> {
     let mut cells = BTreeMap::new();
-    for cell in array(&sheet["cells"])? {
-        let (column, row) = crate::excel::coordinate(string(&cell["address"])?)?;
-        let value = &cell["value"];
-        if value.is_null() && !cell["formula"].is_string() {
+    for cell in &sheet.cells {
+        let (column, row) = crate::excel::coordinate(&cell.address)?;
+        let value = &cell.value;
+        if value.is_null() && cell.formula.is_none() {
             continue;
         }
-        cells.insert((row, column), json!([cell["type"], value]).to_string());
+        cells.insert(
+            (row, column),
+            json!([cell.kind.as_str(), value]).to_string(),
+        );
     }
     Ok(cells)
 }
@@ -470,8 +476,8 @@ mod tests {
             json!({"address":address,"type":"string","value":value,"formula":null})).collect::<Vec<_>>()})
     }
 
-    fn book(cells: &[(&str, &str)]) -> Value {
-        json!({"sheets":[sheet(cells)]})
+    fn book(cells: &[(&str, &str)]) -> Extraction {
+        crate::extraction::sample(json!({"sheets":[sheet(cells)]}))
     }
 
     fn summary(operations: &[StructuralOperation]) -> Vec<(OperationKind, u32, u32, Option<u32>)> {
@@ -624,7 +630,7 @@ mod tests {
     fn renamed_sheets_are_not_aligned() {
         let before = book(&TABLE);
         let mut after = before.clone();
-        after["sheets"][0]["name"] = json!("T");
+        after.sheets[0]["name"] = json!("T");
         assert!(operations(&before, &after).is_err());
     }
 
@@ -680,8 +686,8 @@ mod tests {
                         .map(|(address, value)| (address.as_str(), value.as_str()))
                         .collect::<Vec<_>>(),
                 );
-                let old = cells(&old["sheets"][0]).unwrap();
-                let new = cells(&new["sheets"][0]).unwrap();
+                let old = cells(&old.sheets[0]).unwrap();
+                let new = cells(&new.sheets[0]).unwrap();
                 let dense = align(
                     &lines(&old, true, 1, |_| true),
                     &lines(&new, true, 1, |_| true),
@@ -704,7 +710,7 @@ mod tests {
     #[ignore = "manual performance measurement"]
     fn benchmark_sparse_prefix_and_pairing() {
         let sheet = book(&[("A1048576", "value")]);
-        let cells = cells(&sheet["sheets"][0]).unwrap();
+        let cells = cells(&sheet.sheets[0]).unwrap();
         let start = first_line(&cells, &cells, true);
         let mut dense_ms = Vec::new();
         let mut trimmed_ms = Vec::new();

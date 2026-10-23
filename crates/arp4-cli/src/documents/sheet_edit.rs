@@ -77,7 +77,7 @@ struct Sheet<'a> {
     page: String,
     operations: &'a [StructuralOperation],
     /// The original cells by column, then row.
-    cells: BTreeMap<u32, BTreeMap<u32, &'a Value>>,
+    cells: BTreeMap<u32, BTreeMap<u32, &'a Cell>>,
 }
 
 impl<'a> Sheet<'a> {
@@ -299,7 +299,7 @@ impl<'a> Sheet<'a> {
     }
 
     /// The nearest original cell in `column` at or above `row`, with its row.
-    fn reference(&self, column: u32, row: u32) -> Option<(&'a Value, u32)> {
+    fn reference(&self, column: u32, row: u32) -> Option<(&'a Cell, u32)> {
         self.cells
             .get(&column)?
             .range(..=row)
@@ -393,7 +393,7 @@ fn date_format(format: &str) -> bool {
 /// number typed into a text column stays text and a date lands as a date.
 fn converted(
     value: &Value,
-    reference: Option<(&Value, u32)>,
+    reference: Option<(&Cell, u32)>,
     date1904: bool,
     place: &str,
     warnings: &mut Vec<String>,
@@ -416,13 +416,13 @@ fn converted(
             ),
         )
     };
-    Ok(match (string(&cell["type"]).unwrap_or(""), value) {
+    Ok(match (cell.kind.as_str(), value) {
         ("string", Value::String(_)) | ("number", Value::Number(_)) => value.clone(),
         ("boolean", Value::Bool(_)) => value.clone(),
         ("string", Value::Number(number)) => json!(number.to_string()),
         ("string", Value::Bool(_)) => return Err(mismatch("text")),
         ("number", Value::String(text)) => {
-            let date = cell["number_format"].as_str().is_some_and(date_format);
+            let date = date_format(&cell.number_format);
             if date && let Some(serial) = date_serial(text, date1904) {
                 json!(serial)
             } else if let Ok(integer) = text.trim().parse::<i64>() {
@@ -479,12 +479,21 @@ impl Store {
         } else {
             self.document(id)?
         };
-        let inspected = self.inspect(&dir, false).map_err(|error| {
-            rejection(
-                "invalid_document",
-                format!("the document fails check before the edit; fix that first: {error:#}"),
-            )
-        })?;
+        // The layout the inspection loads is kept: the edit reads it and
+        // changes a copy of it. So is the page of the sheet, which it edits.
+        let keep = inspection::Keep {
+            layout: true,
+            pages: &[edit.sheet.as_str()],
+        };
+        let (mut inspected, mut kept) = self
+            .inspect_layout(&dir, false, &Planned::new(), &keep)
+            .map_err(|error| {
+                rejection(
+                    "invalid_document",
+                    format!("the document fails check before the edit; fix that first: {error:#}"),
+                )
+            })?;
+        let current_layout = kept.layout.take().context("inspection keeps the layout")?;
         if let Some(base) = &edit.base
             && *base != inspected.fingerprint
         {
@@ -511,7 +520,7 @@ impl Store {
         }
         // Slides a slide operation inserts take row edits like the others.
         let operated = operated_extraction(extraction, &inspected.mappings["operations"])?;
-        let sheets = array(&operated["sheets"])?;
+        let sheets = &operated.sheets;
         let Some(index) = sheets.iter().position(|s| s["name"] == edit.sheet) else {
             let names: Vec<_> = sheets.iter().map(|s| s["name"].clone()).collect();
             return Err(Rejection(json!({"code":"sheet_not_found","message":format!("{} has no sheet {}", id, edit.sheet),"sheets":names})).into());
@@ -539,7 +548,6 @@ impl Store {
         };
         let prior_values = &recorded[..repeated.unwrap_or(recorded.len())];
         let prior = excel::parse_operations(prior_values, sheets)?;
-        let current_layout = identity::load(&dir, extraction, &Planned::new())?;
         let mut reserved = recorded.clone();
         {
             let layout = &current_layout;
@@ -556,9 +564,9 @@ impl Store {
             Some(op) => op.clone(),
             None => generated_id(&reserved, edit),
         };
-        let mut cells: BTreeMap<u32, BTreeMap<u32, &Value>> = BTreeMap::new();
-        for cell in array(&sheets[index]["cells"])? {
-            let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+        let mut cells: BTreeMap<u32, BTreeMap<u32, &Cell>> = BTreeMap::new();
+        for cell in &sheets[index].cells {
+            let (column, row) = excel::coordinate(&cell.address)?;
             cells.entry(column).or_default().insert(row, cell);
         }
         let sheet = Sheet {
@@ -570,15 +578,16 @@ impl Store {
             cells,
         };
         let source = under(&self.root, string(&inspected.meta["source"]["path"])?)?;
-        let book = Source::open(&source)?;
-        let vba = book.vba_report();
-        if edit.vba_unchanged && vba.is_none() {
+        // The original is opened only once the content the inspection read is
+        // let go (below); whether it has VBA is read from its parts' names.
+        if edit.vba_unchanged && !Source::has_vba_project(&source)? {
             return Err(rejection(
                 "invalid_arguments",
                 "--vba-unchanged accepts that a workbook's VBA code keeps its cell addresses; this document has no VBA project",
             ));
         }
-        let date1904 = matches!(&book, Source::Excel(workbook) if workbook.date1904);
+        // As the extraction records it of the original, which is current.
+        let date1904 = extraction["date1904"] == true;
         let plan = plan(&sheet, edit, &op_id, date1904)?;
         if laid_out
             && (plan.operation.get("style_rows").is_some() || plan.operation["merges"] == true)
@@ -597,10 +606,11 @@ impl Store {
             .get(&sheet.page)
             .cloned()
             .context("the sheet has no content page")?;
-        pages.insert(
-            page_name.clone(),
-            self.read_content(&dir, &page_name, extraction)?,
-        );
+        let page = match kept.pages.remove(&sheet.page) {
+            Some(page) => page,
+            None => self.read_content_with(&dir, &page_name, extraction, &current_layout)?,
+        };
+        pages.insert(page_name.clone(), page);
         let mut new_values = prior_values.to_vec();
         new_values.push(plan.operation.clone());
         let operations = excel::parse_operations(&new_values, sheets)?;
@@ -621,13 +631,20 @@ impl Store {
         }
 
         let deleted = deleted_content(&inspected, &sheet, &operations)?;
+        // The values, fonts and mapping entries the inspection read, each held
+        // for every cell of a large sheet, are not read past here: the files
+        // written are inspected below on top of what is kept.
+        inspected.content = HashMap::new();
+        inspected.entries = Vec::new();
+        let book = Source::open(&source)?;
+        let vba = book.vba_report();
         if edit.axis == Axis::Rows {
             let cells: BTreeSet<String> = deleted
                 .iter()
                 .filter(|(page, block, _, _)| *page == sheet.page && block == "table-1")
                 .map(|(_, _, row, column)| elements::cell_id(row, column))
                 .collect();
-            let metadata = &current_layout["sheets"][&sheet.page]["element_metadata"];
+            let metadata = &current_layout.sheet(&sheet.page)?.metadata;
             if let Some(key) = elements::orphaned_category(metadata, &cells)? {
                 return Err(rejection(
                     "category_row_deleted",
@@ -645,7 +662,10 @@ impl Store {
                 .cloned()
                 .context("content page missing")?;
             if !pages.contains_key(&name) {
-                pages.insert(name.clone(), self.read_content(&dir, &name, extraction)?);
+                pages.insert(
+                    name.clone(),
+                    self.read_content_with(&dir, &name, extraction, &current_layout)?,
+                );
             }
             let rows = pages.get_mut(&name).unwrap()["blocks"][&block]["rows"]
                 .as_object_mut()
@@ -676,7 +696,7 @@ impl Store {
             changed.insert(page_name.clone());
         }
         // Values a merge grown by the insertion would hide.
-        let merges = excel::merges_after(&sheets[index], &operations)?;
+        let merges = excel::merges_after(&sheets[index].fields, &operations)?;
         let merges = Merges::new(&merges)?;
         for (row, column, _) in &plan.additions {
             let (axis_key, offset_key, row_axis) = match edit.axis {
@@ -715,10 +735,35 @@ impl Store {
                 ));
             }
         }
+        book.ensure_row_edits_supported(&operations, &new_values)
+            .map_err(|error| {
+                if error.downcast_ref::<excel::VbaNotUpdated>().is_some() {
+                    Rejection(
+                        json!({"code":"vba_not_updated","message":format!("{error:#}"),"vba":vba}),
+                    )
+                    .into()
+                } else {
+                    rejection("structural_edit_unsupported", format!("{error:#}"))
+                }
+            })?;
+        // The original is not read past here either.
+        drop(book);
+        let neighbors = match edit.axis {
+            Axis::Rows => Some(neighbors(
+                &pages[&page_name],
+                &sheet,
+                &operations,
+                &op_id,
+                plan.span,
+                matches!(edit.kind, EditKind::Insert { .. }),
+            )?),
+            Axis::Columns => None,
+        };
+        drop(sheet);
         mappings["operations"] = Value::Array(new_values);
 
         let mut planned = BTreeMap::new();
-        let mut layout = identity::load(&dir, extraction, &Planned::new())?;
+        let mut layout = current_layout;
         {
             let layout = &mut layout;
             identity::update(layout, &operations)?;
@@ -734,29 +779,14 @@ impl Store {
         );
         changed.insert(page_name.clone());
         for name in &changed {
-            planned.insert(
-                name.clone(),
-                Some({
-                    let body = elements::encode(&pages[name], &mut layout)?;
-                    elements::page_bytes(&body, &layout)?
-                }),
-            );
+            let page = pages.remove(name).context("content page missing")?;
+            let body = elements::encode(page, &mut layout, None)?;
+            planned.insert(name.clone(), Some(elements::content_bytes(&body, &layout)?));
         }
         planned.insert(
             "layout.yml".into(),
-            Some(identity::stored(&mut layout, extraction)?),
+            Some(identity::stored(layout, extraction)?),
         );
-        book.ensure_row_edits_supported(&operations, array(&mappings["operations"])?)
-            .map_err(|error| {
-                if error.downcast_ref::<excel::VbaNotUpdated>().is_some() {
-                    Rejection(
-                        json!({"code":"vba_not_updated","message":format!("{error:#}"),"vba":vba}),
-                    )
-                    .into()
-                } else {
-                    rejection("structural_edit_unsupported", format!("{error:#}"))
-                }
-            })?;
         let result = self
             .inspect_with(&dir, false, &planned)
             .map_err(|error| rejection("validation_failed", format!("{error:#}")))?;
@@ -780,15 +810,8 @@ impl Store {
         if edit.vba_unchanged {
             report["vba"] = json!(vba);
         }
-        if edit.axis == Axis::Rows {
-            report["neighbors"] = neighbors(
-                &pages[&page_name],
-                &sheet,
-                &operations,
-                &op_id,
-                plan.span,
-                matches!(edit.kind, EditKind::Insert { .. }),
-            )?;
+        if let Some(neighbors) = neighbors {
+            report["neighbors"] = neighbors;
         }
         if edit.dry_run {
             report["state"] = json!("planned");
@@ -798,6 +821,10 @@ impl Store {
         self.commit(&dir, &planned, &inspected.fingerprint)?;
         report["state"] = json!("written");
         report["content"] = json!(result.fingerprint);
+        // The written content was inspected above; its status is made from
+        // that inspection rather than by inspecting the document again.
+        let row = self.state_of(id, &dir, Ok(result));
+        self.remember_state(id, &dir, &row);
         Ok(report)
     }
 
@@ -1155,11 +1182,16 @@ fn deleted_content(
     sheet: &Sheet<'_>,
     operations: &[StructuralOperation],
 ) -> Result<Vec<(String, String, String, String)>> {
-    let gone = |target: &MappingTarget<'_>, operations: &[StructuralOperation]| -> Result<bool> {
+    // The cells are placed with and without the new operation, each row and
+    // column once.
+    let with = excel::CoordinateMap::new(operations);
+    let without = excel::CoordinateMap::new(sheet.operations);
+    let gone = |target: &MappingTarget<'_>,
+                coordinates: &excel::CoordinateMap<'_>,
+                operations: &[StructuralOperation]|
+     -> Result<bool> {
         Ok(match target {
-            MappingTarget::Cell { sheet: name, cell } => {
-                excel::map_coordinate(name, cell, operations)?.is_none()
-            }
+            MappingTarget::Cell { sheet: name, cell } => coordinates.map(name, cell)?.is_none(),
             MappingTarget::InsertionRow {
                 sheet: name,
                 insertion,
@@ -1179,13 +1211,13 @@ fn deleted_content(
         })
     };
     let mut deleted = vec![];
+    // Read through the accessors: most entries are the defaults of cells,
+    // which are not kept as JSON.
     for entry in &inspected.entries {
-        let entry = entry.json();
-        let entry = &*entry;
-        let Some(position) = entry["position"].as_object() else {
+        let Some(position) = entry.position()? else {
             continue;
         };
-        let Some(target) = mapping_target(&entry["target"])? else {
+        let Some(target) = entry.target()? else {
             continue;
         };
         let name = match &target {
@@ -1197,12 +1229,12 @@ fn deleted_content(
         if name != sheet.name {
             continue;
         }
-        if gone(&target, operations)? && !gone(&target, sheet.operations)? {
+        if gone(&target, &with, operations)? && !gone(&target, &without, sheet.operations)? {
             deleted.push((
-                string(&entry["page"])?.to_owned(),
-                string(&entry["block"])?.to_owned(),
-                string(&position["row"])?.to_owned(),
-                string(&position["column"])?.to_owned(),
+                entry.page()?.to_owned(),
+                entry.block()?.to_owned(),
+                position.row.to_owned(),
+                position.column.to_owned(),
             ));
         }
     }
@@ -1277,6 +1309,15 @@ fn neighbors(
 }
 
 #[cfg(test)]
+fn number_cell() -> Cell {
+    crate::extraction::sample(json!({"sheets":[{"name":"S","cells":[{"address":"A1","value":1}]}]}))
+        .sheets
+        .remove(0)
+        .cells
+        .remove(0)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1285,7 +1326,7 @@ mod tests {
     fn measure_sparse_last_row_style() {
         use std::{hint::black_box, time::Instant};
 
-        let value = json!(1);
+        let value = number_cell();
         let cells = BTreeMap::from([(1, BTreeMap::from([(900_000, &value)]))]);
         let operations = [StructuralOperation {
             sheet: "S".to_owned(),
@@ -1357,7 +1398,7 @@ mod tests {
     fn measure_last_occupied_row() {
         use std::{hint::black_box, time::Instant};
 
-        let value = json!(1);
+        let value = number_cell();
         let cells: BTreeMap<_, _> = (1..=20)
             .map(|column| (column, (1..=2000).map(|row| (row, &value)).collect()))
             .collect();

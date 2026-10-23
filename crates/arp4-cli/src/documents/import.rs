@@ -2,6 +2,7 @@ use super::*;
 use crate::document_source::encryption::{self, Protection};
 use crate::document_structure::Carrier;
 use crate::rights_management::Unprotected;
+use std::collections::HashSet;
 
 /// The longest project-relative path of a document record. Windows limits a full path
 /// to 259 characters unless Git and every application enable long paths, so this
@@ -439,7 +440,7 @@ impl Store {
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let mut extraction = json!({"schema_version":"2","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"sheets":[],"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        let mut extraction = json!({"schema_version":"2","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
         if matches!(&book, Source::Excel(workbook) if workbook.date1904) {
             extraction["date1904"] = json!(true);
         }
@@ -463,14 +464,24 @@ impl Store {
         if !opaque_parts.is_empty() {
             extraction["opaque_parts"] = json!(opaque_parts);
         }
-        // Moved in rather than serialized again: the sheets hold every cell.
-        extraction["sheets"] = Value::Array(book.sheets().into_owned());
         // The parsed original is not needed past its sheets; only its bytes
         // are compared again at the end.
-        let raw = book.into_raw();
+        let (sheets, raw) = book.into_extraction()?;
+        let extraction = Extraction {
+            fields: extraction,
+            sheets,
+        };
+        let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
+        let ready = stage.path().join("ready");
+        fs::create_dir(&ready)?;
         // Encoded once, in the stored form: the record is these bytes and its
-        // key is their hash. The rest of import reads the expanded form.
-        let extraction_bytes = crate::extraction::stored(&mut extraction)?;
+        // key is their hash. Written at once, as they are as large as the
+        // extraction and nothing reads them again.
+        let extraction_hash = {
+            let bytes = crate::extraction::stored(&extraction)?;
+            replace(&ready.join("extraction.json"), &bytes)?;
+            hash(&bytes)
+        };
         let mut layout = if identity::is_excel(&extraction) && earlier.is_none() {
             let identity_base = if carry.is_none()
                 && destination.join("document.yml").is_file()
@@ -483,11 +494,17 @@ impl Store {
             } else {
                 &current
             };
-            identity::reimport(identity_base, &extraction, carry.is_some())?
+            let mut layout = identity::reimport(identity_base, &extraction, carry.is_some())?;
+            // The element metadata of the version before is let go: classify
+            // gives the groups and the pages encoded below give the metadata
+            // again, and it has an entry per cell.
+            for sheet in layout.sheets.values_mut() {
+                sheet.metadata = vec![];
+            }
+            layout
         } else {
             identity::initial(&extraction)?
         };
-        let extraction_hash = hash(&extraction_bytes);
         let same_extraction = earlier.is_none()
             && current.join("document.yml").exists()
             && read(&current.join("document.yml"), Some("document"))?["extraction"]
@@ -554,7 +571,7 @@ impl Store {
             Some(Err(error)) => (interpretation, not_carried(Carrier::Alignment, error)),
             None => (interpretation, Value::Null),
         };
-        {
+        let mut classified = {
             let (structure, _) = crate::document_structure::replay_verified_corrections(
                 &self.root,
                 &interpretation,
@@ -562,12 +579,10 @@ impl Store {
                 &extraction_hash,
                 &axes,
             )?;
-            elements::classify(&mut layout, array(&structure["elements"])?)?;
+            let classified = elements::classify(&mut layout, &extraction, &structure.elements)?;
             elements::geometry(&mut layout, &extraction, &[])?;
-        }
-        let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
-        let ready = stage.path().join("ready");
-        fs::create_dir(&ready)?;
+            classified
+        };
         if !assets.is_empty() {
             fs::create_dir(ready.join("assets"))?;
             for (name, bytes) in &assets {
@@ -583,19 +598,31 @@ impl Store {
             &ready.join("proposal.json"),
             &json!({"schema_version":"1","document_id":id,"base":base}),
         )?;
-        for (i, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+        for (i, sheet) in extraction.sheets.iter().enumerate() {
             let page = format!("sheet-{}", i + 1);
-            let body = elements::encode(&initial_page(sheet, &page, &json!(note))?, &mut layout)?;
-            replace(
+            let note = json!(note);
+            let grid = initial_grid(sheet, &page, &note, &layout)?;
+            debug_assert_eq!(
+                grid,
+                elements::GridPage::from_value(identity::grid(
+                    initial_page(sheet, &page, &note)?,
+                    &layout,
+                    false
+                )?)?,
+                "the grid import makes of {page} is the one of its initial page"
+            );
+            let body = elements::encode_grid(grid, &mut layout, classified.remove(&page))?;
+            elements::write_page(
                 &ready
                     .join("content")
                     .join(excel::filename(string(&sheet["name"])?)),
-                &elements::page_bytes(&body, &layout)?,
+                &body,
+                &layout,
             )?;
         }
         replace(
             &ready.join("layout.yml"),
-            &identity::stored(&mut layout, &extraction)?,
+            &identity::stored(layout, &extraction)?,
         )?;
         // The per-cell entries follow from the extraction; inspection derives them.
         let mappings_path = ready.join("mappings.yml");
@@ -606,7 +633,6 @@ impl Store {
                 &json!({"schema_version":"1","interpretation":interpretation}),
             )?,
         )?;
-        replace(&ready.join("extraction.json"), &extraction_bytes)?;
         let names = files(&ready)?
             .into_keys()
             .chain(LATER_RECORDS.map(String::from));
@@ -647,31 +673,36 @@ impl Store {
 
 /// The grid page of `page` that import makes of the extraction `sheet`: its
 /// values, formulas, shape texts and fonts, with the extraction's `note`.
-pub(super) fn initial_page(sheet: &Value, page: &str, note: &Value) -> Result<Value> {
+pub(super) fn initial_page(sheet: &Sheet, page: &str, note: &Value) -> Result<Value> {
     let mut rows = json!({});
     let mut formulas = json!({});
     let mut fonts = json!({});
-    for c in array(&sheet["cells"])? {
-        let address = string(&c["address"])?;
+    let mut table = elements::Fonts::default();
+    for c in &sheet.cells {
+        let address = &*c.address;
         let (_, row) = excel::coordinate(address)?;
         let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
-        rows[&format!("r{row}")][column] = c["value"].clone();
+        rows[&format!("r{row}")][column] = c.value.clone();
         let font = crate::extraction::font(sheet, c)?;
-        if c["type"] == "formula" {
-            let f = string(&c["id"])?;
-            formulas[f]["formula"] = json!(format!("={}", string(&c["formula"])?));
+        if c.kind == CellKind::Formula {
+            let f = &*c.id;
+            let formula = c
+                .formula
+                .as_deref()
+                .context("formula cell without formula")?;
+            formulas[f]["formula"] = json!(format!("={formula}"));
             if !font.is_null() {
-                fonts["formulas"][f]["formula"] = font.clone();
+                fonts["formulas"][f]["formula"] = table.add(font);
             }
         } else if !font.is_null() {
-            fonts["table-1"][&format!("r{row}")][column] = font.clone();
+            fonts["table-1"][&format!("r{row}")][column] = table.add(font);
         }
     }
     let mut shapes = json!({});
-    for (key, drawing) in shape_texts(sheet)? {
+    for (key, drawing) in shape_texts(&sheet.fields)? {
         shapes[&key]["text"] = drawing["text"].clone();
         if let Some(font) = drawing.get("font") {
-            fonts["shapes"][&key]["text"] = font.clone();
+            fonts["shapes"][&key]["text"] = table.add(font);
         }
     }
     let mut blocks = json!({"extraction-notes":{"title":"未抽出・注意事項","text":note}});
@@ -681,20 +712,136 @@ pub(super) fn initial_page(sheet: &Value, page: &str, note: &Value) -> Result<Va
         ("shapes", "図形の文字", shapes),
     ] {
         if body.as_object().is_some_and(|o| !o.is_empty()) {
-            blocks[block] = json!({"title":title,"rows":body});
+            // Moved in: `json!` would copy the values of every cell.
+            blocks[block] = json!({"title":title});
+            blocks[block]["rows"] = body;
         }
     }
-    Ok(
-        json!({"schema_version":identity::GRID_VERSION,"page_id":page,"title":sheet["name"],"blocks":blocks,"fonts":fonts}),
-    )
+    let mut page =
+        json!({"schema_version":identity::GRID_VERSION,"page_id":page,"title":sheet["name"]});
+    page["blocks"] = blocks;
+    page["fonts"] = fonts;
+    page[elements::FONT_TABLE] = Value::Array(table.list);
+    Ok(page)
+}
+
+/// [`initial_page`] as [`identity::grid`] places it in `layout` for
+/// [`elements::encode_grid`], made without the page as JSON, which held an
+/// object for each row of values and of fonts.
+pub(super) fn initial_grid(
+    sheet: &Sheet,
+    page: &str,
+    note: &Value,
+    layout: &Layout,
+) -> Result<elements::GridPage> {
+    let places = identity::grid_places(layout, page, &sheet["name"], false)?;
+    let name = places.sheet["name"].as_str().unwrap_or("sheet");
+    // Formula caches are extraction metadata, not editable body values.
+    let formula_cells: HashSet<(&str, &str)> = places.sheet["formulas"]
+        .as_object()
+        .context("layout formulas missing")?
+        .values()
+        .map(|target| Ok((string(&target["row"])?, string(&target["column"])?)))
+        .collect::<Result<_>>()?;
+    let (body, formulas, shapes): (Arc<str>, Arc<str>, Arc<str>) =
+        ("table-1".into(), "formulas".into(), "shapes".into());
+    let mut table = elements::Fonts::default();
+    let mut font = |font: &Value| {
+        if font.is_null() {
+            Value::Null
+        } else {
+            table.add(font)
+        }
+    };
+    let (mut values, mut formula_values) = (vec![], vec![]);
+    for c in &sheet.cells {
+        let address = &*c.address;
+        let (_, row) = excel::coordinate(address)?;
+        let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
+        let key = format!("r{row}");
+        let target_row = places.rows.get(&key).with_context(|| {
+            format!("unknown row identity: deleted by operations or unmapped ({name} {key})")
+        })?;
+        let target_column = places
+            .columns
+            .get(column)
+            .context("unknown column identity")?;
+        let cell_font = crate::extraction::font(sheet, c)?;
+        let mut body_font = Value::Null;
+        if c.kind == CellKind::Formula {
+            let formula = c
+                .formula
+                .as_deref()
+                .context("formula cell without formula")?;
+            let field = places.formulas.get(&*c.id).with_context(|| {
+                format!(
+                    "{name}!{} is deleted or has unknown formula identity",
+                    c.id.rsplit('-').next().unwrap_or(&c.id)
+                )
+            })?;
+            formula_values.push(elements::GridValue {
+                block: formulas.clone(),
+                row: field.clone(),
+                column: "formula".into(),
+                value: json!(format!("={formula}")),
+                font: font(cell_font),
+            });
+        } else {
+            body_font = font(cell_font);
+        }
+        if !formula_cells.contains(&(target_row.as_str(), target_column.as_str())) {
+            values.push(elements::GridValue {
+                block: body.clone(),
+                row: target_row.clone(),
+                column: target_column.clone(),
+                value: c.value.clone(),
+                font: body_font,
+            });
+        }
+    }
+    let shape_values: Vec<_> = shape_texts(&sheet.fields)?
+        .into_iter()
+        .map(|(key, drawing)| elements::GridValue {
+            block: shapes.clone(),
+            row: key,
+            column: "text".into(),
+            value: drawing["text"].clone(),
+            font: drawing
+                .get("font")
+                .map_or(Value::Null, |font| table.add(font)),
+        })
+        .collect();
+    let mut titles = serde_json::Map::new();
+    for (block, title, present) in [
+        ("table-1", "本文", !sheet.cells.is_empty()),
+        ("formulas", "数式原文", !formula_values.is_empty()),
+        ("shapes", "図形の文字", !shape_values.is_empty()),
+    ] {
+        if present {
+            titles.insert(block.into(), json!(title));
+        }
+    }
+    // In the order of their block, row and column, as a page lists them.
+    let mut ordered = vec![];
+    for mut block in [formula_values, shape_values, values] {
+        block.sort_by(|a, b| (&a.row, &a.column).cmp(&(&b.row, &b.column)));
+        ordered.extend(block);
+    }
+    Ok(elements::GridPage {
+        fields: json!({"schema_version":identity::GRID_VERSION,"page_id":page,"title":sheet["name"]}),
+        notes: json!({"title":"未抽出・注意事項","text":note}),
+        titles,
+        values: ordered,
+        font_table: Value::Array(table.list),
+    })
 }
 
 /// What the import of a new version of an original carries the interpretation
 /// from: the interpretation and extraction of the version before and the
 /// row/column operations between the two, which `apply` wrote or alignment found.
 pub(super) struct Carry {
-    pub(super) structure: Value,
-    pub(super) extraction: Value,
+    pub(super) structure: crate::document_structure::Structure,
+    pub(super) extraction: Extraction,
     pub(super) operations: Vec<excel::StructuralOperation>,
     pub(super) carrier: Carrier,
 }
@@ -702,7 +849,7 @@ pub(super) struct Carry {
 impl Store {
     /// The carry of `journal`, the interpretation of the document in `current`,
     /// onto `extraction`, the extraction of its original as edited outside ARP.
-    fn aligned(&self, current: &Path, journal: &Value, extraction: &Value) -> Result<Carry> {
+    fn aligned(&self, current: &Path, journal: &Value, extraction: &Extraction) -> Result<Carry> {
         let meta = read(&current.join("document.yml"), Some("document"))?;
         let key = string(&meta["extraction"])?;
         let before = crate::extraction::read_record(&current.join("extraction.json"))?;
@@ -715,7 +862,7 @@ impl Store {
             journal,
             &before,
             key,
-            &identity::stored_axes(current, &Planned::new())?,
+            &identity::stored_axes(current, &Planned::new())?.0,
         )?;
         let operations = crate::document_structure::align_operations(&before, extraction)?;
         Ok(Carry {

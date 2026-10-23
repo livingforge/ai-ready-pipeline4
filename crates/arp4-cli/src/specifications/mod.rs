@@ -55,7 +55,6 @@ pub struct CellContext {
     pub cell: String,
     pub row: u32,
     pub column: u32,
-    pub merges: Vec<String>,
     pub number_format: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<crate::native_text::TextPosition>,
@@ -70,6 +69,20 @@ pub struct Input {
     pub structure_requirements: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub structures: BTreeMap<String, Value>,
+    /// The merged ranges of each sheet that has any, by document and sheet:
+    /// recorded once for the sheet rather than with each of its cells.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub merges: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+}
+
+impl Input {
+    /// The merged ranges of `sheet` of `document`; none for a sheet without.
+    pub fn sheet_merges(&self, document: &str, sheet: &str) -> &[String] {
+        self.merges
+            .get(document)
+            .and_then(|sheets| sheets.get(sheet))
+            .map_or(&[], Vec::as_slice)
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -367,4 +380,45 @@ pub struct Report {
     pub issues: Vec<Value>,
     /// Numbers in text values that fixed lexical rules excluded from quantity checks.
     pub quantity_exemptions: Vec<Value>,
+}
+
+/// The assessment of the files `input` and `model` that a page of `spec
+/// check` shows: whether it is ready, its assurance, summary, coverage and
+/// issues. Every page otherwise assesses the whole model again, so reading
+/// all pages took time in proportion to the pages times the model. Inside a
+/// project (a folder above the model holding `.arp/config.yml`) it is saved in
+/// the project's cache under the hash of both files and the program, and read
+/// back while they are the same; elsewhere it is assessed each time.
+pub fn page_assessment(input: &std::path::Path, model: &std::path::Path) -> Result<Value> {
+    let assessed = || -> Result<Value> {
+        let report = assess(&load_input(input)?, &load_model(model)?)?;
+        Ok(
+            json!({"ready":report.ready,"assurance":report.assurance,"summary":report.summary,
+            "coverage":report.coverage,"issues":report.issues}),
+        )
+    };
+    let Some(arp) = std::path::absolute(model).ok().and_then(|path| {
+        path.ancestors()
+            .skip(1)
+            .map(|folder| folder.join(".arp"))
+            .find(|arp| arp.join("config.yml").is_file())
+    }) else {
+        return assessed();
+    };
+    let directory = crate::data::under(&arp, "cache/spec-check")?;
+    let key = hash(&encoded(&json!({"program":crate::data::program()?,
+        "input":hash(&std::fs::read(input)?),"model":hash(&std::fs::read(model)?)})));
+    let path = directory.join(format!("{key}.json"));
+    if let Some(saved) = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        return Ok(saved);
+    }
+    let result = assessed()?;
+    // A check that cannot save its assessment still answers.
+    if crate::data::replace_cache(&path, &serde_json::to_vec(&result)?).is_ok() {
+        crate::data::keep_newest(&directory, 8);
+    }
+    Ok(result)
 }

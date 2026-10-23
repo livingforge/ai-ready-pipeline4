@@ -20,7 +20,8 @@ pub(super) fn refresh(r: &mut Registry) -> Result<()> {
         .collect::<Result<_>>()?;
     Ok(())
 }
-pub fn load(root: &Path) -> Result<Registry> {
+/// The manifest of the registry at `root`, which names its files.
+fn manifest(root: &Path) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_value(read(&root.join("registry.json"), None)?)?;
     ensure!(
         manifest.records.keys().all(|s| valid_id(s))
@@ -28,29 +29,35 @@ pub fn load(root: &Path) -> Result<Registry> {
             && manifest.archives.keys().all(|s| slug(s)),
         "unsafe manifest paths"
     );
-    let entries = manifest
-        .records
-        .keys()
-        .map(|id| {
-            Ok((
-                id.clone(),
-                serde_json::from_value(read(
-                    &root.join("records").join(format!("{id}.json")),
-                    None,
-                )?)?,
-            ))
-        })
-        .collect::<Result<_>>()?;
-    let inputs = manifest
-        .evidence
-        .iter()
-        .map(|id| {
-            Ok((
-                id.clone(),
-                read(&root.join("evidence").join(format!("{id}.json")), None)?,
-            ))
-        })
-        .collect::<Result<_>>()?;
+    Ok(manifest)
+}
+pub fn load(root: &Path) -> Result<Registry> {
+    Ok(load_checked(root)?.0)
+}
+/// [`load`] with the snapshots it read.
+fn load_checked(root: &Path) -> Result<(Registry, Snapshots)> {
+    let manifest = manifest(root)?;
+    // The files are read on several threads: a registry holds a record per
+    // entry and a snapshot per capture its records cite.
+    let ids: Vec<&String> = manifest.records.keys().collect();
+    let entries = crate::data::in_order(&ids, |id| -> Result<Entry> {
+        Ok(serde_json::from_value(read(
+            &root.join("records").join(format!("{id}.json")),
+            None,
+        )?)?)
+    })
+    .into_iter()
+    .zip(&ids)
+    .map(|(entry, id)| Ok(((*id).clone(), entry?)))
+    .collect::<Result<_>>()?;
+    let ids: Vec<&String> = manifest.evidence.iter().collect();
+    let inputs = crate::data::in_order(&ids, |id| {
+        read(&root.join("evidence").join(format!("{id}.json")), None)
+    })
+    .into_iter()
+    .zip(&ids)
+    .map(|(input, id)| Ok(((*id).clone(), input?)))
+    .collect::<Result<_>>()?;
     let mut archives = BTreeMap::new();
     for (name, expected) in &manifest.archives {
         let v = read(&root.join("archive").join(format!("{name}.json")), None)?;
@@ -63,8 +70,9 @@ pub fn load(root: &Path) -> Result<Registry> {
         inputs,
         archives,
     };
-    validate(&r)?;
-    Ok(r)
+    let mut snapshots = Snapshots::default();
+    validate_with(&r, &mut snapshots)?;
+    Ok((r, snapshots))
 }
 /// Writes a file of the staged registry. One the current registry already holds
 /// with the same bytes is linked instead: Windows virus scanning reads every newly
@@ -86,6 +94,22 @@ fn stage_file(current: Option<&Path>, out: &Path, relative: &str, bytes: &[u8]) 
 }
 pub fn save(r: &Registry, out: &Path) -> Result<()> {
     validate(r)?;
+    write(r, out)
+}
+/// Applies `change` to the registry at `root` and saves it. [`apply`]
+/// validates what it gives, so it is written without validating it again:
+/// each validation reads every evidence snapshot a record cites, and those
+/// grow with the changes. The snapshots read when loading are not read
+/// again when validating the change.
+pub fn update(root: &Path, change: Change, additional: Vec<spec::Input>) -> Result<Registry> {
+    let (r, snapshots) = load_checked(root)?;
+    let r = apply_with(r, change, additional, snapshots)?;
+    write(&r, root)?;
+    Ok(r)
+}
+/// Writes the validated registry `r` over the one at `out`, which must be the
+/// one it was changed from.
+fn write(r: &Registry, out: &Path) -> Result<()> {
     let parent = out.parent().context("registry has no parent")?;
     fs::create_dir_all(parent)?;
     let lock_path = parent.join("registry.lock");
@@ -103,22 +127,24 @@ pub fn save(r: &Registry, out: &Path) -> Result<()> {
     }
     let _lock = Lock(lock_path, Some(lock));
     if out.exists() {
-        let current = load(out)?;
+        // The manifest names the registry and its files; the registry was
+        // validated when it was read to be changed.
+        let current = manifest(out)?;
         ensure!(
-            r.manifest.parent.as_deref() == Some(&fingerprint(&current)?),
+            r.manifest.parent.as_deref() == Some(&hash(&bytes(&current)?)),
             "registry changed or already initialized"
         );
         let mut owned = BTreeSet::from(["registry.json".to_owned()]);
         owned.extend(
             current
-                .entries
+                .records
                 .keys()
                 .map(|id| format!("records/{id}.json")),
         );
         owned.extend(
             current
-                .inputs
-                .keys()
+                .evidence
+                .iter()
                 .map(|id| format!("evidence/{id}.json")),
         );
         owned.extend(

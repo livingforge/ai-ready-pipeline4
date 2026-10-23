@@ -112,17 +112,28 @@ impl<'a> Merges<'a> {
     /// top-left cell. Excel shows only the top-left value, so such cells are never written.
     pub fn hiding(&self, address: &str) -> Result<Option<&'a str>> {
         let (column, row) = coordinate(address)?;
-        Ok(self
-            .0
+        Ok(self.hiding_at(column, row))
+    }
+
+    /// [`Merges::hiding`] the cell at `column` and `row`.
+    fn hiding_at(&self, column: u32, row: u32) -> Option<&'a str> {
+        self.0
             .containing(column, row)
             .filter(|merge| (column, row) != (merge.columns.0, merge.rows.0))
             .min_by_key(|merge| merge.order)
-            .map(|merge| merge.value))
+            .map(|merge| merge.value)
     }
 
     /// Rejects writing `address` of `sheet` when one of the merges hides it.
     pub fn ensure_not_hidden(&self, sheet: &str, address: &str) -> Result<()> {
-        if let Some(merge) = self.hiding(address)? {
+        let (column, row) = coordinate(address)?;
+        self.ensure_not_hidden_at(sheet, (column, row))
+    }
+
+    /// [`Merges::ensure_not_hidden`] for the cell at a (column, row) point.
+    pub fn ensure_not_hidden_at(&self, sheet: &str, (column, row): (u32, u32)) -> Result<()> {
+        if let Some(merge) = self.hiding_at(column, row) {
+            let address = format!("{}{row}", column_name(column)?);
             bail!(
                 "{sheet}!{address} is hidden by merged range {merge}: Excel shows only the top-left cell of a merge, so write the value there or add the row or column outside the merge"
             );
@@ -288,6 +299,23 @@ impl MergeState {
                 })?;
                 template.push((current.columns, top, bottom));
             }
+            // The copies lie in the inserted rows, so only a merge reaching
+            // them, or a copy made before, can be under one: they are checked
+            // against those, in the order of the areas, rather than all.
+            let inserted = Area {
+                columns: None,
+                rows: Some((
+                    operation.at,
+                    operation
+                        .at
+                        .saturating_add(operation.count.saturating_sub(1)),
+                )),
+            };
+            let mut nearby: Vec<Area> = areas
+                .iter()
+                .copied()
+                .filter(|&other| !single(other) && overlap(inserted, other))
+                .collect();
             for group in 0..operation.count / height {
                 for &(columns, top, bottom) in &template {
                     let first = operation.at + group * height + (top - from);
@@ -295,16 +323,16 @@ impl MergeState {
                         columns,
                         rows: Some((first, first + (bottom - top))),
                     };
-                    if let Some(&other) = areas
-                        .iter()
-                        .find(|&&other| !single(other) && overlap(area, other))
-                    {
+                    if let Some(&other) = nearby.iter().find(|&&other| overlap(area, other)) {
                         bail!(
                             "operation {} would merge {} over the merged range {}; insert the rows outside that merge",
                             operation.id,
                             area.render()?,
                             other.render()?
                         );
+                    }
+                    if !single(area) {
+                        nearby.push(area);
                     }
                     areas.push(area);
                     copied.push(true);
@@ -483,6 +511,91 @@ pub fn map_coordinate(
         column_name(mapped_column)?,
         mapped_row
     )))
+}
+
+/// [`map_coordinate`] for the many cells of a sheet or a workbook: a row is
+/// mapped through the row operations of its sheet and a column through its
+/// column operations once, rather than every cell through every operation,
+/// which grew with the cells times the pending operations.
+pub struct CoordinateMap<'a> {
+    operations: &'a [StructuralOperation],
+    /// Each axis's mapped positions, by sheet; none for a deleted one.
+    rows: std::cell::RefCell<
+        std::collections::HashMap<String, std::collections::HashMap<u32, Option<u32>>>,
+    >,
+    columns: std::cell::RefCell<
+        std::collections::HashMap<String, std::collections::HashMap<u32, Option<u32>>>,
+    >,
+}
+
+impl<'a> CoordinateMap<'a> {
+    pub fn new(operations: &'a [StructuralOperation]) -> Self {
+        Self {
+            operations,
+            rows: Default::default(),
+            columns: Default::default(),
+        }
+    }
+
+    /// Where the cell `address` of `sheet` is after the operations, as
+    /// [`map_coordinate`] gives it.
+    pub fn map(&self, sheet: &str, address: &str) -> Result<Option<String>> {
+        self.map_point(sheet, address)?
+            .map(|(column, row)| Ok(format!("{}{}", column_name(column)?, row)))
+            .transpose()
+    }
+
+    /// [`CoordinateMap::map`] as a (column, row) point.
+    pub fn map_point(&self, sheet: &str, address: &str) -> Result<Option<(u32, u32)>> {
+        let (column, row) = coordinate(address)?;
+        let Some(row) = self.axis(sheet, row, true)? else {
+            return Ok(None);
+        };
+        let Some(column) = self.axis(sheet, column, false)? else {
+            return Ok(None);
+        };
+        Ok(Some((column, row)))
+    }
+
+    fn axis(&self, sheet: &str, position: u32, rows: bool) -> Result<Option<u32>> {
+        let cache = if rows { &self.rows } else { &self.columns };
+        if let Some(&mapped) = cache
+            .borrow()
+            .get(sheet)
+            .and_then(|axis| axis.get(&position))
+        {
+            return Ok(mapped);
+        }
+        let mut mapped = Some(position);
+        for operation in self
+            .operations
+            .iter()
+            .filter(|operation| operation.sheet == sheet && operation.row_operation() == rows)
+        {
+            let Some(current) = mapped else { break };
+            let next = transform_index(current, std::slice::from_ref(operation), rows);
+            mapped = if matches!(
+                operation.kind,
+                OperationKind::DeleteRows | OperationKind::DeleteColumns
+            ) {
+                next
+            } else {
+                Some(next.with_context(|| {
+                    if rows {
+                        "row coordinate overflow"
+                    } else {
+                        "column coordinate overflow"
+                    }
+                })?)
+            };
+        }
+        cache
+            .borrow_mut()
+            .entry(sheet.to_owned())
+            .or_default()
+            .insert(position, mapped);
+        Ok(mapped)
+    }
 }
 
 /// Whether row or column operations remove an original axis position.
@@ -696,6 +809,49 @@ mod tests {
                 let deleted = axis_deleted(row, &operations, true).unwrap()
                     || axis_deleted(column, &operations, false).unwrap();
                 assert_eq!(mapped.is_none(), deleted, "{address}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_coordinate_map_places_cells_as_mapping_each_does() {
+        let operations = [
+            ("Sheet1", OperationKind::InsertRows, 3, 2),
+            ("Sheet2", OperationKind::DeleteRows, 2, 3),
+            ("Sheet1", OperationKind::DeleteRows, 5, 2),
+            ("Sheet1", OperationKind::InsertColumns, 2, 1),
+            ("Sheet1", OperationKind::MoveColumns { to: 7 }, 3, 2),
+            ("Sheet1", OperationKind::DeleteColumns, 4, 2),
+            ("Sheet1", OperationKind::InsertRows, 1, 1),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (sheet, kind, at, count))| StructuralOperation {
+            id: format!("op-{index}"),
+            sheet: sheet.into(),
+            kind,
+            at,
+            count,
+            style_from: None,
+            style_rows: 1,
+            merges: false,
+            vba_unchanged: false,
+        })
+        .collect::<Vec<_>>();
+        let map = CoordinateMap::new(&operations);
+        // Twice, the second time from what the first saved.
+        for _ in 0..2 {
+            for sheet in ["Sheet1", "Sheet2", "Sheet3"] {
+                for row in 1..20 {
+                    for column in 1..12 {
+                        let address = format!("{}{}", column_name(column).unwrap(), row);
+                        assert_eq!(
+                            map.map(sheet, &address).unwrap(),
+                            map_coordinate(sheet, &address, &operations).unwrap(),
+                            "{sheet}!{address}"
+                        );
+                    }
+                }
             }
         }
     }

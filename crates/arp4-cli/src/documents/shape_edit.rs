@@ -97,9 +97,7 @@ impl Store {
         let operated = operated_extraction(&inspected.extraction, &json!(values))?;
         let slide = string(&operation["slide"])?;
         if slide.starts_with("notes-")
-            || !array(&operated["sheets"])?
-                .iter()
-                .any(|sheet| sheet["name"] == slide)
+            || !operated.sheets.iter().any(|sheet| sheet["name"] == slide)
         {
             return Err(rejection(
                 "invalid_slide",
@@ -152,6 +150,10 @@ impl Store {
         self.commit(&dir, &planned, &inspected.fingerprint)?;
         report["state"] = json!("written");
         report["content"] = json!(result.fingerprint);
+        // The written content was inspected above; its status is made from
+        // that inspection rather than by inspecting the document again.
+        let row = self.state_of(id, &dir, Ok(result));
+        self.remember_state(id, &dir, &row);
         Ok(report)
     }
 }

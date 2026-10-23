@@ -5,7 +5,7 @@
 use super::word::Block;
 use super::word_fonts::TablePlace;
 use super::*;
-use crate::fonts::{Color, ColorContext, FontEdit, RunFont, Theme};
+use crate::fonts::{Color, ColorContext, Emphasis, FontEdit, RunFont, Theme};
 
 /// The sizes PowerPoint gives text whose master defines no text styles:
 /// titles 44 points, body text by level, notes 12 and other text 18 points.
@@ -274,6 +274,12 @@ impl SlideFonts {
                     {
                         font.color = Some(color);
                     }
+                    // `def` leaves the text style's italic to the table's text.
+                    font.emphasis.italic = match text_style.attribute("i") {
+                        Some("on") => Some(true),
+                        Some("off") => Some(false),
+                        _ => None,
+                    };
                     by_part.insert(part.tag_name().name().to_owned(), font);
                 }
                 tables.insert(id.to_owned(), by_part);
@@ -417,20 +423,20 @@ impl SlideFonts {
             .is_none_or(|id| self.tables.contains_key(id))
     }
 
-    /// The font of a block of slide text from the runs that show it; an empty
-    /// placeholder shows the font of its paragraph end.
-    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> Value {
+    /// The font and emphasis of a block of slide text from the runs that show
+    /// it; an empty placeholder shows the font of its paragraph end.
+    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, Emphasis) {
         self.runs_font(&block.runs, block.place.as_ref(), block.empty)
     }
 
-    /// The font of `runs`, in a table cell at `place`, or of the empty
-    /// placeholder paragraph `empty`.
+    /// The font and emphasis of `runs`, in a table cell at `place`, or of the
+    /// empty placeholder paragraph `empty`.
     pub(super) fn runs_font(
         &self,
         runs: &[Node<'_, '_>],
         place: Option<&TablePlace>,
         empty: Option<Node<'_, '_>>,
-    ) -> Value {
+    ) -> (Value, Emphasis) {
         let context = self.context();
         let ends: Vec<Node<'_, '_>> = empty
             .into_iter()
@@ -471,7 +477,10 @@ impl SlideFonts {
                     .or(&inherited)
             })
             .collect();
-        crate::fonts::element_font(&runs, &RunFont::default())
+        (
+            crate::fonts::element_font(&runs, &RunFont::default()),
+            crate::fonts::element_emphasis(&runs, &RunFont::default()),
+        )
     }
 }
 

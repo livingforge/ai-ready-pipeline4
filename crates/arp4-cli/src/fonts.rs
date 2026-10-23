@@ -1,7 +1,8 @@
-//! Font name, size and colour of document text as readers see them: every
-//! property is resolved through the styles and themes it inherits from. An
-//! element holds runs; a property its runs disagree on is `mixed`, and one that
-//! cannot be resolved is null.
+//! Font name, size, colour and emphasis of document text as readers see them:
+//! every property is resolved through the styles and themes it inherits from.
+//! An element holds runs; a property its runs disagree on is `mixed`, and one
+//! that cannot be resolved is null. An emphasis mark holds for an element only
+//! when every run shows it.
 use crate::data::string;
 use anyhow::{Context, Result, bail, ensure};
 use roxmltree::{Document, Node};
@@ -55,6 +56,7 @@ pub struct RunFont {
     pub east_asian: Option<String>,
     pub size: Option<f64>,
     pub color: Option<Color>,
+    pub emphasis: Emphasis,
 }
 
 impl RunFont {
@@ -65,7 +67,82 @@ impl RunFont {
             east_asian: self.east_asian.or_else(|| inherited.east_asian.clone()),
             size: self.size.or(inherited.size),
             color: self.color.or_else(|| inherited.color.clone()),
+            emphasis: self.emphasis.or(&inherited.emphasis),
         }
+    }
+}
+
+/// The emphasis marks of one run: italic, underlined (in any line), struck
+/// through (once or twice) and highlighted. `Some(false)` turns a mark off at
+/// this level, `None` leaves it to what the run inherits.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Emphasis {
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    pub strike: Option<bool>,
+    pub highlight: Option<bool>,
+}
+
+impl Emphasis {
+    /// This emphasis with the marks it leaves unset taken from `inherited`.
+    pub fn or(self, inherited: &Emphasis) -> Emphasis {
+        Emphasis {
+            italic: self.italic.or(inherited.italic),
+            underline: self.underline.or(inherited.underline),
+            strike: self.strike.or(inherited.strike),
+            highlight: self.highlight.or(inherited.highlight),
+        }
+    }
+
+    /// The marks by their `style` keys, in the order of the contract.
+    fn marks(&self) -> [(&'static str, Option<bool>); 4] {
+        [
+            ("italic", self.italic),
+            ("underline", self.underline),
+            ("strike", self.strike),
+            ("highlight", self.highlight),
+        ]
+    }
+
+    /// Sets the `style` key of each mark this emphasis shows to true. A mark
+    /// it does not show is left out, as style records only what text has.
+    pub fn mark(&self, style: &mut Value) {
+        for (key, shown) in self.marks() {
+            if shown == Some(true) {
+                style[key] = json!(true);
+            }
+        }
+    }
+
+    /// The marks it shows as a `style` object; `None` for none.
+    pub fn style(&self) -> Option<Value> {
+        let mut style = json!({});
+        self.mark(&mut style);
+        style
+            .as_object()
+            .is_some_and(|marks| !marks.is_empty())
+            .then_some(style)
+    }
+}
+
+/// The emphasis of an element from the fonts of its runs: each mark that every
+/// run shows. With no runs, the element shows `empty`.
+pub fn element_emphasis(runs: &[RunFont], empty: &RunFont) -> Emphasis {
+    let runs = if runs.is_empty() {
+        std::slice::from_ref(empty)
+    } else {
+        runs
+    };
+    let all = |mark: fn(&Emphasis) -> Option<bool>| {
+        runs.iter()
+            .all(|run| mark(&run.emphasis) == Some(true))
+            .then_some(true)
+    };
+    Emphasis {
+        italic: all(|e| e.italic),
+        underline: all(|e| e.underline),
+        strike: all(|e| e.strike),
+        highlight: all(|e| e.highlight),
     }
 }
 
@@ -647,6 +724,18 @@ pub fn drawing_run(properties: Node<'_, '_>, context: &ColorContext<'_>) -> RunF
             .and_then(|sz| sz.parse::<f64>().ok())
             .map(|sz| sz / 100.0),
         color,
+        emphasis: Emphasis {
+            italic: properties
+                .attribute("i")
+                .map(|i| matches!(i, "1" | "true" | "on")),
+            underline: properties.attribute("u").map(|u| u != "none"),
+            strike: properties.attribute("strike").map(|s| s != "noStrike"),
+            // A highlight cannot be turned off below where it is set.
+            highlight: properties
+                .children()
+                .any(|n| n.has_tag_name((DRAWING, "highlight")))
+                .then_some(true),
+        },
     }
 }
 
@@ -949,6 +1038,7 @@ mod tests {
             east_asian: Some("游ゴシック".into()),
             size: Some(size),
             color: Some(Color::rgb(color)),
+            ..RunFont::default()
         };
         let font = element_font(
             &[run("Arial", 11.0, "FF0000"), run("Arial", 12.0, "FF0000")],

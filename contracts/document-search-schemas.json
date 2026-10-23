@@ -36,10 +36,23 @@
       "setup_ms": {"type": "number", "minimum": 0, "description": "Query analysis and read-only database opening."},
       "integrity_ms": {"type": "number", "minimum": 0, "description": "Saved index metadata reads and revision calculation; canonical files are not checked by search."},
       "index_update_ms": {"type": "number", "minimum": 0, "description": "Read-only transaction completion; search does not update the index."},
-      "sql_ms": {"type": "number", "minimum": 0, "description": "Result count, SQL preparation, ranking, deduplication ordering and stepping the result cursor."},
+      "sql_ms": {"type": "number", "minimum": 0, "description": "Result count, SQL preparation, ranking, deduplication ordering and stepping the result cursor; for a page after the first, reading or saving its ranking and reading its passages."},
       "response_ms": {"type": "number", "minimum": 0},
       "other_ms": {"type": "number", "minimum": 0},
       "total_ms": {"type": "number", "minimum": 0}
+    }
+  },
+  "search-format": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: one per cell or shape text, mixed where its runs differ. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where every run of the text shows it; fill is a filled cell behind the text.",
+    "type": "object", "additionalProperties": false,
+    "required": ["property", "value", "hits", "cells"],
+    "properties": {
+      "property": {"enum": ["color", "theme", "font", "size", "bold", "italic", "underline", "strike", "highlight", "fill"]},
+      "value": {"type": ["string", "number", "boolean"], "description": "Font color as RRGGBB, auto or mixed; theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill)."},
+      "family": {"enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray", "black", "white"], "description": "For a color, the family a --color filter names it by; auto is black."},
+      "hits": {"type": "integer", "minimum": 1, "description": "The hits of a search filtering by this value alone."},
+      "cells": {"type": "integer", "minimum": 0, "description": "The cells and shape texts with text in this value."}
     }
   },
   "search-synonyms": {
@@ -109,6 +122,7 @@
       "values": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. unread names why a cell is unread or uncalculated; an unread cell keeps its extracted text, and is null without one, as an uncalculated formula is. A row too long for one passage lists the pieces of this passage, without its empty cells."},
       "row_context": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field"}, "description": "Row headers of other rows that head this row, such as a merged item name or a section row, outermost first."},
       "unread": {"type": "object", "minProperties": 1, "additionalProperties": {"enum": ["unreadable", "not_examined", "uncalculated"]}, "description": "Cells of the row by address without a known text: a reader could not read it or has not examined it, or a formula was saved without its result."},
+      "formatted": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}, "description": "On a hit of a search with a format filter: the sources of this passage whose text is in the format, in source order; a cell by its address, a shape's text by its pointer."},
       "structure_reviewed": {"type": "boolean"}
     },
     "dependentRequired": {"table": ["row", "values"], "row": ["table"], "values": ["table"], "row_context": ["table"], "unread": ["table"]},
@@ -128,6 +142,7 @@
           "text": {"type": "string", "description": "The text the original shows. A workbook cell shows its value, for a formula its result, under its number format."},
           "value": {"type": ["string", "number", "boolean"], "description": "The stored value of a workbook cell, when it reads otherwise than text."},
           "formula": {"type": "string", "description": "The formula of a workbook cell. Its result is the stored value; a formula saved without one shows no text."},
+          "format": {"type": "integer", "minimum": 1, "description": "The index's ID of the format of the source's text; stored only, responses leave it out."},
           "start": {"type": "integer", "minimum": 0},
           "end": {"type": "integer", "minimum": 0}
         }

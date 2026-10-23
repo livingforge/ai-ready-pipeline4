@@ -15,61 +15,6 @@ fn skipped_sheet_kind(relationship_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Master cells of shared formulas by group index: (column, row, formula).
-fn shared_formula_masters<'a>(
-    sheet_data: Node<'a, '_>,
-) -> Result<BTreeMap<&'a str, (u32, u32, &'a str)>> {
-    let mut masters = BTreeMap::new();
-    for cell in sheet_data
-        .descendants()
-        .filter(|n| n.has_tag_name((NS, "c")))
-    {
-        let Some(formula) = child(cell, "f") else {
-            continue;
-        };
-        if formula.attribute("t") == Some("shared")
-            && formula.attribute("ref").is_some()
-            && let Some(text) = formula.text()
-        {
-            let (column, row) = coordinate(cell.attribute("r").context("missing cell address")?)?;
-            masters.insert(
-                formula
-                    .attribute("si")
-                    .context("shared formula without si")?,
-                (column, row, text),
-            );
-        }
-    }
-    Ok(masters)
-}
-
-/// The formula a cell shows. Members of a shared formula store only the group
-/// index; Excel derives their formula from the master by moving relative references.
-fn formula_text(
-    formula: Node<'_, '_>,
-    address: &str,
-    masters: &BTreeMap<&str, (u32, u32, &str)>,
-) -> Result<String> {
-    if let Some(text) = formula.text() {
-        return Ok(text.to_owned());
-    }
-    if formula.attribute("t") != Some("shared") {
-        return Ok(String::new());
-    }
-    let group = formula
-        .attribute("si")
-        .context("shared formula without si")?;
-    let (master_column, master_row, text) = masters
-        .get(group)
-        .context("shared formula master missing")?;
-    let (column, row) = coordinate(address)?;
-    references::shift_relative(
-        text,
-        i64::from(row) - i64::from(*master_row),
-        i64::from(column) - i64::from(*master_column),
-    )
-}
-
 /// A worksheet as (name, part, state).
 type Worksheet = (String, String, String);
 
@@ -169,6 +114,347 @@ pub(super) fn sheet_parts(
     }
     ensure!(!output.is_empty(), "workbook has no worksheets");
     Ok((output, skipped))
+}
+
+/// How much of a worksheet's cells, in bytes of its XML, is parsed at a time:
+/// the tree of a large sheet held several times its text.
+const ROWS_PART: usize = 1 << 20;
+
+/// Where the `sheetData` of a worksheet's XML lies, found from its tags alone,
+/// so that the rest of the sheet is parsed whole and its rows
+/// [`ROWS_PART`] at a time.
+pub(crate) struct SheetData<'t> {
+    /// The start tags of the root element and of `sheetData`, and their
+    /// names: each part of the rows is parsed inside them, as they declare
+    /// the namespaces of the rows.
+    root_tag: &'t str,
+    root_name: &'t str,
+    data_tag: &'t str,
+    data_name: &'t str,
+    /// Where the start tag of `sheetData` begins.
+    pub(crate) start: usize,
+    /// What `sheetData` holds.
+    inner: std::ops::Range<usize>,
+    /// Where each element that `sheetData` holds ends, in order.
+    ends: Vec<usize>,
+}
+
+impl<'t> SheetData<'t> {
+    /// The first `sheetData` under the root element of the worksheet XML
+    /// `text`; none when the sheet has none or an empty one. Text and
+    /// attribute values hold no `<`, so the markup is found by it alone.
+    pub(crate) fn of(text: &'t str) -> Result<Option<Self>> {
+        let find = |from: usize, pattern: &str| -> Result<usize> {
+            text[from..]
+                .find(pattern)
+                .map(|i| from + i)
+                .context("unterminated markup in worksheet XML")
+        };
+        let mut at = 0;
+        let mut depth = 0usize;
+        let mut root = None;
+        let mut data: Option<(usize, &str, &str, usize)> = None;
+        let mut ends = vec![];
+        while let Some(i) = text[at..].find('<') {
+            let open = at + i;
+            let rest = &text[open..];
+            if rest.starts_with("<?") {
+                at = find(open, "?>")? + 2;
+            } else if rest.starts_with("<!--") {
+                at = find(open, "-->")? + 3;
+            } else if rest.starts_with("<![CDATA[") {
+                at = find(open, "]]>")? + 3;
+            } else if rest.starts_with("<!") {
+                at = find(open, ">")? + 1;
+            } else if rest.starts_with("</") {
+                at = find(open, ">")? + 1;
+                depth = depth.checked_sub(1).context("unbalanced worksheet XML")?;
+                if let Some((start, data_tag, data_name, inner)) = data {
+                    match depth {
+                        1 => {
+                            let (root_tag, root_name) =
+                                root.context("worksheet XML without root")?;
+                            return Ok(Some(Self {
+                                root_tag,
+                                root_name,
+                                data_tag,
+                                data_name,
+                                start,
+                                inner: inner..open,
+                                ends,
+                            }));
+                        }
+                        2 => ends.push(at),
+                        _ => {}
+                    }
+                }
+            } else {
+                // A start tag ends at the first `>` outside quotes.
+                let mut quote = None;
+                let mut close = None;
+                for (j, &byte) in rest.as_bytes().iter().enumerate().skip(1) {
+                    match quote {
+                        Some(q) if byte == q => quote = None,
+                        Some(_) => {}
+                        None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+                        None if byte == b'>' => {
+                            close = Some(open + j);
+                            break;
+                        }
+                        None => {}
+                    }
+                }
+                let close = close.context("unterminated tag in worksheet XML")?;
+                let tag = &text[open..=close];
+                let empty = tag.ends_with("/>");
+                let name = tag[1..]
+                    .split(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
+                    .next()
+                    .unwrap_or_default();
+                at = close + 1;
+                if depth == 0 {
+                    root = Some((tag, name));
+                } else if depth == 1
+                    && data.is_none()
+                    && name.rsplit(':').next() == Some("sheetData")
+                {
+                    if empty {
+                        return Ok(None);
+                    }
+                    data = Some((open, tag, name, at));
+                } else if empty && depth == 2 && data.is_some() {
+                    ends.push(at);
+                }
+                if !empty {
+                    depth += 1;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The worksheet `text` without what `sheetData` holds.
+    pub(crate) fn rest(&self, text: &str) -> String {
+        format!("{}{}", &text[..self.inner.start], &text[self.inner.end..])
+    }
+
+    /// The rows of `text` as documents of their own, each of at least
+    /// [`ROWS_PART`] bytes of whole elements but the last, inside the start
+    /// tags of the root and of `sheetData`.
+    pub(crate) fn parts(&self, text: &str) -> Vec<String> {
+        let wrap = |range: std::ops::Range<usize>| {
+            format!(
+                "{}{}{}</{}></{}>",
+                self.root_tag, self.data_tag, &text[range], self.data_name, self.root_name
+            )
+        };
+        let mut parts = vec![];
+        let mut start = self.inner.start;
+        for &end in &self.ends {
+            if end - start >= ROWS_PART {
+                parts.push(start..end);
+                start = end;
+            }
+        }
+        parts.push(start..self.inner.end);
+        parts.into_iter().map(wrap).collect()
+    }
+}
+
+/// The cells of a worksheet as its rows are read, a part of them at a time.
+struct Rows<'w> {
+    sheet: &'w str,
+    shared: &'w [(String, bool, Vec<crate::fonts::RunFont>)],
+    palette: &'w fonts::Palette,
+    cell_formats: &'w [CellFormat],
+    date1904: bool,
+    rich_values: &'w mut Vec<String>,
+    cells: Vec<Cell>,
+    addresses: BTreeSet<String>,
+    /// Border sides by position, and the cells holding nothing.
+    sides: HashMap<(u32, u32), [bool; 4]>,
+    blanks: Vec<(u32, u32)>,
+    filled: Vec<(u32, u32)>,
+    hidden_rows: Vec<u32>,
+    /// The masters of shared formulas by group index: (column, row, formula).
+    masters: BTreeMap<String, (u32, u32, String)>,
+    /// The cells whose formula a shared formula's master gives, by their
+    /// place in `cells`, with their group: given once every master is read,
+    /// as the last master of a group is the one taken.
+    members: Vec<(usize, String)>,
+    /// The ranges array formulas and data tables fill, in order.
+    computed: Vec<Value>,
+}
+
+impl Rows<'_> {
+    /// Reads the cells of the rows `data` holds, a `sheetData` element.
+    fn read(&mut self, data: Node<'_, '_>) -> Result<()> {
+        for cell in data.descendants().filter(|n| n.has_tag_name((NS, "c"))) {
+            let Some(formula) = child(cell, "f") else {
+                continue;
+            };
+            if formula.attribute("t") == Some("shared")
+                && formula.attribute("ref").is_some()
+                && let Some(text) = formula.text()
+            {
+                let (column, row) =
+                    coordinate(cell.attribute("r").context("missing cell address")?)?;
+                self.masters.insert(
+                    formula
+                        .attribute("si")
+                        .context("shared formula without si")?
+                        .to_owned(),
+                    (column, row, text.to_owned()),
+                );
+            }
+        }
+        self.computed.extend(computed_formulas(data.descendants())?);
+        let hidden = |n: &Node<'_, '_>| matches!(n.attribute("hidden"), Some("1" | "true"));
+        for row in data.children().filter(|n| n.has_tag_name((NS, "row"))) {
+            if hidden(&row)
+                && let Some(number) = row.attribute("r")
+            {
+                self.hidden_rows.push(number.parse::<u32>()?);
+            }
+            for c in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
+                let address = c.attribute("r").context("missing cell address")?;
+                coordinate(address)?;
+                ensure!(
+                    self.addresses.insert(address.to_owned()),
+                    "duplicate Excel cell"
+                );
+                let formula = child(c, "f");
+                let mut member = None;
+                let formula_text = match formula {
+                    Some(f) => Some(match f.text() {
+                        Some(text) => text.to_owned(),
+                        None if f.attribute("t") == Some("shared") => {
+                            member = Some(
+                                f.attribute("si")
+                                    .context("shared formula without si")?
+                                    .to_owned(),
+                            );
+                            String::new()
+                        }
+                        None => String::new(),
+                    }),
+                    None => None,
+                };
+                let raw_value = child(c, "v").and_then(|n| n.text()).unwrap_or("");
+                // A picture placed in the cell or a linked data type keeps
+                // its value in rich data; the cell holds only `#VALUE!`.
+                if c.attribute("vm").is_some() {
+                    self.rich_values.push(format!("{}!{address}", self.sheet));
+                }
+                let mut bold_text = false;
+                let mut runs = vec![];
+                let (kind, value) = match c.attribute("t").unwrap_or("n") {
+                    "inlineStr" => {
+                        bold_text = child(c, "is").is_some_and(bold_runs);
+                        runs = child(c, "is")
+                            .map(|is| self.palette.runs(is))
+                            .unwrap_or_default();
+                        ("string", json!(texts(c)))
+                    }
+                    _ if raw_value.is_empty() => ("null", Value::Null),
+                    "s" => {
+                        let (text, bold, shared_runs) = self
+                            .shared
+                            .get(raw_value.parse::<usize>()?)
+                            .context("invalid shared string index")?;
+                        bold_text = *bold;
+                        runs = shared_runs.clone();
+                        ("string", json!(text))
+                    }
+                    "b" => {
+                        ensure!(
+                            raw_value == "0" || raw_value == "1",
+                            "invalid Excel boolean"
+                        );
+                        ("boolean", json!(raw_value == "1"))
+                    }
+                    "n" => {
+                        let v = if let Ok(n) = raw_value.parse::<i64>() {
+                            json!(n)
+                        } else {
+                            let n: f64 = raw_value.parse()?;
+                            ensure!(n.is_finite(), "non-finite Excel number");
+                            json!(n)
+                        };
+                        ("number", v)
+                    }
+                    "e" => ("error", json!(raw_value)),
+                    "d" => match iso_date_serial(raw_value, self.date1904) {
+                        Some(serial) if serial.fract() == 0.0 => ("number", json!(serial as i64)),
+                        Some(serial) => ("number", json!(serial)),
+                        None => ("string", json!(raw_value)),
+                    },
+                    _ => ("string", json!(decode_xstring(raw_value))),
+                };
+                let format = c.attribute("s").unwrap_or("0").parse::<usize>()?;
+                ensure!(format < self.cell_formats.len(), "invalid style index");
+                let position = coordinate(address)?;
+                if self.cell_formats[format].sides.iter().any(|side| *side) {
+                    self.sides.insert(position, self.cell_formats[format].sides);
+                }
+                if value.is_null() && formula.is_none() {
+                    self.blanks.push(position);
+                    continue;
+                }
+                self.filled.push(position);
+                if let Some(group) = member {
+                    self.members.push((self.cells.len(), group));
+                }
+                self.cells.push(Cell {
+                    address: address.to_owned(),
+                    kind: if formula.is_some() { "formula" } else { kind },
+                    value,
+                    formula: formula_text,
+                    format,
+                    bold_text,
+                    runs,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Gives the members of shared formulas the formula of their master:
+    /// Excel derives it by moving relative references.
+    fn share_formulas(&mut self) -> Result<()> {
+        for (index, group) in std::mem::take(&mut self.members) {
+            let (master_column, master_row, text) = self
+                .masters
+                .get(&group)
+                .context("shared formula master missing")?;
+            let cell = &mut self.cells[index];
+            let (column, row) = coordinate(&cell.address)?;
+            cell.formula = Some(references::shift_relative(
+                text,
+                i64::from(row) - i64::from(*master_row),
+                i64::from(column) - i64::from(*master_column),
+            )?);
+        }
+        Ok(())
+    }
+}
+
+/// The ranges that the array formulas and data tables below `node` fill, in
+/// order (see [`computed_ranges`]).
+fn computed_formulas<'a, 'i: 'a>(nodes: impl Iterator<Item = Node<'a, 'i>>) -> Result<Vec<Value>> {
+    let mut ranges = vec![];
+    for formula in nodes.filter(|n| n.has_tag_name((NS, "f"))) {
+        let kind = match formula.attribute("t") {
+            Some("array") => "array",
+            Some("dataTable") => "data_table",
+            _ => continue,
+        };
+        if let Some(range) = formula.attribute("ref") {
+            Area::parse(range)?;
+            ranges.push(json!({"range":range,"kind":kind}));
+        }
+    }
+    Ok(ranges)
 }
 
 impl Workbook {
@@ -304,7 +590,7 @@ impl Workbook {
                     .map(|n| {
                         n.children()
                             .filter(Node::is_element)
-                            .map(|f| (on(f, "b"), on(f, "strike"), palette.font(f, false)))
+                            .map(|f| (on(f, "b"), palette.font(f, false)))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -331,7 +617,7 @@ impl Workbook {
                     let font = |index: usize| {
                         font_list
                             .get(index)
-                            .map(|(_, _, font)| font.clone())
+                            .map(|(_, font)| font.clone())
                             .unwrap_or_default()
                     };
                     font(style).or(&font(0))
@@ -341,7 +627,7 @@ impl Workbook {
                     .filter(Node::is_element)
                     .map(|f| {
                         let font = f.attribute("fontId").unwrap_or("0").parse::<usize>()?;
-                        let (bold, strike, font) = font_list.get(font).cloned().unwrap_or_default();
+                        let (bold, font) = font_list.get(font).cloned().unwrap_or_default();
                         let font = font.or(&inherited(f));
                         let border = f.attribute("borderId").unwrap_or("0").parse::<u32>()?;
                         let sides = border_sides
@@ -351,10 +637,11 @@ impl Workbook {
                         let fill = f.attribute("fillId").unwrap_or("0").parse::<u32>()?;
                         // A border drawing no side or a fill painting nothing looks
                         // like none, as writers save such formats for plain cells.
+                        // Each cell's runs tell whether its text is struck through.
                         let mut appearance = json!({"bold":bold,
                         "fill":if painted.get(fill as usize).copied().unwrap_or(true) { fill } else { 0 },
                         "border":if border_sides.get(border as usize).is_none() || sides.contains(&true) { border } else { 0 },
-                        "strike":strike});
+                        "strike":false});
                         let indent = child(f, "alignment")
                             .and_then(|alignment| alignment.attribute("indent"))
                             .and_then(|level| level.parse::<u32>().ok())
@@ -386,19 +673,16 @@ impl Workbook {
         let (worksheets, skipped_sheets) = sheet_parts(&parts)?;
         let persons = visuals::persons(&parts)?;
         for (name, part, state) in worksheets {
-            let doc = xml(&parts[&part])?;
+            let text = std::str::from_utf8(&parts[&part])?;
+            // The sheet is parsed without its cells, and its rows a part at a time.
+            let data = SheetData::of(text)?;
+            let rest = data.as_ref().map(|data| data.rest(text));
+            let doc = Document::parse(rest.as_deref().unwrap_or(text))?;
             ensure!(
                 doc.root_element().has_tag_name((NS, "worksheet")),
                 "invalid worksheet namespace"
             );
-            let mut cells = vec![];
-            let mut addresses = BTreeSet::new();
-            // Border sides by position, and the cells holding nothing.
-            let mut sides: HashMap<(u32, u32), [bool; 4]> = HashMap::new();
-            let mut blanks = vec![];
-            let mut filled = vec![];
             let hidden = |n: &Node<'_, '_>| matches!(n.attribute("hidden"), Some("1" | "true"));
-            let mut hidden_rows = vec![];
             let mut hidden_columns = vec![];
             for columns in doc
                 .root_element()
@@ -418,97 +702,63 @@ impl Workbook {
                     hidden_columns.push(column_name(column)?);
                 }
             }
-            if let Some(data) = child(doc.root_element(), "sheetData") {
-                let masters = shared_formula_masters(data)?;
-                for row in data.children().filter(|n| n.has_tag_name((NS, "row"))) {
-                    if hidden(&row)
-                        && let Some(number) = row.attribute("r")
-                    {
-                        hidden_rows.push(number.parse::<u32>()?);
+            let mut rows = Rows {
+                sheet: &name,
+                shared: &shared,
+                palette: &palette,
+                cell_formats: &cell_formats,
+                date1904,
+                rich_values: &mut rich_values,
+                cells: vec![],
+                addresses: BTreeSet::new(),
+                sides: HashMap::new(),
+                blanks: vec![],
+                filled: vec![],
+                hidden_rows: vec![],
+                masters: BTreeMap::new(),
+                members: vec![],
+                computed: vec![],
+            };
+            // Where the cells were: the formulas around them come before and after theirs.
+            let mut cells_at = usize::MAX;
+            if let Some(sheet_data) = child(doc.root_element(), "sheetData") {
+                match &data {
+                    Some(data) => {
+                        ensure!(
+                            sheet_data.range().start == data.start,
+                            "the sheetData of {part} is not the worksheet's"
+                        );
+                        cells_at = data.start;
+                        for rows_part in data.parts(text) {
+                            let part_doc = Document::parse(&rows_part)?;
+                            rows.read(
+                                child(part_doc.root_element(), "sheetData")
+                                    .context("worksheet rows missing")?,
+                            )?;
+                        }
                     }
-                    for c in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
-                        let address = c.attribute("r").context("missing cell address")?;
-                        coordinate(address)?;
-                        ensure!(addresses.insert(address), "duplicate Excel cell");
-                        let formula = child(c, "f");
-                        let formula_text = formula
-                            .map(|f| formula_text(f, address, &masters))
-                            .transpose()?;
-                        let raw_value = child(c, "v").and_then(|n| n.text()).unwrap_or("");
-                        // A picture placed in the cell or a linked data type keeps
-                        // its value in rich data; the cell holds only `#VALUE!`.
-                        if c.attribute("vm").is_some() {
-                            rich_values.push(format!("{name}!{address}"));
-                        }
-                        let mut bold_text = false;
-                        let mut runs = vec![];
-                        let (kind, value) = match c.attribute("t").unwrap_or("n") {
-                            "inlineStr" => {
-                                bold_text = child(c, "is").is_some_and(bold_runs);
-                                runs = child(c, "is")
-                                    .map(|is| palette.runs(is))
-                                    .unwrap_or_default();
-                                ("string", json!(texts(c)))
-                            }
-                            _ if raw_value.is_empty() => ("null", Value::Null),
-                            "s" => {
-                                let (text, bold, shared_runs) = shared
-                                    .get(raw_value.parse::<usize>()?)
-                                    .context("invalid shared string index")?;
-                                bold_text = *bold;
-                                runs = shared_runs.clone();
-                                ("string", json!(text))
-                            }
-                            "b" => {
-                                ensure!(
-                                    raw_value == "0" || raw_value == "1",
-                                    "invalid Excel boolean"
-                                );
-                                ("boolean", json!(raw_value == "1"))
-                            }
-                            "n" => {
-                                let v = if let Ok(n) = raw_value.parse::<i64>() {
-                                    json!(n)
-                                } else {
-                                    let n: f64 = raw_value.parse()?;
-                                    ensure!(n.is_finite(), "non-finite Excel number");
-                                    json!(n)
-                                };
-                                ("number", v)
-                            }
-                            "e" => ("error", json!(raw_value)),
-                            "d" => match iso_date_serial(raw_value, date1904) {
-                                Some(serial) if serial.fract() == 0.0 => {
-                                    ("number", json!(serial as i64))
-                                }
-                                Some(serial) => ("number", json!(serial)),
-                                None => ("string", json!(raw_value)),
-                            },
-                            _ => ("string", json!(decode_xstring(raw_value))),
-                        };
-                        let format = c.attribute("s").unwrap_or("0").parse::<usize>()?;
-                        ensure!(format < cell_formats.len(), "invalid style index");
-                        let position = coordinate(address)?;
-                        if cell_formats[format].sides.iter().any(|side| *side) {
-                            sides.insert(position, cell_formats[format].sides);
-                        }
-                        if value.is_null() && formula.is_none() {
-                            blanks.push(position);
-                            continue;
-                        }
-                        filled.push(position);
-                        cells.push(Cell {
-                            address: address.to_owned(),
-                            kind: if formula.is_some() { "formula" } else { kind },
-                            value,
-                            formula: formula_text,
-                            format,
-                            bold_text,
-                            runs,
-                        });
-                    }
+                    None => rows.read(sheet_data)?,
                 }
             }
+            rows.share_formulas()?;
+            let around = |before: bool| {
+                computed_formulas(
+                    doc.root_element()
+                        .descendants()
+                        .filter(|n| (n.range().start < cells_at) == before),
+                )
+            };
+            let mut formulas = around(true)?;
+            formulas.append(&mut rows.computed);
+            formulas.append(&mut around(false)?);
+            let Rows {
+                cells,
+                sides,
+                blanks,
+                filled,
+                hidden_rows,
+                ..
+            } = rows;
             let mut merges = child(doc.root_element(), "mergeCells")
                 .map(|n| {
                     n.children()
@@ -537,7 +787,7 @@ impl Workbook {
             )?;
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
-            let computed = computed_ranges(&parts, &part, doc.root_element())?;
+            let computed = computed_ranges(&parts, &part, formulas)?;
             let mut sheet = json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed});
             let boxes = bordered_blanks(&blanks, &filled, &sides, &merges)?;
             if !boxes.is_empty() {
@@ -582,24 +832,14 @@ impl Workbook {
 /// Ranges whose cells Excel fills from a formula or a pivot table: array formulas
 /// (Ctrl+Shift+Enter arrays and dynamic spills), What-If data tables and pivot
 /// table bodies. Their member cells look like constants, but Excel overwrites any
-/// value written there.
+/// value written there. `formulas` are the ranges of the array formulas and
+/// data tables, in the order of the sheet; those of pivot tables follow.
 fn computed_ranges(
     parts: &BTreeMap<String, Vec<u8>>,
     part: &str,
-    sheet: Node<'_, '_>,
+    formulas: Vec<Value>,
 ) -> Result<Vec<Value>> {
-    let mut ranges = vec![];
-    for formula in sheet.descendants().filter(|n| n.has_tag_name((NS, "f"))) {
-        let kind = match formula.attribute("t") {
-            Some("array") => "array",
-            Some("dataTable") => "data_table",
-            _ => continue,
-        };
-        if let Some(range) = formula.attribute("ref") {
-            Area::parse(range)?;
-            ranges.push(json!({"range":range,"kind":kind}));
-        }
-    }
+    let mut ranges = formulas;
     for pivot in related_parts(parts, part, "/pivotTable")? {
         let doc = xml(&parts[&pivot])?;
         let location =
@@ -843,4 +1083,86 @@ fn bordered_blanks(
             ))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The addresses of the cells of every row of `text`, a worksheet, read
+    /// from the whole document.
+    fn whole(text: &str) -> Vec<String> {
+        let doc = Document::parse(text).unwrap();
+        let data = child(doc.root_element(), "sheetData").unwrap();
+        data.descendants()
+            .filter(|n| n.has_tag_name((NS, "c")))
+            .map(|c| c.attribute("r").unwrap().to_owned())
+            .collect()
+    }
+
+    /// The same read from the parts [`SheetData`] cuts the rows into.
+    fn parted(text: &str) -> Vec<String> {
+        let data = SheetData::of(text).unwrap().unwrap();
+        let rest = Document::parse(&data.rest(text))
+            .unwrap()
+            .input_text()
+            .len();
+        assert!(rest < text.len());
+        data.parts(text)
+            .iter()
+            .flat_map(|part| {
+                let doc = Document::parse(part).unwrap();
+                let data = child(doc.root_element(), "sheetData").unwrap();
+                data.descendants()
+                    .filter(|n| n.has_tag_name((NS, "c")))
+                    .map(|c| c.attribute("r").unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rows_are_found_by_their_tags_whatever_surrounds_them() {
+        let text = format!(
+            r#"<?xml version="1.0"?><!-- <sheetData> --><x:worksheet xmlns:x="{NS}" a='>'><x:sheetPr/><x:sheetData><x:row r="1"><x:c r="A1" t="inlineStr"><x:is><x:t><![CDATA[<row>]]></x:t></x:is></x:c></x:row><!-- </x:row> --><x:row r="2"/><?pi <x:c?><x:row r="3"><x:c r="B3" s="0"><x:f t="array" ref="B3">"a>b"</x:f></x:c></x:row></x:sheetData><x:cols/></x:worksheet>"#
+        );
+        assert_eq!(parted(&text), whole(&text));
+        assert_eq!(whole(&text), ["A1", "B3"]);
+        let data = SheetData::of(&text).unwrap().unwrap();
+        assert_eq!(data.ends.len(), 3);
+        assert_eq!(&text[data.start..data.start + 13], "<x:sheetData>");
+        let rest = data.rest(&text);
+        let doc = Document::parse(&rest).unwrap();
+        let sheet_data = child(doc.root_element(), "sheetData").unwrap();
+        assert_eq!(sheet_data.range().start, data.start);
+        assert!(child(doc.root_element(), "cols").is_some());
+    }
+
+    #[test]
+    fn large_rows_are_cut_into_parts_of_whole_rows() {
+        let rows: String = (1..=40_000)
+            .map(|r| {
+                format!(
+                    r#"<row r="{r}"><c r="A{r}"><v>{r}</v></c><c r="B{r}" t="s"><v>0</v></c></row>"#
+                )
+            })
+            .collect();
+        let text = format!(r#"<worksheet xmlns="{NS}"><sheetData>{rows}</sheetData></worksheet>"#);
+        let data = SheetData::of(&text).unwrap().unwrap();
+        assert!(data.parts(&text).len() > 1);
+        assert_eq!(parted(&text), whole(&text));
+        assert_eq!(whole(&text).len(), 80_000);
+    }
+
+    #[test]
+    fn a_sheet_without_rows_is_read_whole() {
+        for text in [
+            format!(r#"<worksheet xmlns="{NS}"><sheetData/></worksheet>"#),
+            format!(r#"<worksheet xmlns="{NS}"><dimension ref="A1"/></worksheet>"#),
+        ] {
+            assert!(SheetData::of(&text).unwrap().is_none());
+        }
+        let text = format!(r#"<worksheet xmlns="{NS}"><sheetData> </sheetData></worksheet>"#);
+        assert_eq!(parted(&text), Vec::<String>::new());
+    }
 }

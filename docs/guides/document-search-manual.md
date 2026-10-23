@@ -10,6 +10,7 @@ ARPに取り込んだ設計書を、端末から `arp4 documents search` で検�
 - 結果ごとに、原本のファイル、シート・セル、Markdownなら行番号を返します。原本の該当箇所をすぐ開けます。
 - Excelのセルは、画面に見えるとおりの値で検索・表示されます。数式は計算結果、日付は `2026/10/10`、割合は `50%` のように、セルの表示形式を適用した文字列です。数式そのものでは検索できません。
 - 表では、行の値と列見出しを合わせて検索できます。例えば「在庫照会」の行の「タイムアウト」列を、`在庫照会 タイムアウト` で探せます（[表を見出し込みで探す](#表を見出し込みで探す)）。
+- 赤字・太字・取り消し線、特定のフォントやサイズの文字を含む箇所に絞れます。キーワードなしで「赤字の箇所をすべて」も探せます（[書式で探す](#書式で探す)）。
 
 次のことはできません。
 
@@ -202,6 +203,56 @@ $r.items | Where-Object table_ref | ForEach-Object {
 
 CSVの先頭行は自動では見出しとみなしません。Markdownは本文の見出し階層（`#`、`##`）を見出しとして使います。
 
+## 書式で探す
+
+文字の色・フォント・サイズ・太字・取り消し線で結果を絞れます。キーワードを省くと、その書式の文字がある箇所をすべて返します。
+
+```powershell
+arp4 documents search --color red --root C:/project
+arp4 documents search "秒" --color red --root C:/project
+```
+
+```json
+{"items":[{"formatted":["B2"],"kind":"row","row":2,"table_ref":"t1","values":["注文登録","30","秒"]},{"formatted":["B4"],"kind":"row","row":4,"table_ref":"t1","values":["在庫引当","90","秒"]},{"formatted":["E6"],"kind":"block","text":"赤字は変更箇所", …}], "page":{"total":3, …}, …}
+```
+
+`formatted` が、指定した書式に一致したセルの番地です（図形の文字は抽出結果へのポインター）。表の行では、行の中のどのセルが赤いかをここで確認します。
+
+| やりたいこと | 書き方 |
+|---|---|
+| 赤い文字（濃い赤なども含む） | `--color red` |
+| 特定の色だけ | `--color FF0000` |
+| 赤か青 | `--color red --color blue` |
+| テーマの色（アクセント2など） | `--color accent2` |
+| 一部の文字だけ色が違うセル | `--color mixed` |
+| フォント | `--font "MS ゴシック"` |
+| 14ポイント以上 | `--size 14..` |
+| 太字・斜体・下線 | `--bold`・`--italic`・`--underline` |
+| 取り消し線（一重・二重） | `--strike` |
+| 蛍光ペン（Word・PowerPoint） | `--highlight` |
+| 塗りつぶしのあるセル | `--fill` |
+
+色の系統には `red`・`orange`・`yellow`・`green`・`cyan`・`blue`・`purple`・`pink`・`gray`・`black`・`white` を使えます。自動色（Excelの「自動」）は `black` に入ります。複数の条件を付けると、すべてを満たすセルがある箇所だけを返します（`--bold --color red` は赤い太字）。斜体・下線・取り消し線・蛍光ペンは、セルや段落の文字全体に付いているときだけ一致します。
+
+どんな色やフォントが使われているかは、先に `search-formats` で確認できます。
+
+```powershell
+arp4 documents search-formats --root C:/project
+```
+
+```json
+{"items":[{"cells":9,"family":"black","hits":4,"property":"color","value":"auto"},{"cells":2,"family":"red","hits":2,"property":"color","value":"FF0000"},{"cells":1,"family":"red","hits":1,"property":"color","value":"C00000"},{"cells":1,"hits":1,"property":"color","value":"mixed"},{"cells":3,"hits":1,"property":"font","value":"Meiryo UI"}, …], …}
+```
+
+`hits` はその値だけで絞ったときの件数、`cells` はその書式の文字があるセルの数です。
+
+注意点:
+
+- **セルの一部だけが赤い場合は `--color red` で見つかりません。** 書式はセルごとに1つで、文字ごとに色が違うセルは `mixed` になります。`--color mixed` で探して原本で確認してください。
+- 条件付き書式で赤く見えるセルや、表示形式（`[赤]`）で赤く表示される数値は対象外です。
+- Markdown・CSVなどフォント情報のない文書、コメント、画像のOCR文字は書式では絞れません。
+- 太字・取り消し線は、取り込み時にセルの書式として記録される形式（Excelのセルなど）だけが対象です。
+
 ## 件数が多いとき
 
 既定では1回に20件を返します。続きは `page.next_offset` と `revision` を使って取得します。
@@ -282,7 +333,8 @@ groups:
 | 表の列見出しの語で見つからない | その表に構造解釈がありません。[表を見出し込みで探す](#表を見出し込みで探す)を参照してください。 |
 | `search revision changed; restart at offset 0 without --revision` | ページ送りの途中で索引が更新されました。`--offset` と `--revision` を外して最初から検索し直します。 |
 | `the argument '--full' cannot be used with '--limit <LIMIT>'`（指定順により逆の文言。`--offset` も同様） | `--full` は全件を返すため、件数の指定とは併用できません。どちらかを外します。 |
-| `search query must contain 1..256 characters` | 検索語が空か、長すぎます。 |
+| `search query must contain 1..256 characters` | 検索語が空か、長すぎます。書式だけで探す場合は検索語を省きます。 |
+| `unknown color …` | `--color` に指定できない値です。`RRGGBB`、色の系統（`red` など）、テーマの色枠（`accent1` など）、`auto`、`mixed` のいずれかを指定します。 |
 | `ok: false` で `failed` に文書が並ぶ | 一部の文書の検証に失敗し、その文書を除いた結果が返っています。**「該当なし」と判断しないでください。** `search-refresh` を実行し、それでも失敗する場合は該当文書の状態を `documents status` で確認します。 |
 | 索引が壊れた様子がある | `documents search-refresh --rebuild` で索引を作り直します。索引は再生成できるキャッシュなので、作り直しても文書は失われません。 |
 

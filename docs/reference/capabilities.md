@@ -91,6 +91,7 @@
     "documents_search": true,
     "documents_search_batch": true,
     "documents_search_engine": "SQLite FTS5 BM25; TiniestSegmenter Japanese segmentation; Unicode normalization; character bigrams; explicit synonyms",
+    "documents_search_formats": "--color (RRGGBB, color family, theme slot, auto, mixed), --font, --size, --bold, --italic, --underline, --strike, --highlight and --fill keep hits with a cell or shape text in that effective format of the adopted extraction, with or without a query; one format per cell, mixed where runs differ, a mark only where every run shows it; documents search-formats lists each indexed value with its hits",
     "documents_search_freshness": "saved index snapshot; external changes remain unchecked until search-refresh",
     "documents_search_refresh": "explicit documents search-refresh command",
     "documents_search_scope": "adopted extraction with structure context; proposals and unexported content edits are not indexed",

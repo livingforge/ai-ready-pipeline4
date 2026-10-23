@@ -820,8 +820,44 @@ pub(crate) enum DocumentCommand {
     Search {
         /// One to 32 quoted queries against one saved index snapshot. Within each query,
         /// whitespace separates literal AND terms; punctuation is not query syntax.
-        #[arg(required = true, num_args = 1..=32)]
+        /// With a format filter the query may be left out, to search by format alone.
+        #[arg(
+            num_args = 0..=32,
+            required_unless_present_any = [
+                "color", "font", "size", "bold", "italic", "underline", "strike", "highlight", "fill"
+            ]
+        )]
         query: Vec<String>,
+        /// Only hits with text in this font color: RRGGBB, a family (red, orange,
+        /// yellow, green, cyan, blue, purple, pink, gray, black, white), a theme slot
+        /// (accent1, dk1, ...), auto or mixed. Repeat for any of several.
+        #[arg(long)]
+        color: Vec<String>,
+        /// Only hits with text in this font, latin or East Asian, compared as
+        /// search terms are. Repeat for any of several.
+        #[arg(long)]
+        font: Vec<String>,
+        /// Only hits with text in this size in points: N, N..M, N.. or ..M.
+        #[arg(long)]
+        size: Option<String>,
+        /// Only hits with bold text.
+        #[arg(long)]
+        bold: bool,
+        /// Only hits with italic text.
+        #[arg(long)]
+        italic: bool,
+        /// Only hits with underlined text, in any line.
+        #[arg(long)]
+        underline: bool,
+        /// Only hits with struck-through text, by one line or two.
+        #[arg(long)]
+        strike: bool,
+        /// Only hits with highlighted text (Word and PowerPoint).
+        #[arg(long)]
+        highlight: bool,
+        /// Only hits with text in a filled cell (Excel cells, Word table cells).
+        #[arg(long)]
+        fill: bool,
         /// Restrict to a document ID or folder ID.
         #[arg(long)]
         document: Option<String>,
@@ -834,6 +870,13 @@ pub(crate) enum DocumentCommand {
         /// Pin pagination to a previous index and query revision.
         #[arg(long)]
         revision: Option<String>,
+    },
+    /// List the font colors, theme colors, fonts, sizes and emphasis of the indexed
+    /// text, each with the hits a search filtering by it alone returns.
+    SearchFormats {
+        /// Restrict to a document ID or folder ID.
+        #[arg(long)]
+        document: Option<String>,
     },
     /// Reconcile canonical documents with the local search index.
     SearchRefresh {

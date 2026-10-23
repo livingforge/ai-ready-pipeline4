@@ -58,6 +58,7 @@ fn run(cli: Cli) -> Result<bool> {
                         | DocumentCommand::Status { .. }
                         | DocumentCommand::Check { .. }
                         | DocumentCommand::Search { .. }
+                        | DocumentCommand::SearchFormats { .. }
                         | DocumentCommand::Operations {
                             command: OperationCommand::List { .. }
                         }
@@ -66,7 +67,7 @@ fn run(cli: Cli) -> Result<bool> {
                     ..
                 }
             ),
-            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, search, operations list, diff without --out, or export without --out"
+            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, search, search-formats, operations list, diff without --out, or export without --out"
         );
     }
     match cli.command {
@@ -185,12 +186,44 @@ fn run(cli: Cli) -> Result<bool> {
             let result = match command {
                 DocumentCommand::Search {
                     query,
+                    color,
+                    font,
+                    size,
+                    bold,
+                    italic,
+                    underline,
+                    strike,
+                    highlight,
+                    fill,
                     document,
                     synonyms,
                     profile,
                     revision,
                 } => {
                     let search_started = std::time::Instant::now();
+                    let marks: Vec<&str> = [
+                        ("bold", bold),
+                        ("italic", italic),
+                        ("underline", underline),
+                        ("strike", strike),
+                        ("highlight", highlight),
+                        ("fill", fill),
+                    ]
+                    .into_iter()
+                    .filter_map(|(mark, on)| on.then_some(mark))
+                    .collect();
+                    let format = arp4_cli::documents::search::FormatFilter::new(
+                        &color,
+                        &font,
+                        size.as_deref(),
+                        &marks,
+                    )?;
+                    // A format alone searches as one empty query.
+                    let query = if query.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        query
+                    };
                     let offset = output.offset.unwrap_or(0);
                     let mut batch = store.search_many(
                         &query.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -204,6 +237,7 @@ fn run(cli: Cli) -> Result<bool> {
                                 Some(output.limit.unwrap_or(20) as usize)
                             },
                             revision: revision.as_deref(),
+                            format,
                         },
                     )?;
                     let response_started = std::time::Instant::now();
@@ -290,6 +324,21 @@ fn run(cli: Cli) -> Result<bool> {
                     if profile {
                         eprintln!("{}", batch.timings.report(search_started.elapsed()));
                     }
+                    return Ok(ok);
+                }
+                DocumentCommand::SearchFormats { document } => {
+                    let inventory = store.search_formats(document.as_deref())?;
+                    let ok = inventory.failed.is_empty();
+                    let mut result = output.page(inventory.items);
+                    result["summary"] = json!({"indexed_documents":inventory.indexed_documents,
+                        "indexed_at_unix":inventory.indexed_at_unix,
+                        "source_checked_this_search":false});
+                    result["failed"] = json!(inventory.failed);
+                    result["scope"] = json!("adopted_extraction");
+                    if !ok {
+                        result["error"] = json!({"code":"partial_search","message":"Invalid documents were excluded; see failed."});
+                    }
+                    output.emit(result, ok);
                     return Ok(ok);
                 }
                 DocumentCommand::SearchRefresh { rebuild } => {
@@ -494,7 +543,7 @@ fn run(cli: Cli) -> Result<bool> {
                 } => {
                     ensure!(!out.exists(), "structure output already exists");
                     let (structure, mut report) = store.structure(&document, proposal)?;
-                    arp4_cli::data::write(&out, &structure)?;
+                    arp4_cli::data::write_lazy(&out, structure.lazy(None))?;
                     if !output.full {
                         count_carried_cells(&mut report["carried"]);
                     }
@@ -506,9 +555,7 @@ fn run(cli: Cli) -> Result<bool> {
                     proposal,
                 } => {
                     ensure!(!out.exists(), "elements output already exists");
-                    let elements = store.elements(&document, proposal)?;
-                    arp4_cli::data::write(&out, &elements)?;
-                    let pages = elements["pages"].as_object().map_or(0, |pages| pages.len());
+                    let pages = store.write_elements(&document, proposal, &out)?;
                     json!({"state":"saved","elements":out,"document_id":document,"pages":pages})
                 }
                 DocumentCommand::ExtractionRead {
@@ -517,8 +564,7 @@ fn run(cli: Cli) -> Result<bool> {
                     proposal,
                 } => {
                     ensure!(!out.exists(), "extraction output already exists");
-                    let extraction = store.extraction_view(&document, proposal)?;
-                    arp4_cli::data::write(&out, &extraction)?;
+                    store.write_extraction_view(&document, proposal, &out)?;
                     json!({"state":"saved","extraction":out,"document_id":document})
                 }
                 DocumentCommand::StructureSave {
@@ -593,7 +639,12 @@ fn run(cli: Cli) -> Result<bool> {
                     result
                 }
                 DocumentCommand::Export { document, out } => {
-                    let mut result = store.export(&document, out.as_deref())?;
+                    // A plan shown a page at a time is saved for its later pages.
+                    let mut result = if out.is_none() && !output.full {
+                        store.export_plan(&document)?
+                    } else {
+                        store.export(&document, out.as_deref())?
+                    };
                     if !output.full {
                         let items = summarize_export(&mut result, include_hashes)?;
                         if out.is_none() {
@@ -626,7 +677,13 @@ fn run(cli: Cli) -> Result<bool> {
                         out.is_some() || matches!(format, Format::Json),
                         "--format markdown requires --out; stdout is JSON"
                     );
-                    let result = store.diff(proposal.as_deref(), document.as_deref())?;
+                    // Changes shown a page at a time, without the semantic
+                    // changes no page shows, are saved for the later pages.
+                    let result = if out.is_none() && !output.full {
+                        store.diff_changes(proposal.as_deref(), document.as_deref())?
+                    } else {
+                        store.diff(proposal.as_deref(), document.as_deref())?
+                    };
                     if let Some(path) = out {
                         let rendered = if matches!(format, Format::Json) {
                             serde_json::to_string(&result)?
@@ -1431,7 +1488,29 @@ fn passwords(mut input: impl std::io::Read) -> Result<Vec<String>> {
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+unsafe extern "C" {
+    #[cfg(test)]
+    fn mi_option_get(option: i32) -> std::ffi::c_long;
+    fn mi_option_set(option: i32, value: std::ffi::c_long);
+}
+
+/// `mi_option_purge_delay` of mimalloc v3, which the bindings leave out: the
+/// milliseconds freed memory is kept before it goes back to the system.
+const PURGE_DELAY: i32 = 15;
+
+/// Freed memory goes back to the system after 50 ms rather than mimalloc's
+/// 1000: a command reading a large document frees much of what each step
+/// made, and kept it while the next step made more, which raised its peak
+/// by a sixth to a third for no gain in time. MIMALLOC_PURGE_DELAY, when set,
+/// is left to decide.
+fn release_freed_memory_sooner() {
+    if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
+        unsafe { mi_option_set(PURGE_DELAY, 50) };
+    }
+}
+
 fn main() -> std::process::ExitCode {
+    release_freed_memory_sooner();
     #[cfg(windows)]
     if std::env::args_os()
         .nth(1)
@@ -1511,5 +1590,22 @@ fn main() -> std::process::ExitCode {
             }
             std::process::ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The option number names the purge delay: unset, it is mimalloc v3's
+    /// 1000 ms, and setting it reads back.
+    #[test]
+    fn the_purge_delay_option_is_the_one_released_sooner() {
+        if std::env::var_os("MIMALLOC_PURGE_DELAY").is_some() {
+            return;
+        }
+        assert_eq!(unsafe { mi_option_get(PURGE_DELAY) }, 1000);
+        release_freed_memory_sooner();
+        assert_eq!(unsafe { mi_option_get(PURGE_DELAY) }, 50);
     }
 }

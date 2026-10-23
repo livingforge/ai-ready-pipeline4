@@ -15,23 +15,61 @@ impl Store {
         planned: &Planned,
     ) -> Result<Inspection> {
         Ok(self
-            .inspect_layout(dir, require_reviewed, planned, false)?
+            .inspect_layout(dir, require_reviewed, planned, &Keep::default())?
             .0)
     }
-    /// [`Store::inspect_with`] together with the layout the inspection read,
-    /// when `keep_layout` asks for it. Otherwise the layout is dropped as soon
-    /// as the pages are read: it is as large as the extraction.
+    /// [`Store::inspect_with`] together with what `keep` asks for of what the
+    /// inspection read. Otherwise the layout is dropped as soon as the pages
+    /// are read: it is as large as the extraction.
     pub(super) fn inspect_layout(
         &self,
         dir: &Path,
         require_reviewed: bool,
         planned: &Planned,
-        keep_layout: bool,
-    ) -> Result<(Inspection, Option<Value>)> {
+        keep: &Keep<'_>,
+    ) -> Result<(Inspection, Kept)> {
         let files = self
             .file_hashes_with(dir, planned)?
             .context("document not found")?;
-        let fp = fingerprint_of(&files);
+        self.inspect_files(dir, &files, require_reviewed, planned, keep, None)
+    }
+    /// [`Store::inspect`] for a command that reads none of the content values,
+    /// fonts and mapping entries, which are left empty, with the layout when
+    /// `layout` asks for it. Files an inspection by this program found valid
+    /// before, by the hash of every one of them, are not validated again, nor
+    /// are their content pages read: validating a large workbook takes seconds.
+    /// What is not in the files is checked as every inspection checks it: the
+    /// document's place and ID, its original and its review.
+    pub(super) fn inspect_records(
+        &self,
+        dir: &Path,
+        require_reviewed: bool,
+        layout: bool,
+    ) -> Result<(Inspection, Option<Layout>)> {
+        let files = self.file_hashes(dir)?.context("document not found")?;
+        let known = self.known_inspection(&fingerprint_of(&files));
+        let keep = Keep {
+            layout,
+            ..Default::default()
+        };
+        let (mut inspected, kept) =
+            self.inspect_files(dir, &files, require_reviewed, &Planned::new(), &keep, known)?;
+        inspected.release_content();
+        Ok((inspected, kept.layout))
+    }
+    /// The inspection of the files whose hashes are `files`; with `known`, what
+    /// an earlier inspection found of the same files, which are then not
+    /// validated again.
+    fn inspect_files(
+        &self,
+        dir: &Path,
+        files: &serde_json::Map<String, Value>,
+        require_reviewed: bool,
+        planned: &Planned,
+        keep: &Keep<'_>,
+        known: Option<Known>,
+    ) -> Result<(Inspection, Kept)> {
+        let fp = fingerprint_of(files);
         let metadata = self.management(dir)?;
         let meta = read(&metadata.join("document.yml"), Some("document"))?;
         let id = string(&meta["document_id"])?;
@@ -51,11 +89,20 @@ impl Store {
             files["extraction.json"] == ext_key,
             "extraction integrity failure"
         );
-        let extraction = crate::extraction::read_record(&metadata.join("extraction.json"))?;
-        let axes = identity::stored_axes(dir, planned)?;
+        let extraction_path = metadata.join("extraction.json");
+        let extraction = if known.is_some() {
+            crate::extraction::read_known_record(&extraction_path)?
+        } else {
+            crate::extraction::read_record(&extraction_path)?
+        };
+        let (axes, axes_digest) = identity::stored_axes(dir, planned)?;
         // The extraction takes its document and original from this document.yml
         // when it is read; the extraction key above ties it to the file.
-        let layout = identity::load(dir, &extraction, planned)?;
+        let layout = if known.is_none() || keep.layout {
+            Some(identity::load(dir, &extraction, planned)?)
+        } else {
+            None
+        };
         let original = self.original(string(&meta["source"]["path"])?)?;
         let source_missing = original.is_none();
         let source_current = original
@@ -64,6 +111,50 @@ impl Store {
             })
             .transpose()?
             .unwrap_or(false);
+        if let Some(known) = known {
+            debug_assert!(keep.pages.is_empty(), "known files read no content page");
+            let mut mappings = complete_mappings(read_planned(
+                "mappings.yml",
+                &metadata.join("mappings.yml"),
+                planned,
+                "mappings",
+            )?);
+            if mappings.get("interpretation").is_none() {
+                mappings["interpretation"] =
+                    crate::document_structure::empty_corrections(&extraction, ext_key);
+            }
+            // As with_default_entries leaves them: the entries are its own.
+            mappings["entries"] = json!([]);
+            let reviewed = self.reviewed(&metadata, dir, &fp)?;
+            ensure!(
+                !require_reviewed || reviewed,
+                "content changed or not reviewed; run documents review"
+            );
+            return Ok((
+                Inspection {
+                    meta,
+                    extraction,
+                    mappings,
+                    entries: vec![],
+                    content: HashMap::new(),
+                    page_files: known.page_files,
+                    fingerprint: fp,
+                    reviewed,
+                    source_current,
+                    source_missing,
+                    axes,
+                    axes_digest,
+                    structure_sha256: known.structure_sha256,
+                    pending: known.pending,
+                    content_edited: known.content_edited,
+                },
+                Kept {
+                    layout,
+                    pages: BTreeMap::new(),
+                },
+            ));
+        }
+        let layout = layout.expect("loaded for an inspection validating the files");
         // Every file besides the records and assets is a content page, read once here.
         let mut content_pages = vec![];
         let mut page_files = BTreeMap::new();
@@ -79,12 +170,22 @@ impl Store {
                 "unmanaged document file: {name}"
             );
             let page = read_planned(&name, &path, planned, "content")?;
-            let page = identity::runtime(&page, &layout, &extraction)?;
-            page_files.insert(string(&page["page_id"])?.to_owned(), name);
+            // Held typed: as JSON, the rows of a page took several times its values.
+            let page = identity::runtime_grid(&page, &layout, &extraction)?;
+            page_files.insert(string(&page.fields["page_id"])?.to_owned(), name);
             content_pages.push(page);
         }
         let structure_sha256 = layout["structure_sha256"].as_str().map(str::to_owned);
-        let layout = keep_layout.then_some(layout);
+        // Validating the content takes the values out of the pages.
+        let kept_pages: BTreeMap<String, Value> = content_pages
+            .iter()
+            .filter(|page| {
+                keep.pages
+                    .contains(&page.fields["title"].as_str().unwrap_or(""))
+            })
+            .map(|page| Ok((string(&page.fields["page_id"])?.to_owned(), page.to_value())))
+            .collect::<Result<_>>()?;
+        let layout = keep.layout.then_some(layout);
         let mut stored = complete_mappings(read_planned(
             "mappings.yml",
             &metadata.join("mappings.yml"),
@@ -143,11 +244,9 @@ impl Store {
             ensure_slide_pages(&extraction, operated, &content_pages)?;
         }
         let operations =
-            excel::parse_operations(array(&mappings["operations"])?, array(&operated["sheets"])?)?;
-        let image_operations = excel::parse_image_operations(
-            array(&mappings["operations"])?,
-            array(&operated["sheets"])?,
-        )?;
+            excel::parse_operations(array(&mappings["operations"])?, &operated.sheets)?;
+        let image_operations =
+            excel::parse_image_operations(array(&mappings["operations"])?, &operated.sheets)?;
         let shape_operations =
             crate::document_source::parse_shape_operations(array(&mappings["operations"])?)?;
         let assets: Vec<String> = image_operations
@@ -173,8 +272,7 @@ impl Store {
             native_text,
             text_format,
         )?;
-        let values = content.values;
-        let fonts = content.fonts;
+        let fields = content.fields;
         for asset in array(&extraction["assets"])? {
             ensure!(
                 hash(&fs::read(under(
@@ -185,17 +283,24 @@ impl Store {
                 "asset evidence changed"
             );
         }
-        let mut reviewed = false;
-        let review = metadata.join("review.json");
-        if review.exists() {
-            let r = read(&review, Some("review"))?;
-            let (_, key) = self.formation(dir)?;
-            ensure!(r["formation"] == key, "review/formation identity mismatch");
-            reviewed = r["content"] == fp;
-        }
+        let reviewed = self.reviewed(&metadata, dir, &fp)?;
         ensure!(
             !require_reviewed || reviewed,
             "content changed or not reviewed; run documents review"
+        );
+        let pending = entries
+            .iter()
+            .filter(|e| e.writeback().is_ok_and(|w| w == "pending"))
+            .count();
+        let content_edited = content_edited(&extraction, &mappings, &entries, &fields)?;
+        self.save_known_inspection(
+            &fp,
+            &Known {
+                pending,
+                content_edited,
+                page_files: page_files.clone(),
+                structure_sha256: structure_sha256.clone(),
+            },
         );
         Ok((
             Inspection {
@@ -203,26 +308,119 @@ impl Store {
                 extraction,
                 mappings,
                 entries,
-                values,
-                fonts,
+                content: fields,
                 page_files,
                 fingerprint: fp,
                 reviewed,
                 source_current,
                 source_missing,
                 axes,
+                axes_digest,
                 structure_sha256,
+                pending,
+                content_edited,
             },
-            layout,
+            Kept {
+                layout,
+                pages: kept_pages,
+            },
         ))
     }
+    /// Whether the review of the document in `dir`, whose management folder
+    /// is `metadata`, is of its content as `fingerprint` names it.
+    fn reviewed(&self, metadata: &Path, dir: &Path, fingerprint: &str) -> Result<bool> {
+        let review = metadata.join("review.json");
+        if !review.exists() {
+            return Ok(false);
+        }
+        let r = read(&review, Some("review"))?;
+        let (_, key) = self.formation(dir)?;
+        ensure!(r["formation"] == key, "review/formation identity mismatch");
+        Ok(r["content"] == fingerprint)
+    }
+    /// Where what an inspection found of the files `fingerprint` names is kept:
+    /// valid for this program and the shared settings it read them with.
+    fn known_path(&self, fingerprint: &str) -> Result<PathBuf> {
+        let config = hash(&fs::read(under(&self.arp, "config.yml")?)?);
+        let key = hash(&encoded(
+            &json!({"program":crate::data::program()?,"config":config,"files":fingerprint}),
+        ));
+        under(&self.arp, &format!("cache/inspection/{key}.json"))
+    }
+    /// What an inspection by this program found of the files `fingerprint`
+    /// names, when one found them valid; none when nothing readable is kept.
+    fn known_inspection(&self, fingerprint: &str) -> Option<Known> {
+        let bytes = fs::read(self.known_path(fingerprint).ok()?).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+    /// Keeps `known` for the valid files `fingerprint` names, with the newest
+    /// others. An inspection that cannot keep it still answers.
+    fn save_known_inspection(&self, fingerprint: &str, known: &Known) {
+        let Ok(path) = self.known_path(fingerprint) else {
+            return;
+        };
+        if let Ok(bytes) = serde_json::to_vec(known)
+            && crate::data::replace_cache(&path, &bytes).is_ok()
+            && let Some(directory) = path.parent()
+        {
+            crate::data::keep_newest(directory, KNOWN_KEPT);
+        }
+    }
+}
+
+/// The inspections kept; saving another removes the oldest.
+const KNOWN_KEPT: usize = 64;
+
+/// What an inspection found of valid files besides what it reads of them
+/// again: what [`Store::inspect_records`] gives without reading the content.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Known {
+    pending: usize,
+    content_edited: bool,
+    page_files: BTreeMap<String, String>,
+    structure_sha256: Option<String>,
+}
+
+/// Whether the content differs from the extraction: a row or column
+/// operation is pending, or a value written back to a cell is not the one
+/// the extraction holds there.
+fn content_edited(
+    extraction: &Extraction,
+    mappings: &Value,
+    entries: &[Entry],
+    fields: &HashMap<(String, String, String), Field>,
+) -> Result<bool> {
+    if !array(&mappings["operations"])?.is_empty() {
+        return Ok(true);
+    }
+    let mut originals = HashMap::new();
+    for sheet in &extraction.sheets {
+        for cell in &sheet.cells {
+            originals.insert((string(&sheet["name"])?, &*cell.address), &cell.value);
+        }
+    }
+    for entry in entries {
+        if entry.writeback().is_ok_and(|w| w == "cell")
+            && let Some(MappingTarget::Cell { sheet, cell }) = entry.target()?
+            && let Some(Field { value, .. }) = fields.get(&entry.key()?)
+            && originals
+                .get(&(sheet, cell))
+                .is_some_and(|old| **old != *value)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 impl Store {
     /// The structure interpretation and its replay report: the extraction with the
     /// document's corrections replayed. None for text formats and a changed original.
     /// Replaying infers every table of the extraction, so only commands reading the
     /// structure ask for it.
-    pub fn interpretation(&self, inspected: &Inspection) -> Result<Option<(Value, Value)>> {
+    pub fn interpretation(
+        &self,
+        inspected: &Inspection,
+    ) -> Result<Option<(crate::document_structure::Structure, Value)>> {
         if !inspected.source_current || !structure_format(&inspected.meta)? {
             return Ok(None);
         }
@@ -236,7 +434,40 @@ impl Store {
         )
         .map(Some)
     }
-    fn validate_content(entries: &[Entry], mut pages: Vec<Value>) -> Result<ValidatedContent> {
+    /// What a status row reads of [`Store::interpretation`]: whether it is
+    /// ready, the number of conflicts of its replay and the digest of its
+    /// elements. Replaying infers and checks every table, so the summary is
+    /// saved under what the replay reads, as the correction journal, the
+    /// extraction, the stored rows and columns, the original and the program,
+    /// and reused while they are the same, as after an edit of values or rows.
+    /// A journal with image regions also reads their files and is replayed
+    /// every time.
+    fn structure_summary(&self, inspected: &Inspection) -> Result<Option<Value>> {
+        let compute = || -> Result<Value> {
+            let Some((structure, report)) = self.interpretation(inspected)? else {
+                return Ok(Value::Null);
+            };
+            Ok(json!({"ready":report["ready"] == true,
+                "conflicts":report["conflicts"].as_array().map(Vec::len).unwrap_or(0),
+                "digest":elements::interpretation_digest(&structure.elements)?}))
+        };
+        let journal = &inspected.mappings["interpretation"];
+        let summary = if !inspected.source_current
+            || journal["regions"].as_array().is_some_and(|r| !r.is_empty())
+        {
+            compute()?
+        } else {
+            let inputs = json!({"document":inspected.meta["document_id"],
+                "source":inspected.meta["source"],"extraction":inspected.meta["extraction"],
+                "journal":journal,"axes":inspected.axes_digest});
+            self.cached_result("structure-status", &inputs, 64, compute)?
+        };
+        Ok((!summary.is_null()).then_some(summary))
+    }
+    fn validate_content(
+        entries: &[Entry],
+        pages: Vec<elements::GridPage>,
+    ) -> Result<ValidatedContent> {
         // Positioned entries by page and block, so that each table block does not
         // scan every entry of a document with many sheets, slides or pages.
         let mut positioned: BTreeMap<(&str, &str), Vec<(&Entry, EntryPosition)>> = BTreeMap::new();
@@ -248,87 +479,75 @@ impl Store {
                     .push((e, position));
             }
         }
-        let mut values = HashMap::new();
-        let mut fonts = HashMap::new();
+        let mut fields: HashMap<_, Field> = HashMap::new();
         let mut expected = BTreeSet::new();
         let mut page_ids = BTreeSet::new();
-        for page in &mut pages {
-            let page_id = string(&page["page_id"])?.to_owned();
+        for mut page in pages {
+            let page_id = string(&page.fields["page_id"])?.to_owned();
             ensure!(page_ids.insert(page_id.clone()), "duplicate page ID");
-            // Values and fonts are moved into the maps rather than copied.
-            let mut page_fonts = page["fonts"].take();
-            for (block, body) in page["blocks"].as_object_mut().unwrap() {
-                let base = (page_id.clone(), block.clone());
-                expected.insert((base.0.clone(), base.1.clone(), String::new()));
-                // Local links require full link/asset semantics; reject unsupported links instead of silently accepting them.
-                if let Some(links) = body["links"].as_array() {
+            // Values are moved into the maps rather than copied, and each
+            // font of the page is shared by the fields that have it.
+            let font_table: Vec<Arc<Value>> = match std::mem::take(&mut page.font_table) {
+                Value::Array(fonts) => fonts.into_iter().map(Arc::new).collect(),
+                _ => vec![],
+            };
+            // The notes, and the blocks of rows: those titled and those of values.
+            let mut blocks: BTreeSet<String> = page.titles.keys().cloned().collect();
+            blocks.extend(page.values.iter().map(|v| v.block.to_string()));
+            for block in
+                std::iter::once("extraction-notes").chain(blocks.iter().map(String::as_str))
+            {
+                expected.insert((page_id.clone(), block.to_owned(), String::new()));
+            }
+            for block in blocks {
+                let start = page.values.partition_point(|v| *v.block < *block);
+                let rows = &mut page.values[start..];
+                let end = rows.partition_point(|v| *v.block == *block);
+                let rows = &mut rows[..end];
+                let mut consumed = HashSet::new();
+                for (e, pos) in positioned
+                    .get(&(page_id.as_str(), block.as_str()))
+                    .into_iter()
+                    .flatten()
+                {
+                    let (row, col) = (pos.row, pos.column);
+                    let at = rows
+                        .binary_search_by(|v| (v.row.as_str(), v.column.as_str()).cmp(&(row, col)))
+                        .ok()
+                        .context("missing table position")?;
+                    ensure!(consumed.insert((row, col)), "duplicate table position");
+                    let value = &mut rows[at];
                     ensure!(
-                        links
-                            .iter()
-                            .all(|v| v.as_str().is_some_and(|s| s.starts_with("https://")
-                                || s.starts_with("http://")
-                                || s.starts_with("mailto:"))),
-                        "local document links are not yet supported by Rust"
+                        kind(&value.value) != "object"
+                            && (value.value.is_null() || kind(&value.value) == pos.kind),
+                        "table type/value mismatch"
+                    );
+                    ensure!(!e.field_is_null(), "table field required");
+                    let font = if value.font.is_null() {
+                        None
+                    } else {
+                        let index = &value.font;
+                        let font = index
+                            .as_u64()
+                            .and_then(|index| usize::try_from(index).ok())
+                            .and_then(|index| font_table.get(index))
+                            .with_context(|| format!("unknown font index {index}"))?;
+                        Some(Arc::clone(font))
+                    };
+                    let field = Field {
+                        value: value.value.take(),
+                        font,
+                    };
+                    ensure!(
+                        fields.insert(e.key()?, field).is_none(),
+                        "duplicate table field"
                     );
                 }
-                // Looked up with get_mut: indexing a missing member mutably adds it.
-                if let Some(fields) = body.get_mut("fields").and_then(Value::as_object_mut) {
-                    for (field, value) in fields {
-                        values.insert(
-                            (base.0.clone(), base.1.clone(), field.clone()),
-                            value.take(),
-                        );
-                    }
-                }
-                let has_fields = body.get("fields").is_some();
-                if let Some(rows) = body.get_mut("rows").and_then(Value::as_object_mut) {
-                    ensure!(!has_fields, "table cannot contain fields");
-                    let mut consumed = HashSet::new();
-                    for (e, pos) in positioned
-                        .get(&(page_id.as_str(), block.as_str()))
-                        .into_iter()
-                        .flatten()
-                    {
-                        let (row, col) = (pos.row, pos.column);
-                        let value = rows
-                            .get_mut(row)
-                            .and_then(|r| r.get_mut(col))
-                            .context("missing table position")?;
-                        ensure!(consumed.insert((row, col)), "duplicate table position");
-                        ensure!(
-                            kind(value) != "object" && (value.is_null() || kind(value) == pos.kind),
-                            "table type/value mismatch"
-                        );
-                        ensure!(!e.field_is_null(), "table field required");
-                        if let Some(font) = page_fonts
-                            .get_mut(block.as_str())
-                            .and_then(|fonts| fonts.get_mut(row))
-                            .and_then(|fonts| fonts.get_mut(col))
-                            .filter(|font| !font.is_null())
-                        {
-                            fonts.insert(e.key()?, font.take());
-                        }
-                        ensure!(
-                            values.insert(e.key()?, value.take()).is_none(),
-                            "duplicate table field"
-                        );
-                    }
-                    let mut count = 0;
-                    for row in rows.values() {
-                        let obj = row.as_object().context("invalid table row")?;
-                        ensure!(!obj.is_empty(), "empty table row");
-                        count += obj.len();
-                    }
-                    ensure!(count == consumed.len(), "unmapped table value");
-                }
+                ensure!(rows.len() == consumed.len(), "unmapped table value");
             }
         }
         ensure!(!page_ids.is_empty(), "content is empty");
-        Ok(ValidatedContent {
-            values,
-            fonts,
-            expected,
-        })
+        Ok(ValidatedContent { fields, expected })
     }
     pub fn status(
         &self,
@@ -349,42 +568,33 @@ impl Store {
                 dirs.push((id.clone(), self.proposal(&id)?));
             }
         }
-        Ok(json!(
-            dirs.into_iter()
-                .map(|(id, dir)| self.state(&id, &dir, require_reviewed))
-                .collect::<Vec<_>>()
-        ))
+        Ok(json!(self.states(&dirs, require_reviewed)?))
     }
 
     /// The status row of the document or proposal in `dir`: its state, and the
     /// blockers or error that keep it from the next step.
     pub(super) fn state(&self, id: &str, dir: &Path, require_reviewed: bool) -> Value {
+        let inspected = self
+            .inspect_records(dir, require_reviewed, false)
+            .map(|(inspected, _)| inspected);
+        self.state_of(id, dir, inspected)
+    }
+
+    /// [`Store::state`] from an inspection of the document or proposal in
+    /// `dir` already made, as an edit makes of the content it writes.
+    pub(super) fn state_of(&self, id: &str, dir: &Path, inspected: Result<Inspection>) -> Value {
         let is_proposal = dir.join("proposal.json").is_file();
         let inspected = (|| -> Result<Value> {
-            let mut r = self.inspect(dir, require_reviewed)?;
-            let pending = r
-                .entries
-                .iter()
-                .filter(|e| e.writeback().is_ok_and(|w| w == "pending"))
-                .count();
+            let mut r = inspected?;
+            let pending = r.pending;
             r.release_content();
-            let interpretation = self.interpretation(&r)?;
+            let summary = self.structure_summary(&r)?;
             // The tables of the element metadata are those of the
             // interpretation the layout was classified from; the replay infers
             // tables with this version of ARP.
-            let structure_outdated = interpretation
+            let structure_outdated = summary
                 .as_ref()
-                .map(|(structure, _)| {
-                    Ok::<_, anyhow::Error>(
-                        r.structure_sha256.as_deref()
-                            != Some(
-                                elements::interpretation_digest(array(&structure["elements"])?)?
-                                    .as_str(),
-                            ),
-                    )
-                })
-                .transpose()?;
-            let report = interpretation.map(|(_, report)| report);
+                .map(|summary| r.structure_sha256.as_deref() != summary["digest"].as_str());
             let formation = self.management(dir)?.join("formation.json");
             let (recorded, by_import) = if formation.exists() {
                 let (f, _) = self.formation(dir)?;
@@ -441,8 +651,8 @@ impl Store {
             Ok(
                 json!({"document_id":r.meta["document_id"],"directory":dir,"reviewed":r.reviewed,
                 "source_current":r.source_current,"content":r.fingerprint,"source_sha256":r.meta["source"]["sha256"],"pending":pending,
-                "structure_ready":report.as_ref().is_some_and(|report| report["ready"] == true),
-                "structure_conflicts":report.as_ref().map(|report| report["conflicts"].as_array().map(Vec::len).unwrap_or(0)),
+                "structure_ready":summary.as_ref().is_some_and(|summary| summary["ready"] == true),
+                "structure_conflicts":summary.as_ref().map(|summary| summary["conflicts"].clone()),
                 "structure_outdated":structure_outdated,
                 "state":state,"blockers":blockers,"no_changes":no_changes}),
             )
@@ -460,15 +670,30 @@ impl Store {
     }
 }
 
+/// What an inspection keeps of what it read besides its result.
+#[derive(Default)]
+pub(super) struct Keep<'a> {
+    /// The layout, placed under the pending operations.
+    pub(super) layout: bool,
+    /// The content pages with these titles, the names of their sheets.
+    pub(super) pages: &'a [&'a str],
+}
+
+/// What an inspection kept, as [`Keep`] asked.
+pub(super) struct Kept {
+    pub(super) layout: Option<Layout>,
+    /// The content pages by page ID, as the writer reads them.
+    pub(super) pages: BTreeMap<String, Value>,
+}
+
 struct ValidatedContent {
-    values: HashMap<(String, String, String), Value>,
-    fonts: HashMap<(String, String, String), Value>,
+    fields: HashMap<(String, String, String), Field>,
     /// The page blocks, keyed with an empty field. Every value is expected too.
     expected: BTreeSet<(String, String, String)>,
 }
 
 fn validate_coverage(
-    extraction: &Value,
+    extraction: &Extraction,
     mappings: &Value,
     entries: &[Entry],
     content: &ValidatedContent,
@@ -476,27 +701,37 @@ fn validate_coverage(
     native_text: bool,
     text_format: bool,
 ) -> Result<()> {
-    let values = &content.values;
+    let fields = &content.fields;
+    let value_of = |key: &(String, String, String)| fields.get(key).map(|field| &field.value);
     let expected = &content.expected;
+    // Every cell is placed through the pending operations; each row and
+    // column is mapped once.
+    let coordinates = excel::CoordinateMap::new(operations);
     // Keys borrow from the extraction and mappings: a large workbook has an entry per cell.
     // Hashed: every entry looks up its key, target and destination, and a large
     // workbook has an entry per cell.
     let mut cells = HashMap::new();
-    for sheet in array(&extraction["sheets"])? {
-        for c in array(&sheet["cells"])? {
+    for sheet in &extraction.sheets {
+        for c in &sheet.cells {
             ensure!(
                 cells
-                    .insert((string(&sheet["name"])?, string(&c["address"])?), c)
+                    .insert((string(&sheet["name"])?, &*c.address), c)
                     .is_none(),
                 "duplicate extraction cell"
             );
         }
     }
-    let sheet_names: HashSet<&str> = array(&extraction["sheets"])?
+    let sheet_names: HashSet<&str> = extraction
+        .sheets
         .iter()
         .map(|sheet| string(&sheet["name"]))
         .collect::<Result<_>>()?;
-    let mut actual = HashSet::new();
+    // The keys of the entries, as the content values or the expected fields
+    // hold them, and any that neither holds, which fail below: a large
+    // workbook has an entry per cell, and a copy of each key took a third of
+    // what the check held.
+    let mut actual = HashSet::with_capacity(entries.len());
+    let mut strays = HashSet::new();
     // New table column names by sheet and cell, checked for duplicates below.
     let mut header_edits = HashMap::new();
     let mut covered_cells = HashSet::new();
@@ -505,12 +740,15 @@ fn validate_coverage(
     // the operations: an insertion inside a merge grows it over the new cells.
     let mut merges = BTreeMap::new();
     let mut computed = BTreeMap::new();
-    for sheet in array(&extraction["sheets"])? {
+    for sheet in &extraction.sheets {
         merges.insert(
             string(&sheet["name"])?.to_owned(),
-            excel::merges_after(sheet, operations)?,
+            excel::merges_after(&sheet.fields, operations)?,
         );
-        computed.insert(string(&sheet["name"])?, excel::ComputedRanges::new(sheet)?);
+        computed.insert(
+            string(&sheet["name"])?,
+            excel::ComputedRanges::new(&sheet.fields)?,
+        );
     }
     let merges = merges
         .iter()
@@ -523,9 +761,9 @@ fn validate_coverage(
         if let Some(MappingTarget::Cell { sheet, cell }) = mapped_target {
             let pair = (sheet, cell);
             if cells.contains_key(&pair) {
-                if native_text && let Some(value) = values.get(&k) {
+                if native_text && let Some(value) = value_of(&k) {
                     ensure!(
-                        *value == cells[&pair]["value"],
+                        *value == cells[&pair].value,
                         "text content is a read-only derived view; edit the original and re-import with the same document ID"
                     );
                 }
@@ -547,14 +785,14 @@ fn validate_coverage(
                 ensure!(!reason.trim().is_empty(), "exclusion requires reason");
                 // An excluded cell is never written, so an edit would be lost.
                 if let (Some(MappingTarget::Cell { sheet, cell }), Some(value)) =
-                    (&mapped_target, values.get(&k))
+                    (&mapped_target, value_of(&k))
                 {
                     let source = &cells[&(*sheet, *cell)];
-                    let original = match source["formula"].as_str() {
+                    let original = match source.formula.as_deref() {
                         Some(formula) if e.position()?.is_some_and(|p| p.column == "formula") => {
                             json!(format!("={formula}"))
                         }
-                        _ => source["value"].clone(),
+                        _ => source.value.clone(),
                     };
                     ensure!(
                         *value == original
@@ -565,7 +803,7 @@ fn validate_coverage(
             }
             "pending" => {}
             "cell" => {
-                let value = values.get(&k).context("writeback requires field")?;
+                let value = value_of(&k).context("writeback requires field")?;
                 ensure!(
                     !text_format || value.is_string(),
                     "text replacement must be a string; use an empty string to clear text"
@@ -576,23 +814,25 @@ fn validate_coverage(
                         let source = cells.get(&(sheet, cell));
                         if let Some(source) = source {
                             ensure!(
-                                source["type"] != "formula" && source["type"] != "error",
+                                !matches!(source.kind, CellKind::Formula | CellKind::Error),
                                 "formula/error cell cannot be overwritten"
                             );
                             ensure!(
                                 value.is_null()
-                                    || source["type"] == kind(value)
-                                    || source["type"] == "null",
+                                    || source.kind.as_str() == kind(value)
+                                    || source.kind == CellKind::Null,
                                 "Excel target type mismatch"
                             );
                         }
-                        let original = source.map_or(&Value::Null, |source| &source["value"]);
+                        let original = source.map_or(&Value::Null, |source| &source.value);
                         if !text_format && value != original {
                             let (column, row) = excel::coordinate(cell)?;
-                            let book_sheet = array(&extraction["sheets"])?
+                            let book_sheet = &extraction
+                                .sheets
                                 .iter()
                                 .find(|s| s["name"] == sheet)
-                                .context("missing Excel target sheet")?;
+                                .context("missing Excel target sheet")?
+                                .fields;
                             excel::ensure_table_label_edit(book_sheet, column, row, value)?;
                             if excel::table_label(book_sheet, column, row)?
                                 .is_some_and(|(_, header)| header)
@@ -606,7 +846,7 @@ fn validate_coverage(
                         }
                         // A cell an operation deletes is removed from the content with
                         // it; one left behind would be an edit silently dropped.
-                        let mapped = excel::map_coordinate(sheet, cell, operations)?
+                        let mapped = coordinates.map_point(sheet, cell)?
                             .with_context(|| {
                                 format!(
                                     "{sheet}!{cell} is deleted by a delete_rows/delete_columns operation; remove it from the content too"
@@ -628,7 +868,7 @@ fn validate_coverage(
                             None,
                             operations,
                         )?;
-                        Some((sheet, mapped))
+                        Some((sheet, excel::coordinate(&mapped)?))
                     }
                     MappingTarget::InsertionColumn {
                         sheet,
@@ -644,7 +884,7 @@ fn validate_coverage(
                             Some(row),
                             operations,
                         )?;
-                        Some((sheet, mapped))
+                        Some((sheet, excel::coordinate(&mapped)?))
                     }
                     MappingTarget::Shape { .. } => {
                         bail!("the text of a shape is written back with shape writeback")
@@ -654,7 +894,7 @@ fn validate_coverage(
                     merges
                         .get(sheet)
                         .context("missing Excel target sheet")?
-                        .ensure_not_hidden(sheet, &cell)?;
+                        .ensure_not_hidden_at(sheet, cell)?;
                     ensure!(
                         destinations.insert((sheet, cell)),
                         "duplicate writeback target"
@@ -665,11 +905,12 @@ fn validate_coverage(
                 bail!("operation writeback entries are not supported; use operations")
             }
             "shape" => {
-                let value = values.get(&k).context("writeback requires field")?;
+                let value = value_of(&k).context("writeback requires field")?;
                 let Some(MappingTarget::Shape { sheet, shape }) = mapped_target else {
                     bail!("shape writeback requires a shape target");
                 };
-                let old = array(&extraction["sheets"])?
+                let old = extraction
+                    .sheets
                     .iter()
                     .filter(|s| s["name"] == sheet)
                     .flat_map(|s| s["drawings"].as_array().into_iter().flatten())
@@ -689,16 +930,21 @@ fn validate_coverage(
                 }
             }
             "formula" => {
-                let value = values.get(&k).context("writeback requires field")?;
+                let value = value_of(&k).context("writeback requires field")?;
                 let Some(MappingTarget::Cell { sheet, cell }) = mapped_target else {
                     bail!("formula writeback requires a cell target");
                 };
                 let source = &cells[&(sheet, cell)];
-                ensure!(
-                    source["type"] == "formula",
-                    "{sheet}!{cell} holds no formula; formula writeback replaces an existing formula"
-                );
-                if value.as_str() != Some(&format!("={}", string(&source["formula"])?)) {
+                let formula = source
+                    .formula
+                    .as_deref()
+                    .filter(|_| source.kind == CellKind::Formula);
+                let Some(formula) = formula else {
+                    bail!(
+                        "{sheet}!{cell} holds no formula; formula writeback replaces an existing formula"
+                    );
+                };
+                if value.as_str() != Some(&format!("={formula}")) {
                     let formula = value
                         .as_str()
                         .and_then(|v| v.strip_prefix('='))
@@ -712,32 +958,37 @@ fn validate_coverage(
                         .context("missing Excel target sheet")?
                         .ensure_not_computed(cell)?;
                     ensure!(
-                        excel::map_coordinate(sheet, cell, operations)?.is_some(),
+                        coordinates.map(sheet, cell)?.is_some(),
                         "{sheet}!{cell} is deleted by a delete_rows/delete_columns operation; restore its formula"
                     );
                 }
             }
             other => bail!("unsupported writeback: {other}"),
         }
-        ensure!(actual.insert(k), "duplicate mapping");
+        let unique = match fields
+            .get_key_value(&k)
+            .map(|(key, _)| key)
+            .or_else(|| expected.get(&k))
+        {
+            Some(key) => actual.insert(key),
+            None => strays.insert(k),
+        };
+        ensure!(unique, "duplicate mapping");
     }
     if !header_edits.is_empty() {
-        for sheet in array(&extraction["sheets"])? {
+        for sheet in &extraction.sheets {
             let name = string(&sheet["name"])?;
-            excel::ensure_unique_table_headers(sheet, |cell| {
+            excel::ensure_unique_table_headers(&sheet.fields, |cell| {
                 header_edits
                     .get(&(name, cell))
                     .map(|value| (*value).clone())
-                    .or_else(|| cells.get(&(name, cell)).map(|c| c["value"].clone()))
+                    .or_else(|| cells.get(&(name, cell)).map(|c| c.value.clone()))
             })?;
         }
     }
-    let expected_count = expected.len() + values.keys().filter(|k| !expected.contains(*k)).count();
+    let expected_count = expected.len() + fields.keys().filter(|k| !expected.contains(*k)).count();
     ensure!(
-        actual.len() == expected_count
-            && actual
-                .iter()
-                .all(|k| values.contains_key(k) || expected.contains(k)),
+        strays.is_empty() && actual.len() == expected_count,
         "mapping coverage mismatch"
     );
     for o in array(&mappings["omissions"])? {
@@ -749,7 +1000,7 @@ fn validate_coverage(
         );
     }
     for &(sheet, cell) in cells.keys() {
-        if excel::map_coordinate(sheet, cell, operations)?.is_none() {
+        if coordinates.map(sheet, cell)?.is_none() {
             covered_cells.insert((sheet, cell));
         }
     }
@@ -763,16 +1014,21 @@ fn validate_coverage(
 
 /// Requires a content page for each page the slide operations leave (the
 /// `operated` extraction) and none for a page they delete.
-fn ensure_slide_pages(extraction: &Value, operated: &Value, pages: &[Value]) -> Result<()> {
-    let kept: BTreeMap<&str, &str> = array(&operated["sheets"])?
+fn ensure_slide_pages(
+    extraction: &Extraction,
+    operated: &Extraction,
+    pages: &[elements::GridPage],
+) -> Result<()> {
+    let kept: BTreeMap<&str, &str> = operated
+        .sheets
         .iter()
         .map(|sheet| Ok((string(&sheet["page"])?, string(&sheet["name"])?)))
         .collect::<Result<_>>()?;
     let present: BTreeSet<&str> = pages
         .iter()
-        .map(|page| string(&page["page_id"]))
+        .map(|page| string(&page.fields["page_id"]))
         .collect::<Result<_>>()?;
-    for (index, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+    for (index, sheet) in extraction.sheets.iter().enumerate() {
         let page = format!("sheet-{}", index + 1);
         ensure!(
             kept.contains_key(page.as_str()) || !present.contains(page.as_str()),

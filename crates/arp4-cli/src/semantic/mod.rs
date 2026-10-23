@@ -8,7 +8,9 @@ pub use packet::{changes, compact_review, packet, packet_fingerprint};
 mod assembly;
 pub use assembly::{Reply, assemble};
 mod review_packet;
-pub use review_packet::{ReviewScope, review_packet, review_packet_scoped, review_packet_selected};
+pub use review_packet::{
+    ReviewBasis, ReviewScope, review_packet, review_packet_scoped, review_packet_selected,
+};
 mod review;
 pub use review::{AuditGroup, Review, ReviewAction, ReviewFinding, apply_reviews};
 

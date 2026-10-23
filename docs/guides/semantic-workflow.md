@@ -257,6 +257,7 @@ arp4 spec workflow --root C:/my-project run --provider claude-code --executable 
 | work/ | モデル実行中の一時ファイル。記録の保存・照合後に重複コピーを除去 |
 | latest/ | 正式生成成功時の設計書・モデル・台帳・分類とmanifest |
 | read-cache/ | 回答待ちタスクを `read` でページ分割した結果。タスク・採用返信・参照・表示形式・CLIのいずれかが変わると作り直す。回答待ちでなくなったタスクの分は、次に `read` がページ分割するときに削除。消しても次の `read` で再作成 |
+| status-cache/ | `status` の結果（`--summary` の有無ごとに1件）。ページ送りのたびに懸念事項・品質・provenanceを作り直さないよう保存し、state.json・実行ディレクトリ・CLIのいずれかが変わると作り直す。消しても次の `status` で再作成 |
 | AGENT_BRIEF.md | 担当Agent向けの共通ブリーフ |
 | unresolved.json | 変更なしのrepair・restructureの保留など、未解決の記録 |
 | draft/ | `needs_decision` 時の草稿・報告・`open-issues.json` |
@@ -323,7 +324,7 @@ arp4 spec workflow --root C:/my-project compact
 
 `submit` と `retry` の理由は、短文なら `--reason <理由>`、引用符・JSON断片・改行を含む場合は `--reason-file <PATH>` を使います。両者は同時指定できません。ファイルはUTF-8で読み、先頭BOMだけを除去し、改行や前後の空白は保持します。空白だけの本文、不正なUTF-8、読み込み失敗は状態や提出履歴を変更せずエラーにします。理由ファイルは標準入力に対応しません（`-` はファイル名です）。submitで両方省略した場合の理由は `Externally supplied reply`、retryはいずれか必須です。
 
-`history` で全履歴、`status.provenance` で呼び出し数・失敗数・外部介入数・報告費用の集計を確認できます（語彙、初回受理率などは `history`）。`history` の `submissions`（提出の担当・理由・受理可否・拒否診断）と `runs`（provider呼び出しの受理可否・使用量・費用）はtask_refで示し、`--limit/--offset` を両方の一覧に同じ範囲で適用します（`page.total` は長い方）。オブジェクトのハッシュとstate.jsonの完全な記録はprovenance.jsonと履歴に残ります。正式成果物にはprovenance.jsonを添付します。呼び出し数、報告費用、初回返信受理率、修正回数、外部介入の段階・文書、原本警告を確認できます。初回受理率は構造・引用検査の指標で、意味品質の正解率ではありません。
+`history` で全履歴、`status.provenance` で呼び出し数・失敗数・外部介入数・報告費用の集計を確認できます（語彙、初回受理率などは `history`）。`history` の `submissions`（提出の担当・理由・受理可否・拒否診断）と `runs`（provider呼び出しの受理可否・使用量・費用）はtask_refで示し、`--limit/--offset` を両方の一覧に同じ範囲で適用します（`page.total` は長い方）。オブジェクトのハッシュと提出・呼び出しの記録はstate.jsonとprovenance.jsonに残ります。state.jsonは現在の状態だけを保存し、以前の版は残しません。保存のたびに以前の版の全体を写すと、保存量が保存回数の2乗で増えるためです。正式成果物にはprovenance.jsonを添付します。呼び出し数、報告費用、初回返信受理率、修正回数、外部介入の段階・文書、原本警告を確認できます。初回受理率は構造・引用検査の指標で、意味品質の正解率ではありません。
 
 保存済み状態はstatus/inspect/historyで確認できます。生成の継続はバイナリ一致を要求します。実行ファイルを変更した場合は、検証済み返信を新しい実行へimportします。
 

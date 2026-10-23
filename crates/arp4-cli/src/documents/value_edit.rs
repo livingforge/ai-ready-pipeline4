@@ -99,7 +99,7 @@ impl Store {
         }
         let edits = array(&request["edits"])?;
         let all: Vec<usize> = (0..edits.len()).collect();
-        let plan = match self.plan_values(&dir, &inspected, &book, request, &all) {
+        let mut plan = match self.plan_values(&dir, &inspected, &book, request, &all) {
             Ok(plan) => plan,
             Err(error) => {
                 // Name the edits the writer refuses on their own.
@@ -141,6 +141,14 @@ impl Store {
         if plan.new_cells > 0 {
             result["new_cells"] = json!(plan.new_cells);
         }
+        // The written content was inspected when planned; its status is made
+        // from that inspection rather than by inspecting the document again.
+        if state == "written"
+            && let Some(checked) = plan.checked.take()
+        {
+            let row = self.state_of(id, &dir, Ok(checked));
+            self.remember_state(id, &dir, &row);
+        }
         Ok(result)
     }
 
@@ -160,16 +168,14 @@ impl Store {
         let extraction = &inspected.extraction;
         let workbook = identity::is_excel(extraction);
         let current = identity::load(dir, extraction, &Planned::new())?;
-        let originals: BTreeSet<&str> = array(&extraction["sheets"])?
+        let originals: BTreeSet<&str> = extraction
+            .sheets
             .iter()
             .filter_map(|sheet| sheet["name"].as_str())
             .collect();
         // The pages by sheet name, and the entries by what they write.
         let mut pages_by_name = BTreeMap::new();
-        for (page, sheet) in current["sheets"]
-            .as_object()
-            .context("layout sheets missing")?
-        {
+        for (page, sheet) in &current.sheets {
             pages_by_name.insert(string(&sheet["name"])?, page.as_str());
         }
         let mut positioned: HashMap<(&str, &str, &str, &str), usize> = HashMap::new();
@@ -192,15 +198,12 @@ impl Store {
                 _ => {}
             }
         }
-        let extracted: std::collections::HashSet<(&str, &str)> = array(&extraction["sheets"])?
+        let extracted: std::collections::HashSet<(&str, &str)> = extraction
+            .sheets
             .iter()
             .flat_map(|sheet| {
                 let name = sheet["name"].as_str().unwrap_or_default();
-                sheet["cells"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(move |cell| Some((name, cell["address"].as_str()?)))
+                sheet.cells.iter().map(move |cell| (name, &*cell.address))
             })
             .collect();
         let mut pages: BTreeMap<String, Value> = BTreeMap::new();
@@ -208,6 +211,10 @@ impl Store {
         let mut new_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
         // The edits changing their value or font, the ones mappings records.
         let mut changing = Vec::new();
+        // What the edits look up in each page's layout and each sheet's
+        // merges, read once for all of them.
+        let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::new();
+        let mut merged: HashMap<&str, Option<excel::Merges<'_>>> = HashMap::new();
         for &index in indices {
             let edit = &edits[index];
             let sheet = string(&edit["sheet"])?;
@@ -215,7 +222,10 @@ impl Store {
             let Some(&page) = pages_by_name.get(sheet) else {
                 return Err(Rejection(json!({"code":"sheet_not_found","message":format!("the document has no sheet or page {sheet}"),"edit":index,"sheets":pages_by_name.keys().collect::<Vec<_>>()})).into());
             };
-            let layout_sheet = &current["sheets"][page];
+            let layout_sheet = &current.sheet(page)?.fields;
+            let lookup = lookups
+                .entry(page)
+                .or_insert_with(|| identity::SheetLookup::new(layout_sheet, page));
             let file = inspected
                 .page_files
                 .get(page)
@@ -262,8 +272,8 @@ impl Store {
                     (None, None) => {
                         let (column, row) = excel::coordinate(cell)?;
                         let (row, column) = (format!("r{row}"), excel::column_name(column)?);
-                        let known = identity::identity_of(layout_sheet, "rows", &row).is_some()
-                            && identity::identity_of(layout_sheet, "columns", &column).is_some();
+                        let known = lookup.identity("rows", &row).is_some()
+                            && lookup.identity("columns", &column).is_some();
                         if !workbook || !originals.contains(sheet) || !known {
                             return Err(refuse(
                                 "target_not_found",
@@ -272,12 +282,16 @@ impl Store {
                                 ),
                             ));
                         }
-                        let merges = array(&extraction["sheets"])?
-                            .iter()
-                            .find(|s| s["name"] == sheet)
-                            .map(|s| excel::Merges::new(&s["merges"]))
-                            .transpose()?;
-                        if let Some(range) = merges
+                        if !merged.contains_key(sheet) {
+                            let merges = extraction
+                                .sheets
+                                .iter()
+                                .find(|s| s["name"] == sheet)
+                                .map(|s| excel::Merges::new(&s["merges"]))
+                                .transpose()?;
+                            merged.insert(sheet, merges);
+                        }
+                        if let Some(range) = merged[sheet]
                             .as_ref()
                             .map(|merges| merges.hiding(cell))
                             .transpose()?
@@ -303,12 +317,10 @@ impl Store {
                 from_entry(entry)?
             } else {
                 let element = string(&edit["element"])?;
-                let (block, row, column) = elements::Bindings::of(layout_sheet)?
-                    .get(element)
+                let (block, row, column) = lookup
+                    .binding(element)?
                     .map_err(|error| refuse("target_not_found", format!("{error:#}")))?;
-                let Some((row_key, column_key)) =
-                    identity::runtime_place(layout_sheet, page, &block, &row, &column)?
-                else {
+                let Some((row_key, column_key)) = lookup.place(&block, &row, &column)? else {
                     return Err(refuse(
                         "target_not_found",
                         format!(
@@ -423,9 +435,11 @@ impl Store {
                 } else {
                     if slot.entry.is_none() {
                         let id = elements::cell_id(
-                            &identity::identity_of(layout_sheet, "rows", &slot.row)
+                            &lookup
+                                .identity("rows", &slot.row)
                                 .unwrap_or_else(|| slot.row.clone()),
-                            &identity::identity_of(layout_sheet, "columns", &slot.column)
+                            &lookup
+                                .identity("columns", &slot.column)
                                 .unwrap_or_else(|| slot.column.clone()),
                         );
                         new_cells.entry(slot.page.clone()).or_default().push(id);
@@ -445,9 +459,10 @@ impl Store {
                     _ => false,
                 };
                 let font = match entry {
-                    Some(entry) if original && book.font_edits_supported() => {
-                        inspected.fonts.get(&entry.key()?)
-                    }
+                    Some(entry) if original && book.font_edits_supported() => inspected
+                        .content
+                        .get(&entry.key()?)
+                        .and_then(|field| field.font.as_deref()),
                     _ => None,
                 };
                 let Some(font) = font else {
@@ -482,21 +497,27 @@ impl Store {
                 if !crate::fonts::same_font(&applied, font) && changing.last() != Some(&index) {
                     changing.push(index);
                 }
-                content["fonts"][&slot.block][&slot.row][&slot.column] = applied;
+                elements::set_grid_font(content, &slot.block, &slot.row, &slot.column, applied);
             }
         }
         let mut layout = identity::load(dir, extraction, &Planned::new())?;
+        // The groups of the pages that take new cells, by page.
+        let mut page_groups = BTreeMap::new();
         for (page, cells) in &new_cells {
-            elements::adopt_cells(&mut layout["sheets"][page], cells)?;
+            let sheet = layout.sheet(page)?;
+            let mut groups = elements::metadata_groups(&sheet.metadata)?;
+            elements::adopt_cells(&sheet.fields, &mut groups, cells)?;
+            page_groups.insert(page.clone(), groups);
         }
         let mut planned = Planned::new();
-        for (name, page) in &pages {
-            let body = elements::encode(page, &mut layout)?;
-            planned.insert(name.clone(), Some(elements::page_bytes(&body, &layout)?));
+        for (name, page) in pages {
+            let groups = page_groups.remove(string(&page["page_id"])?);
+            let body = elements::encode(page, &mut layout, groups)?;
+            planned.insert(name, Some(elements::content_bytes(&body, &layout)?));
         }
         planned.insert(
             "layout.yml".into(),
-            Some(identity::stored(&mut layout, extraction)?),
+            Some(identity::stored(layout, extraction)?),
         );
         let unchanged = planned.iter().all(|(name, bytes)| {
             bytes
@@ -564,9 +585,9 @@ fn refusal_target(edit: &Value) -> Value {
 }
 
 /// The shapes of each sheet by sheet name and extraction ID.
-pub(super) fn shape_drawings(extraction: &Value) -> Result<BTreeMap<(&str, &str), &Value>> {
+pub(super) fn shape_drawings(extraction: &Extraction) -> Result<BTreeMap<(&str, &str), &Value>> {
     let mut shapes = BTreeMap::new();
-    for sheet in array(&extraction["sheets"])? {
+    for sheet in &extraction.sheets {
         for drawing in sheet["drawings"].as_array().into_iter().flatten() {
             shapes.insert((string(&sheet["name"])?, string(&drawing["id"])?), drawing);
         }
@@ -578,24 +599,22 @@ pub(super) fn shape_drawings(extraction: &Value) -> Result<BTreeMap<(&str, &str)
 /// font (`fonts`, by mapping entry key) differs from the font extracted from the
 /// original, with the properties that changed.
 pub(super) fn font_changes(
-    extraction: &Value,
+    extraction: &Extraction,
     entries: &[Entry],
-    fonts: &HashMap<(String, String, String), Value>,
+    fields: &HashMap<(String, String, String), Field>,
 ) -> Result<Vec<Value>> {
-    if fonts.is_empty() {
+    if fields.values().all(|field| field.font.is_none()) {
         return Ok(vec![]);
     }
     let mut cells = BTreeMap::new();
-    for sheet in array(&extraction["sheets"])? {
-        for cell in array(&sheet["cells"])? {
-            cells.insert(
-                (string(&sheet["name"])?, string(&cell["address"])?),
-                (sheet, cell),
-            );
+    for sheet in &extraction.sheets {
+        for cell in &sheet.cells {
+            cells.insert((string(&sheet["name"])?, &*cell.address), (sheet, cell));
         }
     }
     let shapes = shape_drawings(extraction)?;
-    let originals: BTreeSet<&str> = array(&extraction["sheets"])?
+    let originals: BTreeSet<&str> = extraction
+        .sheets
         .iter()
         .filter_map(|sheet| sheet["name"].as_str())
         .collect();
@@ -609,7 +628,10 @@ pub(super) fn font_changes(
         ) {
             continue;
         }
-        let Some(current) = fonts.get(&key(entry)?) else {
+        let Some(current) = fields
+            .get(&key(entry)?)
+            .and_then(|field| field.font.as_ref())
+        else {
             continue;
         };
         // A slide copy has no original page; it takes the fonts of the page it

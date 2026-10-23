@@ -148,10 +148,10 @@ impl Axes {
 pub(super) struct Cells(BTreeMap<u32, BTreeSet<u32>>);
 
 impl Cells {
-    pub(super) fn of(sheet: &Value) -> Result<Self> {
+    pub(super) fn of<'a>(addresses: impl IntoIterator<Item = &'a str>) -> Result<Self> {
         let mut cells = Self::default();
-        for cell in array(&sheet["cells"])? {
-            let (column, row) = crate::excel::coordinate(string(&cell["address"])?)?;
+        for address in addresses {
+            let (column, row) = crate::excel::coordinate(address)?;
             cells.0.entry(row).or_default().insert(column);
         }
         Ok(cells)
@@ -242,10 +242,7 @@ mod tests {
     use super::*;
 
     fn cells(addresses: &[&str]) -> Cells {
-        Cells::of(
-            &json!({"cells":addresses.iter().map(|a| json!({"address":a})).collect::<Vec<_>>()}),
-        )
-        .unwrap()
+        Cells::of(addresses.iter().copied()).unwrap()
     }
 
     fn points(addresses: &[&str]) -> Vec<Point> {

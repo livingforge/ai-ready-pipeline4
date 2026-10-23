@@ -471,6 +471,7 @@ impl Workflow {
     pub(super) fn history(&self) -> Result<Value> {
         let mut history = self.provenance()?;
         history["notices"] = self.notices();
+        let refs = TaskRefs::new(&self.state.tasks);
         let mut numbers = BTreeMap::<String, usize>::new();
         let submissions: Vec<_> = self
             .state
@@ -479,7 +480,7 @@ impl Workflow {
             .map(|entry| {
                 let mut row = json!({});
                 if let Some(id) = entry["task"].as_str() {
-                    row["task_ref"] = json!(self.short_ref(id));
+                    row["task_ref"] = json!(refs.short(id));
                     let number = numbers.entry(id.to_owned()).or_default();
                     *number += 1;
                     row["submission"] = json!(*number);
@@ -515,7 +516,7 @@ impl Workflow {
                 let task = run["task"].as_str().unwrap_or("");
                 let number = numbers.entry(task.to_owned()).or_default();
                 *number += 1;
-                let mut row = json!({"task_ref":self.short_ref(task),"run":*number});
+                let mut row = json!({"task_ref":refs.short(task),"run":*number});
                 for key in [
                     "provider",
                     "model",
@@ -567,6 +568,7 @@ impl Workflow {
         const LISTED_TASKS: usize = 20;
         let mut actions: Vec<(String, Vec<String>)> = Vec::new();
         let tasks = &self.state.tasks;
+        let refs = TaskRefs::new(tasks);
         let all_complete = tasks.iter().all(|task| task.state == TaskState::Complete);
         for task in tasks {
             let action = match task.state {
@@ -590,7 +592,7 @@ impl Workflow {
                     "Saved; waiting for remaining tasks before advance can apply this reply."
                 }
             };
-            let task_ref = self.short_id(task);
+            let task_ref = refs.short(&task.id);
             match actions.iter_mut().find(|(known, _)| known == action) {
                 Some((_, refs)) => refs.push(task_ref),
                 None => actions.push((action.to_owned(), vec![task_ref])),

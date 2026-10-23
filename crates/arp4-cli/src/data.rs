@@ -95,6 +95,22 @@ impl Sink for HashSink {
     }
 }
 
+/// A writer the encoding goes to as it is made, keeping the first error.
+struct WriteSink<W: Write> {
+    out: W,
+    error: Option<std::io::Error>,
+}
+
+impl<W: Write> Sink for WriteSink<W> {
+    fn put(&mut self, text: &str) {
+        if self.error.is_none()
+            && let Err(error) = self.out.write_all(text.as_bytes())
+        {
+            self.error = Some(error);
+        }
+    }
+}
+
 fn indent(out: &mut impl Sink, depth: usize) {
     for _ in 0..depth {
         out.put("  ");
@@ -288,7 +304,241 @@ pub fn hash_encoded_without(value: &Value, skip: &str) -> String {
     digest.finish()
 }
 
-/// JSON with unique keys and finite numbers. Each node is moved into its parent:
+/// A value [`hash_encoded_lazy`] hashes as [`hash_encoded`] hashes it, with
+/// the items of its arrays made only as they are hashed: a large array is not
+/// held whole.
+pub enum Lazy<'a> {
+    Value(Value),
+    Borrowed(&'a Value),
+    /// An object, its members in any order.
+    Object(Vec<(&'a str, Lazy<'a>)>),
+    Items(Box<dyn Iterator<Item = Result<Lazy<'a>>> + 'a>),
+}
+
+impl<'a> Lazy<'a> {
+    /// The members of the object `fields` without those in `skip`, borrowed.
+    pub fn members(fields: &'a Value, skip: &[&str]) -> Vec<(&'a str, Lazy<'a>)> {
+        fields
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| !skip.contains(&key.as_str()))
+            .map(|(key, value)| (key.as_str(), Lazy::Borrowed(value)))
+            .collect()
+    }
+
+    /// The value `self` stands for, made whole.
+    pub fn into_value(self) -> Result<Value> {
+        Ok(match self {
+            Lazy::Value(value) => value,
+            Lazy::Borrowed(value) => value.clone(),
+            Lazy::Object(members) => Value::Object(
+                members
+                    .into_iter()
+                    .map(|(key, member)| Ok((key.to_owned(), member.into_value()?)))
+                    .collect::<Result<_>>()?,
+            ),
+            Lazy::Items(items) => Value::Array(
+                items
+                    .map(|item| item?.into_value())
+                    .collect::<Result<_>>()?,
+            ),
+        })
+    }
+}
+
+/// A [`Lazy`] serialized once, as the value it stands for is: an object's
+/// members in order and an array's items as they are made.
+struct Once<'a>(std::cell::RefCell<Option<Lazy<'a>>>);
+
+impl serde::Serialize for Once<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeMap, SerializeSeq};
+        let lazy = self
+            .0
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| S::Error::custom("a lazy value is written once"))?;
+        match lazy {
+            Lazy::Value(value) => value.serialize(serializer),
+            Lazy::Borrowed(value) => value.serialize(serializer),
+            Lazy::Object(mut members) => {
+                members.sort_by(|a, b| a.0.cmp(b.0));
+                let mut map = serializer.serialize_map(Some(members.len()))?;
+                for (key, member) in members {
+                    map.serialize_entry(key, &Once(std::cell::RefCell::new(Some(member))))?;
+                }
+                map.end()
+            }
+            Lazy::Items(items) => {
+                let mut seq = serializer.serialize_seq(None)?;
+                for item in items {
+                    let item = item.map_err(|error| S::Error::custom(format!("{error:#}")))?;
+                    seq.serialize_element(&Once(std::cell::RefCell::new(Some(item))))?;
+                }
+                seq.end()
+            }
+        }
+    }
+}
+
+/// [`render`] of `value`, the items of an array held by a member named in
+/// `inline` on one line of their own, as [`encoded_lines`] writes them.
+fn render_lazy(value: Lazy<'_>, depth: usize, inline: &[&str], out: &mut impl Sink) -> Result<()> {
+    match value {
+        Lazy::Value(value) => render(&value, depth, inline, out),
+        Lazy::Borrowed(value) => render(value, depth, inline, out),
+        Lazy::Object(mut members) => {
+            if members.is_empty() {
+                out.put("{}");
+                return Ok(());
+            }
+            members.sort_by(|a, b| a.0.cmp(b.0));
+            out.put("{\n");
+            for (index, (key, member)) in members.into_iter().enumerate() {
+                if index > 0 {
+                    out.put(",\n");
+                }
+                indent(out, depth + 1);
+                out.put(&serde_json::to_string(key).unwrap());
+                out.put(": ");
+                if inline.contains(&key) {
+                    render_lines(member, depth + 1, inline, out)?;
+                } else {
+                    render_lazy(member, depth + 1, inline, out)?;
+                }
+            }
+            out.put("\n");
+            indent(out, depth);
+            out.put("}");
+        }
+        Lazy::Items(items) => {
+            let mut empty = true;
+            for item in items {
+                let item = item?;
+                out.put(if empty { "[\n" } else { ",\n" });
+                empty = false;
+                indent(out, depth + 1);
+                render_lazy(item, depth + 1, inline, out)?;
+            }
+            if empty {
+                out.put("[]");
+            } else {
+                out.put("\n");
+                indent(out, depth);
+                out.put("]");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The member `value` of a member named in the `inline` of [`render_lazy`]:
+/// a non-empty array with each item on one line, anything else as
+/// [`render`] writes it.
+fn render_lines(value: Lazy<'_>, depth: usize, inline: &[&str], out: &mut impl Sink) -> Result<()> {
+    let items: Box<dyn Iterator<Item = Result<Value>> + '_> = match value {
+        Lazy::Items(items) => Box::new(items.map(|item| item?.into_value())),
+        Lazy::Borrowed(Value::Array(items)) => Box::new(items.iter().cloned().map(Ok)),
+        Lazy::Value(Value::Array(items)) => Box::new(items.into_iter().map(Ok)),
+        other => return render_lazy(other, depth, inline, out),
+    };
+    let mut empty = true;
+    for item in items {
+        let item = item?;
+        out.put(if empty { "[\n" } else { ",\n" });
+        empty = false;
+        indent(out, depth + 1);
+        render_line(&item, out);
+    }
+    if empty {
+        out.put("[]");
+    } else {
+        out.put("\n");
+        indent(out, depth);
+        out.put("]");
+    }
+    Ok(())
+}
+
+/// `hash(&encoded(value))` of the value `value` stands for, made only as it is
+/// hashed.
+pub fn hash_encoded_lazy(value: Lazy<'_>) -> Result<String> {
+    hash_encoded_lazy_lines(value, &[])
+}
+
+/// `hash(&encoded_lines(value, inline))` of the value `value` stands for,
+/// made only as it is hashed.
+pub fn hash_encoded_lazy_lines(value: Lazy<'_>, inline: &[&str]) -> Result<String> {
+    let mut digest = HashSink::new();
+    render_lazy(value, 0, inline, &mut digest)?;
+    digest.put("\n");
+    Ok(digest.finish())
+}
+
+/// Whether `expected`, each `\r\n` read as `\n`, is `encoded_lines(value,
+/// inline)` of the value `value` stands for: compared as it is made rather
+/// than held, as the encoding of a large extraction is.
+pub fn is_encoded_lazy_lines(value: Lazy<'_>, inline: &[&str], expected: &[u8]) -> Result<bool> {
+    let mut compared = CompareSink {
+        rest: expected,
+        crlf: expected.contains(&b'\r'),
+        same: true,
+    };
+    render_lazy(value, 0, inline, &mut compared)?;
+    compared.put("\n");
+    Ok(compared.same && compared.rest.is_empty())
+}
+
+/// What an encoding is compared with as it is made: the bytes not yet
+/// matched, and whether they all matched so far.
+struct CompareSink<'a> {
+    rest: &'a [u8],
+    /// Whether `rest` holds a `\r`, each before `\n` read as nothing.
+    crlf: bool,
+    same: bool,
+}
+
+impl Sink for CompareSink<'_> {
+    fn put(&mut self, text: &str) {
+        if !self.same {
+            return;
+        }
+        if !self.crlf {
+            match self.rest.strip_prefix(text.as_bytes()) {
+                Some(rest) => self.rest = rest,
+                None => self.same = false,
+            }
+            return;
+        }
+        for &byte in text.as_bytes() {
+            if self.rest.starts_with(b"\r\n") {
+                self.rest = &self.rest[1..];
+            }
+            match self.rest.split_first() {
+                Some((&next, rest)) if next == byte => self.rest = rest,
+                _ => {
+                    self.same = false;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// `encoded_lines(value, inline)` of the value `value` stands for, made as it
+/// is written into the buffer.
+pub fn encoded_lazy_lines(value: Lazy<'_>, inline: &[&str]) -> Result<Vec<u8>> {
+    let mut out = String::new();
+    render_lazy(value, 0, inline, &mut out)?;
+    out.push('\n');
+    Ok(out.into_bytes())
+}
+
+// JSON with unique keys and finite numbers. Each node is moved into its parent:
 /// `json!` on a built array would copy it again at every enclosing level.
 struct Strict(Value);
 impl<'de> Deserialize<'de> for Strict {
@@ -401,8 +651,41 @@ pub fn read(path: &Path, schema: Option<&str>) -> Result<Value> {
     }
     Ok(value)
 }
+/// Stores [`serialized`] of `value` at `path` as [`replace`] does, encoding
+/// it straight into the file: a large output encoded whole first was held
+/// twice, as the value and as its bytes.
 pub fn write(path: &Path, value: &Value) -> Result<()> {
-    replace(path, &serialized(path, value)?)
+    write_lazy(path, Lazy::Borrowed(value))
+}
+/// [`write`] of the value `lazy` stands for, made only as it is written: a
+/// large output is not held whole.
+pub fn write_lazy(path: &Path, lazy: Lazy<'_>) -> Result<()> {
+    replace_streamed(path, |out| {
+        if path.extension().is_some_and(|s| s == "json") {
+            let mut sink = WriteSink { out, error: None };
+            render_lazy(lazy, 0, &[], &mut sink)?;
+            sink.put("\n");
+            if let Some(error) = sink.error {
+                return Err(error.into());
+            }
+        } else {
+            serde_saphyr::to_io_writer(out, &Once(std::cell::RefCell::new(Some(lazy))))?;
+        }
+        Ok(())
+    })
+}
+/// [`replace`] with the bytes `fill` writes, buffered, rather than bytes
+/// held whole first.
+pub fn replace_streamed(
+    path: &Path,
+    fill: impl FnOnce(&mut std::io::BufWriter<&mut fs::File>) -> Result<()>,
+) -> Result<()> {
+    replace_with(path, true, |file| {
+        let mut out = std::io::BufWriter::with_capacity(1 << 16, file);
+        fill(&mut out)?;
+        out.flush()?;
+        Ok(())
+    })
 }
 /// The bytes [`write`] stores for `value` at `path`: canonical JSON or YAML.
 pub fn serialized(path: &Path, value: &Value) -> Result<Vec<u8>> {
@@ -413,10 +696,28 @@ pub fn serialized(path: &Path, value: &Value) -> Result<Vec<u8>> {
     })
 }
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
+    replace_with(path, true, |file| Ok(file.write_all(bytes)?))
+}
+/// [`replace`] for a file of `.arp/cache/` or of a workflow's status cache,
+/// which is made again when it is lost or does not read back. It still takes
+/// the place of the old file whole, but is not flushed to the disk first,
+/// which took longer than writing it.
+pub fn replace_cache(path: &Path, bytes: &[u8]) -> Result<()> {
+    replace_with(path, false, |file| Ok(file.write_all(bytes)?))
+}
+/// A new file that `fill` writes takes the place of `path` whole, flushed to
+/// the disk first when `durable`.
+fn replace_with(
+    path: &Path,
+    durable: bool,
+    fill: impl FnOnce(&mut fs::File) -> Result<()>,
+) -> Result<()> {
     fs::create_dir_all(path.parent().context("missing parent")?)?;
     let mut tmp = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-    tmp.write_all(bytes)?;
-    tmp.as_file().sync_all()?;
+    fill(tmp.as_file_mut())?;
+    if durable {
+        tmp.as_file().sync_all()?;
+    }
     tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
@@ -644,9 +945,147 @@ pub fn grouped_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Valu
     json!(groups)
 }
 
+/// The program as built: its version, path, size and modification time, so
+/// that what a build of other code saved in a cache is not reused.
+pub fn program() -> Result<String> {
+    let path = std::env::current_exe()?;
+    let metadata = fs::metadata(&path)?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    Ok(format!(
+        "{}\n{}\n{}\n{modified}",
+        env!("CARGO_PKG_VERSION"),
+        path.display(),
+        metadata.len()
+    ))
+}
+
+/// The results of `work` on each of `items`, in their order, done on up to
+/// four threads. A panic in `work` panics here.
+pub fn in_order<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(4)
+        .min(items.len());
+    if workers < 2 {
+        return items.iter().map(work).collect();
+    }
+    let work = &work;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(items.len().div_ceil(workers))
+            .map(|chunk| scope.spawn(move || chunk.iter().map(work).collect::<Vec<_>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// Removes the files in `directory` beyond the `kept` most recently written,
+/// as a cache keeps its newest entries. Best effort: a file that cannot be
+/// read or removed stays.
+pub fn keep_newest(directory: &Path, kept: usize) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut saved: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    if saved.len() > kept {
+        saved.sort();
+        for (_, path) in &saved[..saved.len() - kept] {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_encoding_is_compared_as_it_is_made() {
+        let value = json!({"a":[{"b":1,"c":"x"},{"b":2,"c":"y\r\nz"}],"d":{"e":[]}});
+        let lazy = || Lazy::Borrowed(&value);
+        let encoded = encoded_lazy_lines(lazy(), &["a"]).unwrap();
+        assert!(is_encoded_lazy_lines(lazy(), &["a"], &encoded).unwrap());
+        // As text.replace("\r\n", "\n") compared it: line breaks written as
+        // CRLF read as LF, and a CR the encoding escapes stays apart.
+        let crlf = String::from_utf8(encoded.clone())
+            .unwrap()
+            .replace('\n', "\r\n");
+        assert!(is_encoded_lazy_lines(lazy(), &["a"], crlf.as_bytes()).unwrap());
+        for other in [
+            &encoded[..encoded.len() - 1],
+            &[encoded.as_slice(), b" "].concat(),
+        ] {
+            assert!(!is_encoded_lazy_lines(lazy(), &["a"], other).unwrap());
+        }
+        let mut changed = encoded.clone();
+        changed[3] = b'#';
+        assert!(!is_encoded_lazy_lines(lazy(), &["a"], &changed).unwrap());
+        assert!(!is_encoded_lazy_lines(lazy(), &[], &encoded).unwrap());
+    }
+
+    #[test]
+    fn written_files_hold_the_serialized_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let big: Vec<_> = (0..20_000)
+            .map(|i| json!({"id":format!("c-{i}"),"value":i as f64 / 3.0,"text":"在庫 引当"}))
+            .collect();
+        for value in [
+            json!(null),
+            json!({}),
+            json!({"a":[1, 2.5, 1e20, -0.00001],"b":{},"c":[],"d":"x: #y","e":"010"}),
+            json!({"elements":big}),
+        ] {
+            for name in ["out.json", "out.yml"] {
+                let path = dir.path().join(name);
+                write(&path, &value).unwrap();
+                assert_eq!(fs::read(&path).unwrap(), serialized(&path, &value).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_values_write_as_the_values_they_stand_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let fields = json!({"z":{"a":[1, 2.5, 1e20]},"b":{},"c":[],"d":"x: #y","e":"010"});
+        let items = |values: Vec<Value>| {
+            Lazy::Items(Box::new(values.into_iter().map(|v| Ok(Lazy::Value(v)))))
+        };
+        let lazy = || {
+            let mut members = Lazy::members(&fields, &["e"]);
+            members.push((
+                "rows",
+                items(vec![json!({"cells":[]}), json!([1, {"k":null}])]),
+            ));
+            members.push(("empty", items(vec![])));
+            members.push((
+                "nested",
+                Lazy::Object(vec![("inner", items(vec![json!("v")]))]),
+            ));
+            members.push(("none", Lazy::Object(vec![])));
+            Lazy::Object(members)
+        };
+        let value = lazy().into_value().unwrap();
+        assert_eq!(value["rows"][1][1]["k"], Value::Null);
+        assert!(value.get("e").is_none());
+        for name in ["out.json", "out.yml"] {
+            let path = dir.path().join(name);
+            write_lazy(&path, lazy()).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), serialized(&path, &value).unwrap());
+        }
+    }
 
     #[test]
     fn streamed_hashes_equal_hashes_of_the_encoding() {
@@ -672,6 +1111,31 @@ mod tests {
             assert_eq!(
                 hash_encoded_without(&value, "review"),
                 hash(&encoded(&without))
+            );
+        }
+        for items in [
+            vec![],
+            vec![json!({})],
+            vec![json!({"a":[1]}), json!("x"), json!([])],
+        ] {
+            let lazy = |items: Vec<Value>| {
+                Lazy::Items(Box::new(
+                    items.into_iter().map(|item| Ok(Lazy::Value(item))),
+                ))
+            };
+            assert_eq!(
+                hash_encoded_lazy(lazy(items.clone())).unwrap(),
+                hash(&encoded(&Value::Array(items.clone())))
+            );
+            // Members in any order, an empty object and a nested lazy array.
+            let object = Lazy::Object(vec![
+                ("z", lazy(items.clone())),
+                ("a", Lazy::Value(json!(1))),
+                ("m", Lazy::Object(vec![])),
+            ]);
+            assert_eq!(
+                hash_encoded_lazy(object).unwrap(),
+                hash(&encoded(&json!({"z":items,"a":1,"m":{}})))
             );
         }
     }

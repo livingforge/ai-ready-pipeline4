@@ -5817,7 +5817,7 @@
                     "type": "boolean"
                   },
                   "fill": {
-                    "description": "Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.",
+                    "description": "Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.",
                     "type": "integer",
                     "minimum": 0
                   },
@@ -5826,8 +5826,20 @@
                     "type": "integer",
                     "minimum": 0
                   },
+                  "italic": {
+                    "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
+                    "type": "boolean"
+                  },
+                  "underline": {
+                    "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
+                    "type": "boolean"
+                  },
                   "strike": {
-                    "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                    "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
+                    "type": "boolean"
+                  },
+                  "highlight": {
+                    "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
                     "type": "boolean"
                   },
                   "indent": {
@@ -6357,6 +6369,30 @@
                       }
                     }
                   },
+                  "style": {
+                    "description": "The emphasis every run of the shape's text shows. Absent when it shows none.",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "italic": {
+                        "description": "Every run of the text is italic, as styles and themes resolve it.",
+                        "const": true
+                      },
+                      "underline": {
+                        "description": "Every run of the text is underlined, by a line of any kind.",
+                        "const": true
+                      },
+                      "strike": {
+                        "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted.",
+                        "const": true
+                      },
+                      "highlight": {
+                        "description": "Every run of the text is highlighted (Word and PowerPoint).",
+                        "const": true
+                      }
+                    }
+                  },
                   "placeholder": {
                     "type": "object",
                     "additionalProperties": false,
@@ -6715,8 +6751,20 @@
                         "type": "integer",
                         "minimum": 0
                       },
+                      "italic": {
+                        "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
+                        "type": "boolean"
+                      },
+                      "underline": {
+                        "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
+                        "type": "boolean"
+                      },
                       "strike": {
-                        "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                        "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
+                        "type": "boolean"
+                      },
+                      "highlight": {
+                        "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
                         "type": "boolean"
                       }
                     },
@@ -7223,7 +7271,7 @@
                         "type": "boolean"
                       },
                       "fill": {
-                        "description": "Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.",
+                        "description": "Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.",
                         "type": "integer",
                         "minimum": 0
                       },
@@ -7232,8 +7280,20 @@
                         "type": "integer",
                         "minimum": 0
                       },
+                      "italic": {
+                        "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
+                        "type": "boolean"
+                      },
+                      "underline": {
+                        "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
+                        "type": "boolean"
+                      },
                       "strike": {
-                        "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                        "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
+                        "type": "boolean"
+                      },
+                      "highlight": {
+                        "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
                         "type": "boolean"
                       },
                       "indent": {
@@ -7837,6 +7897,30 @@
                       }
                     }
                   },
+                  "style": {
+                    "description": "The emphasis every run of the shape's text shows. Absent when it shows none.",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "italic": {
+                        "description": "Every run of the text is italic, as styles and themes resolve it.",
+                        "const": true
+                      },
+                      "underline": {
+                        "description": "Every run of the text is underlined, by a line of any kind.",
+                        "const": true
+                      },
+                      "strike": {
+                        "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted.",
+                        "const": true
+                      },
+                      "highlight": {
+                        "description": "Every run of the text is highlighted (Word and PowerPoint).",
+                        "const": true
+                      }
+                    }
+                  },
                   "placeholder": {
                     "type": "object",
                     "additionalProperties": false,
@@ -8223,8 +8307,20 @@
                         "type": "integer",
                         "minimum": 0
                       },
+                      "italic": {
+                        "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
+                        "type": "boolean"
+                      },
+                      "underline": {
+                        "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
+                        "type": "boolean"
+                      },
                       "strike": {
-                        "description": "Excel cell font is struck through, which authors use to mark a value as deleted.",
+                        "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
+                        "type": "boolean"
+                      },
+                      "highlight": {
+                        "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
                         "type": "boolean"
                       }
                     },

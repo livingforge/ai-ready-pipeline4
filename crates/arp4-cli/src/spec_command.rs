@@ -283,15 +283,14 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
                     }
                 }
                 RegistryCommand::Apply { change, input } => {
-                    let r = registry::apply(
-                        registry::load(&canonical)?,
+                    let r = registry::update(
+                        &canonical,
                         serde_json::from_value(read(&change, None)?)?,
                         input
                             .iter()
                             .map(|p| spec::load_input(p))
                             .collect::<Result<Vec<_>>>()?,
                     )?;
-                    registry::save(&r, &canonical)?;
                     output.emit(json!({"state":"revised","root":canonical,"summary":registry::summary(&r)?}),true);
                 }
                 RegistryCommand::Check => {
@@ -394,7 +393,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
                     arp4_cli::document_structure::attach(
                         &root,
                         &inspected.extraction,
-                        &structure,
+                        &structure.to_value(),
                         &mut input,
                     )?;
                 }
@@ -410,21 +409,32 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
             output.emit(json!({"state":"saved","prompt":out}), true);
         }
         SpecCommand::Check { input, model, out } => {
-            let report = spec::assess(&spec::load_input(&input)?, &spec::load_model(&model)?)?;
-            if let Some(path) = &out {
+            // A page of issues reads the assessment saved for these files.
+            let mut report = if let Some(path) = &out {
+                let report = spec::assess(&spec::load_input(&input)?, &spec::load_model(&model)?)?;
                 immutable(path, &encoded(&serde_json::to_value(&report)?))?;
-            }
+                json!({"ready":report.ready,"assurance":report.assurance,"summary":report.summary,
+                    "coverage":report.coverage})
+            } else {
+                spec::page_assessment(&input, &model)?
+            };
+            let ready = report["ready"] == true;
             let mut result = if out.is_none() {
-                output.page(report.issues)
+                output.page(
+                    report["issues"]
+                        .as_array_mut()
+                        .map(std::mem::take)
+                        .unwrap_or_default(),
+                )
             } else {
                 json!({"report":out})
             };
-            result["summary"] = json!(report.summary);
-            result["coverage"] = report.coverage;
-            result["assurance"] = report.assurance;
-            result["state"] = json!(if report.ready { "ready" } else { "blocked" });
-            output.emit(result, report.ready);
-            return Ok(report.ready);
+            result["summary"] = report["summary"].take();
+            result["coverage"] = report["coverage"].take();
+            result["assurance"] = report["assurance"].take();
+            result["state"] = json!(if ready { "ready" } else { "blocked" });
+            output.emit(result, ready);
+            return Ok(ready);
         }
         SpecCommand::Render {
             input,

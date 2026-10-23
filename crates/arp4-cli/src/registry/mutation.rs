@@ -65,6 +65,7 @@ pub fn import(
         approved: vec![],
         aliases: BTreeMap::new(),
         resolved_issues: BTreeMap::new(),
+        repointed: vec![],
     };
     let archives: BTreeMap<String, Value> = BTreeMap::from([("judgments".into(), judgments)]);
     let mut r = Registry {
@@ -172,6 +173,110 @@ pub fn preflight(
     }))
 }
 
+/// Points the evidence of the records citing an earlier snapshot at one of
+/// the snapshots `added` by this change that holds every source they cite
+/// from the earlier one as it is, of the same version of its document: the
+/// same version, structure requirements, structures and merges. The earlier
+/// snapshot is then cited no more and leaves the registry, so the snapshots
+/// follow the captures kept rather than the changes made. One the judgments
+/// of an archive name stays, as the record of what they were made on.
+/// Returns the records re-pointed, in order; they keep their approvals, as
+/// what they quote is the same.
+fn repoint(r: &mut Registry, added: &BTreeSet<String>) -> Result<Vec<String>> {
+    if added.is_empty() {
+        return Ok(vec![]);
+    }
+    let archived: BTreeSet<&str> = r
+        .archives
+        .values()
+        .filter_map(|judgments| judgments["input_hash"].as_str())
+        .collect();
+    // The sources each earlier snapshot is cited for, by the records citing it.
+    let mut wanted: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for e in r.entries.values() {
+        let needed = cited(e);
+        for ev in &e.evidence {
+            if !added.contains(&ev.snapshot) && !archived.contains(ev.snapshot.as_str()) {
+                wanted
+                    .entry(ev.snapshot.as_str())
+                    .or_default()
+                    .extend(needed.iter().copied());
+            }
+        }
+    }
+    // A source by its ID, the first with it as validation reads it, and
+    // what a snapshot holds of a document besides its sources.
+    fn sources(input: &spec::Input) -> Result<BTreeMap<String, Vec<u8>>> {
+        let mut sources = BTreeMap::new();
+        for source in &input.sources {
+            if !sources.contains_key(&source.id) {
+                sources.insert(source.id.clone(), bytes(source)?);
+            }
+        }
+        Ok(sources)
+    }
+    fn document(input: &spec::Input, name: &str) -> Result<Vec<u8>> {
+        bytes(&json!([
+            input.revisions.get(name),
+            input.structure_requirements.get(name),
+            input.structures.get(name),
+            input.merges.get(name)
+        ]))
+    }
+    let read = |key: &str| spec::Input::deserialize(&r.inputs[key]);
+    let fresh = added
+        .iter()
+        .map(|key| {
+            let input = read(key)?;
+            let held = sources(&input)?;
+            Ok((key, input, held))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut moves = BTreeMap::new();
+    for (old, ids) in &wanted {
+        let earlier = read(old)?;
+        let cited: BTreeMap<String, Vec<u8>> = sources(&earlier)?
+            .into_iter()
+            .filter(|(id, _)| ids.contains(id.as_str()))
+            .collect();
+        let documents: BTreeSet<&str> = earlier
+            .sources
+            .iter()
+            .filter(|s| cited.contains_key(&s.id))
+            .map(|s| s.document.as_str())
+            .collect();
+        'fresh: for (key, input, held) in &fresh {
+            if cited
+                .iter()
+                .any(|(id, source)| held.get(id) != Some(source))
+            {
+                continue;
+            }
+            for name in &documents {
+                if document(&earlier, name)? != document(input, name)? {
+                    continue 'fresh;
+                }
+            }
+            moves.insert(old.to_string(), (*key).clone());
+            break;
+        }
+    }
+    let mut repointed = vec![];
+    for e in r.entries.values_mut() {
+        let mut moved = false;
+        for ev in &mut e.evidence {
+            if let Some(new) = moves.get(&ev.snapshot) {
+                ev.snapshot = new.clone();
+                moved = true;
+            }
+        }
+        if moved {
+            repointed.push(e.id.clone());
+        }
+    }
+    Ok(repointed)
+}
+
 pub(super) fn add_check(
     checks: &mut Vec<Value>,
     name: &str,
@@ -194,14 +299,28 @@ pub(super) fn ensure_result(condition: bool, message: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> Result<Registry> {
+pub fn apply(r: Registry, change: Change, additional: Vec<spec::Input>) -> Result<Registry> {
+    apply_with(r, change, additional, Snapshots::default())
+}
+
+/// [`apply`] to a registry whose snapshots `snapshots` read.
+pub(super) fn apply_with(
+    mut r: Registry,
+    change: Change,
+    additional: Vec<spec::Input>,
+    mut snapshots: Snapshots,
+) -> Result<Registry> {
     let parent = fingerprint(&r)?;
     ensure!(change.base_hash == parent, "stale base revision");
     nonempty(&change.actor)?;
     nonempty(&change.reason)?;
+    let mut added = BTreeSet::new();
     for input in additional {
         let v = serde_json::to_value(input)?;
         let h = hash(&encoded(&v));
+        if !r.inputs.contains_key(&h) {
+            added.insert(h.clone());
+        }
         r.manifest.evidence.insert(h.clone());
         r.inputs.insert(h, v);
     }
@@ -212,6 +331,9 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
     }
     let mut touched = BTreeSet::new();
     let mut aliases = BTreeMap::new();
+    // The last number of each prefix, found in the issued IDs once and then
+    // counted on, rather than searched again for every new entry.
+    let mut numbers: BTreeMap<&str, u64> = BTreeMap::new();
     for e in &change.entries {
         ensure!(touched.insert(e.id.clone()), "duplicate change ID");
         if e.id.starts_with("new:") {
@@ -223,16 +345,19 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
                 Category::Estimate => "EST",
                 Category::Reference => "REF",
             };
-            let next = r
-                .manifest
-                .issued
-                .iter()
-                .filter_map(|s| s.strip_prefix(&format!("{prefix}-")))
-                .filter_map(|s| s.parse::<u64>().ok())
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .context("ID overflow")?;
+            let last = match numbers.get(prefix) {
+                Some(&last) => last,
+                None => r
+                    .manifest
+                    .issued
+                    .iter()
+                    .filter_map(|s| s.strip_prefix(&format!("{prefix}-")))
+                    .filter_map(|s| s.parse::<u64>().ok())
+                    .max()
+                    .unwrap_or(0),
+            };
+            let next = last.checked_add(1).context("ID overflow")?;
+            numbers.insert(prefix, next);
             let id = format!("{prefix}-{next:06}");
             r.manifest.issued.insert(id.clone());
             aliases.insert(e.id.clone(), id);
@@ -319,6 +444,7 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
     r.manifest.revision += 1;
     r.manifest.parent = Some(parent.clone());
     let mut approved = Vec::new();
+    let mut seen = BTreeSet::new();
     for approval in change.approve {
         ensure!(
             r.manifest.open_issues.is_empty(),
@@ -326,7 +452,7 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
         );
         nonempty(&approval.reason)?;
         let id = aliases.get(&approval.id).cloned().unwrap_or(approval.id);
-        ensure!(!approved.contains(&id), "duplicate approval");
+        ensure!(seen.insert(id.clone()), "duplicate approval");
         let e = r.entries.get_mut(&id).context("unknown approval ID")?;
         ensure!(
             e.status == Status::Proposed,
@@ -340,6 +466,7 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
         });
         approved.push(id);
     }
+    let repointed = repoint(&mut r, &added)?;
     r.manifest.last_change = ChangeRecord {
         revision: r.manifest.revision,
         parent: Some(parent),
@@ -350,8 +477,9 @@ pub fn apply(mut r: Registry, change: Change, additional: Vec<spec::Input>) -> R
         approved,
         aliases,
         resolved_issues: change.resolve_issues,
+        repointed,
     };
     refresh(&mut r)?;
-    validate(&r)?;
+    validate_with(&r, &mut snapshots)?;
     Ok(r)
 }

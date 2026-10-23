@@ -7,6 +7,7 @@
 //! operation ID and its notes page `notes-<ID>`.
 use super::*;
 use crate::excel::xml_attr;
+use crate::extraction::Fields;
 use std::ops::Range;
 
 const SLIDE_KINDS: &[&str] = &[
@@ -100,14 +101,14 @@ struct Deck {
 }
 
 impl Deck {
-    fn new(sheets: &[Value]) -> Result<Self> {
+    fn new(sheets: &[impl Fields]) -> Result<Self> {
         let names = sheets
             .iter()
-            .map(|sheet| string(&sheet["name"]).map(str::to_owned))
+            .map(|sheet| string(&sheet.fields()["name"]).map(str::to_owned))
             .collect::<Result<BTreeSet<_>>>()?;
         let mut slides = vec![];
         for sheet in sheets {
-            let name = string(&sheet["name"])?;
+            let name = string(&sheet.fields()["name"])?;
             if let Some(number) = name.strip_prefix("slide-") {
                 let notes = format!("notes-{number}");
                 let notes = names.contains(&notes).then_some(notes);
@@ -225,7 +226,10 @@ impl Deck {
 
 /// The slide operations among `values`, checked in order against the pages
 /// of the extraction (`sheets`).
-pub fn parse_slide_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<SlideOperation>> {
+pub fn parse_slide_operations(
+    values: &[Value],
+    sheets: &[impl Fields],
+) -> Result<Vec<SlideOperation>> {
     let mut ids = BTreeSet::new();
     for value in values {
         if let Some(id) = value["id"].as_str() {
@@ -287,11 +291,11 @@ pub fn parse_slide_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<
 /// copies (`copy_of`), named and keyed by its own name (`sheet-<name>`). A
 /// slide made from a layout follows with the text of the layout's empty
 /// placeholders (`from_layout`), as the extraction's `layouts` list them.
-pub fn slide_view(
-    sheets: &[Value],
+pub fn slide_view<S: Fields>(
+    sheets: &[S],
     layouts: &[Value],
     operations: &[SlideOperation],
-) -> Result<Vec<Value>> {
+) -> Result<Vec<S>> {
     let mut deck = Deck::new(sheets)?;
     for operation in operations {
         deck.apply(operation)?;
@@ -312,10 +316,10 @@ pub fn slide_view(
         }
     };
     for (index, sheet) in sheets.iter().enumerate() {
-        if kept.contains(string(&sheet["name"])?) {
+        if kept.contains(string(&sheet.fields()["name"])?) {
             let mut sheet = sheet.clone();
-            sheet["page"] = json!(format!("sheet-{}", index + 1));
-            state(&mut sheet);
+            sheet.fields_mut()["page"] = json!(format!("sheet-{}", index + 1));
+            state(sheet.fields_mut());
             view.push(sheet);
         }
     }
@@ -327,11 +331,12 @@ pub fn slide_view(
                 .iter()
                 .find(|l| l["part"] == layout.as_str())
                 .with_context(|| format!("{layout} is not a slide layout of the presentation"))?;
-            let mut sheet = json!({"name":id,"part":layout,"state":"visible","merges":[],"cells":source["cells"],"tables":[]});
-            sheet["page"] = json!(format!("sheet-{id}"));
-            sheet["from_layout"] = json!(layout);
-            state(&mut sheet);
-            view.push(sheet);
+            let mut fields =
+                json!({"name":id,"part":layout,"state":"visible","merges":[],"tables":[]});
+            fields["page"] = json!(format!("sheet-{id}"));
+            fields["from_layout"] = json!(layout);
+            state(&mut fields);
+            view.push(S::with_cells(fields, &source["cells"])?);
             continue;
         }
         let SlideOperation::Insert { id, .. } = operation else {
@@ -343,13 +348,14 @@ pub fn slide_view(
             };
             let mut sheet = sheets
                 .iter()
-                .find(|sheet| sheet["name"] == origin.as_str())
+                .find(|sheet| sheet.fields()["name"] == origin.as_str())
                 .context("copied page missing")?
                 .clone();
-            sheet["name"] = json!(name);
-            sheet["page"] = json!(format!("sheet-{name}"));
-            sheet["copy_of"] = json!(origin);
-            state(&mut sheet);
+            let fields = sheet.fields_mut();
+            fields["name"] = json!(name);
+            fields["page"] = json!(format!("sheet-{name}"));
+            fields["copy_of"] = json!(origin);
+            state(fields);
             view.push(sheet);
         }
     }
@@ -359,7 +365,7 @@ pub fn slide_view(
 /// The slides in show order as the operations leave them, each with the
 /// name of its notes page.
 pub fn slide_order(
-    sheets: &[Value],
+    sheets: &[impl Fields],
     operations: &[SlideOperation],
 ) -> Result<Vec<(String, Option<String>)>> {
     let mut deck = Deck::new(sheets)?;
@@ -372,7 +378,7 @@ pub fn slide_order(
 /// The original page each inserted slide or notes page copies.
 pub fn origins(
     operations: &[SlideOperation],
-    sheets: &[Value],
+    sheets: &[impl Fields],
 ) -> Result<BTreeMap<String, String>> {
     let mut deck = Deck::new(sheets)?;
     for operation in operations {
@@ -632,7 +638,9 @@ pub(super) fn layouts(parts: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
         let slide = slide_from_layout(&text)?;
         let slide_xml = Document::parse(&slide)?;
         let fonts = super::slide_fonts::SlideFonts::for_layout(parts, part, &slide_xml)?;
-        let sheet = super::slide_text::layout(&slide_xml)?.sheet("layout", part, &fonts);
+        let sheet = crate::extraction::sheet_view(
+            &super::slide_text::layout(&slide_xml)?.sheet("layout", part, &fonts),
+        )?;
         layouts.push(
             json!({"name":name,"part":part,"placeholders":placeholders,"cells":sheet["cells"]}),
         );

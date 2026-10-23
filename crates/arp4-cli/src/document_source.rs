@@ -92,7 +92,10 @@ pub enum Source {
 
 pub struct TextSource {
     raw: Vec<u8>,
-    sheets: Vec<Value>,
+    /// The sheets of the extraction, their cells typed.
+    extraction: Vec<crate::extraction::Sheet>,
+    /// [`TextSource::sheets`], made on first use.
+    json: std::sync::OnceLock<Vec<Value>>,
     format: String,
     backend: TextBackend,
     /// The slide layouts of a presentation (see [`slides::layouts`]).
@@ -164,7 +167,7 @@ impl Source {
             return Ok(vec![]);
         };
         let mut result = Vec::new();
-        for sheet in &doc.sheets {
+        for sheet in &doc.extraction {
             let part = string(&sheet["part"])?;
             let (text, _) = part_text(parts.get(part).context("missing Word part")?)?;
             result.extend(word::extract_field_codes(&Document::parse(&text)?, part));
@@ -175,6 +178,16 @@ impl Source {
     /// Print-related Open XML elements with their source part. Keep the XML
     /// fragment so settings not modeled by ARP remain visible and auditable.
     pub fn print_settings(&self) -> Result<Vec<Value>> {
+        /// The elements of a worksheet holding its print settings.
+        const SHEET_PRINT_SETTINGS: [&str; 7] = [
+            "printOptions",
+            "pageMargins",
+            "pageSetup",
+            "headerFooter",
+            "rowBreaks",
+            "colBreaks",
+            "pageSetUpPr",
+        ];
         let mut result = Vec::new();
         let parts = match self {
             Self::Excel(book) => &book.parts,
@@ -194,35 +207,52 @@ impl Source {
                 continue;
             }
             let (text, _) = part_text(bytes)?;
-            let xml = Document::parse(&text)?;
-            for node in xml.descendants().filter(Node::is_element) {
-                let name = node.tag_name().name();
-                let relevant = if excel_workbook {
-                    name == "definedName"
-                        && matches!(
-                            node.attribute("name"),
-                            Some("_xlnm.Print_Area" | "_xlnm.Print_Titles")
-                        )
-                } else if excel_sheet {
-                    matches!(
-                        name,
-                        "printOptions"
-                            | "pageMargins"
-                            | "pageSetup"
-                            | "headerFooter"
-                            | "rowBreaks"
-                            | "colBreaks"
-                            | "pageSetUpPr"
-                    )
-                } else {
-                    name == "sectPr" && node.tag_name().namespace() == Some(WORD)
-                };
-                if relevant {
-                    let mut xml = String::new();
-                    canonical_xml(node, &mut xml);
-                    result.push(json!({"part":part,"component":name,"xml":xml}));
+            let mut collect = |nodes: &mut dyn Iterator<Item = Node<'_, '_>>| {
+                for node in nodes.filter(Node::is_element) {
+                    let name = node.tag_name().name();
+                    let relevant = if excel_workbook {
+                        name == "definedName"
+                            && matches!(
+                                node.attribute("name"),
+                                Some("_xlnm.Print_Area" | "_xlnm.Print_Titles")
+                            )
+                    } else if excel_sheet {
+                        SHEET_PRINT_SETTINGS.contains(&name)
+                    } else {
+                        name == "sectPr" && node.tag_name().namespace() == Some(WORD)
+                    };
+                    if relevant {
+                        let mut xml = String::new();
+                        canonical_xml(node, &mut xml);
+                        result.push(json!({"part":part,"component":name,"xml":xml}));
+                    }
+                }
+            };
+            // A worksheet is read without its cells, as importing it does,
+            // and only the parts of its rows naming a print setting.
+            let cells = if excel_sheet {
+                crate::excel::SheetData::of(&text)?
+            } else {
+                None
+            };
+            let Some(cells) = cells else {
+                collect(&mut Document::parse(&text)?.descendants());
+                continue;
+            };
+            let rest = cells.rest(&text);
+            let xml = Document::parse(&rest)?;
+            collect(&mut xml.descendants().filter(|n| n.range().start < cells.start));
+            for rows in cells.parts(&text) {
+                if SHEET_PRINT_SETTINGS.iter().any(|name| rows.contains(name)) {
+                    let rows = Document::parse(&rows)?;
+                    let data = rows
+                        .root_element()
+                        .first_element_child()
+                        .context("worksheet rows missing")?;
+                    collect(&mut data.descendants().skip(1));
                 }
             }
+            collect(&mut xml.descendants().filter(|n| n.range().start > cells.start));
         }
         Ok(result)
     }
@@ -270,6 +300,26 @@ impl Source {
                 Some(json!({"part":part,"kind":kind,"sha256":hash(bytes)}))
             })
             .collect()
+    }
+
+    /// Whether the original at `path` is a workbook with a VBA project, as
+    /// [`Source::vba_report`] of it is some: read from the names of its parts
+    /// alone, without parsing the workbook.
+    pub fn has_vba_project(path: &Path) -> Result<bool> {
+        let format = path
+            .extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !is_excel(&format) {
+            return Ok(false);
+        }
+        let raw = fs::read(path)?;
+        let package = office_package(&raw)?;
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(&*package))?;
+        Ok(archive
+            .file_names()
+            .any(|name| name.to_ascii_lowercase().ends_with("vbaproject.bin")))
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -337,7 +387,10 @@ impl Source {
                 "tsv" => crate::native_text::delimited(text, b'\t')?,
                 _ => crate::native_text::lines(text)?,
             };
-            (TextBackend::Native, vec![sheet])
+            (
+                TextBackend::Native,
+                vec![crate::extraction::Sheet::from_value(sheet, 0)?],
+            )
         } else if format == "pdf" {
             let doc = Pdf::load_mem(&raw)?;
             ensure!(
@@ -365,11 +418,10 @@ impl Source {
                     .into_iter()
                     .map(|(text, font)| (text, Some(font)))
                     .collect();
-                sheets.push(text_sheet(
-                    &format!("page-{page}"),
-                    &format!("pdf:{page}"),
-                    values,
-                ));
+                sheets.push(crate::extraction::Sheet::from_value(
+                    text_sheet(&format!("page-{page}"), &format!("pdf:{page}"), values),
+                    sheets.len(),
+                )?);
             }
             (
                 TextBackend::Pdf {
@@ -389,6 +441,11 @@ impl Source {
                 let (text, _) = part_text(parts.get(&part).context("missing document part")?)?;
                 let xml = Document::parse(&text)?;
                 if let Some(styles) = &styles {
+                    // office_containers leaves the main part's root to be checked here.
+                    ensure!(
+                        name != "document" || xml.root_element().has_tag_name((WORD, "document")),
+                        "not a supported Word document"
+                    );
                     sheets.push(word::layout(&xml)?.sheet(&name, &part, styles));
                 } else {
                     let fonts = slide_fonts::SlideFonts::new(&parts, &part, &xml)?;
@@ -421,6 +478,7 @@ impl Source {
         if format == "pptx" {
             for sheet in &mut sheets {
                 for drawing in sheet
+                    .fields
                     .get_mut("drawings")
                     .and_then(Value::as_array_mut)
                     .into_iter()
@@ -452,7 +510,8 @@ impl Source {
         }
         Ok(Self::Text(TextSource {
             raw,
-            sheets,
+            extraction: sheets,
+            json: std::sync::OnceLock::new(),
             format,
             backend,
             layouts,
@@ -468,13 +527,6 @@ impl Source {
         }
     }
 
-    pub fn into_raw(self) -> Vec<u8> {
-        match self {
-            Self::Excel(book) => book.raw,
-            Self::Text(doc) => doc.raw,
-        }
-    }
-
     pub fn raw(&self) -> &[u8] {
         match self {
             Self::Excel(book) => &book.raw,
@@ -482,12 +534,23 @@ impl Source {
         }
     }
 
-    /// The sheets as the extraction records them. A workbook builds them from
-    /// its typed cells on each call.
+    /// The sheets of an extraction of the original, their cells typed, and
+    /// the bytes of the original. The parsed original is let go: its sheets
+    /// are moved into the typed ones rather than copied.
+    pub fn into_extraction(self) -> Result<(Vec<crate::extraction::Sheet>, Vec<u8>)> {
+        match self {
+            Self::Excel(book) => Ok((book.extraction_sheets()?, book.raw)),
+            Self::Text(doc) => Ok((doc.extraction, doc.raw)),
+        }
+    }
+
+    /// The sheets as the extraction records them, with the fonts and styles
+    /// of their cells in place. A workbook builds them from its typed cells on
+    /// each call.
     pub fn sheets(&self) -> Cow<'_, [Value]> {
         match self {
             Self::Excel(book) => Cow::Owned(book.sheet_values()),
-            Self::Text(doc) => Cow::Borrowed(&doc.sheets),
+            Self::Text(doc) => Cow::Borrowed(doc.sheets()),
         }
     }
 
@@ -605,15 +668,17 @@ impl Source {
                 let TextBackend::Office(parts) = &doc.backend else {
                     bail!("Office document without parts");
                 };
+                // Read by their names and parts: their cells as JSON took
+                // several times the memory of the typed ones.
                 let slide_operations = if doc.format == "pptx" {
-                    parse_slide_operations(all, &doc.sheets)?
+                    parse_slide_operations(all, &doc.extraction)?
                 } else {
                     vec![]
                 };
                 let names: BTreeSet<&str> = operations.iter().map(|o| o.sheet.as_str()).collect();
-                let origins = slides::origins(&slide_operations, &doc.sheets)?;
-                let sheets: BTreeMap<&str, &Value> = doc
-                    .sheets
+                let origins = slides::origins(&slide_operations, &doc.extraction)?;
+                let sheets: BTreeMap<&str, &crate::extraction::Sheet> = doc
+                    .extraction
                     .iter()
                     .map(|sheet| Ok((string(&sheet["name"])?, sheet)))
                     .collect::<Result<_>>()?;
@@ -644,15 +709,17 @@ impl Source {
         if !operations.iter().any(is_slide_operation) {
             return Ok(());
         }
-        let Self::Text(TextSource {
-            format,
-            sheets,
-            backend: TextBackend::Office(parts),
-            ..
-        }) = self
+        let Self::Text(
+            doc @ TextSource {
+                format,
+                backend: TextBackend::Office(parts),
+                ..
+            },
+        ) = self
         else {
             bail!("slide operations apply to PowerPoint presentations only");
         };
+        let sheets = doc.sheets();
         ensure!(
             format == "pptx",
             "slide operations apply to PowerPoint presentations only"
@@ -740,7 +807,9 @@ fn text_sheet(name: &str, part: &str, texts: Vec<(String, Option<Value>)>) -> Va
             cell
         })
         .collect();
-    json!({"name":name,"part":part,"state":"visible","merges":[],"cells":cells})
+    let mut sheet = json!({"name":name,"part":part,"state":"visible","merges":[]});
+    sheet["cells"] = Value::Array(cells);
+    sheet
 }
 
 fn office_parts(raw: &[u8], include_binary: bool) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -983,13 +1052,9 @@ fn office_containers(
         "",
         root.attribute("Id").context("missing relationship id")?,
     )?;
-    let main_text = xml_part(parts, &main)?;
-    let xml = Document::parse(&main_text)?;
     if word(format) {
-        ensure!(
-            xml.root_element().has_tag_name((WORD, "document")),
-            "not a supported Word document"
-        );
+        // The main part, as large as the document, is parsed once, where its
+        // text is read, and its root checked there.
         let mut result = vec![("document".into(), main.clone())];
         let (directory, filename) = main.rsplit_once('/').unwrap_or(("", &main));
         let rel_path = if directory.is_empty() {
@@ -1022,6 +1087,8 @@ fn office_containers(
         }
         Ok(result)
     } else {
+        let main_text = xml_part(parts, &main)?;
+        let xml = Document::parse(&main_text)?;
         ensure!(
             xml.root_element()
                 .has_tag_name((PRESENTATION, "presentation")),
@@ -1821,6 +1888,20 @@ fn word_run_content(text: &str, opening: &str, name: &str, prefix: &str) -> Resu
 }
 
 impl TextSource {
+    /// The sheets as JSON with every cell's font and style in place, as the
+    /// writers read them: made once, from the typed sheets, when first read.
+    fn sheets(&self) -> &[Value] {
+        self.json.get_or_init(|| {
+            self.extraction
+                .iter()
+                .map(|sheet| {
+                    crate::extraction::sheet_view(sheet)
+                        .expect("a sheet read from an original refers to its own tables")
+                })
+                .collect()
+        })
+    }
+
     /// The document with `fonts` (each a `sheet` and `cell` of the original
     /// and the font properties `after` sets) written to the runs of the text,
     /// checked by reading it back; None without font edits.
@@ -1837,7 +1918,7 @@ impl TextSource {
             let name = string(&change["sheet"])?;
             let address = string(&change["cell"])?;
             let sheet = self
-                .sheets
+                .sheets()
                 .iter()
                 .find(|s| s["name"] == name)
                 .with_context(|| format!("font edit page {name} is missing"))?;
@@ -1889,10 +1970,10 @@ impl TextSource {
             bail!("font edit changed the document format");
         };
         ensure!(
-            written.sheets.len() == self.sheets.len(),
+            written.sheets().len() == self.sheets().len(),
             "font edit changed the pages of the document"
         );
-        for (old, new) in self.sheets.iter().zip(&written.sheets) {
+        for (old, new) in self.sheets().iter().zip(written.sheets()) {
             let name = string(&old["name"])?;
             let (old_cells, new_cells) = (array(&old["cells"])?, array(&new["cells"])?);
             ensure!(
@@ -1951,7 +2032,7 @@ impl TextSource {
                 }),
             "row operations apply to Excel, Word and PowerPoint documents, slide and shape operations to PowerPoint"
         );
-        let slide_operations = parse_slide_operations(operations, &self.sheets)?;
+        let slide_operations = parse_slide_operations(operations, self.sheets())?;
         let shape_operations = parse_shape_operations(operations)?;
         let mut shapes_by_sheet: BTreeMap<&str, Vec<&ShapeOperation>> = BTreeMap::new();
         for operation in &shape_operations {
@@ -1965,7 +2046,7 @@ impl TextSource {
                 let complete = office_parts(&self.raw, true)?;
                 Some(slides::restructure(
                     &complete,
-                    &self.sheets,
+                    self.sheets(),
                     &slide_operations,
                 )?)
             }
@@ -1973,9 +2054,9 @@ impl TextSource {
         };
         // The pages as the slide operations leave them, with their parts.
         let view = if slide_operations.is_empty() {
-            Cow::Borrowed(&self.sheets)
+            Cow::Borrowed(self.sheets())
         } else {
-            Cow::Owned(slide_view(&self.sheets, &self.layouts, &slide_operations)?)
+            Cow::Owned(slide_view(self.sheets(), &self.layouts, &slide_operations)?)
         };
         let mut pages = vec![];
         for sheet in view.iter() {
@@ -1997,7 +2078,7 @@ impl TextSource {
         }
         // Each page and address is looked up for every changed text block.
         let mut sheet_index = BTreeMap::new();
-        for sheet in view.iter().chain(self.sheets.iter()) {
+        for sheet in view.iter().chain(self.sheets().iter()) {
             let name = string(&sheet["name"])?;
             if sheet_index.contains_key(name) {
                 continue;
@@ -2200,7 +2281,9 @@ impl TextSource {
                                 .iter()
                                 .find(|sheet| sheet["name"] == sheet_name)
                                 .and_then(|sheet| sheet["copy_of"].as_str())
-                                .and_then(|origin| self.sheets.iter().find(|s| s["name"] == origin))
+                                .and_then(|origin| {
+                                    self.sheets().iter().find(|s| s["name"] == origin)
+                                })
                                 .and_then(|sheet| sheet["part"].as_str())
                                 .unwrap_or(part);
                             let (edits, added) = slide_shapes::slide_edits(
@@ -2362,7 +2445,7 @@ impl TextSource {
                             .map(|(slide, _)| slide.clone())
                             .collect(),
                         None => self
-                            .sheets
+                            .sheets()
                             .iter()
                             .filter_map(|s| s["name"].as_str())
                             .filter(|name| name.starts_with("slide-"))
@@ -2576,7 +2659,7 @@ impl TextSource {
         appended: &BTreeMap<String, Vec<String>>,
     ) -> Result<()> {
         // Every page as the operations leave it: kept, copied or made from a layout.
-        let view = slide_view(&self.sheets, &self.layouts, operations)?;
+        let view = slide_view(self.sheets(), &self.layouts, operations)?;
         let sheets: BTreeMap<&str, &Value> = view
             .iter()
             .map(|sheet| Ok((string(&sheet["name"])?, sheet)))
@@ -2609,7 +2692,7 @@ impl TextSource {
             bail!("the written presentation is not read as a presentation");
         };
         let actual = written
-            .sheets
+            .sheets()
             .iter()
             .map(|sheet| {
                 Ok(array(&sheet["cells"])?
@@ -2629,7 +2712,7 @@ impl TextSource {
         for ((slide, _), (sheet, hidden)) in restructured
             .order
             .iter()
-            .zip(written.sheets.iter().zip(&restructured.hidden))
+            .zip(written.sheets().iter().zip(&restructured.hidden))
         {
             ensure!(
                 (sheet["state"] == "hidden") == *hidden,
@@ -3192,6 +3275,7 @@ fn pdf_text(
                         east_asian: name,
                         size: (size > 0.0).then_some(size),
                         color: color.map(crate::fonts::Color::rgb),
+                        ..crate::fonts::RunFont::default()
                     }],
                     &crate::fonts::RunFont::default(),
                 );
@@ -3581,7 +3665,7 @@ mod tests {
             let Source::Text(doc) = Source::open(&source).unwrap() else {
                 panic!("Word source expected")
             };
-            assert_eq!(doc.sheets[0]["cells"][0]["value"], "plain");
+            assert_eq!(doc.sheets()[0]["cells"][0]["value"], "plain");
         }
     }
 
@@ -3671,7 +3755,7 @@ mod tests {
     }
 
     fn values(doc: &TextSource, sheet: usize) -> Vec<String> {
-        doc.sheets[sheet]["cells"]
+        doc.sheets()[sheet]["cells"]
             .as_array()
             .unwrap()
             .iter()
@@ -3767,7 +3851,7 @@ mod tests {
         );
         let doc = open_word(&source);
         let names: Vec<_> = doc
-            .sheets
+            .sheets()
             .iter()
             .map(|s| s["part"].as_str().unwrap())
             .collect();
@@ -3783,7 +3867,7 @@ mod tests {
         );
         assert_eq!(values(&doc, 4), ["comment body"]);
         assert!(
-            doc.sheets[4]["name"]
+            doc.sheets()[4]["name"]
                 .as_str()
                 .unwrap()
                 .starts_with("comments-")
@@ -4121,12 +4205,12 @@ mod tests {
         pptx_package(&source, "表題", Some("話す内容"));
         let doc = open_text(&source);
         let names: Vec<_> = doc
-            .sheets
+            .sheets()
             .iter()
             .map(|s| s["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["slide-1", "notes-1"]);
-        assert_eq!(doc.sheets[1]["part"], "ppt/notesSlides/notesSlide1.xml");
+        assert_eq!(doc.sheets()[1]["part"], "ppt/notesSlides/notesSlide1.xml");
         assert_eq!(values(&doc, 1), ["話す内容"]);
         let written = dir.path().join("written.pptx");
         doc.patch(
@@ -4266,7 +4350,7 @@ mod tests {
         deck_package(&source, false, &[&[1, 2]]);
         let doc = open_text(&source);
         let names: Vec<_> = doc
-            .sheets
+            .sheets()
             .iter()
             .map(|s| s["name"].as_str().unwrap())
             .collect();
@@ -4288,7 +4372,7 @@ mod tests {
             .unwrap();
         assert_eq!(report["slide_order"], json!(["slide-1", "copy"]));
         let result = open_text(&written);
-        let pages: Vec<_> = (0..result.sheets.len())
+        let pages: Vec<_> = (0..result.sheets().len())
             .map(|i| values(&result, i))
             .collect();
         assert_eq!(pages, [["表題"], ["複製"], ["話す内容"], ["複製のノート"]]);
@@ -4389,8 +4473,8 @@ mod tests {
         let report = doc.patch(&written, &operations, &[]).unwrap();
         assert_eq!(report["slide_order"], json!(["slide-2", "copy", "slide-1"]));
         let result = open_text(&written);
-        assert_eq!(result.sheets.len(), 5, "three slides and two notes pages");
-        let states: Vec<_> = result.sheets[..3]
+        assert_eq!(result.sheets().len(), 5, "three slides and two notes pages");
+        let states: Vec<_> = result.sheets()[..3]
             .iter()
             .map(|s| s["state"].clone())
             .collect();
@@ -4433,14 +4517,14 @@ mod tests {
             .unwrap();
         assert!(
             open_text(&shown)
-                .sheets
+                .sheets()
                 .iter()
                 .all(|s| s["state"] == "visible")
         );
         let error = |operations: &[Value]| {
             format!(
                 "{:#}",
-                parse_slide_operations(operations, &doc.sheets).unwrap_err()
+                parse_slide_operations(operations, doc.sheets()).unwrap_err()
             )
         };
         assert!(

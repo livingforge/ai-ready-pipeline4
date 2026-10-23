@@ -18,9 +18,7 @@ use super::*;
 pub(super) const LAYOUT_VERSION: &str = "14";
 
 /// The bytes stored for `layout`, whose rows and columns have keys in
-/// `extraction`. The groups a page's encoding uses are left
-/// out, so they are dropped here: encoding derives them again from the element
-/// metadata. The rows and columns are stored as runs of identities by their
+/// `extraction`. The rows and columns are stored as runs of identities by their
 /// keys ([`stored_axis`]): their positions follow from the keys and the pending
 /// operations ([`update`]), so recording an operation does not rewrite the rows
 /// or columns after it, and applying one rewrites a run or two. Merges and the
@@ -28,61 +26,82 @@ pub(super) const LAYOUT_VERSION: &str = "14";
 /// ([`elements::geometry`]) and the notes from the extraction ([`notes`]); a
 /// visual keeps the kind and text key a body is checked against. The element
 /// metadata is stored without what [`load`] gives back ([`LAYOUT_VERSION`]),
-/// with the digest of what is stored.
-pub(super) fn stored(layout: &mut Value, extraction: &Value) -> Result<Vec<u8>> {
-    let mut stored = layout.clone();
-    table_cells(&mut stored, |cell| {
-        for derived in ["column", "row_span", "column_span"] {
-            cell.remove(derived);
-        }
-        Ok(())
-    })?;
-    if stored["history"].as_array().is_some_and(Vec::is_empty) {
-        stored.as_object_mut().unwrap().remove("history");
+/// with the digest of what is stored. The layout is turned into its stored
+/// form in place, as its element metadata has an entry per cell.
+pub(super) fn stored(layout: Layout, extraction: &Extraction) -> Result<Vec<u8>> {
+    let Layout {
+        fields: mut layout,
+        sheets: typed,
+    } = layout;
+    if layout["history"].as_array().is_some_and(Vec::is_empty) {
+        layout
+            .as_object_mut()
+            .context("layout must be an object")?
+            .remove("history");
     }
-    for (page, sheet) in stored["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-    {
-        let current = &layout["sheets"][page];
-        let inherited = inherited_fonts(current, extraction)?;
-        let mut fonts = elements::Fonts::default();
-        font_holders(&mut sheet["element_metadata"], |id, holder| {
-            let font = elements::font(current, &Value::Object(holder.clone()))?;
-            if inherited.get(id).unwrap_or(&Value::Null) == &font {
-                holder.remove("font");
-            } else if font.is_null() {
-                holder.insert("font".into(), Value::Null);
-            } else {
-                holder.insert("font".into(), fonts.add(&font));
+    let mut sheets = serde_json::Map::new();
+    for (page, mut typed) in typed {
+        // Compared below with what the stored form reads back as.
+        let current = cfg!(debug_assertions).then(|| typed.clone());
+        let inherited = inherited_fonts(&typed, extraction)?;
+        table_cells(&mut typed, |cell| {
+            for derived in ["column", "row_span", "column_span"] {
+                cell.remove(derived);
             }
             Ok(())
         })?;
-        sheet["fonts"] = Value::Array(fonts.list);
-        for element in sheet["element_metadata"]
-            .as_array_mut()
-            .context("element metadata missing")?
-        {
-            let element = element
+        // The font tables the element metadata refers to now.
+        let current_fonts = typed["fonts"].take();
+        let mut fonts = elements::Fonts::default();
+        font_holders(&mut typed.metadata, |id, holder| {
+            let font = elements::table_font(&current_fonts, holder.get("font"))?.clone();
+            if *inherited.get(id).unwrap_or(&&Value::Null) == &font {
+                holder.remove("font");
+            } else if font.is_null() {
+                holder.insert("font", Value::Null);
+            } else {
+                holder.insert("font", fonts.add(&font));
+            }
+            Ok(())
+        })?;
+        typed["fonts"] = Value::Array(fonts.list);
+        for element in &mut typed.metadata {
+            // A text or formula element stores all its members.
+            let Some(fields) = element.fields_mut() else {
+                continue;
+            };
+            let fields = fields
                 .as_object_mut()
                 .context("element must be an object")?;
-            match element.get("type").and_then(Value::as_str) {
+            match fields.get("type").and_then(Value::as_str) {
                 // The records' IDs go with their rows ([`stored_tables`]).
                 Some("table") => {
-                    element.remove("id");
-                    element.remove("columns");
+                    fields.remove("id");
+                    fields.remove("columns");
                 }
                 Some("blank") => {
-                    element.remove("id");
+                    fields.remove("id");
                 }
                 _ => {}
             }
         }
-        stored_tables(&mut sheet["element_metadata"])?;
+        let LayoutSheet {
+            fields: mut sheet,
+            metadata,
+        } = typed;
+        sheet["element_metadata"] = stored_tables(metadata)?;
         sheet["metadata_sha256"] = json!(crate::data::hash_encoded(&sheet["element_metadata"]));
-        if cfg!(debug_assertions) {
+        if let Some(current) = &current {
             let mut restored = sheet.clone();
-            expand_tables(&mut restored["element_metadata"])?;
+            let metadata = expand_tables(restored["element_metadata"].take())?;
+            restored
+                .as_object_mut()
+                .context("layout sheet must be an object")?
+                .remove("element_metadata");
+            let mut restored = LayoutSheet {
+                fields: restored,
+                metadata,
+            };
             restore_metadata(&mut restored, &inherited)?;
             ensure!(
                 resolved(&restored)? == resolved(current)?,
@@ -90,7 +109,7 @@ pub(super) fn stored(layout: &mut Value, extraction: &Value) -> Result<Vec<u8>> 
             );
         }
         if let Some(sheet) = sheet.as_object_mut() {
-            for derived in ["groups", "notes", "merges"] {
+            for derived in ["notes", "merges"] {
                 sheet.remove(derived);
             }
         }
@@ -129,8 +148,10 @@ pub(super) fn stored(layout: &mut Value, extraction: &Value) -> Result<Vec<u8>> 
                         || value.as_array().is_some_and(Vec::is_empty)))
             });
         }
+        sheets.insert(page, sheet);
     }
-    serialized(Path::new("layout.yml"), &stored)
+    layout["sheets"] = Value::Object(sheets);
+    serialized(Path::new("layout.yml"), &layout)
 }
 
 /// The members of a layout sheet left out when empty.
@@ -225,13 +246,16 @@ fn stored_axis(entries: &serde_json::Map<String, Value>, rows: bool) -> Result<V
 /// `layout`, at the positions their keys name in the extraction it belongs to:
 /// how its correction journal names cells. An identity an insertion not yet
 /// applied adds has no such position.
-pub(super) fn axes(layout: &Value) -> Result<crate::document_structure::Axes> {
+pub(super) fn axes(layout: &Layout) -> Result<crate::document_structure::Axes> {
+    sheet_axes(layout.sheets.values().map(|sheet| &sheet.fields))
+}
+
+/// The [`axes`] of the layout sheets `sheets`, their rows and columns placed.
+fn sheet_axes<'a>(
+    sheets: impl Iterator<Item = &'a Value>,
+) -> Result<crate::document_structure::Axes> {
     let mut axes = crate::document_structure::Axes::default();
-    for sheet in layout["sheets"]
-        .as_object()
-        .context("layout sheets missing")?
-        .values()
-    {
+    for sheet in sheets {
         let mut lines = [vec![], vec![]];
         for (line, (axis, rows)) in lines.iter_mut().zip([("rows", true), ("columns", false)]) {
             for (id, entry) in sheet[axis].as_object().context("layout axis missing")? {
@@ -246,11 +270,14 @@ pub(super) fn axes(layout: &Value) -> Result<crate::document_structure::Axes> {
     Ok(axes)
 }
 
-/// The [`axes`] of the layout stored in `dir`, before its pending operations.
+/// The [`axes`] of the layout stored in `dir`, before its pending operations,
+/// and the digest of the stored rows and columns of each sheet they are read
+/// from: what besides the extraction and the correction journal decides the
+/// structure interpretation.
 pub(super) fn stored_axes(
     dir: &Path,
     planned: &Planned,
-) -> Result<crate::document_structure::Axes> {
+) -> Result<(crate::document_structure::Axes, String)> {
     let mut layout = read_planned(
         "layout.yml",
         &dir.join("layout.yml"),
@@ -258,6 +285,13 @@ pub(super) fn stored_axes(
         "document-layout",
     )
     .context("Document element bindings missing; re-import the original")?;
+    let stored: BTreeMap<&str, (&Value, &Value)> = layout["sheets"]
+        .as_object()
+        .context("layout sheets missing")?
+        .values()
+        .map(|sheet| Ok((string(&sheet["name"])?, (&sheet["rows"], &sheet["columns"]))))
+        .collect::<Result<_>>()?;
+    let digest = crate::data::hash_encoded(&json!(stored));
     for sheet in layout["sheets"]
         .as_object_mut()
         .context("layout sheets missing")?
@@ -267,7 +301,11 @@ pub(super) fn stored_axes(
             sheet[axis] = expand_axis(&sheet[axis], rows)?;
         }
     }
-    axes(&layout)
+    let sheets = layout["sheets"]
+        .as_object()
+        .context("layout sheets missing")?
+        .values();
+    Ok((sheet_axes(sheets)?, digest))
 }
 
 /// The identities of an axis with their keys, from its [`stored_axis`] form.
@@ -313,7 +351,7 @@ fn expand_axis(stored: &Value, rows: bool) -> Result<Value> {
 
 /// The notes on what the extraction leaves out, which every page of its
 /// document shows.
-fn notes(extraction: &Value) -> Value {
+fn notes(extraction: &Extraction) -> Value {
     let note = extraction["findings"]
         .as_array()
         .into_iter()
@@ -330,31 +368,31 @@ fn notes(extraction: &Value) -> Value {
 /// IDs, and the row of each record's parent, or the category it is in, by the
 /// record's row. [`expand_tables`] gives
 /// them back.
-fn stored_tables(metadata: &mut Value) -> Result<()> {
-    for element in metadata
-        .as_array_mut()
-        .context("element metadata missing")?
-        .iter_mut()
-        .filter(|element| element["type"] == "table")
-    {
+fn stored_tables(metadata: Vec<Meta>) -> Result<Value> {
+    let mut stored = Vec::with_capacity(metadata.len());
+    for element in metadata {
+        let (mut element, rows) = match element {
+            Meta::Table { fields, rows } => (fields, rows),
+            other => {
+                stored.push(other.into_value());
+                continue;
+            }
+        };
         let mut lines = vec![];
         let mut marked = serde_json::Map::new();
         let mut parents = serde_json::Map::new();
         let mut record_rows = HashMap::new();
-        for row in array(&element["rows"])? {
-            let first = string(&row["cells"][0]["id"])?;
+        for row in &rows {
+            let first = string(&row.cells.first().context("table record without cells")?["id"])?;
             if let (Some(id), Some((axis, _))) = (row["id"].as_str(), elements::cell_axes(first)) {
                 record_rows.insert(id.to_owned(), axis);
             }
         }
-        for row in array(&element["rows"])? {
+        for row in rows {
             let mut record = None;
             let mut columns = vec![];
-            for cell in array(&row["cells"])? {
-                let mut cell = cell
-                    .as_object()
-                    .context("table cell must be an object")?
-                    .clone();
+            let parent = row.get("parent").cloned();
+            for mut cell in row.cells {
                 let id = string(&cell.remove("id").unwrap_or_default())?.to_owned();
                 let (row, column) = elements::cell_axes(&id)
                     .filter(|(row, column)| {
@@ -369,12 +407,12 @@ fn stored_tables(metadata: &mut Value) -> Result<()> {
                 );
                 columns.push(column);
                 if !cell.is_empty() {
-                    marked.insert(id, Value::Object(cell));
+                    marked.insert(id, Value::Object(cell.into_map()));
                 }
             }
             let record = record.context("table record without cells")?;
             lines.push(json!(format!("{record} {}", column_runs(&columns)?)));
-            if let Some(parent) = row["parent"].as_str() {
+            if let Some(parent) = parent.as_ref().and_then(Value::as_str) {
                 if element["categories"].get(parent).is_some() {
                     parents.insert(record, json!(parent));
                 } else {
@@ -405,8 +443,9 @@ fn stored_tables(metadata: &mut Value) -> Result<()> {
         if !parents.is_empty() {
             element["parents"] = Value::Object(parents);
         }
+        stored.push(element);
     }
-    Ok(())
+    Ok(Value::Array(stored))
 }
 
 /// The column identities of a stored record, separated by spaces, three or
@@ -436,14 +475,17 @@ fn column_runs(columns: &[String]) -> Result<String> {
 /// The table elements of stored element `metadata` with each record's cells
 /// in place, the cells their [`stored_tables`] line names with their formula
 /// marks and fonts.
-fn expand_tables(metadata: &mut Value) -> Result<()> {
-    for element in metadata
-        .as_array_mut()
-        .context("element metadata missing")?
-        .iter_mut()
-        .filter(|element| element["type"] == "table")
-    {
-        let element = element.as_object_mut().context("table must be an object")?;
+fn expand_tables(metadata: Value) -> Result<Vec<Meta>> {
+    let Value::Array(stored) = metadata else {
+        bail!("element metadata missing");
+    };
+    let mut expanded = Vec::with_capacity(stored.len());
+    for mut value in stored {
+        if value["type"] != "table" {
+            expanded.push(Meta::from_value(value)?);
+            continue;
+        }
+        let element = value.as_object_mut().context("table must be an object")?;
         let mut marked = match element.remove("cells") {
             Some(Value::Object(marked)) => marked,
             Some(_) => bail!("table cells must be a map"),
@@ -469,8 +511,9 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
             Some(_) => bail!("table categories must be a map"),
             None => BTreeSet::new(),
         };
+        let lines = element.remove("rows").context("table rows missing")?;
         let mut rows = vec![];
-        for line in array(element.get("rows").context("table rows missing")?)? {
+        for line in array(&lines)? {
             let mut items = string(line)?.split(' ');
             let record = items.next().context("table record missing")?;
             let mut cells = vec![];
@@ -491,13 +534,16 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
                 };
                 for column in columns {
                     let id = elements::cell_id(record, &column);
-                    let mut cell = marked.remove(&id).unwrap_or_else(|| json!({}));
-                    cell["id"] = json!(id);
+                    let mut cell = match marked.remove(&id) {
+                        Some(cell) => MetaCell::from_value(cell)?,
+                        None => MetaCell::default(),
+                    };
+                    cell.insert("id", json!(id));
                     cells.push(cell);
                 }
             }
             ensure!(!cells.is_empty(), "table record {record} has no cells");
-            let mut row = json!({ "cells": cells });
+            let mut row = MetaRow::new(cells);
             if let Some(parent) = parents.remove(record) {
                 let parent = string(&parent)?;
                 row["parent"] = if categories.contains(parent) {
@@ -514,74 +560,94 @@ fn expand_tables(metadata: &mut Value) -> Result<()> {
         if let Some(record) = parents.keys().next() {
             bail!("table parent of {record} is for no record of its table");
         }
-        element.insert("rows".into(), Value::Array(rows));
+        expanded.push(Meta::table(value, rows));
     }
-    Ok(())
+    Ok(expanded)
 }
 
-/// Calls `visit` with each table cell of the element metadata of `layout`.
+/// Calls `visit` with each table cell of the element metadata of a layout
+/// `sheet`.
 fn table_cells(
-    layout: &mut Value,
-    mut visit: impl FnMut(&mut serde_json::Map<String, Value>) -> Result<()>,
+    sheet: &mut LayoutSheet,
+    mut visit: impl FnMut(&mut MetaCell) -> Result<()>,
 ) -> Result<()> {
-    for sheet in layout["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
-        for element in sheet["element_metadata"]
-            .as_array_mut()
-            .context("element metadata missing")?
-            .iter_mut()
-            .filter(|element| element["type"] == "table")
-        {
-            for row in element["rows"]
-                .as_array_mut()
-                .context("table rows missing")?
-            {
-                for cell in row["cells"].as_array_mut().context("table cells missing")? {
-                    visit(
-                        cell.as_object_mut()
-                            .context("table cell must be an object")?,
-                    )?;
-                }
+    for element in &mut sheet.metadata {
+        for row in element.records_mut().into_iter().flatten() {
+            for cell in &mut row.cells {
+                visit(cell)?;
             }
         }
     }
     Ok(())
 }
 
+/// The members of an element or table cell that can have a font, as
+/// [`font_holders`] gives them.
+pub(super) enum Holder<'a> {
+    Element(&'a mut MetaText),
+    Cell(&'a mut MetaCell),
+}
+
+impl Holder<'_> {
+    pub(super) fn get(&self, key: &str) -> &Value {
+        match self {
+            Self::Element(element) => &element[key],
+            Self::Cell(cell) => &cell[key],
+        }
+    }
+
+    /// Whether the holder has the member `key`, null or not.
+    pub(super) fn has(&self, key: &str) -> Option<&Value> {
+        match self {
+            Self::Element(element) => element.get(key),
+            Self::Cell(cell) => cell.get(key),
+        }
+    }
+
+    pub(super) fn insert(&mut self, key: &str, value: Value) {
+        match self {
+            Self::Element(element) => {
+                element.insert(key, value);
+            }
+            Self::Cell(cell) => {
+                cell.insert(key, value);
+            }
+        }
+    }
+
+    pub(super) fn remove(&mut self, key: &str) {
+        match self {
+            Self::Element(element) => {
+                element.remove(key);
+            }
+            Self::Cell(cell) => {
+                cell.remove(key);
+            }
+        }
+    }
+}
+
 /// Calls `visit` with the ID and the members of each element and table cell
 /// of the element `metadata` of a page that can have a font, in order.
 fn font_holders(
-    metadata: &mut Value,
-    mut visit: impl FnMut(&str, &mut serde_json::Map<String, Value>) -> Result<()>,
+    metadata: &mut [Meta],
+    mut visit: impl FnMut(&str, &mut Holder<'_>) -> Result<()>,
 ) -> Result<()> {
-    for element in metadata
-        .as_array_mut()
-        .context("element metadata missing")?
-    {
-        match element["type"].as_str() {
-            Some("text" | "formula") => {
+    for element in metadata {
+        match element {
+            Meta::Text(element) => {
                 let id = string(&element["id"])?.to_owned();
-                visit(&id, element.as_object_mut().unwrap())?;
+                visit(&id, &mut Holder::Element(element))?;
             }
-            Some("table") => {
-                for row in element["rows"]
-                    .as_array_mut()
-                    .context("table rows missing")?
-                {
-                    for cell in row["cells"].as_array_mut().context("table cells missing")? {
+            Meta::Table { rows, .. } => {
+                for row in rows {
+                    for cell in &mut row.cells {
                         let id = string(&cell["id"])?.to_owned();
-                        visit(
-                            &id,
-                            cell.as_object_mut()
-                                .context("table cell must be an object")?,
-                        )?;
+                        visit(&id, &mut Holder::Cell(cell))?;
                     }
                 }
             }
-            _ => {}
+            Meta::Other(_) => {}
         }
     }
     Ok(())
@@ -591,36 +657,40 @@ fn font_holders(
 /// it names by the keys of its row and column, by element ID: the font import
 /// gives it. A sheet the extraction does not hold once under its name, such
 /// as a copied slide, has none, nor does a row or column an insertion adds.
-fn inherited_fonts(sheet: &Value, extraction: &Value) -> Result<HashMap<String, Value>> {
-    let sources: Vec<_> = array(&extraction["sheets"])?
+fn inherited_fonts<'e>(
+    sheet: &LayoutSheet,
+    extraction: &'e Extraction,
+) -> Result<HashMap<String, &'e Value>> {
+    let sources: Vec<_> = extraction
+        .sheets
         .iter()
         .filter(|source| source["name"] == sheet["name"])
         .collect();
     let [source] = sources.as_slice() else {
         return Ok(HashMap::new());
     };
-    let identities = |axis: &str| -> Result<HashMap<String, String>> {
-        sheet[axis]
-            .as_object()
-            .context("layout axis missing")?
-            .iter()
-            .map(|(id, entry)| Ok((string(&entry["key"])?.to_owned(), id.clone())))
-            .collect()
+    // The identity with each key naming a row or column number, by the
+    // number: a cell is placed by its address.
+    let identities = |axis: &str, rows: bool| -> Result<HashMap<u32, &str>> {
+        let mut identities = HashMap::new();
+        for (id, entry) in sheet[axis].as_object().context("layout axis missing")? {
+            if let Some(position) = numbered(string(&entry["key"])?, rows) {
+                identities.insert(position, id.as_str());
+            }
+        }
+        Ok(identities)
     };
-    let rows = identities("rows")?;
-    let columns = identities("columns")?;
+    let rows = identities("rows", true)?;
+    let columns = identities("columns", false)?;
     let mut fonts = HashMap::new();
-    for cell in array(&source["cells"])? {
+    for cell in &source.cells {
         let font = crate::extraction::font(source, cell)?;
         if font.is_null() {
             continue;
         }
-        let (column, row) = excel::coordinate(string(&cell["address"])?)?;
-        if let (Some(row), Some(column)) = (
-            rows.get(&name_of(row, true)?),
-            columns.get(&name_of(column, false)?),
-        ) {
-            fonts.insert(elements::token("cell", &[row, column]), font.clone());
+        let (column, row) = excel::coordinate(&cell.address)?;
+        if let (Some(row), Some(column)) = (rows.get(&row), columns.get(&column)) {
+            fonts.insert(elements::token("cell", &[row, column]), font);
         }
     }
     Ok(fonts)
@@ -630,13 +700,15 @@ fn inherited_fonts(sheet: &Value, extraction: &Value) -> Result<HashMap<String, 
 /// a layout `sheet` whose rows and columns are placed: the fonts, an element
 /// without one taking the font it has from the extraction (`inherited`), and
 /// what [`elements::complete`] gives.
-fn restore_metadata(sheet: &mut Value, inherited: &HashMap<String, Value>) -> Result<()> {
+fn restore_metadata(sheet: &mut LayoutSheet, inherited: &HashMap<String, &Value>) -> Result<()> {
     let stored = sheet["fonts"].as_array().cloned().unwrap_or_default();
     let mut fonts = elements::Fonts::default();
-    let mut metadata = sheet["element_metadata"].take();
+    let mut metadata = std::mem::take(&mut sheet.metadata);
     font_holders(&mut metadata, |id, holder| {
-        let font = match holder.get("font") {
-            None => inherited.get(id).cloned().unwrap_or(Value::Null),
+        let font = match holder.has("font") {
+            None => inherited
+                .get(id)
+                .map_or(Value::Null, |font| (*font).clone()),
             Some(Value::Null) => Value::Null,
             Some(index) => {
                 let index = index.as_u64().context("font index must be a number")?;
@@ -650,26 +722,26 @@ fn restore_metadata(sheet: &mut Value, inherited: &HashMap<String, Value>) -> Re
         if font.is_null() {
             holder.remove("font");
         } else {
-            holder.insert("font".into(), fonts.add(&font));
+            holder.insert("font", fonts.add(&font));
         }
         Ok(())
     })?;
-    elements::complete(sheet, &mut metadata)?;
-    sheet["element_metadata"] = metadata;
+    elements::complete(&sheet.fields, &mut metadata)?;
+    sheet.metadata = metadata;
     sheet["fonts"] = Value::Array(fonts.list);
     Ok(())
 }
 
 /// The element metadata of a layout `sheet` with each font in place of its
 /// index, to compare metadata whatever order their font tables have.
-fn resolved(sheet: &Value) -> Result<Value> {
-    let mut metadata = sheet["element_metadata"].clone();
+fn resolved(sheet: &LayoutSheet) -> Result<Vec<Meta>> {
+    let mut metadata = sheet.metadata.clone();
     font_holders(&mut metadata, |_, holder| {
-        let font = elements::font(sheet, &Value::Object(holder.clone()))?;
+        let font = elements::table_font(&sheet["fonts"], holder.get("font"))?.clone();
         if font.is_null() {
             holder.remove("font");
         } else {
-            holder.insert("font".into(), font);
+            holder.insert("font", font);
         }
         Ok(())
     })?;
@@ -681,25 +753,32 @@ fn resolved(sheet: &Value) -> Result<Value> {
 /// place, and the empty history, formulas, visuals, fonts and block titles.
 /// The element metadata is checked against its digest; [`restore_metadata`]
 /// completes it once the rows and columns are placed.
-fn expand(layout: &mut Value) -> Result<()> {
+fn expand(mut layout: Value) -> Result<Layout> {
     if layout.get("history").is_none() {
         layout["history"] = json!([]);
     }
-    for sheet in layout["sheets"]
+    let Some(Value::Object(stored)) = layout
         .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
+        .context("layout must be an object")?
+        .remove("sheets")
+    else {
+        bail!("layout sheets missing");
+    };
+    let mut sheets = BTreeMap::new();
+    for (page, mut sheet) in stored {
         let Some(members) = sheet.as_object_mut() else {
             bail!("layout sheet must be an object");
         };
         let digest = members.remove("metadata_sha256");
+        let metadata = members
+            .remove("element_metadata")
+            .context("element metadata missing")?;
         ensure!(
             digest.as_ref().and_then(Value::as_str)
-                == Some(crate::data::hash_encoded(&sheet["element_metadata"]).as_str()),
+                == Some(crate::data::hash_encoded(&metadata).as_str()),
             "element structure differs from bindings; use structure-save or row/column operations"
         );
-        expand_tables(&mut sheet["element_metadata"])?;
+        let metadata = expand_tables(metadata)?;
         for (member, empty) in [
             ("formulas", json!({})),
             ("visuals", json!({})),
@@ -713,16 +792,26 @@ fn expand(layout: &mut Value) -> Result<()> {
         for (axis, rows) in [("rows", true), ("columns", false)] {
             sheet[axis] = expand_axis(&sheet[axis], rows)?;
         }
+        sheets.insert(
+            page,
+            LayoutSheet {
+                fields: sheet,
+                metadata,
+            },
+        );
     }
-    Ok(())
+    Ok(Layout {
+        fields: layout,
+        sheets,
+    })
 }
 
 /// A stored layout with its rows and columns placed under the pending
 /// `operations` of the same version, as [`load`] places them with the
 /// `extraction` of that version, and its element metadata complete. Its
 /// elements keep only the fonts stored.
-pub(super) fn placed(mut layout: Value, extraction: &Value, operations: &Value) -> Result<Value> {
-    expand(&mut layout)?;
+pub(super) fn placed(layout: Value, extraction: &Extraction, operations: &Value) -> Result<Layout> {
+    let mut layout = expand(layout)?;
     place(&mut layout, extraction, operations, false)?;
     Ok(layout)
 }
@@ -732,16 +821,17 @@ pub(super) fn placed(mut layout: Value, extraction: &Value, operations: &Value) 
 /// them, and completes its element metadata ([`restore_metadata`]); with
 /// `inherit`, an element without a font stored takes the font of the
 /// extraction cell it was imported from.
-fn place(layout: &mut Value, extraction: &Value, operations: &Value, inherit: bool) -> Result<()> {
+fn place(
+    layout: &mut Layout,
+    extraction: &Extraction,
+    operations: &Value,
+    inherit: bool,
+) -> Result<()> {
     let operated = operated_extraction(extraction, operations)?;
-    let operations = excel::parse_operations(array(operations)?, array(&operated["sheets"])?)?;
+    let operations = excel::parse_operations(array(operations)?, &operated.sheets)?;
     update(layout, &operations)?;
     elements::geometry(layout, &operated, &operations)?;
-    for sheet in layout["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
+    for sheet in layout.sheets.values_mut() {
         let inherited = if inherit {
             inherited_fonts(sheet, extraction)?
         } else {
@@ -752,7 +842,7 @@ fn place(layout: &mut Value, extraction: &Value, operations: &Value, inherit: bo
     Ok(())
 }
 
-pub(super) fn is_excel(extraction: &Value) -> bool {
+pub(super) fn is_excel(extraction: &Extraction) -> bool {
     extraction["parser"]
         .as_str()
         .is_some_and(|p| p.contains(";cells/"))
@@ -765,12 +855,15 @@ pub(super) fn page_id(sheet: &Value, index: usize) -> String {
         .unwrap_or_else(|| format!("sheet-{}", index + 1))
 }
 
-pub(super) fn initial(extraction: &Value) -> Result<Value> {
-    let mut sheets = json!({});
-    for (index, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
-        sheets[page_id(sheet, index)] = initial_sheet(sheet)?;
+pub(super) fn initial(extraction: &Extraction) -> Result<Layout> {
+    let mut sheets = BTreeMap::new();
+    for (index, sheet) in extraction.sheets.iter().enumerate() {
+        sheets.insert(page_id(&sheet.fields, index), initial_sheet(sheet)?);
     }
-    let layout = json!({"schema_version":LAYOUT_VERSION,"sheets":sheets,"history":[]});
+    let layout = Layout {
+        fields: json!({"schema_version":LAYOUT_VERSION,"history":[]}),
+        sheets,
+    };
     check_axes(&layout)?;
     Ok(layout)
 }
@@ -778,18 +871,18 @@ pub(super) fn initial(extraction: &Value) -> Result<Value> {
 /// The layout of a page before its content is encoded: its rows, columns and
 /// formulas by their positions in the extraction `sheet`. Every row and column
 /// up to the last cell has an identity, so they are stored as one run each.
-pub(super) fn initial_sheet(sheet: &Value) -> Result<Value> {
+pub(super) fn initial_sheet(sheet: &Sheet) -> Result<LayoutSheet> {
     {
         let mut rows = json!({});
         let mut columns = json!({});
         let mut formulas = json!({});
         let (mut max_column, mut max_row) = (0, 0);
-        for cell in array(&sheet["cells"])? {
-            let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+        for cell in &sheet.cells {
+            let (column, row) = excel::coordinate(&cell.address)?;
             max_row = max_row.max(row);
             max_column = max_column.max(column);
-            if cell["type"] == "formula" {
-                formulas[string(&cell["id"])?] =
+            if cell.kind == CellKind::Formula {
+                formulas[&*cell.id] =
                     json!({"row":format!("r{row}"),"column":excel::column_name(column)?});
             }
         }
@@ -800,21 +893,22 @@ pub(super) fn initial_sheet(sheet: &Value) -> Result<Value> {
             let key = excel::column_name(column)?;
             columns[&key] = json!({"key":key,"position":column});
         }
-        Ok(
-            json!({"name":sheet["name"],"rows":rows,"columns":columns,"formulas":formulas,"element_metadata":[],"fonts":[],"groups":{},"notes":{},"merges":sheet["merges"],"block_titles":{},"visuals":{}}),
-        )
+        let mut initial = json!({"name":sheet["name"],"fonts":[],"notes":{},"merges":sheet["merges"],"block_titles":{},"visuals":{}});
+        initial["rows"] = rows;
+        initial["columns"] = columns;
+        initial["formulas"] = formulas;
+        Ok(LayoutSheet {
+            fields: initial,
+            metadata: vec![],
+        })
     }
 }
 
 /// Checks that the rows and columns of every sheet have valid identities and
 /// unique keys and positions. Their order follows from the positions and is
 /// not stored.
-pub(super) fn check_axes(layout: &Value) -> Result<()> {
-    for sheet in layout["sheets"]
-        .as_object()
-        .context("layout sheets missing")?
-        .values()
-    {
+pub(super) fn check_axes(layout: &Layout) -> Result<()> {
+    for sheet in layout.sheets.values() {
         for axis in ["rows", "columns"] {
             let mut positions = BTreeSet::new();
             let mut keys = BTreeSet::new();
@@ -831,7 +925,7 @@ pub(super) fn check_axes(layout: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn load(dir: &Path, extraction: &Value, planned: &Planned) -> Result<Value> {
+pub(super) fn load(dir: &Path, extraction: &Extraction, planned: &Planned) -> Result<Layout> {
     let layout = read_planned(
         "layout.yml",
         &dir.join("layout.yml"),
@@ -839,14 +933,9 @@ pub(super) fn load(dir: &Path, extraction: &Value, planned: &Planned) -> Result<
         "document-layout",
     )
     .context("Document element bindings missing; re-import the original")?;
-    let mut ordered = layout;
-    expand(&mut ordered)?;
+    let mut ordered = expand(layout)?;
     let notes = notes(extraction);
-    for sheet in ordered["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
+    for sheet in ordered.sheets.values_mut() {
         sheet["notes"] = notes.clone();
     }
     let mappings = complete_mappings(read_planned(
@@ -907,60 +996,156 @@ fn formula_keys(sheet: &Value, page: &str, to_runtime: bool) -> Result<BTreeMap<
         .collect()
 }
 
-/// The keys a runtime page of `page` has for the place `row` and `column` of
-/// `block` of the layout `sheet`, as [`elements::Bindings`] reads the place
-/// from an element ID; None for a row or column the sheet has no identity
-/// for, as one an operation deletes.
-pub(super) fn runtime_place(
-    sheet: &Value,
-    page: &str,
-    block: &str,
-    row: &str,
-    column: &str,
-) -> Result<Option<(String, String)>> {
-    Ok(match block {
-        "table-1" => match (
-            sheet["rows"][row]["key"].as_str(),
-            sheet["columns"][column]["key"].as_str(),
-        ) {
-            (Some(row), Some(column)) => Some((row.to_owned(), column.to_owned())),
-            _ => None,
-        },
-        "formulas" => formula_keys(sheet, page, true)?
-            .remove(row)
-            .map(|key| (key, column.to_owned())),
-        _ => Some((row.to_owned(), column.to_owned())),
-    })
+/// The identity of the row or column (`axis` "rows" or "columns") of the
+/// layout `sheet` with each key: the first in order with it.
+pub(super) fn key_identities(sheet: &Value, axis: &str) -> HashMap<String, String> {
+    let mut identities = HashMap::new();
+    for (id, entry) in sheet[axis].as_object().into_iter().flatten() {
+        if let Some(key) = entry["key"].as_str() {
+            identities
+                .entry(key.to_owned())
+                .or_insert_with(|| id.clone());
+        }
+    }
+    identities
 }
 
-/// The identity of the row or column of the layout `sheet` whose key is `key`.
-pub(super) fn identity_of(sheet: &Value, axis: &str, key: &str) -> Option<String> {
-    sheet[axis]
-        .as_object()?
-        .iter()
-        .find(|(_, entry)| entry["key"] == key)
-        .map(|(id, _)| id.clone())
+/// What edits naming many places of the layout `sheet` of `page` look up,
+/// read once for all of them rather than for each: the identity of each row
+/// and column key, and, when first asked for, the element bindings and the
+/// runtime keys of the formulas.
+pub(super) struct SheetLookup<'a> {
+    sheet: &'a Value,
+    page: &'a str,
+    /// The identity of each key of the rows and of the columns: the first
+    /// in order, as [`identity_of`] finds it.
+    identities: std::cell::OnceCell<[HashMap<&'a str, &'a str>; 2]>,
+    bindings: std::cell::OnceCell<super::elements::Bindings>,
+    formulas: std::cell::OnceCell<BTreeMap<String, String>>,
+}
+
+impl<'a> SheetLookup<'a> {
+    pub(super) fn new(sheet: &'a Value, page: &'a str) -> Self {
+        Self {
+            sheet,
+            page,
+            identities: Default::default(),
+            bindings: Default::default(),
+            formulas: Default::default(),
+        }
+    }
+
+    /// The identity of the row (`axis` "rows") or column with `key`: the
+    /// first in order with it.
+    pub(super) fn identity(&self, axis: &str, key: &str) -> Option<String> {
+        let identities = self.identities.get_or_init(|| {
+            ["rows", "columns"].map(|axis| {
+                let mut keys = HashMap::new();
+                for (id, entry) in self.sheet[axis].as_object().into_iter().flatten() {
+                    if let Some(key) = entry["key"].as_str() {
+                        keys.entry(key).or_insert(id.as_str());
+                    }
+                }
+                keys
+            })
+        });
+        let keys = &identities[usize::from(axis != "rows")];
+        keys.get(key).map(|id| (*id).to_owned())
+    }
+
+    /// The place an element ID names, as [`super::elements::Bindings`] reads it.
+    pub(super) fn binding(&self, element: &str) -> Result<Result<(String, String, String)>> {
+        if self.bindings.get().is_none() {
+            let _ = self
+                .bindings
+                .set(super::elements::Bindings::of(self.sheet)?);
+        }
+        Ok(self.bindings.get().unwrap().get(element))
+    }
+
+    /// The keys a runtime page has for the place `row` and `column` of
+    /// `block`, as [`super::elements::Bindings`] reads the place from an
+    /// element ID; None for a row or column the sheet has no identity for, as
+    /// one an operation deletes.
+    pub(super) fn place(
+        &self,
+        block: &str,
+        row: &str,
+        column: &str,
+    ) -> Result<Option<(String, String)>> {
+        Ok(match block {
+            "table-1" => match (
+                self.sheet["rows"][row]["key"].as_str(),
+                self.sheet["columns"][column]["key"].as_str(),
+            ) {
+                (Some(row), Some(column)) => Some((row.to_owned(), column.to_owned())),
+                _ => None,
+            },
+            "formulas" => {
+                if self.formulas.get().is_none() {
+                    let _ = self
+                        .formulas
+                        .set(formula_keys(self.sheet, self.page, true)?);
+                }
+                self.formulas
+                    .get()
+                    .unwrap()
+                    .get(row)
+                    .map(|key| (key.clone(), column.to_owned()))
+            }
+            _ => Some((row.to_owned(), column.to_owned())),
+        })
+    }
 }
 
 /// The version of the writer's private grid pages, values by block, row and
 /// column, which content pages are encoded from and decoded to.
 pub(super) const GRID_VERSION: &str = "4";
 
+/// What [`grid`] places the values of a page by: the layout sheet of the
+/// page, and the identity of each row, column and formula key of it, or with
+/// `to_runtime` the key of each identity.
+pub(super) struct GridPlaces<'a> {
+    pub(super) sheet: &'a Value,
+    pub(super) rows: BTreeMap<String, String>,
+    pub(super) columns: BTreeMap<String, String>,
+    pub(super) formulas: BTreeMap<String, String>,
+}
+
+/// The [`GridPlaces`] of the page `page_id` titled `title` of `layout`.
+pub(super) fn grid_places<'a>(
+    layout: &'a Layout,
+    page_id: &str,
+    title: &Value,
+    to_runtime: bool,
+) -> Result<GridPlaces<'a>> {
+    let sheet = layout
+        .sheets
+        .get(page_id)
+        .map(|sheet| &sheet.fields)
+        .filter(|sheet| sheet["name"] == *title)
+        .context("layout page mismatch")?;
+    Ok(GridPlaces {
+        sheet,
+        rows: axis_keys(sheet, "rows", to_runtime)?,
+        columns: axis_keys(sheet, "columns", to_runtime)?,
+        formulas: formula_keys(sheet, page_id, to_runtime)?,
+    })
+}
+
 /// Translate internal grid identities to the writer coordinate keys.
-pub(super) fn grid(mut page: Value, layout: &Value, to_runtime: bool) -> Result<Value> {
+pub(super) fn grid(mut page: Value, layout: &Layout, to_runtime: bool) -> Result<Value> {
     ensure!(
         page["schema_version"] == GRID_VERSION,
         "Document body requires document elements"
     );
     let page_id = string(&page["page_id"])?.to_owned();
-    let sheet = &layout["sheets"][page_id.as_str()];
-    ensure!(
-        sheet.is_object() && sheet["name"] == page["title"],
-        "layout page mismatch"
-    );
-    let rows = axis_keys(sheet, "rows", to_runtime)?;
-    let columns = axis_keys(sheet, "columns", to_runtime)?;
-    let formulas = formula_keys(sheet, &page_id, to_runtime)?;
+    let GridPlaces {
+        sheet,
+        rows,
+        columns,
+        formulas,
+    } = grid_places(layout, &page_id, &page["title"], to_runtime)?;
     // The bodies and fonts are converted in place, their values moved.
     let mut take = |pointer: &str| match page.pointer_mut(pointer) {
         Some(Value::Object(object)) => Some(std::mem::take(object)),
@@ -1079,58 +1264,139 @@ pub(super) fn copy_except(value: &Value, skip: &[&[&str]]) -> Value {
     )
 }
 
-pub(super) fn runtime(page: &Value, layout: &Value, extraction: &Value) -> Result<Value> {
-    let decoded = super::elements::decode(page, layout)?;
-    let mut page = grid(decoded, layout, true)?;
+pub(super) fn runtime(page: &Value, layout: &Layout, extraction: &Extraction) -> Result<Value> {
+    Ok(runtime_grid(page, layout, extraction)?.to_value())
+}
+
+/// [`runtime`] held typed, as an inspection reads the pages of a document:
+/// the values of the content `page` by the keys of the writer, and the
+/// formula caches of a workbook, made without the page as JSON.
+pub(super) fn runtime_grid(
+    page: &Value,
+    layout: &Layout,
+    extraction: &Extraction,
+) -> Result<super::elements::GridPage> {
+    let mut grid = super::elements::decode_grid(page, layout)?;
+    let page_id = string(&grid.fields["page_id"])?.to_owned();
+    let GridPlaces {
+        sheet,
+        rows,
+        columns,
+        formulas,
+    } = grid_places(layout, &page_id, &grid.fields["title"], true)?;
+    let name = sheet["name"].as_str().unwrap_or("sheet");
+    // As grid gives them to the writer: the body's values first, then the formulas.
+    for value in grid.values.iter_mut().filter(|v| &*v.block == "table-1") {
+        value.row = rows
+            .get(&value.row)
+            .with_context(|| {
+                format!(
+                    "unknown row identity: deleted by operations or unmapped ({name} {})",
+                    value.row
+                )
+            })?
+            .clone();
+        value.column = columns
+            .get(&value.column)
+            .context("unknown column identity")?
+            .clone();
+    }
+    for value in grid.values.iter_mut().filter(|v| &*v.block == "formulas") {
+        value.row = formulas
+            .get(&value.row)
+            .with_context(|| {
+                format!(
+                    "{name}!{} is deleted or has unknown formula identity",
+                    value.row.rsplit('-').next().unwrap_or(&value.row)
+                )
+            })?
+            .clone();
+    }
+    grid.order();
     if is_excel(extraction) {
-        let index: usize = string(&page["page_id"])?
-            .trim_start_matches("sheet-")
-            .parse()?;
-        let source = array(&extraction["sheets"])?
+        let index: usize = page_id.trim_start_matches("sheet-").parse()?;
+        let source = extraction
+            .sheets
             .get(index - 1)
             .context("missing layout sheet")?;
-        let fields = formula_keys(
-            &layout["sheets"][string(&page["page_id"])?],
-            string(&page["page_id"])?,
-            true,
-        )?;
-        for cell in array(&source["cells"])? {
-            if cell["type"] == "formula" && fields.values().any(|field| cell["id"] == *field) {
-                let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+        // A set, looked up once per cell: a sheet may hold thousands of formulas.
+        let fields: BTreeSet<String> =
+            formula_keys(&layout.sheet(&page_id)?.fields, &page_id, true)?
+                .into_values()
+                .collect();
+        let mut caches = vec![];
+        let body: Arc<str> = "table-1".into();
+        for cell in &source.cells {
+            if cell.kind == CellKind::Formula && fields.contains(&*cell.id) {
+                let (column, row) = excel::coordinate(&cell.address)?;
                 let row = format!("r{row}");
                 let column = excel::column_name(column)?;
                 ensure!(
-                    page["blocks"]["table-1"]["rows"]
-                        .get(&row)
-                        .and_then(|r| r.get(&column))
-                        .is_none(),
+                    grid.block("table-1")
+                        .binary_search_by(|v| (&v.row, &v.column).cmp(&(&row, &column)))
+                        .is_err(),
                     "{}!{} is not written back: formula caches belong to extraction metadata, not body YAML",
                     source["name"].as_str().unwrap_or("sheet"),
-                    cell["address"].as_str().unwrap_or("cell")
+                    cell.address
                 );
-                if page["blocks"]["table-1"].is_null() {
-                    page["blocks"]["table-1"] = json!({"title":"本文","rows":{}});
-                }
-                page["blocks"]["table-1"]["rows"][&row][&column] = cell["value"].clone();
+                caches.push(super::elements::GridValue {
+                    block: body.clone(),
+                    row,
+                    column,
+                    value: cell.value.clone(),
+                    font: Value::Null,
+                });
             }
         }
+        if !caches.is_empty() && !grid.titles.contains_key("table-1") {
+            grid.titles.insert("table-1".into(), json!("本文"));
+        }
+        grid.values.extend(caches);
+        grid.order();
     }
-    Ok(page)
+    Ok(grid)
 }
 
 impl Store {
-    pub(super) fn read_content(&self, dir: &Path, name: &str, extraction: &Value) -> Result<Value> {
+    pub(super) fn read_content(
+        &self,
+        dir: &Path,
+        name: &str,
+        extraction: &Extraction,
+    ) -> Result<Value> {
+        self.read_content_with(
+            dir,
+            name,
+            extraction,
+            &load(dir, extraction, &Planned::new())?,
+        )
+    }
+    /// [`Store::read_content`] with the document's `layout` already loaded.
+    pub(super) fn read_content_with(
+        &self,
+        dir: &Path,
+        name: &str,
+        extraction: &Extraction,
+        layout: &Layout,
+    ) -> Result<Value> {
         let page = read(&under(dir, name)?, Some("content"))?;
-        runtime(&page, &load(dir, extraction, &Planned::new())?, extraction)
+        runtime(&page, layout, extraction)
     }
 }
 
 /// Refresh placements without renaming existing identities or body keys.
-pub(super) fn update(layout: &mut Value, operations: &[excel::StructuralOperation]) -> Result<()> {
+pub(super) fn update(layout: &mut Layout, operations: &[excel::StructuralOperation]) -> Result<()> {
+    let history = layout["history"]
+        .as_array_mut()
+        .context("layout history missing")?;
+    // Applied operations by ID, looked up once per operation: the history
+    // keeps every operation the document has had applied.
+    let mut applied: HashMap<String, usize> = history
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| Some((o["id"].as_str()?.to_owned(), i)))
+        .collect();
     for operation in operations {
-        let history = layout["history"]
-            .as_array_mut()
-            .context("layout history missing")?;
         {
             let kind = match operation.kind {
                 excel::OperationKind::InsertRows => "insert_rows",
@@ -1152,26 +1418,25 @@ pub(super) fn update(layout: &mut Value, operations: &[excel::StructuralOperatio
             if operation.merges {
                 record["merges"] = json!(true);
             }
-            if let Some(existing) = history.iter().find(|o| o["id"] == operation.id) {
+            if let Some(&existing) = applied.get(&operation.id) {
                 ensure!(
-                    *existing == record,
+                    history[existing] == record,
                     "operation history mismatch; do not rewrite applied operations"
                 );
             } else {
+                applied.insert(operation.id.clone(), history.len());
                 history.push(record);
             }
         }
     }
-    for sheet in layout["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
+    for sheet in layout.sheets.values_mut() {
+        let sheet = &mut sheet.fields;
         let name = string(&sheet["name"])?.to_owned();
         for (axis, rows) in [("rows", true), ("columns", false)] {
+            // Only this sheet's operations move its rows and columns.
             let axis_operations: Vec<_> = operations
                 .iter()
-                .filter(|op| op.row_operation() == rows)
+                .filter(|op| op.sheet == name && op.row_operation() == rows)
                 .cloned()
                 .collect();
             let entries = sheet[axis].as_object_mut().context("layout axis missing")?;
@@ -1265,13 +1530,12 @@ pub(super) fn update(layout: &mut Value, operations: &[excel::StructuralOperatio
 /// address. An empty cell is left out, whether it only carries formatting or
 /// holds an empty string: whether a writer stores one, as Excel does for each
 /// cell of a merged range, and in which form, says nothing of the grid.
-fn filled(sheet: &Value) -> Result<BTreeMap<&str, &Value>> {
-    array(&sheet["cells"])?
+fn filled(sheet: &Sheet) -> BTreeMap<&str, &Cell> {
+    sheet
+        .cells
         .iter()
-        .filter(|cell| {
-            cell["formula"].is_string() || !(cell["value"].is_null() || cell["value"] == "")
-        })
-        .map(|cell| Ok((string(&cell["address"])?, cell)))
+        .filter(|cell| cell.formula.is_some() || !(cell.value.is_null() || cell.value == ""))
+        .map(|cell| (&*cell.address, cell))
         .collect()
 }
 
@@ -1292,7 +1556,7 @@ fn fresh_identity(entries: &serde_json::Map<String, Value>, key: &str) -> String
 /// Cells that only carry formatting are not compared. A row or column without
 /// an identity takes a new one when such a cell is there or, for an external
 /// source, the one cell edited: no value moved there.
-pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<Value> {
+pub(super) fn reimport(dir: &Path, extraction: &Extraction, trusted: bool) -> Result<Layout> {
     if !dir.join("document.yml").exists() {
         return initial(extraction);
     }
@@ -1307,12 +1571,11 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
     }
     if trusted {
         let mappings = read_mappings(&dir.join("mappings.yml"))?;
-        let operations =
-            excel::parse_operations(array(&mappings["operations"])?, array(&before["sheets"])?)?;
+        let operations = excel::parse_operations(array(&mappings["operations"])?, &before.sheets)?;
         update(&mut layout, &operations)?;
-    } else if before["sheets"] != extraction["sheets"] {
-        let old = array(&before["sheets"])?;
-        let new = array(&extraction["sheets"])?;
+    } else if before.sheets != extraction.sheets {
+        let old = &before.sheets;
+        let new = &extraction.sheets;
         ensure!(
             old.len() == new.len(),
             "ambiguous correspondence: external sheet structure changed"
@@ -1323,18 +1586,18 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
                 a["name"] == b["name"] && a["merges"] == b["merges"],
                 "ambiguous correspondence: external sheet structure changed"
             );
-            let (ac, bc) = (filled(a)?, filled(b)?);
+            let (ac, bc) = (filled(a), filled(b));
             let addresses: BTreeSet<_> = ac.keys().chain(bc.keys()).collect();
             for address in addresses {
                 match (ac.get(address), bc.get(address)) {
                     (Some(x), Some(y)) => {
                         ensure!(
-                            x["type"] == y["type"],
+                            x.kind == y.kind,
                             "ambiguous correspondence: external coordinates or cell types changed"
                         );
                         changed += usize::from(
-                            (x["type"] != "formula" && x["value"] != y["value"])
-                                || x["formula"] != y["formula"],
+                            (x.kind != CellKind::Formula && x.value != y.value)
+                                || x.formula != y.formula,
                         );
                     }
                     // A cell filled or emptied.
@@ -1347,17 +1610,13 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
             "ambiguous correspondence: external row/column change or multi-cell edit could be a move; no identity guessing"
         );
     }
-    let new_sheets = array(&extraction["sheets"])?;
+    let new_sheets = &extraction.sheets;
     ensure!(
-        layout["sheets"]
-            .as_object()
-            .context("layout sheets missing")?
-            .len()
-            == new_sheets.len(),
+        layout.sheets.len() == new_sheets.len(),
         "layout sheet coverage mismatch"
     );
     for (index, source) in new_sheets.iter().enumerate() {
-        let sheet = &mut layout["sheets"][format!("sheet-{}", index + 1)];
+        let sheet = &mut layout.sheet_mut(&format!("sheet-{}", index + 1))?.fields;
         ensure!(
             sheet["name"] == source["name"],
             "layout sheet order changed"
@@ -1390,11 +1649,12 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
                 .values()
                 .filter_map(|e| e["position"].as_u64())
                 .collect();
-            for cell in array(&source["cells"])?
+            for cell in source
+                .cells
                 .iter()
-                .filter(|cell| !trusted || cell["type"] == "null")
+                .filter(|cell| !trusted || cell.kind == CellKind::Null)
             {
-                let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+                let (column, row) = excel::coordinate(&cell.address)?;
                 let position = if rows { row } else { column };
                 if held.insert(u64::from(position)) {
                     let key = name_of(position, rows)?;
@@ -1405,11 +1665,12 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
             // Every row and column before the last keeps an identity, as from
             // the start. A cell holding a value where the trusted path placed
             // none is left without one: its correspondence is not proven.
-            let unproven: BTreeSet<u64> = array(&source["cells"])?
+            let unproven: BTreeSet<u64> = source
+                .cells
                 .iter()
-                .filter(|cell| trusted && cell["type"] != "null")
+                .filter(|cell| trusted && cell.kind != CellKind::Null)
                 .map(|cell| {
-                    let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+                    let (column, row) = excel::coordinate(&cell.address)?;
                     Ok(u64::from(if rows { row } else { column }))
                 })
                 .collect::<Result<_>>()?;
@@ -1439,14 +1700,14 @@ pub(super) fn reimport(dir: &Path, extraction: &Value, trusted: bool) -> Result<
         let rows = identities("rows")?;
         let columns = identities("columns")?;
         let mut formula_cells = BTreeSet::new();
-        for cell in array(&source["cells"])? {
-            let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+        for cell in &source.cells {
+            let (column, row) = excel::coordinate(&cell.address)?;
             let (Some(row), Some(column)) =
                 (rows.get(&u64::from(row)), columns.get(&u64::from(column)))
             else {
                 bail!("layout does not cover imported cell; correspondence not proven");
             };
-            if cell["type"] == "formula" {
+            if cell.kind == CellKind::Formula {
                 formula_cells.insert((row.clone(), column.clone()));
             }
         }
@@ -1489,20 +1750,18 @@ mod tests {
         let metadata = json!([{"type":"text","id":"cell_r1_A"},{"type":"table","rows":[
             {"cells":[cell("r1", "A"), cell("r1", "B"), cell("r1", "C"), cell("r1", "E")]},
             {"cells":[cell("r2", "A"), cell("r2", "B"), marked, formula, cell("r2", "F"), cell("r2", "G"), cell("r2", "H")]}]}]);
-        let mut stored = metadata.clone();
-        stored_tables(&mut stored).unwrap();
+        let stored = stored_tables(metadata_from(metadata.clone()).unwrap()).unwrap();
         assert_eq!(
             stored[1],
             json!({"type":"table","rows":["r1 A..C E","r2 A B ins-1 D F..H"],
                 "cells":{"cell_r2_ins-1":{"font":0},"cell_r2_D":{"formula":null}}})
         );
-        expand_tables(&mut stored).unwrap();
-        assert_eq!(stored, metadata);
-        let mut two_rows =
+        assert_eq!(metadata_value(&expand_tables(stored).unwrap()), metadata);
+        let two_rows =
             json!([{"type":"table","rows":[{"cells":[cell("r1", "A"), cell("r2", "B")]}]}]);
-        assert!(stored_tables(&mut two_rows).is_err());
-        let mut stray = json!([{"type":"table","rows":["r1 A"],"cells":{"cell_r2_A":{"font":0}}}]);
-        assert!(expand_tables(&mut stray).is_err());
+        assert!(stored_tables(metadata_from(two_rows).unwrap()).is_err());
+        let stray = json!([{"type":"table","rows":["r1 A"],"cells":{"cell_r2_A":{"font":0}}}]);
+        assert!(expand_tables(stray).is_err());
     }
 
     #[test]
@@ -1543,20 +1802,21 @@ mod tests {
 
     #[test]
     fn deleting_first_row_keeps_original_and_inserted_columns() {
-        let extraction = json!({"document_id":"book.xlsx","source":{"sha256":"hash"},
-        "sheets":[{"name":"Sheet1","merges":[],"cells":[
-            {"address":"A1","type":"string"},{"address":"B2","type":"string"}
-        ]}]});
+        let extraction =
+            crate::extraction::sample(json!({"document_id":"book.xlsx","source":{"sha256":"hash"},
+            "sheets":[{"name":"Sheet1","merges":[],"cells":[
+                {"address":"A1","type":"string"},{"address":"B2","type":"string"}
+            ]}]}));
         let mut layout = initial(&extraction).unwrap();
         let operations = excel::parse_operations(
             &[
                 json!({"id":"add","kind":"insert_columns","sheet":"Sheet1","at":2,"count":1,"reason":"test"}),
                 json!({"id":"delete","kind":"delete_rows","sheet":"Sheet1","at":1,"count":1,"reason":"test"}),
             ],
-            extraction["sheets"].as_array().unwrap(),
+            &extraction.sheets,
         ).unwrap();
         update(&mut layout, &operations).unwrap();
-        let sheet = &layout["sheets"]["sheet-1"];
+        let sheet = &layout.sheets["sheet-1"];
         let position = |axis: &str, id: &str| sheet[axis][id]["position"].clone();
         assert_eq!(
             ["A", "add-1", "B"].map(|id| position("columns", id)),

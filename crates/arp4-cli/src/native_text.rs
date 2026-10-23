@@ -81,7 +81,9 @@ fn cell(row: usize, value: &str, position: TextPosition) -> Value {
 }
 
 fn sheet(cells: Vec<Value>, part: &str) -> Value {
-    json!({"name":"text","part":part,"state":"visible","merges":[],"cells":cells})
+    let mut sheet = json!({"name":"text","part":part,"state":"visible","merges":[]});
+    sheet["cells"] = Value::Array(cells);
+    sheet
 }
 
 pub fn lines(raw: &str) -> Result<Value> {
@@ -361,7 +363,8 @@ pub fn delimited(raw: &str, delimiter: u8) -> Result<Value> {
         count == ranges.len(),
         "CSV record positions do not match parsed input"
     );
-    Ok(
-        json!({"name":"records","part":"delimited:records","state":"visible","merges":[],"cells":cells}),
-    )
+    let mut sheet =
+        json!({"name":"records","part":"delimited:records","state":"visible","merges":[]});
+    sheet["cells"] = Value::Array(cells);
+    Ok(sheet)
 }

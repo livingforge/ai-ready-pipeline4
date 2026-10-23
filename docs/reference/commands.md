@@ -1757,6 +1757,7 @@ Commands:
   remove           Remove the documents at or below an ID whose originals were moved, renamed or deleted
   discard          Discard one proposal, leaving the original and adopted document untouched
   search           Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+  search-formats   List the font colors, theme colors, fonts, sizes and emphasis of the indexed text, each with the hits a search filtering by it alone returns
   search-refresh   Reconcile canonical documents with the local search index
   structure-read   Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
   elements-read    Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
@@ -1974,11 +1975,77 @@ Options:
 ```text
 Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
 
-Usage: arp4 documents search [OPTIONS] <QUERY>...
+Usage: arp4 documents search [OPTIONS] [QUERY]...
 
 Arguments:
-  <QUERY>...
-          One to 32 quoted queries against one saved index snapshot. Within each query, whitespace separates literal AND terms; punctuation is not query syntax
+  [QUERY]...
+          One to 32 quoted queries against one saved index snapshot. Within each query, whitespace separates literal AND terms; punctuation is not query syntax. With a format filter the query may be left out, to search by format alone
+
+Options:
+      --color <COLOR>
+          Only hits with text in this font color: RRGGBB, a family (red, orange, yellow, green, cyan, blue, purple, pink, gray, black, white), a theme slot (accent1, dk1, ...), auto or mixed. Repeat for any of several
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --font <FONT>
+          Only hits with text in this font, latin or East Asian, compared as search terms are. Repeat for any of several
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --size <SIZE>
+          Only hits with text in this size in points: N, N..M, N.. or ..M
+
+      --bold
+          Only hits with bold text
+
+      --italic
+          Only hits with italic text
+
+      --underline
+          Only hits with underlined text, in any line
+
+      --strike
+          Only hits with struck-through text, by one line or two
+
+      --highlight
+          Only hits with highlighted text (Word and PowerPoint)
+
+      --fill
+          Only hits with text in a filled cell (Excel cells, Word table cells)
+
+      --document <DOCUMENT>
+          Restrict to a document ID or folder ID
+
+      --synonyms <SYNONYMS>
+          Project vocabulary groups (search-synonyms schema). Defaults to .arp/search-synonyms.yml if present
+
+      --profile
+          Emit disjoint search wall-clock timings as one JSON record on stderr
+
+      --revision <REVISION>
+          Pin pagination to a previous index and query revision
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents search-formats`
+
+```text
+List the font colors, theme colors, fonts, sizes and emphasis of the indexed text, each with the hits a search filtering by it alone returns
+
+Usage: arp4 documents search-formats [OPTIONS]
 
 Options:
       --document <DOCUMENT>
@@ -1996,17 +2063,8 @@ Options:
       --limit <LIMIT>
           Maximum items per page (default: 20)
 
-      --synonyms <SYNONYMS>
-          Project vocabulary groups (search-synonyms schema). Defaults to .arp/search-synonyms.yml if present
-
       --offset <OFFSET>
           Zero-based item offset (default: 0); use page.next_offset for the next page
-
-      --profile
-          Emit disjoint search wall-clock timings as one JSON record on stderr
-
-      --revision <REVISION>
-          Pin pagination to a previous index and query revision
 
   -h, --help
           Print help

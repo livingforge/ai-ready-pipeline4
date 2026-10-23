@@ -164,7 +164,7 @@ impl Workflow {
         let task = &self.state.tasks[i];
         let reply = self.store.put_json(value)?;
         let revision = self.store.put_json(
-            &json!({"task":task.id,"run":self.store.root,"state":self.state.previous,"previous":task.draft,"reply":reply}),
+            &json!({"task":task.id,"run":self.store.root,"previous":task.draft,"reply":reply}),
         )?;
         self.state.tasks[i].draft = Some(revision);
         Ok(())

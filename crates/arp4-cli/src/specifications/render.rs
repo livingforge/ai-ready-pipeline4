@@ -56,7 +56,8 @@ pub fn source_view(input: &Input, document: Option<&str>) -> Result<String> {
                 escaped(sheet)
             ));
             if let Some(c) = &source.context {
-                text.push_str(&format!("結合範囲: {}\n\n", escaped(&c.merges.join(", "))));
+                let merges = input.sheet_merges(&source.document, &c.sheet);
+                text.push_str(&format!("結合範囲: {}\n\n", escaped(&merges.join(", "))));
             }
             previous = Some(key);
         }
@@ -87,9 +88,10 @@ pub fn source_view(input: &Input, document: Option<&str>) -> Result<String> {
     Ok(text)
 }
 /// Render the selected original grid. Missing cells are not invented or filled from merges.
+/// `source` gives each source with the input holding it, which records its sheet's merges.
 pub(crate) fn render_table<'a>(
     value: &AtomicValue,
-    source: impl Fn(&str) -> Option<&'a Source>,
+    source: impl Fn(&str) -> Option<(&'a Source, &'a Input)>,
 ) -> Result<String> {
     let AtomicValue::Table {
         title: captions,
@@ -122,11 +124,16 @@ pub(crate) fn render_table<'a>(
     let mut merges = BTreeSet::new();
     let mut title = String::new();
     for cell in cells {
-        let source = source(&cell.source).context("missing original table source")?;
+        let (source, input) = source(&cell.source).context("missing original table source")?;
         let ctx = source.context.as_ref().context("missing table context")?;
         title = format!("{} / {}", escaped(&source.document), escaped(&ctx.sheet));
         columns.insert(ctx.column);
-        merges.extend(ctx.merges.iter().cloned());
+        merges.extend(
+            input
+                .sheet_merges(&source.document, &ctx.sheet)
+                .iter()
+                .cloned(),
+        );
         let text = cell
             .quote
             .replace("\r\n", "\n")
@@ -231,7 +238,9 @@ pub fn render(input: &Input, model: &Model, draft: bool) -> Result<String> {
         }
         text.push_str(&format!("\n### {}{}\n\n種別: {:?}\n\n{}\n\n対象: {} / 属性: {} / 条件: {} / 値: {}\n\n検証: {}\n\n要件: {}\n\n", escaped(&item.id), if rejected.contains(&item.id) { "（不採用・出典保持）" } else { "" }, item.kind, escaped(&item.statement), escaped(&item.subject), escaped(&item.property), escaped(item.condition.text()), escaped(&item.value.display()), escaped(item.verification.as_deref().unwrap_or("未記載（検証済みを意味しない）")), escaped(&item.requirements.join(", "))));
         if matches!(&item.value, AtomicValue::Table { .. }) {
-            text.push_str(&render_table(&item.value, |id| sources.get(id).copied())?);
+            text.push_str(&render_table(&item.value, |id| {
+                sources.get(id).map(|&source| (source, input))
+            })?);
         }
         if let Condition::Composed {
             operator,

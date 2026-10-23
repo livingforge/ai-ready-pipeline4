@@ -11,7 +11,7 @@ mod outline;
 
 #[derive(Clone)]
 struct Cell<'a> {
-    source: &'a Value,
+    source: &'a crate::extraction::Cell,
     /// The cell's style, from its sheet's table.
     style: &'a Value,
     left: u32,
@@ -21,7 +21,16 @@ struct Cell<'a> {
 }
 impl Cell<'_> {
     fn nonempty(&self) -> bool {
-        !self.source["value"].is_null() && self.source["value"] != ""
+        !self.source.value.is_null() && self.source.value != ""
+    }
+    /// The text_state the parser gives the cell: read when it holds text or
+    /// a formula.
+    fn text_state(&self) -> TextState {
+        if self.nonempty() || self.source.formula.is_some() {
+            TextState::Read
+        } else {
+            TextState::Empty
+        }
     }
     fn bold(&self) -> bool {
         self.style["bold"] == true
@@ -33,10 +42,10 @@ impl Cell<'_> {
         self.style["border"].as_u64().unwrap_or(0) > 0
     }
     fn string(&self) -> bool {
-        self.source["type"] == "string"
+        self.source.kind == CellKind::String
     }
     fn text(&self) -> &str {
-        self.source["value"].as_str().unwrap_or("")
+        self.source.value.as_str().unwrap_or("")
     }
     fn span(&self) -> (u32, u32) {
         (self.left, self.right)
@@ -408,9 +417,30 @@ fn prose_bullets(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
             bullet_rows.entry(c.left).or_default().push(c.top);
         }
     }
-    for rows in bullet_rows.values_mut() {
+    // Whether each run of bullets on consecutive rows of a column lies beside
+    // bordered records, decided once for the run rather than for every bullet
+    // in it, by (column, row).
+    let mut beside = HashMap::<(u32, u32), bool>::new();
+    for (&column, rows) in &mut bullet_rows {
         rows.sort_unstable();
         rows.dedup();
+        let mut start = 0;
+        while start < rows.len() {
+            let mut end = start + 1;
+            while end < rows.len() && rows[end - 1].checked_add(1) == Some(rows[end]) {
+                end += 1;
+            }
+            let run = &rows[start..end];
+            let listed = bordered_left.get(&column).is_some_and(|neighbor| {
+                run.len() >= 2
+                    && neighbor.len() >= run.len() * 2
+                    && run.iter().all(|row| neighbor.contains(row))
+            });
+            for &row in run {
+                beside.insert((column, row), listed);
+            }
+            start = end;
+        }
     }
     cells
         .iter()
@@ -431,26 +461,7 @@ fn prose_bullets(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
             if isolated {
                 return true;
             }
-            let Some(rows) = bullet_rows.get(&c.left) else {
-                return false;
-            };
-            let Some(position) = rows.iter().position(|row| *row == c.top) else {
-                return false;
-            };
-            let mut start = position;
-            while start > 0 && rows[start - 1].checked_add(1) == Some(rows[start]) {
-                start -= 1;
-            }
-            let mut end = position + 1;
-            while end < rows.len() && rows[end - 1].checked_add(1) == Some(rows[end]) {
-                end += 1;
-            }
-            let run = &rows[start..end];
-            bordered_left.get(&c.left).is_some_and(|neighbor| {
-                run.len() >= 2
-                    && neighbor.len() >= run.len() * 2
-                    && run.iter().all(|row| neighbor.contains(row))
-            })
+            beside.get(&(c.left, c.top)).copied().unwrap_or(false)
         })
         .map(|(i, _)| i)
         .collect()
@@ -1197,7 +1208,7 @@ fn labelled(c: &Cell<'_>) -> bool {
 /// such as ① that refer to the same mark on a screen image.
 fn number_mark(c: &Cell<'_>) -> bool {
     let text = c.text().trim();
-    c.source["value"].is_number()
+    c.source.value.is_number()
         || (!text.is_empty()
             && text.chars().all(|ch| {
                 ch.is_ascii_digit()
@@ -1627,7 +1638,7 @@ fn interpret(
     indices: &[usize],
     explicit: Explicit,
     sheet_index: usize,
-) -> Result<Option<Vec<Value>>> {
+) -> Result<Option<Vec<ElementCell>>> {
     let mut group: Vec<_> = indices.iter().map(|i| &cells[*i]).collect();
     group.sort_by_key(|c| (c.top, c.left));
     let Layout {
@@ -1657,7 +1668,9 @@ fn interpret(
             line.len() == 2
                 && line[0].left == left
                 && (line[0].text().trim() == format!("{}.", index + 1)
-                    || line[0].source["value"]
+                    || line[0]
+                        .source
+                        .value
                         .as_f64()
                         .is_some_and(|number| number == (index + 1) as f64))
                 && line[1].string()
@@ -1942,13 +1955,14 @@ fn interpret(
         year_heading
             && years.len() >= 3
             && years.iter().all(|c| {
-                c.source["value"]
+                c.source
+                    .value
                     .as_f64()
                     .is_some_and(|year| (1900.0..=2100.0).contains(&year) && year.fract() == 0.0)
             })
             && years
                 .windows(2)
-                .all(|pair| pair[0].source["value"] != pair[1].source["value"])
+                .all(|pair| pair[0].source.value != pair[1].source.value)
             && group
                 .iter()
                 .any(|c| body(c) && c.left > left && c.nonempty() && !c.string())
@@ -2144,13 +2158,7 @@ fn interpret(
             }
         }
     }
-    let id_for = |c: &Cell| {
-        format!(
-            "s{}-{}",
-            sheet_index + 1,
-            c.source["address"].as_str().unwrap()
-        )
-    };
+    let id_for = |c: &Cell| format!("s{}-{}", sheet_index + 1, &*c.source.address);
     // The header cells each cell links to, in the header rows above it.
     let header_links = |c: &Cell<'_>, current: &str| -> Vec<usize> {
         let mut links = vec![];
@@ -2282,7 +2290,7 @@ fn interpret(
         }
     };
     let mut alike: HashMap<(usize, u32, u32), Vec<usize>> = HashMap::new();
-    let interpreted: Vec<_> = group
+    let interpreted = group
         .iter()
         .enumerate()
         .map(|(index, c)| {
@@ -2306,10 +2314,15 @@ fn interpret(
                 // A label left blank continues the label above it. Stepped
                 // names have their parents instead: a row naming itself in a
                 // label span continues no other name of that span.
-                let own = label_rows.get(&c.top).map(Vec::as_slice).unwrap_or_default();
+                let own = label_rows
+                    .get(&c.top)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
                 for (column, labels) in &label_columns {
                     if occupied.contains(&(*column, c.top))
-                        || own.iter().any(|&o| area(group[o]) == area(group[labels[0]]))
+                        || own
+                            .iter()
+                            .any(|&o| area(group[o]) == area(group[labels[0]]))
                     {
                         continue;
                     }
@@ -2366,13 +2379,16 @@ fn interpret(
                 // A form label followed directly by other labels groups them
                 // and heads the rest of its row, as an estimate over its kinds.
                 if matches!(labels, Labels::Marked) {
-                    let line = label_rows.get(&c.top).map(Vec::as_slice).unwrap_or_default();
+                    let line = label_rows
+                        .get(&c.top)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
                     links.extend(line.iter().copied().filter(|&i| {
                         group[i].right < c.left
                             && group[i].top == c.top
-                            && line
-                                .iter()
-                                .any(|&j| group[j].left == group[i].right + 1 && group[j].top == c.top)
+                            && line.iter().any(|&j| {
+                                group[j].left == group[i].right + 1 && group[j].top == c.top
+                            })
                     }));
                 }
                 let above = bands.partition_point(|&i| group[i].top < c.top);
@@ -2387,11 +2403,18 @@ fn interpret(
             links.retain(|&i| i != index);
             links.sort_unstable();
             links.dedup();
-            let links: Vec<_> = links.into_iter().map(|i| id_for(group[i])).collect();
-            json!({"id":id_for(c),"address":c.source["address"],"role":current,"headers":links,
-                "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
+            Ok(ElementCell {
+                address: Box::from(&*c.source.address),
+                headers: links
+                    .into_iter()
+                    .map(|i| id_for(group[i]).into_boxed_str())
+                    .collect(),
+                id: id_for(c).into(),
+                role: Role::parse(current)?,
+                text_state: c.text_state(),
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     Ok(Some(interpreted))
 }
 
@@ -2432,14 +2455,14 @@ fn explicit_parents(tables: &[Value]) -> Result<Vec<Option<usize>>> {
 /// and the parent's cells beside the child, those of the records it belongs to.
 fn context(
     by_address: &HashMap<&str, &Cell<'_>>,
-    parent: &Value,
+    parent: &Element,
     child: (u32, u32, u32, u32),
 ) -> Result<Vec<Value>> {
     let (x0, r0, x1, r1) = child;
     let mut members = vec![];
-    for cell in array(&parent["cells"])? {
+    for cell in &parent.cells {
         let c = *by_address
-            .get(string(&cell["address"])?)
+            .get(&*cell.address)
             .context("parent cell missing from extraction")?;
         if c.nonempty() {
             members.push((c, cell));
@@ -2448,7 +2471,7 @@ fn context(
     let above: Vec<_> = members
         .iter()
         .filter(|(c, cell)| {
-            cell["role"] == "column_header" && c.left <= x1 && c.right >= x0 && c.bottom < r0
+            cell.role == Role::ColumnHeader && c.left <= x1 && c.right >= x0 && c.bottom < r0
         })
         .collect();
     let lowest = above.iter().map(|(c, _)| c.bottom).max();
@@ -2456,8 +2479,8 @@ fn context(
         .into_iter()
         .filter(|(c, _)| Some(c.bottom) == lowest)
         .chain(members.iter().filter(|(c, cell)| {
-            cell["role"] != "column_header"
-                && cell["role"] != "text"
+            cell.role != Role::ColumnHeader
+                && cell.role != Role::Text
                 && (c.right < x0 || c.left > x1)
                 && c.top <= r1
                 && c.bottom >= r0
@@ -2466,25 +2489,22 @@ fn context(
     chosen.sort_by_key(|(c, _)| (c.top, c.left));
     Ok(chosen
         .into_iter()
-        .map(|(_, cell)| cell["id"].clone())
+        .map(|(_, cell)| json!(&*cell.id))
         .collect())
 }
 
-pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
+pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
     let mut output = vec![];
-    for (sheet_index, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+    for (sheet_index, sheet) in extraction.sheets.iter().enumerate() {
         let mut spans = BTreeMap::new();
         for m in array(&sheet["merges"])? {
             let (a, b) = string(m)?.split_once(':').context("invalid merge")?;
             spans.insert(a, coordinate(b)?);
         }
         let mut cells = vec![];
-        for c in array(&sheet["cells"])? {
-            let (left, top) = coordinate(string(&c["address"])?)?;
-            let (right, bottom) = spans
-                .get(string(&c["address"])?)
-                .copied()
-                .unwrap_or((left, top));
+        for c in &sheet.cells {
+            let (left, top) = coordinate(&c.address)?;
+            let (right, bottom) = spans.get(&*c.address).copied().unwrap_or((left, top));
             cells.push(Cell {
                 source: c,
                 style: crate::extraction::style(sheet, c)?,
@@ -2596,7 +2616,7 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
             .filter_map(Value::as_str)
             .collect();
         let mut boxes = vec![];
-        for r in array(sheet.get("bordered_blanks").unwrap_or(&json!([])))? {
+        for r in array(sheet.fields.get("bordered_blanks").unwrap_or(&json!([])))? {
             let ((left, top), (right, bottom)) = range(string(r)?)?;
             if merged.contains(string(r)?) {
                 boxes.push(((left, top, right, bottom), true));
@@ -2811,9 +2831,11 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
                 reason.push_str(&competing);
             }
             preceding = Some((rectangle, signature, id.clone(), explicit.is_none()));
-            let element = json!({"id":id,"kind":"table","sheet":sheet["name"],"evidence":[],
-                "reading":{"method":"parser","actor":"arp4","reason":reason},
-                "cells":interpreted});
+            let element = Element::new(
+                json!({"id":id,"kind":"table","sheet":sheet["name"],"evidence":[],
+                    "reading":{"method":"parser","actor":"arp4","reason":reason}}),
+                interpreted,
+            );
             if let Some(parent) = candidate.parent {
                 nested.push((output.len(), parent, rectangle));
             }
@@ -2821,10 +2843,8 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
             output.push(element);
         }
         // A table whose parent was not read as a table stands on its own.
-        let by_address: HashMap<&str, &Cell<'_>> = cells
-            .iter()
-            .map(|c| (c.source["address"].as_str().unwrap_or(""), c))
-            .collect();
+        let by_address: HashMap<&str, &Cell<'_>> =
+            cells.iter().map(|c| (&*c.source.address, c)).collect();
         for (child, parent, rectangle) in nested {
             if let Some(&parent) = interpreted_tables.get(&parent) {
                 output[child]["parent"] = json!({"element":output[parent]["id"],
@@ -2833,13 +2853,22 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
         }
         if !leftovers.is_empty() {
             leftovers.sort_unstable();
-            let interpreted:Vec<_>=leftovers.iter().map(|i| {
-                let c=&cells[*i];
-                json!({"id":format!("s{}-{}",sheet_index+1,c.source["address"].as_str().unwrap()),"address":c.source["address"],
-                    "role":"unassigned","headers":[],"text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
-            }).collect();
-            output.push(json!({"id":format!("sheet-{}",sheet_index+1),"kind":"text","sheet":sheet["name"],"cells":interpreted,"evidence":[],
-                "reading":{"method":"parser","actor":"arp4","reason":if exhausted {"Layout comparison budget reached; roles remain unassigned."} else {"Captured cells outside confident table candidates; roles remain unassigned."}}}));
+            let interpreted = leftovers
+                .iter()
+                .map(|i| {
+                    let c = &cells[*i];
+                    ElementCell {
+                        address: Box::from(&*c.source.address),
+                        headers: vec![],
+                        id: format!("s{}-{}", sheet_index + 1, &*c.source.address).into(),
+                        role: Role::Unassigned,
+                        text_state: c.text_state(),
+                    }
+                })
+                .collect();
+            let fields = json!({"id":format!("sheet-{}",sheet_index+1),"kind":"text","sheet":sheet["name"],"evidence":[],
+                "reading":{"method":"parser","actor":"arp4","reason":if exhausted {"Layout comparison budget reached; roles remain unassigned."} else {"Captured cells outside confident table candidates; roles remain unassigned."}}});
+            output.push(Element::new(fields, interpreted));
         }
     }
     Ok(output)
@@ -2848,6 +2877,14 @@ pub(super) fn elements(extraction: &Value) -> Result<Vec<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The inferred elements, as JSON.
+    fn element_values(extraction: &Extraction) -> Result<Vec<Value>> {
+        Ok(elements(extraction)?
+            .iter()
+            .map(Element::to_value)
+            .collect())
+    }
 
     #[test]
     #[ignore = "manual explicit table inference performance measurement"]
@@ -2872,7 +2909,8 @@ mod tests {
             let mut digest = String::new();
             for _ in 0..5 {
                 let start = std::time::Instant::now();
-                let output = elements(&extraction).unwrap();
+                let output =
+                    element_values(&crate::extraction::sample(extraction.clone())).unwrap();
                 times.push(start.elapsed().as_secs_f64() * 1000.0);
                 assert_eq!(output.len(), count as usize);
                 digest = hash(&encoded(&json!(output)));
@@ -2893,7 +2931,7 @@ mod tests {
     /// The roles of the cells of the sheet `cells` makes, by address.
     fn roles(cells: Vec<Value>) -> BTreeMap<String, String> {
         let extraction = json!({"sheets":[{"name":"S","cells":cells,"merges":[]}]});
-        elements(&extraction)
+        element_values(&crate::extraction::sample(extraction.clone()))
             .unwrap()
             .iter()
             .flat_map(|e| e["cells"].as_array().unwrap().clone())
@@ -2959,9 +2997,9 @@ mod tests {
             .flat_map(|row| ["A", "B", "C"].map(|column| cell(&format!("{column}{row}"), "x")))
             .collect();
         // B2 is merged down to B5 and C7 to C12; A and the rest are single.
-        fn extent(c: &Value) -> Cell<'_> {
-            let (left, top) = coordinate(c["address"].as_str().unwrap()).unwrap();
-            let bottom = match c["address"].as_str().unwrap() {
+        fn extent(c: &crate::extraction::Cell) -> Cell<'_> {
+            let (left, top) = coordinate(&c.address).unwrap();
+            let bottom = match &*c.address {
                 "B2" => 5,
                 "C7" => 12,
                 _ => top,
@@ -2975,7 +3013,8 @@ mod tests {
                 bottom,
             }
         }
-        let cells: Vec<_> = values.iter().map(extent).collect();
+        let extraction = crate::extraction::sample(json!({"sheets":[{"name":"S","cells":values}]}));
+        let cells: Vec<_> = extraction.sheets[0].cells.iter().map(extent).collect();
         let group: Vec<_> = cells.iter().collect();
         let tall = height(&group);
         assert_eq!(tall, 5);
@@ -3014,7 +3053,7 @@ mod tests {
             }
         }
         let extraction = json!({"sheets":[{"name":"S","merges":[],"cells":cells}]});
-        let result = elements(&extraction).unwrap();
+        let result = element_values(&crate::extraction::sample(extraction.clone())).unwrap();
         let table = result.iter().find(|e| e["kind"] == "table").unwrap();
         let headers = |address: &str| -> Vec<String> {
             let found = table["cells"]
@@ -3039,7 +3078,7 @@ mod tests {
     fn explicit_table_takes_precedence_and_honors_no_header() {
         let extraction = json!({"sheets":[{"name":"S","merges":[],"tables":[{"range":"B2:C3","header_rows":1}],
             "cells":[cell("A2","outside"),cell("B2","Key"),cell("C2","Value"),cell("B3","x"),cell("C3","y")]}]});
-        let result = elements(&extraction).unwrap();
+        let result = element_values(&crate::extraction::sample(extraction.clone())).unwrap();
         let table = result.iter().find(|e| e["kind"] == "table").unwrap();
         assert_eq!(table["cells"].as_array().unwrap().len(), 4);
         let data = table["cells"]
@@ -3056,7 +3095,7 @@ mod tests {
         );
         let mut no_header = extraction.clone();
         no_header["sheets"][0]["tables"][0]["header_rows"] = json!(0);
-        let result = elements(&no_header).unwrap();
+        let result = element_values(&crate::extraction::sample(no_header.clone())).unwrap();
         assert!(
             result
                 .iter()
@@ -3069,7 +3108,7 @@ mod tests {
         let mut extraction = json!({"sheets":[{"name":"S","merges":[],
             "tables":[{"range":"D2:E5","header_rows":0},{"range":"A2:B5","header_rows":0}],
             "cells":[cell("E5","e"),cell("A2","a"),cell("D2","d"),cell("B5","b")]}]});
-        let result = elements(&extraction).unwrap();
+        let result = element_values(&crate::extraction::sample(extraction.clone())).unwrap();
         let addresses = |table: &Value| {
             table["cells"]
                 .as_array()
@@ -3082,7 +3121,7 @@ mod tests {
         assert_eq!(addresses(&result[1]), ["D2", "E5"]);
         extraction["sheets"][0]["tables"][1]["range"] = json!("A2:E5");
         assert!(
-            elements(&extraction)
+            element_values(&crate::extraction::sample(extraction.clone()))
                 .unwrap_err()
                 .to_string()
                 .contains("overlapping")
@@ -3110,7 +3149,7 @@ mod tests {
         ]);
         let mut extraction = json!({"sheets":[{"name":"S","merges":["A2:A3","B1:C1","B4:C4"],
             "tables":tables,"cells":cells}]});
-        let result = elements(&extraction).unwrap();
+        let result = element_values(&crate::extraction::sample(extraction.clone())).unwrap();
         let addresses = |table: &Value| -> Vec<String> {
             table["cells"]
                 .as_array()
@@ -3127,7 +3166,7 @@ mod tests {
         );
         extraction["sheets"][0]["tables"][0]["parent"] = json!("inner");
         assert!(
-            elements(&extraction)
+            element_values(&crate::extraction::sample(extraction.clone()))
                 .unwrap_err()
                 .to_string()
                 .contains("cyclic")
@@ -3153,7 +3192,7 @@ mod tests {
         .collect();
         let extraction = json!({"sheets":[{"name":"S","merges":["A2:A3"],
             "tables":[{"range":"A1:C4","header_rows":1}],"cells":cells}]});
-        let result = elements(&extraction).unwrap();
+        let result = element_values(&crate::extraction::sample(extraction.clone())).unwrap();
         let headers = |address: &str| {
             result[0]["cells"]
                 .as_array()
@@ -3175,7 +3214,10 @@ mod tests {
         for address in ["A1", "B1", "A2", "B2", "C3", "D3", "C4", "D4", "J10"] {
             cells.push(cell(address, "text"));
         }
-        let result = elements(&json!({"sheets":[{"name":"S","merges":[],"cells":cells}]})).unwrap();
+        let result = element_values(&crate::extraction::sample(
+            json!({"sheets":[{"name":"S","merges":[],"cells":cells}]}),
+        ))
+        .unwrap();
         assert_eq!(result.iter().filter(|e| e["kind"] == "table").count(), 2);
         let note = result.iter().find(|e| e["kind"] == "text").unwrap();
         assert_eq!(note["cells"][0]["address"], "J10");

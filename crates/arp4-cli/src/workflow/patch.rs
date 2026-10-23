@@ -335,13 +335,22 @@ pub fn context(
         .iter()
         .map(|r| r[rc].as_str().unwrap().to_owned())
         .collect();
-    let available: Vec<Value> = (0..tables.len())
-        .filter(|i| {
-            rows.iter().any(|r| {
-                r[tc] == *i && (!chosen.contains(i) || !selected.contains(r[rc].as_str().unwrap()))
-            })
-        })
-        .map(|i| json!({"table":i,"source_count":rows.iter().filter(|r| r[tc] == i).count()}))
+    // Each table's rows counted, and whether one is left out, in one pass
+    // over the rows rather than one for each table.
+    let mut counts = vec![(0usize, false); tables.len()];
+    for r in rows.iter() {
+        if let Some(i) = r[tc].as_u64().map(|i| i as usize)
+            && let Some((count, left)) = counts.get_mut(i)
+        {
+            *count += 1;
+            *left |= !chosen.contains(&i) || !selected.contains(r[rc].as_str().unwrap());
+        }
+    }
+    let available: Vec<Value> = counts
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (_, left))| *left)
+        .map(|(i, (count, _))| json!({"table":i,"source_count":count}))
         .collect();
     let mut exclusions = Vec::new();
     for e in optional(&base["exclusions"])? {

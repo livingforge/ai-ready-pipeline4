@@ -42,10 +42,8 @@ impl Store {
     ) -> Result<Writeback> {
         // Inserted slides are written like pages of the original they copy.
         let operated = operated_extraction(&result.extraction, &result.mappings["operations"])?;
-        let operations = excel::parse_operations(
-            array(&result.mappings["operations"])?,
-            array(&operated["sheets"])?,
-        )?;
+        let operations =
+            excel::parse_operations(array(&result.mappings["operations"])?, &operated.sheets)?;
         let mut operations_by_sheet: BTreeMap<&str, Vec<excel::StructuralOperation>> =
             BTreeMap::new();
         for operation in &operations {
@@ -64,7 +62,7 @@ impl Store {
         book.ensure_slide_edits_supported(array(&result.mappings["operations"])?)?;
         let image_operations = excel::parse_image_operations(
             array(&result.mappings["operations"])?,
-            array(&operated["sheets"])?,
+            &operated.sheets,
         )?;
         let shape_operations =
             crate::document_source::parse_shape_operations(array(&result.mappings["operations"])?)?;
@@ -85,7 +83,7 @@ impl Store {
         let mut deleted_cells = vec![];
         // Each cell by sheet and address, so that an entry does not scan its sheet.
         let mut cells = BTreeMap::new();
-        for sheet in array(&operated["sheets"])? {
+        for sheet in &operated.sheets {
             let sheet_name = string(&sheet["name"])?;
             let own_operations = sheet_operations(sheet_name);
             let has_deletions = own_operations.iter().any(|operation| {
@@ -96,8 +94,8 @@ impl Store {
             });
             let mut deleted_rows = BTreeMap::new();
             let mut deleted_columns = BTreeMap::new();
-            for cell in array(&sheet["cells"])? {
-                let address = string(&cell["address"])?;
+            for cell in &sheet.cells {
+                let address = &*cell.address;
                 cells.entry((sheet_name, address)).or_insert(cell);
                 if !has_deletions {
                     continue;
@@ -126,7 +124,7 @@ impl Store {
         }
         // The text of each shape by sheet and extraction ID.
         let mut shapes = BTreeMap::new();
-        for sheet in array(&result.extraction["sheets"])? {
+        for sheet in &result.extraction.sheets {
             for drawing in sheet["drawings"].as_array().into_iter().flatten() {
                 shapes.insert(
                     (string(&sheet["name"])?, string(&drawing["id"])?),
@@ -141,13 +139,13 @@ impl Store {
                 "excluded" => excluded.push(e.clone()),
                 "pending" => pending.push(e.clone()),
                 "cell" => {
-                    let new = &result.values[&key(e)?];
+                    let new = &result.content[&key(e)?].value;
                     match mapping_target(&e["target"])?.context("cell writeback requires target")? {
                         MappingTarget::Cell { sheet, cell } => {
                             // A cell the original leaves empty is none of the extraction's.
                             let old = cells
                                 .get(&(sheet, cell))
-                                .map_or(&Value::Null, |old| &old["value"]);
+                                .map_or(&Value::Null, |old| &old.value);
                             if *old != *new
                                 && let Some(mapped) =
                                     excel::map_coordinate(sheet, cell, sheet_operations(sheet))?
@@ -197,7 +195,7 @@ impl Store {
                     }
                 }
                 "shape" => {
-                    let new = &result.values[&key(e)?];
+                    let new = &result.content[&key(e)?].value;
                     let Some(MappingTarget::Shape { sheet, shape }) = mapping_target(&e["target"])?
                     else {
                         bail!("shape writeback requires a shape target");
@@ -213,13 +211,18 @@ impl Store {
                     bail!("operation writeback entries are not supported; use operations")
                 }
                 "formula" => {
-                    let new = &result.values[&key(e)?];
+                    let new = &result.content[&key(e)?].value;
                     let Some(MappingTarget::Cell { sheet, cell }) = mapping_target(&e["target"])?
                     else {
                         bail!("formula writeback requires a cell target");
                     };
                     let old = cells.get(&(sheet, cell)).context("missing cell")?;
-                    let before = format!("={}", string(&old["formula"])?);
+                    let before = format!(
+                        "={}",
+                        old.formula
+                            .as_deref()
+                            .context("formula cell without formula")?
+                    );
                     if *new != before {
                         let mapped = excel::map_coordinate(sheet, cell, sheet_operations(sheet))?;
                         formulas.push(json!({"sheet":sheet,"cell":cell,"final_cell":mapped,"before":before,"after":new,"field":e["field"]}));
@@ -230,7 +233,7 @@ impl Store {
         }
         // Fonts are written to the original cells; a cell an operation deletes keeps none.
         let mut fonts =
-            super::value_edit::font_changes(&result.extraction, &result.entries, &result.fonts)?;
+            super::value_edit::font_changes(&result.extraction, &result.entries, &result.content)?;
         for change in &fonts {
             if let Some(cell) = change["cell"].as_str() {
                 let sheet = string(&change["sheet"])?;

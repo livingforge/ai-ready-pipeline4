@@ -219,13 +219,15 @@ fn shown_tables(tables: &[Value], rows: &[&Value]) -> Result<Vec<Value>> {
         let Some(merges) = table.get("merges") else {
             continue;
         };
+        // The covered cells by row, so that each merge looks up its own rows
+        // rather than going through every covered cell.
         let cells = table["sheet"]
             .as_str()
             .and_then(|sheet| covered.get(sheet))
             .into_iter()
             .flatten()
-            .map(|address| crate::excel::coordinate(address))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|address| crate::excel::coordinate(address).map(|(column, row)| (row, column)))
+            .collect::<Result<BTreeSet<_>>>()?;
         let mut kept = Vec::new();
         for merge in arr(merges)? {
             let (from, to) = s(merge)?.split_once(':').context("merge range required")?;
@@ -233,9 +235,10 @@ fn shown_tables(tables: &[Value], rows: &[&Value]) -> Result<Vec<Value>> {
                 crate::excel::coordinate(from)?,
                 crate::excel::coordinate(to)?,
             );
-            if cells.iter().any(|&(column, row)| {
-                (from.0..=to.0).contains(&column) && (from.1..=to.1).contains(&row)
-            }) {
+            if from.0 <= to.0
+                && (from.1..=to.1)
+                    .any(|row| cells.range((row, from.0)..=(row, to.0)).next().is_some())
+            {
                 kept.push(merge.clone());
             }
         }

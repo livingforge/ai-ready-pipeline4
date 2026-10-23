@@ -30,10 +30,13 @@ pub(super) fn anchor_point(value: &Value, label: &str) -> Result<AnchorPoint> {
     })
 }
 
-pub fn parse_image_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<ImageOperation>> {
+pub fn parse_image_operations(
+    values: &[Value],
+    sheets: &[impl crate::extraction::Fields],
+) -> Result<Vec<ImageOperation>> {
     let sheet_names: BTreeSet<String> = sheets
         .iter()
-        .map(|sheet| string(&sheet["name"]).map(str::to_owned))
+        .map(|sheet| string(&sheet.fields()["name"]).map(str::to_owned))
         .collect::<Result<_>>()?;
     let mut ids = BTreeSet::new();
     let mut operations = vec![];
@@ -86,10 +89,13 @@ pub fn parse_image_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<
     Ok(operations)
 }
 
-pub fn parse_operations(values: &[Value], sheets: &[Value]) -> Result<Vec<StructuralOperation>> {
+pub fn parse_operations(
+    values: &[Value],
+    sheets: &[impl crate::extraction::Fields],
+) -> Result<Vec<StructuralOperation>> {
     let sheet_names: BTreeSet<String> = sheets
         .iter()
-        .map(|sheet| string(&sheet["name"]).map(str::to_owned))
+        .map(|sheet| string(&sheet.fields()["name"]).map(str::to_owned))
         .collect::<Result<_>>()?;
     let mut ids = BTreeSet::new();
     let mut operations = Vec::with_capacity(values.len());

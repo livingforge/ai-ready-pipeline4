@@ -5,7 +5,7 @@ pub fn policy() -> Value {
     serde_json::from_str(include_str!("../../../../contracts/structure-policy.json")).unwrap()
 }
 
-pub fn extension(extraction: &Value) -> String {
+pub fn extension(extraction: &Extraction) -> String {
     Path::new(extraction["source"]["path"].as_str().unwrap_or(""))
         .extension()
         .and_then(|s| s.to_str())
@@ -13,7 +13,7 @@ pub fn extension(extraction: &Value) -> String {
         .to_ascii_lowercase()
 }
 
-pub fn requirements(extraction: &Value) -> Result<Vec<String>> {
+pub fn requirements(extraction: &Extraction) -> Result<Vec<String>> {
     let policy = policy();
     let ext = json!(extension(extraction));
     if array(&policy["always_required_extensions"])?.contains(&ext) {
@@ -23,7 +23,8 @@ pub fn requirements(extraction: &Value) -> Result<Vec<String>> {
         return Ok(vec![]);
     }
     let mut reasons = vec![];
-    if array(&extraction["sheets"])?
+    if extraction
+        .sheets
         .iter()
         .any(|s| s["tables"].as_array().is_some_and(|t| !t.is_empty()))
         || inference::elements(extraction)?
@@ -43,7 +44,7 @@ pub fn requirements(extraction: &Value) -> Result<Vec<String>> {
 
 /// Three or more shapes on a sheet are diagram candidates. Their actual relationship
 /// must be checked by the reader; disconnected DrawingML does not prove independence.
-pub fn visuals(extraction: &Value) -> Result<Vec<Value>> {
+pub fn visuals(extraction: &Extraction) -> Result<Vec<Value>> {
     if !crate::document_source::is_excel(&extension(extraction))
         && !crate::document_source::WORD_FORMATS.contains(&extension(extraction).as_str())
     {
@@ -52,7 +53,7 @@ pub fn visuals(extraction: &Value) -> Result<Vec<Value>> {
     let minimum = policy()["diagram_min_shapes"].as_u64().unwrap() as usize;
     let mut output = vec![];
     let mut pictured_assets = BTreeSet::new();
-    for (si, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+    for (si, sheet) in extraction.sheets.iter().enumerate() {
         let mut shapes = vec![];
         for (di, d) in sheet["drawings"]
             .as_array()
@@ -126,14 +127,14 @@ mod word_image_tests {
             "sheets":[{"name":"document"}],
             "assets":[{"path":"image-001.png","ocr":{"status":"available","text":"label","reason":"Windows OCR"}}]
         });
-        let found = visuals(&extraction).unwrap();
+        let found = visuals(&crate::extraction::sample(extraction.clone())).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0]["sources"], json!(["/assets/0"]));
         assert_eq!(found[0]["ocr"]["text"], "label");
     }
 }
 
-pub fn validate_visuals(extraction: &Value, value: &Value) -> Result<Vec<Value>> {
+pub fn validate_visuals(extraction: &Extraction, value: &Value) -> Result<Vec<Value>> {
     let expected = visuals(extraction)?;
     let actual = array(&value["visuals"])?;
     ensure!(
@@ -200,16 +201,30 @@ mod tests {
     #[test]
     fn office_formats_and_conditional_excel() {
         let mut ext = extraction();
-        assert!(requirements(&ext).unwrap().is_empty());
+        assert!(
+            requirements(&crate::extraction::sample(ext.clone()))
+                .unwrap()
+                .is_empty()
+        );
         for format in ["docx", "pptx", "pdf"] {
             ext["source"]["path"] = json!(format!("input.{format}"));
-            assert_eq!(requirements(&ext).unwrap(), vec!["office_document"]);
+            assert_eq!(
+                requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+                vec!["office_document"]
+            );
         }
         ext["source"]["path"] = json!("input.XLSX");
         ext["sheets"][0]["tables"] = json!([{"range":"A1:B2","header_rows":1}]);
-        assert_eq!(requirements(&ext).unwrap(), vec!["table"]);
+        assert_eq!(
+            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            vec!["table"]
+        );
         ext["source"]["path"] = json!("input.csv");
-        assert!(requirements(&ext).unwrap().is_empty());
+        assert!(
+            requirements(&crate::extraction::sample(ext.clone()))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -226,34 +241,69 @@ mod tests {
             .map(|(a, v)| json!({"address":a,"value":v,"formula":null}))
             .collect::<Vec<_>>()
         );
-        assert_eq!(requirements(&ext).unwrap(), vec!["table"]);
+        assert_eq!(
+            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            vec!["table"]
+        );
     }
 
     #[test]
     fn image_presence_does_not_depend_on_ocr_and_diagrams_have_a_boundary() {
         let mut ext = extraction();
         ext["sheets"][0]["drawings"] = json!([{"kind":"shape"},{"kind":"shape"},{"kind":"group"}]);
-        assert!(requirements(&ext).unwrap().is_empty());
+        assert!(
+            requirements(&crate::extraction::sample(ext.clone()))
+                .unwrap()
+                .is_empty()
+        );
         ext["sheets"][0]["drawings"][2]["kind"] = json!("connector");
-        assert_eq!(requirements(&ext).unwrap(), vec!["diagram"]);
+        assert_eq!(
+            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            vec!["diagram"]
+        );
         ext["sheets"][0]["drawings"] = json!([{"kind":"picture","image":{"asset":"a.png"}}]);
         ext["assets"] = json!([{"path":"a.png"}]);
-        assert_eq!(requirements(&ext).unwrap(), vec!["image"]);
-        assert_eq!(visuals(&ext).unwrap().len(), 1);
-        let mut value = json!({"regions":[],"visuals":visuals(&ext).unwrap()});
-        assert_eq!(validate_visuals(&ext, &value).unwrap().len(), 1);
+        assert_eq!(
+            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            vec!["image"]
+        );
+        assert_eq!(
+            visuals(&crate::extraction::sample(ext.clone()))
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut value = json!({"regions":[],"visuals":visuals(&crate::extraction::sample(ext.clone())).unwrap()});
+        assert_eq!(
+            validate_visuals(&crate::extraction::sample(ext.clone()), &value)
+                .unwrap()
+                .len(),
+            1
+        );
         value["visuals"][0]["state"] = json!("read");
         value["visuals"][0]["actor"] = json!("reader");
         value["visuals"][0]["description"] = json!("Read image");
         value["visuals"][0]["ocr"] = json!({"status":"available","text":"","reason":"OCR engine"});
-        assert!(validate_visuals(&ext, &value).unwrap().is_empty());
+        assert!(
+            validate_visuals(&crate::extraction::sample(ext.clone()), &value)
+                .unwrap()
+                .is_empty()
+        );
         value["visuals"][0]["ocr"]["text"] = json!("Extracted image label");
-        assert!(validate_visuals(&ext, &value).unwrap().is_empty());
+        assert!(
+            validate_visuals(&crate::extraction::sample(ext.clone()), &value)
+                .unwrap()
+                .is_empty()
+        );
         value["visuals"][0]["ocr"] =
             json!({"status":"unavailable","text":"","reason":"No OCR engine available"});
-        assert!(validate_visuals(&ext, &value).unwrap().is_empty());
+        assert!(
+            validate_visuals(&crate::extraction::sample(ext.clone()), &value)
+                .unwrap()
+                .is_empty()
+        );
         value["visuals"] = json!([]);
-        assert!(validate_visuals(&ext, &value).is_err());
+        assert!(validate_visuals(&crate::extraction::sample(ext.clone()), &value).is_err());
     }
 
     #[test]
@@ -264,7 +314,7 @@ mod tests {
             "schema_version":1,"document":"doc",
             "source":{"path":"docs/input.xlsx","sha256":"a".repeat(64)},
             "extraction_hash":"b".repeat(64),"elements":[],"regions":[],
-            "visuals":visuals(&ext).unwrap(),"review":{"status":"pending"}
+            "visuals":visuals(&crate::extraction::sample(ext.clone())).unwrap(),"review":{"status":"pending"}
         });
         value["visuals"][0]["state"] = json!("read");
         value["visuals"][0]["actor"] = json!("ocr-reader");
@@ -273,7 +323,7 @@ mod tests {
         value["visuals"][0]["ocr"] =
             json!({"status":"available","text":"","reason":"OCR completed with an empty result"});
         let accept = |value: &mut Value| {
-            value["review"] = json!({"status":"accepted","content_hash":content_hash(value),
+            value["review"] = json!({"status":"accepted","content_hash":json_content_hash(value),
                 "actor":"reviewer","reason":"Checked reading records"});
         };
         accept(&mut value);
@@ -293,7 +343,11 @@ mod tests {
         value["visuals"][0]["evidence"] = json!(["image-view"]);
         accept(&mut value);
         validate_snapshot("doc", &value).unwrap();
-        assert!(validate_visuals(&ext, &value).unwrap().is_empty());
+        assert!(
+            validate_visuals(&crate::extraction::sample(ext.clone()), &value)
+                .unwrap()
+                .is_empty()
+        );
         let mut no_instruction = value.clone();
         no_instruction["visuals"][0]["ocr"]["llm_correction"]
             .as_object_mut()

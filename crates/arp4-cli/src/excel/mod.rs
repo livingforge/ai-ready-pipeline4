@@ -1,6 +1,6 @@
 pub use coordinates::{
-    ComputedRanges, Merges, column_name, column_number, coordinate, map_coordinate, merges_after,
-    resolve_insertion,
+    ComputedRanges, CoordinateMap, Merges, column_name, column_number, coordinate, map_coordinate,
+    merges_after, resolve_insertion,
 };
 mod coordinates;
 pub(crate) use coordinates::MergeState;
@@ -17,6 +17,7 @@ mod formula_edit;
 use formula_edit::*;
 mod fonts;
 mod import;
+pub(crate) use import::SheetData;
 pub mod number_format;
 mod visuals;
 mod worksheet;
@@ -131,7 +132,36 @@ impl Workbook {
             })
             .collect()
     }
-    fn cell_value(&self, sheet_index: usize, cell: &Cell) -> Value {
+    /// The worksheets as an extraction holds them, their cells typed.
+    pub fn extraction_sheets(&self) -> Result<Vec<crate::extraction::Sheet>> {
+        self.sheets
+            .iter()
+            .zip(&self.cells)
+            .enumerate()
+            .map(|(index, (sheet, cells))| {
+                let mut built = crate::extraction::Sheet::build(sheet.clone());
+                for cell in cells {
+                    let (style, font) = self.appearance(cell);
+                    let typed = crate::extraction::Cell {
+                        id: format!("c-{}-{}", index + 1, cell.address).into(),
+                        address: cell.address.as_str().into(),
+                        kind: crate::extraction::CellKind::parse(cell.kind)?,
+                        value: cell.value.clone(),
+                        formula: cell.formula.as_deref().map(Into::into),
+                        number_format: built
+                            .number_format(&self.formats[cell.format].number_format),
+                        font: None,
+                        style: None,
+                        position: None,
+                    };
+                    built.push(typed, Some(font), Some(style));
+                }
+                Ok(built.finish())
+            })
+            .collect()
+    }
+    /// The style and font of `cell`, as its format and runs give them.
+    fn appearance(&self, cell: &Cell) -> (Value, Value) {
         let format = &self.formats[cell.format];
         let mut style = format.appearance.clone();
         if cell.bold_text {
@@ -142,7 +172,12 @@ impl Workbook {
             .iter()
             .map(|run| run.clone().or(&format.font))
             .collect();
-        let font = crate::fonts::element_font(&runs, &format.font);
+        crate::fonts::element_emphasis(&runs, &format.font).mark(&mut style);
+        (style, crate::fonts::element_font(&runs, &format.font))
+    }
+    fn cell_value(&self, sheet_index: usize, cell: &Cell) -> Value {
+        let format = &self.formats[cell.format];
+        let (style, font) = self.appearance(cell);
         json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind,"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":style,"font":font})
     }
 }

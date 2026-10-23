@@ -91,8 +91,22 @@ impl Workflow {
     }
 
     pub(super) fn compact_payload(&self, mut value: Value) -> Result<Value> {
+        // The reference of each digest, looked up rather than found by going
+        // through every reference for each identity of the payload.
+        let mut references: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::new();
+        for (reference, digest) in &self.state.transport_refs {
+            references
+                .entry(digest.as_str())
+                .or_insert(reference.as_str());
+        }
         identities(&mut value, &mut |v| {
-            *v = json!(self.transport_ref(s(v)?)?);
+            *v = json!(
+                references
+                    .get(s(v)?)
+                    .copied()
+                    .context("unregistered transport digest")?
+            );
             Ok(())
         })?;
         Ok(value)

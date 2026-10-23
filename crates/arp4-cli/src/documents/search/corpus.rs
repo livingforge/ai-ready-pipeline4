@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::document_structure::{Element, ElementCell, Role, Structure};
 
 fn text(value: &Value) -> String {
     match value {
@@ -8,10 +9,11 @@ fn text(value: &Value) -> String {
     }
 }
 
-fn source(pointer: String, sheet: &str, cell: &Value, value: &Value) -> Value {
+/// The passage source of `value` at `pointer`, of the cell at `address` of
+/// `sheet` or none, which lies at `position` of a text original.
+fn source(pointer: String, sheet: &str, address: &str, position: &Value, value: &Value) -> Value {
     let body = text(value);
-    json!({"pointer":pointer,"sheet":sheet,"address":cell["address"].as_str().unwrap_or(""),
-        "position":cell.get("position").cloned().unwrap_or(Value::Null),
+    json!({"pointer":pointer,"sheet":sheet,"address":address,"position":position,
         "start":0,"end":body.chars().count(),"text":body})
 }
 
@@ -59,7 +61,7 @@ fn fragments(sources: Vec<Value>) -> Vec<Vec<Value>> {
 /// its own is 0. Validated header links are acyclic; a cycle adds no level.
 fn header_level<'a>(
     id: &'a str,
-    cells: &BTreeMap<&'a str, &'a Value>,
+    cells: &BTreeMap<&'a str, &'a ElementCell>,
     levels: &mut BTreeMap<&'a str, usize>,
 ) -> Result<usize> {
     let mut stack = vec![(id, false)];
@@ -70,7 +72,7 @@ fn header_level<'a>(
         }
         let mut above = vec![];
         if let Some(cell) = cells.get(current) {
-            for header in array(&cell["headers"])?.iter().filter_map(Value::as_str) {
+            for header in cell.headers.iter().map(|h| &**h) {
                 if cells.contains_key(header) {
                     above.push(header);
                 }
@@ -102,17 +104,22 @@ fn ids(value: &Value) -> Result<Vec<&str>> {
     Ok(array(value)?.iter().filter_map(Value::as_str).collect())
 }
 
+/// The IDs of the headers of `cell`.
+fn header_ids(cell: &ElementCell) -> Vec<&str> {
+    cell.headers.iter().map(|h| &**h).collect()
+}
+
 /// Order header cells outermost first: headers higher in the header chain
 /// before those they head, then by row and column.
 fn ordered<'a>(
     ids: impl IntoIterator<Item = &'a str>,
-    cells: &BTreeMap<&'a str, &'a Value>,
+    cells: &BTreeMap<&'a str, &'a ElementCell>,
     levels: &mut BTreeMap<&'a str, usize>,
 ) -> Result<Vec<&'a str>> {
     let mut keyed = ids
         .into_iter()
         .map(|id| {
-            let (column, row) = excel::coordinate(string(&cells[id]["address"])?)?;
+            let (column, row) = excel::coordinate(&cells[id].address)?;
             Ok(((header_level(id, cells, levels)?, row, column), id))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -125,14 +132,24 @@ fn ordered<'a>(
 /// row header qualifies the row rather than the column: it is returned apart
 /// and what heads it is left to its own path.
 fn headers_of<'a>(
-    cell: &'a Value,
-    cells: &BTreeMap<&'a str, &'a Value>,
+    cell: &'a ElementCell,
+    cells: &BTreeMap<&'a str, &'a ElementCell>,
+    skip: &BTreeSet<&'a str>,
+    split_rows: bool,
+) -> Result<(BTreeSet<&'a str>, BTreeSet<&'a str>)> {
+    headers_from(header_ids(cell), cells, skip, split_rows)
+}
+
+/// [`headers_of`] a cell whose own headers are `direct`.
+fn headers_from<'a>(
+    direct: Vec<&'a str>,
+    cells: &BTreeMap<&'a str, &'a ElementCell>,
     skip: &BTreeSet<&'a str>,
     split_rows: bool,
 ) -> Result<(BTreeSet<&'a str>, BTreeSet<&'a str>)> {
     let mut column = BTreeSet::new();
     let mut rows = BTreeSet::new();
-    let mut pending = ids(&cell["headers"])?;
+    let mut pending = direct;
     while let Some(id) = pending.pop() {
         if skip.contains(id) || column.contains(id) || rows.contains(id) {
             continue;
@@ -140,21 +157,41 @@ fn headers_of<'a>(
         let Some(header) = cells.get(id) else {
             continue;
         };
-        if split_rows && header["role"] == "row_header" {
+        if split_rows && header.role == Role::RowHeader {
             rows.insert(id);
             continue;
         }
         column.insert(id);
-        pending.extend(ids(&header["headers"])?);
+        pending.extend(header_ids(header));
     }
     Ok((column, rows))
+}
+
+/// Header texts in order, each once. A header repeated down a table is
+/// headed by the repeat before it, so a cell under the last repeat reaches
+/// every repeat, each with the same text.
+fn distinct(texts: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    texts
+        .into_iter()
+        .filter(|text| seen.insert(text.clone()))
+        .collect()
+}
+
+/// What the headers of a cell lead to, read once for all the cells under the
+/// same headers: every header reached, the texts of the column headers in
+/// order, each once, and the row headers that qualify the row.
+struct Heads<'a> {
+    reached: BTreeSet<&'a str>,
+    texts: Vec<String>,
+    beside: BTreeSet<&'a str>,
 }
 
 /// A cell read with the headers above it, as `{headers, text}`; a cell
 /// without text gives nothing.
 fn field<'a>(
     id: &'a str,
-    cells: &BTreeMap<&'a str, &'a Value>,
+    cells: &BTreeMap<&'a str, &'a ElementCell>,
     levels: &mut BTreeMap<&'a str, usize>,
     skip: &BTreeSet<&'a str>,
     text: &impl Fn(&str) -> Option<String>,
@@ -163,10 +200,7 @@ fn field<'a>(
         return Ok(None);
     };
     let (above, _) = headers_of(cells[id], cells, skip, false)?;
-    let headers: Vec<_> = ordered(above, cells, levels)?
-        .into_iter()
-        .filter_map(text)
-        .collect();
+    let headers = distinct(ordered(above, cells, levels)?.into_iter().filter_map(text));
     Ok(Some(json!({"headers":headers,"text":value})))
 }
 
@@ -221,14 +255,22 @@ pub(super) fn headings(passage: &Value) -> String {
     texts.join(" | ")
 }
 
-struct Corpus<'a> {
+struct Corpus<'a, E> {
     inspected: &'a Inspection,
     ready: bool,
-    passages: Vec<Value>,
+    /// Takes each passage as it is made: a document's passages together
+    /// held several times the memory of the document.
+    emit: E,
 }
 
-impl Corpus<'_> {
-    fn add(&mut self, kind: &str, title: &str, sources: Vec<Value>, row: Option<&TableRow>) {
+impl<E: FnMut(Value) -> Result<()>> Corpus<'_, E> {
+    fn add(
+        &mut self,
+        kind: &str,
+        title: &str,
+        sources: Vec<Value>,
+        row: Option<&TableRow>,
+    ) -> Result<()> {
         let parts = fragments(sources);
         let whole = parts.len() == 1;
         for sources in parts {
@@ -253,11 +295,19 @@ impl Corpus<'_> {
                         .map(|cell| (cell, json!(cell.text)))
                         .collect()
                 } else {
+                    // The cells of a wide row by address, looked up once per
+                    // source of each fragment.
+                    let by_address: HashMap<&str, &RowCell> = row
+                        .cells
+                        .iter()
+                        .rev()
+                        .map(|cell| (cell.address.as_str(), cell))
+                        .collect();
                     sources
                         .iter()
                         .filter_map(|source| {
-                            let cell = row.cells.iter().find(|c| c.address == source["address"])?;
-                            Some((cell, source["text"].clone()))
+                            let cell = by_address.get(source["address"].as_str()?)?;
+                            Some((*cell, source["text"].clone()))
                         })
                         .collect()
                 };
@@ -282,12 +332,18 @@ impl Corpus<'_> {
                     passage["unread"] = Value::Object(unread);
                 }
             }
-            self.passages.push(passage);
+            (self.emit)(passage)?;
         }
+        Ok(())
     }
 }
 
-pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>> {
+/// Gives `emit` the passages of `inspected`, in the order they are indexed.
+pub(super) fn build(
+    store: &Store,
+    inspected: &Inspection,
+    emit: impl FnMut(Value) -> Result<()>,
+) -> Result<()> {
     // Searching the adopted extraction remains possible when its original changed.
     // That version is explicitly marked stale by the search response.
     let (structure, report) = if super::super::inspection::structure_format(&inspected.meta)? {
@@ -299,63 +355,80 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
             &inspected.axes,
         )?
     } else {
-        (json!({"elements":[]}), json!({"ready":false}))
+        (Structure::new(json!({}), vec![]), json!({"ready":false}))
     };
     let mut corpus = Corpus {
         inspected,
         ready: report["ready"] == true,
-        passages: vec![],
+        emit,
     };
     // A cell reads as the workbook shows it: a formula's result under the
     // cell's number format. The stored value and the formula stay beside it.
+    // What each cell shows is read once; its source is made when a passage
+    // takes it, as the sources of every cell together held several times
+    // the memory of the extraction.
     let date1904 = inspected.extraction["date1904"] == true;
-    let mut by_sheet: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
+    let sheets = &inspected.extraction.sheets;
+    let mut shown: Vec<Vec<String>> = Vec::with_capacity(sheets.len());
+    let mut by_sheet: BTreeMap<&str, HashMap<&str, (usize, usize)>> = BTreeMap::new();
     let mut uncalculated = BTreeSet::new();
-    for (si, sheet) in array(&inspected.extraction["sheets"])?.iter().enumerate() {
+    for (si, sheet) in sheets.iter().enumerate() {
         let name = string(&sheet["name"])?;
-        for (ci, cell) in array(&sheet["cells"])?.iter().enumerate() {
-            let value = &cell["value"];
-            let shown = if cell["type"] == "error" {
+        let mut texts = Vec::with_capacity(sheet.cells.len());
+        let by_address = by_sheet.entry(name).or_default();
+        for (ci, cell) in sheet.cells.iter().enumerate() {
+            let value = &cell.value;
+            texts.push(if cell.kind == CellKind::Error {
                 text(value)
             } else {
-                excel::number_format::display(
-                    value,
-                    cell["number_format"].as_str().unwrap_or(""),
-                    date1904,
-                )
-            };
-            let address = string(&cell["address"])?;
-            let mut entry = source(
-                format!("/sheets/{si}/cells/{ci}/value"),
-                name,
-                cell,
-                &json!(shown),
-            );
-            if text(value) != shown {
-                entry["value"] = value.clone();
+                excel::number_format::display(value, &cell.number_format, date1904)
+            });
+            let address = &*cell.address;
+            if cell.formula.is_some() && value.is_null() {
+                uncalculated.insert((name.to_owned(), address.to_owned()));
             }
-            if let Some(formula) = cell["formula"].as_str() {
-                entry["formula"] = json!(formula);
-                if value.is_null() {
-                    uncalculated.insert((name.to_owned(), address.to_owned()));
-                }
-            }
-            by_sheet
-                .entry(name.into())
-                .or_default()
-                .insert(address.into(), entry);
+            by_address.insert(address, (si, ci));
         }
+        shown.push(texts);
     }
+    // The source of the `ci`th cell of the `si`th sheet, as a passage holds it.
+    let source_of = |(si, ci): (usize, usize)| -> Result<Value> {
+        let sheet = &sheets[si];
+        let cell = &sheet.cells[ci];
+        let shown = &shown[si][ci];
+        let mut entry = source(
+            format!("/sheets/{si}/cells/{ci}/value"),
+            string(&sheet["name"])?,
+            &cell.address,
+            cell.position.as_deref().unwrap_or(&Value::Null),
+            &json!(shown),
+        );
+        if text(&cell.value) != *shown {
+            entry["value"] = cell.value.clone();
+        }
+        // The index takes the format out into its own tables.
+        if let Some(format) = super::format::of(
+            crate::extraction::font(sheet, cell)?,
+            crate::extraction::style(sheet, cell)?,
+        ) {
+            entry["format"] = format;
+        }
+        if let Some(formula) = cell.formula.as_deref() {
+            entry["formula"] = json!(formula);
+        }
+        Ok(entry)
+    };
+    let shown_at = |(si, ci): (usize, usize)| shown[si][ci].as_str();
     let mut used = BTreeSet::new();
-    let elements = array(&structure["elements"])?;
-    let tables: BTreeMap<&str, &Value> = elements
+    let elements = &structure.elements;
+    let tables: BTreeMap<&str, &Element> = elements
         .iter()
         .filter_map(|e| Some((e["id"].as_str()?, e)))
         .collect();
-    let all_cells: BTreeMap<&str, &Value> = elements
+    let all_cells: BTreeMap<&str, &ElementCell> = elements
         .iter()
-        .flat_map(|e| e["cells"].as_array().into_iter().flatten())
-        .filter_map(|c| Some((c["id"].as_str()?, c)))
+        .flat_map(|e| &e.cells)
+        .map(|c| (&*c.id, c))
         .collect();
     // All linked headers are explicit cells in the interpretation, including merged
     // and multi-level headers; no first-row-is-a-header heuristic is added here.
@@ -369,8 +442,8 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
             continue;
         };
         let text = |id: &str| -> Option<String> {
-            let address = all_cells.get(id)?["address"].as_str()?;
-            Some(cells.get(address)?["text"].as_str()?.to_owned())
+            let address = &*all_cells.get(id)?.address;
+            Some(shown_at(*cells.get(address)?).to_owned())
         };
         // A nested table sits under the context its parents give it: their
         // column headers above it, and the cells of the parent records it
@@ -392,7 +465,7 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
             let (above, records): (Vec<&str>, Vec<&str>) = context
                 .into_iter()
                 .filter(|id| all_cells.contains_key(id))
-                .partition(|id| all_cells[id]["role"] == "column_header");
+                .partition(|id| all_cells[id].role == Role::ColumnHeader);
             let records: BTreeSet<&str> = records.into_iter().collect();
             for id in above {
                 let (over, _) = headers_of(all_cells[id], &all_cells, &records, false)?;
@@ -407,7 +480,7 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
             let mut placed = records
                 .iter()
                 .map(|id| {
-                    let (column, row) = excel::coordinate(string(&all_cells[id]["address"])?)?;
+                    let (column, row) = excel::coordinate(&all_cells[id].address)?;
                     Ok(((row, column), *id))
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -423,9 +496,9 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
         if !within.is_empty() {
             table["within"] = json!(within);
         }
-        let mut rows: BTreeMap<u32, Vec<(u32, &Value)>> = BTreeMap::new();
-        for cell in array(&element["cells"])? {
-            let address = string(&cell["address"])?;
+        let mut rows: BTreeMap<u32, Vec<(u32, &ElementCell)>> = BTreeMap::new();
+        for cell in &element.cells {
+            let address = &*cell.address;
             let (column, row) = excel::coordinate(address)?;
             used.insert((name.to_owned(), address.to_owned()));
             rows.entry(row).or_default().push((column, cell));
@@ -434,30 +507,66 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
             "{} / {name}",
             inspected.meta["document_id"].as_str().unwrap()
         );
+        // Cells under the same headers share what the headers lead to; a
+        // table repeating its header every few rows chains each repeat to
+        // the one before, so reading the chain for every cell grows with
+        // the cells times the repeats.
+        let mut heads: HashMap<Vec<&str>, std::rc::Rc<Heads<'_>>> = HashMap::new();
+        let mut fields: HashMap<&str, (BTreeSet<&str>, Option<Value>)> = HashMap::new();
         for (row, mut members) in rows {
             members.sort_by_key(|(column, _)| *column);
             // Headers within the row are values of the row; they head no column.
-            let in_row: BTreeSet<&str> = members
-                .iter()
-                .filter_map(|(_, cell)| cell["id"].as_str())
-                .collect();
+            let in_row: BTreeSet<&str> = members.iter().map(|(_, cell)| &*cell.id).collect();
             let mut row_headers = BTreeSet::new();
             let mut row_cells = vec![];
             let mut sources = vec![];
             for (_, cell) in members {
-                let address = string(&cell["address"])?;
-                let (over, beside) = headers_of(cell, &all_cells, &in_row, true)?;
-                row_headers.extend(beside);
-                let headers = ordered(over, &all_cells, &mut levels)?
+                let address = &*cell.address;
+                // A header in the row is passed over, so it is no part of
+                // what the cell shares with the cells of other rows.
+                let mut direct: Vec<&str> = header_ids(cell)
                     .into_iter()
-                    .filter_map(text)
+                    .filter(|id| !in_row.contains(id))
                     .collect();
-                let original = cells.get(address);
+                direct.sort_unstable();
+                direct.dedup();
+                let shared = match heads.get(&direct) {
+                    Some(shared) => shared.clone(),
+                    None => {
+                        let (over, beside) =
+                            headers_from(direct.clone(), &all_cells, &BTreeSet::new(), true)?;
+                        let shared = std::rc::Rc::new(Heads {
+                            reached: over.iter().chain(&beside).copied().collect(),
+                            texts: distinct(
+                                ordered(over, &all_cells, &mut levels)?
+                                    .into_iter()
+                                    .filter_map(text),
+                            ),
+                            beside,
+                        });
+                        heads.insert(direct, shared.clone());
+                        shared
+                    }
+                };
+                // A header in the cell's own row is a value of the row, not a
+                // header: such a cell is read on its own.
+                let headers = if in_row.iter().any(|id| shared.reached.contains(id)) {
+                    let (over, beside) = headers_of(cell, &all_cells, &in_row, true)?;
+                    row_headers.extend(beside);
+                    distinct(
+                        ordered(over, &all_cells, &mut levels)?
+                            .into_iter()
+                            .filter_map(text),
+                    )
+                } else {
+                    row_headers.extend(shared.beside.iter().copied());
+                    shared.texts.clone()
+                };
+                let original = cells.get(address).copied();
                 if let Some(original) = original {
-                    sources.push(original.clone());
+                    sources.push(source_of(original)?);
                 }
-                let unread = cell["text_state"]
-                    .as_str()
+                let unread = Some(cell.text_state.as_str())
                     .filter(|state| ["unreadable", "not_examined"].contains(state))
                     .or_else(|| {
                         uncalculated
@@ -465,7 +574,7 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
                             .then_some("uncalculated")
                     });
                 let value = original
-                    .and_then(|o| o["text"].as_str())
+                    .map(shown_at)
                     .filter(|_| unread != Some("uncalculated"))
                     .map(str::to_owned)
                     .or_else(|| unread.is_none().then(String::new));
@@ -481,7 +590,23 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
             }
             let mut context = vec![];
             for id in ordered(row_headers, &all_cells, &mut levels)? {
-                context.extend(field(id, &all_cells, &mut levels, &in_row, &text)?);
+                // A row header heads many rows; it is read once for them all,
+                // unless what heads it lies in this row.
+                let (reached, read) = match fields.get(id) {
+                    Some(known) => known,
+                    None => {
+                        let (above, _) =
+                            headers_of(all_cells[id], &all_cells, &BTreeSet::new(), false)?;
+                        let read = field(id, &all_cells, &mut levels, &BTreeSet::new(), &text)?;
+                        fields.insert(id, (above, read));
+                        &fields[id]
+                    }
+                };
+                if in_row.iter().any(|id| reached.contains(id)) {
+                    context.extend(field(id, &all_cells, &mut levels, &in_row, &text)?);
+                } else {
+                    context.extend(read.clone());
+                }
             }
             corpus.add(
                 "row",
@@ -493,18 +618,18 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
                     cells: row_cells,
                     context,
                 }),
-            );
+            )?;
         }
     }
-    for (si, sheet) in array(&inspected.extraction["sheets"])?.iter().enumerate() {
+    for (si, sheet) in inspected.extraction.sheets.iter().enumerate() {
         let name = string(&sheet["name"])?;
         let mut rows: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
-        for cell in array(&sheet["cells"])? {
-            let address = string(&cell["address"])?;
+        for cell in &sheet.cells {
+            let address = &*cell.address;
             if used.contains(&(name.to_owned(), address.to_owned())) {
                 continue;
             }
-            let original = by_sheet[name][address].clone();
+            let original = source_of(by_sheet[name][address])?;
             let (_, row) = excel::coordinate(address)?;
             rows.entry(row).or_default().push(original);
         }
@@ -526,23 +651,36 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
                 headings.into_iter().collect::<Vec<_>>().join(" / ")
             );
             let kind = if sources.len() == 1 { "block" } else { "row" };
-            corpus.add(kind, &title, sources, None);
+            corpus.add(kind, &title, sources, None)?;
         }
         for (key, kind, fields) in [
             ("comments", "comment", vec!["text"]),
             ("drawings", "drawing", vec!["text", "description"]),
         ] {
             for (i, object) in sheet[key].as_array().into_iter().flatten().enumerate() {
+                // The paragraphs of a slide's shapes are cells of the slide,
+                // which are indexed already; their description is not.
+                let slide = key == "drawings" && object["anchor"]["kind"] == "slide";
                 let sources = fields
                     .iter()
-                    .filter(|field| object[**field].is_string())
+                    .filter(|field| object[**field].is_string() && !(slide && **field == "text"))
                     .map(|field| {
-                        source(
+                        let mut entry = source(
                             format!("/sheets/{si}/{key}/{i}/{field}"),
                             name,
-                            object,
+                            object["address"].as_str().unwrap_or(""),
+                            object.get("position").unwrap_or(&Value::Null),
                             &object[*field],
-                        )
+                        );
+                        // A shape's font and emphasis are those of its text, not of
+                        // its description.
+                        if *field == "text"
+                            && let Some(format) =
+                                super::format::of(&object["font"], &object["style"])
+                        {
+                            entry["format"] = format;
+                        }
+                        entry
                     })
                     .collect();
                 corpus.add(
@@ -553,7 +691,7 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
                     ),
                     sources,
                     None,
-                );
+                )?;
             }
         }
     }
@@ -565,14 +703,15 @@ pub(super) fn build(store: &Store, inspected: &Inspection) -> Result<Vec<Value>>
                 vec![source(
                     format!("/assets/{i}/ocr/text"),
                     "",
+                    "",
                     &Value::Null,
                     &asset["ocr"]["text"],
                 )],
                 None,
-            );
+            )?;
         }
     }
-    Ok(corpus.passages)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -433,29 +433,39 @@ impl<'a, 'input> Block<'a, 'input> {
 }
 
 /// The extraction sheet of text laid out as `blocks`, each with its font
-/// from `font` when the format records fonts.
+/// and the emphasis its style marks from `font`. Built typed: a cell as JSON,
+/// with its font and style in place, took eight times the memory.
 pub(super) fn blocks_sheet(
     name: &str,
     part: &str,
     blocks: &[Block<'_, '_>],
     merges: &[String],
     tables: &[Value],
-    font: Option<&dyn Fn(&Block<'_, '_>) -> Value>,
-) -> Value {
-    let cells: Vec<_> = blocks
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let mut cell = json!({"id":format!("text-{}",i+1),"address":b.address,"type":"string","value":b.text,
-                "formula":null,"cached":null,"number_format":"",
-                "style":{"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)}});
-            if let Some(font) = font {
-                cell["font"] = font(b);
-            }
-            cell
-        })
-        .collect();
-    json!({"name":name,"part":part,"state":"visible","merges":merges,"cells":cells,"tables":tables})
+    font: &dyn Fn(&Block<'_, '_>) -> (Value, crate::fonts::Emphasis),
+) -> crate::extraction::Sheet {
+    let mut sheet = crate::extraction::Sheet::build(
+        json!({"name":name,"part":part,"state":"visible","merges":merges,"tables":tables}),
+    );
+    let number_format = sheet.number_format("");
+    for (i, b) in blocks.iter().enumerate() {
+        let mut style =
+            json!({"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)});
+        let (font, emphasis) = font(b);
+        emphasis.mark(&mut style);
+        let cell = crate::extraction::Cell {
+            id: format!("text-{}", i + 1).into(),
+            address: b.address.as_str().into(),
+            kind: crate::extraction::CellKind::String,
+            value: Value::String(b.text.clone()),
+            formula: None,
+            number_format: number_format.clone(),
+            font: None,
+            style: None,
+            position: None,
+        };
+        sheet.push(cell, Some(font), Some(style));
+    }
+    sheet.finish()
 }
 
 pub(super) struct Layout<'a, 'input> {
@@ -467,14 +477,19 @@ pub(super) struct Layout<'a, 'input> {
 }
 
 impl Layout<'_, '_> {
-    pub fn sheet(&self, name: &str, part: &str, styles: &super::word_fonts::WordStyles) -> Value {
+    pub fn sheet(
+        &self,
+        name: &str,
+        part: &str,
+        styles: &super::word_fonts::WordStyles,
+    ) -> crate::extraction::Sheet {
         blocks_sheet(
             name,
             part,
             &self.blocks,
             &self.merges,
             &self.tables,
-            Some(&|block| styles.block_font(block)),
+            &|block| styles.block_font(block),
         )
     }
 }
@@ -1587,11 +1602,12 @@ mod tests {
                 json!({"name":"table-2","range":"C3:D3","header_rows":0,"totals_rows":0,"parent":"table-1"})
             ]
         );
-        let sheet = layout.sheet(
+        let sheet = crate::extraction::sheet_view(&layout.sheet(
             "document",
             "word/document.xml",
             &super::super::word_fonts::WordStyles::new(&BTreeMap::new()).unwrap(),
-        );
+        ))
+        .unwrap();
         assert_eq!(
             sheet["cells"][4]["style"],
             json!({"bold":false,"fill":0,"border":1})

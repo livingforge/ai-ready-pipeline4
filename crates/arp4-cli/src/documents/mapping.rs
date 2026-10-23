@@ -1,5 +1,5 @@
 use super::*;
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 /// A mapping entry. The default entries of an extraction, one or two for
 /// every cell, are kept as what they are made from rather than as JSON, which
@@ -11,12 +11,15 @@ pub(crate) enum Entry {
     Default(DefaultEntry),
 }
 
-/// A default entry of an extraction cell, formula, shape text or block.
+/// A default entry of an extraction cell, formula, shape text or block. A
+/// large workbook has one per cell: the entry of a cell shares its ID and
+/// address with the extraction cell, and its row and column names with the
+/// other cells of its row and column, rather than holding strings of its own.
 pub(crate) struct DefaultEntry {
     page: Arc<str>,
     sheet: Arc<str>,
     block: &'static str,
-    field: Option<Box<str>>,
+    field: Option<Arc<str>>,
     reason: &'static str,
     writeback: &'static str,
     target: DefaultTarget,
@@ -25,13 +28,13 @@ pub(crate) struct DefaultEntry {
 
 enum DefaultTarget {
     None,
-    Cell(Box<str>),
+    Cell(Arc<str>),
     Shape(Box<str>),
 }
 
 struct DefaultPosition {
-    row: Box<str>,
-    column: Cow<'static, str>,
+    row: Arc<str>,
+    column: Arc<str>,
     kind: &'static str,
 }
 
@@ -231,9 +234,12 @@ pub(super) fn mapping_target(value: &Value) -> Result<Option<MappingTarget<'_>>>
 }
 /// The sheet whose content page is `page`: the `page` a sheet names, or else
 /// `sheet-<n>` for the n-th sheet.
-pub(super) fn page_sheet(extraction: &Value, page: &str) -> Result<String> {
-    let sheets = array(&extraction["sheets"])?;
-    if sheets.iter().any(|sheet| sheet.get("page").is_some()) {
+pub(super) fn page_sheet(extraction: &Extraction, page: &str) -> Result<String> {
+    let sheets = &extraction.sheets;
+    if sheets
+        .iter()
+        .any(|sheet| sheet.fields.get("page").is_some())
+    {
         return string(
             &sheets
                 .iter()
@@ -249,7 +255,8 @@ pub(super) fn page_sheet(extraction: &Value, page: &str) -> Result<String> {
         .checked_sub(1)
         .context("invalid worksheet page")?;
     string(
-        &array(&extraction["sheets"])?
+        &extraction
+            .sheets
             .get(index)
             .context("content page has no worksheet")?["name"],
     )
@@ -291,36 +298,48 @@ fn inserted_position(
 }
 /// The mapping entries import derives from `extraction`: one per cell and formula,
 /// and one per page block. mappings.yml stores only entries that differ from these.
-pub(super) fn default_entries(extraction: &Value) -> Result<Vec<Entry>> {
+pub(super) fn default_entries(extraction: &Extraction) -> Result<Vec<Entry>> {
     let native_text = extraction["parser"]
         .as_str()
         .and_then(|parser| parser.split(';').nth(1))
         == Some("native-text/1");
-    let mut entries = vec![];
-    for (i, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+    // An entry per cell, made as large as that at once: grown by doubling,
+    // the list of a large workbook held up to twice its entries.
+    let mut entries = Vec::with_capacity(
+        extraction
+            .sheets
+            .iter()
+            .map(|sheet| sheet.cells.len() + 4)
+            .sum(),
+    );
+    for (i, sheet) in extraction.sheets.iter().enumerate() {
         let page: Arc<str> = match sheet["page"].as_str() {
             Some(page) => page.into(),
             None => format!("sheet-{}", i + 1).into(),
         };
         let name: Arc<str> = string(&sheet["name"])?.into();
-        let entry = |block, field: Option<String>, reason, writeback, target, position| {
+        let entry = |block, field: Option<Arc<str>>, reason, writeback, target, position| {
             Entry::Default(DefaultEntry {
                 page: page.clone(),
                 sheet: name.clone(),
                 block,
-                field: field.map(String::into_boxed_str),
+                field,
                 reason,
                 writeback,
                 target,
                 position,
             })
         };
-        let computed_ranges = excel::ComputedRanges::new(sheet)?;
+        // The names of the rows and columns of the cells, each made once.
+        let mut rows: HashMap<u32, Arc<str>> = HashMap::new();
+        let mut columns: HashMap<&str, Arc<str>> = HashMap::new();
+        let (formula, text): (Arc<str>, Arc<str>) = ("formula".into(), "text".into());
+        let computed_ranges = excel::ComputedRanges::new(&sheet.fields)?;
         let merges = excel::Merges::new(&sheet["merges"])?;
-        let cells = array(&sheet["cells"])?;
+        let cells = &sheet.cells;
         let mut has_formulas = false;
         for c in cells {
-            let address = string(&c["address"])?;
+            let address = &*c.address;
             let (_, row) = excel::coordinate(address)?;
             let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
             let computed = computed_ranges.find(address)?.map(|(kind, _)| kind);
@@ -335,22 +354,28 @@ pub(super) fn default_entries(extraction: &Value) -> Result<Vec<Entry>> {
             let excluded = hidden
                 || computed.is_some()
                 || native_text
-                || c["type"] == "formula"
-                || c["type"] == "error";
-            let id = string(&c["id"])?;
+                || c.kind == CellKind::Formula
+                || c.kind == CellKind::Error;
+            let id = &*c.id;
             entries.push(entry(
                 "table-1",
-                Some(id.to_owned()),
+                Some(c.id.clone()),
                 reason,
                 if excluded { "excluded" } else { "cell" },
-                DefaultTarget::Cell(address.into()),
+                DefaultTarget::Cell(c.address.clone()),
                 Some(DefaultPosition {
-                    row: format!("r{row}").into(),
-                    column: Cow::Owned(column.to_owned()),
-                    kind: kind(&c["value"]),
+                    row: rows
+                        .entry(row)
+                        .or_insert_with(|| format!("r{row}").into())
+                        .clone(),
+                    column: columns
+                        .entry(column)
+                        .or_insert_with(|| column.into())
+                        .clone(),
+                    kind: kind(&c.value),
                 }),
             ));
-            if c["type"] == "formula" {
+            if c.kind == CellKind::Formula {
                 has_formulas = true;
                 // The formula of an array, spill or data table spans its range, and
                 // one hidden by a merge is not shown; those stay as they are.
@@ -367,30 +392,30 @@ pub(super) fn default_entries(extraction: &Value) -> Result<Vec<Entry>> {
                 };
                 entries.push(entry(
                     "formulas",
-                    Some(format!("{id}-formula")),
+                    Some(format!("{id}-formula").into()),
                     reason,
                     writeback,
-                    DefaultTarget::Cell(address.into()),
+                    DefaultTarget::Cell(c.address.clone()),
                     Some(DefaultPosition {
-                        row: id.into(),
-                        column: Cow::Borrowed("formula"),
+                        row: c.id.clone(),
+                        column: formula.clone(),
                         kind: "string",
                     }),
                 ));
             }
         }
         let mut has_shapes = false;
-        for (key, drawing) in shape_texts(sheet)? {
+        for (key, drawing) in shape_texts(&sheet.fields)? {
             has_shapes = true;
             entries.push(entry(
                 "shapes",
-                Some(format!("{key}-text")),
+                Some(format!("{key}-text").into()),
                 "図形の文字",
                 if native_text { "excluded" } else { "shape" },
                 DefaultTarget::Shape(string(&drawing["id"])?.into()),
                 Some(DefaultPosition {
                     row: key.into(),
-                    column: Cow::Borrowed("text"),
+                    column: text.clone(),
                     kind: "string",
                 }),
             ));
@@ -451,7 +476,7 @@ pub(super) fn shape_texts(sheet: &Value) -> Result<Vec<(String, &Value)>> {
 /// empty: the complete entries are returned apart from it.
 pub(super) fn with_default_entries(
     mut mappings: Value,
-    extraction: &Value,
+    extraction: &Extraction,
 ) -> Result<(Value, Vec<Entry>)> {
     let Value::Array(stored) = mappings["entries"].take() else {
         bail!("mappings entries must be an array");
@@ -462,8 +487,9 @@ pub(super) fn with_default_entries(
         replacements.entry(entry_key(entry)?).or_insert(index);
     }
     let mut used = vec![false; stored.len()];
-    let mut entries = vec![];
-    for default in default_entries(extraction)? {
+    let defaults = default_entries(extraction)?;
+    let mut entries = Vec::with_capacity(defaults.len() + stored.len());
+    for default in defaults {
         let key = (
             default.page()?,
             default.block()?,
@@ -503,40 +529,34 @@ type Pair<'a> = (&'a str, &'a str);
 pub(super) fn regenerate_mappings(
     regenerated: Value,
     entries: Vec<Entry>,
-    extraction: &Value,
-    pages: &[Value],
+    extraction: &Extraction,
+    pages: &[super::elements::GridPage],
     operations: &[excel::StructuralOperation],
 ) -> Result<(Value, Vec<Entry>)> {
     let mut positions: BTreeMap<Pair, BTreeMap<Pair, &Value>> = BTreeMap::new();
-    let mut fields: BTreeMap<Pair, BTreeSet<&str>> = BTreeMap::new();
+    // A page has its notes and blocks of rows, and no fields.
+    let fields: BTreeMap<Pair, BTreeSet<&str>> = BTreeMap::new();
     let mut blocks = BTreeSet::new();
     for page in pages {
-        let page_id = string(&page["page_id"])?;
-        for (block, body) in page["blocks"]
-            .as_object()
-            .context("content blocks required")?
-        {
-            let block_key = (page_id, block.as_str());
+        let page_id = string(&page.fields["page_id"])?;
+        blocks.insert((page_id, "extraction-notes"));
+        for block in page.titles.keys() {
+            blocks.insert((page_id, block.as_str()));
+            positions.entry((page_id, block.as_str())).or_default();
+        }
+        for value in &page.values {
+            let block_key = (page_id, &*value.block);
             blocks.insert(block_key);
-            if let Some(values) = body["fields"].as_object() {
-                fields
-                    .entry(block_key)
-                    .or_default()
-                    .extend(values.keys().map(String::as_str));
-            }
-            if let Some(rows) = body["rows"].as_object() {
-                let table = positions.entry(block_key).or_default();
-                for (row, values) in rows {
-                    for (column, value) in values.as_object().context("invalid table row")? {
-                        table.insert((row.as_str(), column.as_str()), value);
-                    }
-                }
-            }
+            positions
+                .entry(block_key)
+                .or_default()
+                .insert((value.row.as_str(), value.column.as_str()), &value.value);
         }
     }
     let mut keep = vec![];
     let mut used_fields = BTreeSet::new();
-    let mut mapped_positions = BTreeSet::new();
+    // Looked up for every cell of the pages, and only looked up.
+    let mut mapped_positions = HashSet::new();
     for entry in &entries {
         let page = entry.page()?;
         let block = entry.block()?;
@@ -689,22 +709,22 @@ pub(super) fn stored_mappings(path: &Path, mappings: &Value) -> Result<Vec<u8>> 
 /// [`slide_view`]): the pages deleted slides leave out, and the copies inserted
 /// slides add. The extraction itself when there are none.
 pub(super) fn operated_extraction<'a>(
-    extraction: &'a Value,
+    extraction: &'a Extraction,
     operations: &Value,
-) -> Result<Cow<'a, Value>> {
+) -> Result<Cow<'a, Extraction>> {
     let operations = array(operations)?;
     if !operations.iter().any(is_slide_operation) {
         return Ok(Cow::Borrowed(extraction));
     }
-    let sheets = array(&extraction["sheets"])?;
-    let parsed = parse_slide_operations(operations, sheets)?;
-    let mut view = extraction.clone();
+    let parsed = parse_slide_operations(operations, &extraction.sheets)?;
     let layouts = extraction["slide_layouts"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default();
-    view["sheets"] = Value::Array(slide_view(sheets, layouts, &parsed)?);
-    Ok(Cow::Owned(view))
+    Ok(Cow::Owned(Extraction {
+        fields: extraction.fields.clone(),
+        sheets: slide_view(&extraction.sheets, layouts, &parsed)?,
+    }))
 }
 
 #[cfg(test)]

@@ -192,7 +192,7 @@ impl Store {
             return Err(Rejection(json!({"code":"operation_id_conflict","message":format!("operation {op_id} is already recorded with other settings; choose another --id, or omit --id to have one generated"),"recorded":existing})).into());
         }
 
-        let sheets = array(&inspected.extraction["sheets"])?;
+        let sheets = &inspected.extraction.sheets;
         let prior = parse_slide_operations(&recorded, sheets)?;
         let mut values = recorded.clone();
         values.push(operation.clone());
@@ -204,7 +204,7 @@ impl Store {
             .unwrap_or_default();
         let before = slide_view(sheets, layouts, &prior)?;
         let after = slide_view(sheets, layouts, &operations)?;
-        let page_of = |view: &[Value], name: &str| {
+        let page_of = |view: &[Sheet], name: &str| {
             view.iter()
                 .find(|sheet| sheet["name"] == name)
                 .and_then(|sheet| sheet["page"].as_str())
@@ -264,8 +264,9 @@ impl Store {
                         .with_context(|| format!("{source} has no content page {source_page}"))?;
                     let page_id = page_of(&after, &name).context("inserted page missing")?;
                     let mut page = read(&under(&dir, &file)?, Some("content"))?;
-                    layout["sheets"][&page_id] = layout["sheets"][&source_page].clone();
-                    layout["sheets"][&page_id]["name"] = json!(name);
+                    let copy = layout.sheet(&source_page)?.clone();
+                    layout.sheets.insert(page_id.clone(), copy);
+                    layout.sheet_mut(&page_id)?["name"] = json!(name);
                     page["page_id"] = json!(page_id);
                     page["title"] = json!(name);
                     let target = format!("content/{name}.yml");
@@ -293,7 +294,7 @@ impl Store {
                     .filter_map(|name| page_of(&before, name))
                     .collect();
                 for page in &gone {
-                    layout["sheets"].as_object_mut().unwrap().remove(page);
+                    layout.sheets.remove(page);
                     if let Some(file) = file_of(page) {
                         planned.insert(file.clone(), None);
                         removed.push(file);
@@ -338,12 +339,13 @@ impl Store {
                     .unwrap_or(json!(""));
                 let mut rows = json!({});
                 let mut fonts = json!({});
-                for cell in array(&sheet["cells"])? {
-                    let (_, row) = crate::excel::coordinate(string(&cell["address"])?)?;
-                    rows[format!("r{row}")]["A"] = cell["value"].clone();
+                let mut table = elements::Fonts::default();
+                for cell in &sheet.cells {
+                    let (_, row) = crate::excel::coordinate(&cell.address)?;
+                    rows[format!("r{row}")]["A"] = cell.value.clone();
                     let font = crate::extraction::font(sheet, cell)?;
                     if !font.is_null() {
-                        fonts["table-1"][format!("r{row}")]["A"] = font.clone();
+                        fonts["table-1"][format!("r{row}")]["A"] = table.add(font);
                     }
                 }
                 let mut blocks =
@@ -351,13 +353,17 @@ impl Store {
                 if rows.as_object().is_some_and(|rows| !rows.is_empty()) {
                     blocks["table-1"] = json!({"title":"本文","rows":rows});
                 }
-                layout["sheets"][&page_id] = identity::initial_sheet(sheet)?;
+                layout
+                    .sheets
+                    .insert(page_id.clone(), identity::initial_sheet(sheet)?);
                 identity::check_axes(&layout)?;
-                let page = elements::encode(
-                    &json!({"schema_version":identity::GRID_VERSION,"page_id":page_id,"title":op_id,"blocks":blocks,"fonts":fonts}),
-                    &mut layout,
-                )?;
-                planned.insert(target.clone(), Some(elements::page_bytes(&page, &layout)?));
+                let mut page = json!({"schema_version":identity::GRID_VERSION,"page_id":page_id,"title":op_id,"blocks":blocks,"fonts":fonts});
+                page[elements::FONT_TABLE] = Value::Array(table.list);
+                let page = elements::encode(page, &mut layout, None)?;
+                planned.insert(
+                    target.clone(),
+                    Some(elements::content_bytes(&page, &layout)?),
+                );
                 added.push(target);
             }
             // The slide keeps its pages; only the presentation changes.
@@ -370,7 +376,7 @@ impl Store {
         );
         planned.insert(
             "layout.yml".into(),
-            Some(identity::stored(&mut layout, &inspected.extraction)?),
+            Some(identity::stored(layout, &inspected.extraction)?),
         );
         Source::open(&under(&self.root, source_path)?)?
             .ensure_slide_edits_supported(&values)
@@ -396,6 +402,10 @@ impl Store {
         self.commit(&dir, &planned, &inspected.fingerprint)?;
         report["state"] = json!("written");
         report["content"] = json!(result.fingerprint);
+        // The written content was inspected above; its status is made from
+        // that inspection rather than by inspecting the document again.
+        let row = self.state_of(id, &dir, Ok(result));
+        self.remember_state(id, &dir, &row);
         Ok(report)
     }
 }

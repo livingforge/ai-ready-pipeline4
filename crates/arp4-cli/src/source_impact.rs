@@ -1,6 +1,7 @@
 //! Conservative correspondence and review impact; never rewrites evidence or approvals.
 use crate::{
     data::{array, encoded, hash, string},
+    extraction::Extraction,
     registry::Registry,
 };
 use anyhow::Result;
@@ -15,15 +16,15 @@ struct Unit {
     position: Value,
 }
 
-fn units(extraction: &Value) -> Result<Vec<Unit>> {
+fn units(extraction: &Extraction) -> Result<Vec<Unit>> {
     let mut units = vec![];
-    for (si, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
-        for (ci, cell) in array(&sheet["cells"])?.iter().enumerate() {
-            let text = string(&cell["value"])?;
+    for (si, sheet) in extraction.sheets.iter().enumerate() {
+        for (ci, cell) in sheet.cells.iter().enumerate() {
+            let text = string(&cell.value)?;
             if text.trim().is_empty() {
                 continue;
             }
-            let position = &cell["position"];
+            let position = cell.position.as_deref().unwrap_or(&Value::Null);
             let kind = string(&position["kind"])?;
             units.push(Unit {
                 id: hash(&encoded(&json!([
@@ -36,10 +37,7 @@ fn units(extraction: &Value) -> Result<Vec<Unit>> {
                     kind,
                     position["headings"],
                     position["columns"],
-                    cell["address"]
-                        .as_str()
-                        .unwrap_or("")
-                        .trim_end_matches(|c: char| c.is_ascii_digit())
+                    cell.address.trim_end_matches(|c: char| c.is_ascii_digit())
                 ]))?,
                 position: position.clone(),
             });
@@ -60,7 +58,11 @@ fn change(kind: &str, old: &[&Unit], new: &[&Unit], confirmed: bool) -> Value {
         "review_required":kind != "moved","affected_entries":[]})
 }
 
-pub fn compare(before: &Value, after: &Value, registry: Option<&Registry>) -> Result<Value> {
+pub fn compare(
+    before: &Extraction,
+    after: &Extraction,
+    registry: Option<&Registry>,
+) -> Result<Value> {
     let old = units(before)?;
     let new = units(after)?;
     let mut matched_before = BTreeSet::new();
@@ -161,7 +163,7 @@ pub fn compare(before: &Value, after: &Value, registry: Option<&Registry>) -> Re
 fn attach_entries(
     changes: &mut Vec<Value>,
     old: &[Unit],
-    before: &Value,
+    before: &Extraction,
     registry: &Registry,
 ) -> Result<()> {
     let revision = crate::extraction::hash(before)?;

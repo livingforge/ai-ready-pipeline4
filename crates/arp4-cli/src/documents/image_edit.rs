@@ -91,7 +91,7 @@ impl Store {
             }
             return Err(Rejection(json!({"code":"operation_id_conflict","message":format!("operation {op_id} is already recorded with other settings; choose another --id, or omit --id to have one generated"),"recorded":existing})).into());
         }
-        let sheets = array(&inspected.extraction["sheets"])?;
+        let sheets = &inspected.extraction.sheets;
         if !sheets
             .iter()
             .any(|sheet| sheet["name"] == edit.sheet.as_str())
@@ -149,6 +149,10 @@ impl Store {
         self.commit(&dir, &planned, &inspected.fingerprint)?;
         report["state"] = json!("written");
         report["content"] = json!(result.fingerprint);
+        // The written content was inspected above; its status is made from
+        // that inspection rather than by inspecting the document again.
+        let row = self.state_of(id, &dir, Ok(result));
+        self.remember_state(id, &dir, &row);
         Ok(report)
     }
 }

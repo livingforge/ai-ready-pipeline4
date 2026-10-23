@@ -146,8 +146,6 @@ pub(super) struct WorkflowState {
     pub reviewed_replies: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub review_findings: Value,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub previous: Value,
 }
 
 impl WorkflowState {

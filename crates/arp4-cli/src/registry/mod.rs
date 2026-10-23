@@ -1,11 +1,12 @@
 //! Current canonical records; Git owns previous versions.
 mod validation;
-use validation::conflicts;
+use validation::{Snapshots, cited, conflicts, validate_with};
 pub use validation::{fingerprint, validate};
 mod persistence;
 use persistence::refresh;
-pub use persistence::{load, save};
+pub use persistence::{load, save, update};
 mod mutation;
+use mutation::apply_with;
 pub use mutation::{apply, import, preflight};
 mod render;
 pub use render::{render, summary};
@@ -132,6 +133,10 @@ pub struct ChangeRecord {
     pub approved: Vec<String>,
     pub aliases: BTreeMap<String, String>,
     pub resolved_issues: BTreeMap<String, String>,
+    /// The records whose evidence now cites a snapshot the change added in
+    /// place of an earlier one holding the same sources.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repointed: Vec<String>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

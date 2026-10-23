@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 
 pub(super) type Stamp = (String, References);
-pub(super) const READ_BUFFER_SIZE: usize = 64 * 1024;
+pub(in crate::documents) const READ_BUFFER_SIZE: usize = 64 * 1024;
 
 fn hash_file(path: &Path, buffer: &mut [u8]) -> Result<String> {
     let mut file = fs::File::open(path)?;

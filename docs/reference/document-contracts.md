@@ -1304,6 +1304,11 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/type</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style</code> | <code>{"additionalProperties":false,"description":"The emphasis every run of the shape's text shows. Absent when it shows none.","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/highlight</code> | <code>{"const":true,"description":"Every run of the text is highlighted (Word and PowerPoint)."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/italic</code> | <code>{"const":true,"description":"Every run of the text is italic, as styles and themes resolve it."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/strike</code> | <code>{"const":true,"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/underline</code> | <code>{"const":true,"description":"Every run of the text is underlined, by a line of any kind."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/0</code> | <code>{"type":"null"}</code> |
@@ -1337,9 +1342,12 @@
 | <code>/properties/sheets/items/properties/styles/items</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/bold</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/styles/items/properties/fill</code> | <code>{"description":"Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/fill</code> | <code>{"description":"Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/styles/items/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/tables</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
@@ -1383,7 +1391,10 @@
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/border</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
@@ -1479,9 +1490,12 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"description":"Excel fill number; 0 when the fill paints nothing. Equal numbers are the same fill.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"description":"Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
@@ -1575,6 +1589,11 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/type</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style</code> | <code>{"additionalProperties":false,"description":"The emphasis every run of the shape's text shows. Absent when it shows none.","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/highlight</code> | <code>{"const":true,"description":"Every run of the text is highlighted (Word and PowerPoint)."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/italic</code> | <code>{"const":true,"description":"Every run of the text is italic, as styles and themes resolve it."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/strike</code> | <code>{"const":true,"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/underline</code> | <code>{"const":true,"description":"Every run of the text is underlined, by a line of any kind."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/0</code> | <code>{"type":"null"}</code> |
@@ -1635,7 +1654,10 @@
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/border</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Excel cell font is struck through, which authors use to mark a value as deleted.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
@@ -1962,6 +1984,17 @@
 | <code>/properties/tables</code> | <code>{"description":"Tables listed once for all queries, as search-passage table with the document of their rows: document_id, source_path, state and structure_reviewed (and extraction_path with --full). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.","type":"object"}</code> |
 | <code>/properties/tables/additionalProperties</code> | <code>{"type":"object"}</code> |
 
+## search-format
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: one per cell or shape text, mixed where its runs differ. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where every run of the text shows it; fill is a filled cell behind the text.","required":["property","value","hits","cells"],"type":"object"}</code> |
+| <code>/properties/cells</code> | <code>{"description":"The cells and shape texts with text in this value.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/family</code> | <code>{"description":"For a color, the family a --color filter names it by; auto is black.","enum":["red","orange","yellow","green","cyan","blue","purple","pink","gray","black","white"]}</code> |
+| <code>/properties/hits</code> | <code>{"description":"The hits of a search filtering by this value alone.","minimum":1,"type":"integer"}</code> |
+| <code>/properties/property</code> | <code>{"enum":["color","theme","font","size","bold","italic","underline","strike","highlight","fill"]}</code> |
+| <code>/properties/value</code> | <code>{"description":"Font color as RRGGBB, auto or mixed; theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill).","type":["string","number","boolean"]}</code> |
+
 ## search-passage
 
 | JSON Pointer | 制約 |
@@ -1969,6 +2002,8 @@
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"dependentRequired":{"row":["table"],"row_context":["table"],"table":["row","values"],"unread":["table"],"values":["table"]},"description":"Fragment stored in the search index. CLI search responses omit extraction_sha256, including with --full. Source pointers are relative to extraction.json; offsets are Unicode scalar offsets in the displayed extracted text, not original file bytes.","required":["document_id","source_path","extraction_sha256","kind","title","text","sources","structure_reviewed"],"type":"object"}</code> |
 | <code>/properties/document_id</code> | <code>{"type":"string"}</code> |
 | <code>/properties/extraction_sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/formatted</code> | <code>{"description":"On a hit of a search with a format filter: the sources of this passage whose text is in the format, in source order; a cell by its address, a shape's text by its pointer.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/formatted/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/kind</code> | <code>{"enum":["row","block","comment","drawing","ocr"]}</code> |
 | <code>/properties/row</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/row_context</code> | <code>{"description":"Row headers of other rows that head this row, such as a merged item name or a section row, outermost first.","minItems":1,"type":"array"}</code> |
@@ -2002,6 +2037,7 @@
 | <code>/$defs/source</code> | <code>{"additionalProperties":false,"required":["pointer","sheet","address","position","text","start","end"],"type":"object"}</code> |
 | <code>/$defs/source/properties/address</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/source/properties/end</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/$defs/source/properties/format</code> | <code>{"description":"The index's ID of the format of the source's text; stored only, responses leave it out.","minimum":1,"type":"integer"}</code> |
 | <code>/$defs/source/properties/formula</code> | <code>{"description":"The formula of a workbook cell. Its result is the stored value; a formula saved without one shows no text.","type":"string"}</code> |
 | <code>/$defs/source/properties/pointer</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/source/properties/position</code> | <code>{"type":["object","null"]}</code> |
@@ -2021,7 +2057,7 @@
 | <code>/properties/other_ms</code> | <code>{"minimum":0,"type":"number"}</code> |
 | <code>/properties/response_ms</code> | <code>{"minimum":0,"type":"number"}</code> |
 | <code>/properties/setup_ms</code> | <code>{"description":"Query analysis and read-only database opening.","minimum":0,"type":"number"}</code> |
-| <code>/properties/sql_ms</code> | <code>{"description":"Result count, SQL preparation, ranking, deduplication ordering and stepping the result cursor.","minimum":0,"type":"number"}</code> |
+| <code>/properties/sql_ms</code> | <code>{"description":"Result count, SQL preparation, ranking, deduplication ordering and stepping the result cursor; for a page after the first, reading or saving its ranking and reading its passages.","minimum":0,"type":"number"}</code> |
 | <code>/properties/total_ms</code> | <code>{"minimum":0,"type":"number"}</code> |
 
 ## search-state

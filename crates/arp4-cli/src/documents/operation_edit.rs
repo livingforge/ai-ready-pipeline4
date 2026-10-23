@@ -139,15 +139,16 @@ impl Store {
             }
             records.retain(|record| record["edits"].as_array().is_some_and(|e| !e.is_empty()));
         }
-        let sheets = array(&extraction["sheets"])?;
+        let sheets = &extraction.sheets;
         let before = operated_extraction(extraction, &Value::Array(recorded.clone()))?;
         let after = operated_extraction(extraction, &Value::Array(remaining.clone()))?;
-        let page_of = |view: &Value, name: &str| -> Result<Option<(usize, String)>> {
-            Ok(array(&view["sheets"])?
+        let page_of = |view: &Extraction, name: &str| -> Result<Option<(usize, String)>> {
+            Ok(view
+                .sheets
                 .iter()
                 .enumerate()
                 .find(|(_, sheet)| sheet["name"] == name)
-                .map(|(i, sheet)| (i, identity::page_id(sheet, i))))
+                .map(|(i, sheet)| (i, identity::page_id(&sheet.fields, i))))
         };
         // The stored layout without what the operation added to it.
         let mut stored = read(&dir.join("layout.yml"), Some("document-layout"))?;
@@ -202,24 +203,27 @@ impl Store {
                 .and_then(|(_, notes)| notes);
             for name in std::iter::once(slide.to_owned()).chain(notes) {
                 if let Some((index, page)) = page_of(&after, &name)? {
-                    layout["sheets"][&page] =
-                        identity::initial_sheet(&array(&after["sheets"])?[index])?;
+                    layout
+                        .sheets
+                        .insert(page.clone(), identity::initial_sheet(&after.sheets[index])?);
                     slide_pages.push((name, index, page));
                 }
             }
-            let operations = excel::parse_operations(&remaining, array(&after["sheets"])?)?;
+            let operations = excel::parse_operations(&remaining, &after.sheets)?;
             elements::geometry(&mut layout, &after, &operations)?;
         }
         // The interpretation of the extraction, which places cells that come
         // back in the tables they were in.
         let interpreted = match self.interpretation(&inspected)? {
-            Some((structure, _)) => {
-                let mut classified = layout.clone();
-                elements::classify(&mut classified, array(&structure["elements"])?)?;
-                Some(classified)
-            }
+            Some((structure, _)) => Some(elements::interpreted_groups(
+                &layout,
+                extraction,
+                &structure.elements,
+            )?),
             None => None,
         };
+        // The groups of the pages cells come back to, by page.
+        let mut page_groups: BTreeMap<String, elements::Groups> = BTreeMap::new();
         let mut pages: BTreeMap<String, Value> = BTreeMap::new();
         let mut removed_values = 0;
         let mut restored_values = 0;
@@ -278,45 +282,65 @@ impl Store {
                     }
                 } else {
                     let own = |values: &[Value]| -> Result<Vec<excel::StructuralOperation>> {
-                        Ok(excel::parse_operations(values, array(&before["sheets"])?)?
+                        Ok(excel::parse_operations(values, &before.sheets)?
                             .into_iter()
                             .filter(|o| o.sheet == sheet)
                             .collect())
                     };
                     let with = own(&recorded)?;
                     let without = own(&remaining)?;
-                    let source = array(&before["sheets"])?
+                    let source = before
+                        .sheets
                         .iter()
                         .find(|s| s["name"] == sheet)
                         .context("operation sheet missing")?;
-                    let layout_sheet = &mut layout["sheets"][&page];
+                    let layout_sheet = layout.sheet_mut(&page)?;
+                    // Each row and column is placed and named once, not for
+                    // every cell in it; the loop adds formulas, not rows or
+                    // columns.
+                    let (with_map, without_map) = (
+                        excel::CoordinateMap::new(&with),
+                        excel::CoordinateMap::new(&without),
+                    );
+                    let identities = ["rows", "columns"]
+                        .map(|axis| identity::key_identities(&layout_sheet.fields, axis));
+                    let identity = |axis: usize, key: &str| identities[axis].get(key).cloned();
                     let mut cells = vec![];
                     let mut slots = BTreeSet::new();
-                    for cell in array(&source["cells"])? {
-                        let address = string(&cell["address"])?;
-                        if excel::map_coordinate(sheet, address, &with)?.is_some()
-                            || excel::map_coordinate(sheet, address, &without)?.is_none()
+                    for cell in &source.cells {
+                        let address = &*cell.address;
+                        if with_map.map(sheet, address)?.is_some()
+                            || without_map.map(sheet, address)?.is_none()
                         {
                             continue;
                         }
                         let (column, row) = excel::coordinate(address)?;
                         let (row, column) = (format!("r{row}"), excel::column_name(column)?);
                         let font = crate::extraction::font(source, cell)?;
-                        if cell["type"] == "formula" {
-                            let field = string(&cell["id"])?;
+                        if cell.kind == CellKind::Formula {
+                            let field = &*cell.id;
+                            let formula = cell
+                                .formula
+                                .as_deref()
+                                .context("formula cell without formula")?;
                             content["blocks"]["formulas"]["rows"][field]["formula"] =
-                                json!(format!("={}", string(&cell["formula"])?));
+                                json!(format!("={formula}"));
                             if content["blocks"]["formulas"]["title"].is_null() {
                                 content["blocks"]["formulas"]["title"] = json!("数式原文");
                             }
                             if !font.is_null() {
-                                content["fonts"]["formulas"][field]["formula"] = font.clone();
+                                elements::set_grid_font(
+                                    &mut content,
+                                    "formulas",
+                                    field,
+                                    "formula",
+                                    font.clone(),
+                                );
                             }
                             // The cell takes its formula identity back.
-                            let (Some(row_id), Some(column_id)) = (
-                                identity::identity_of(layout_sheet, "rows", &row),
-                                identity::identity_of(layout_sheet, "columns", &column),
-                            ) else {
+                            let (Some(row_id), Some(column_id)) =
+                                (identity(0, &row), identity(1, &column))
+                            else {
                                 bail!(
                                     "{sheet}!{address} has no row or column identity to come back to"
                                 );
@@ -332,18 +356,24 @@ impl Store {
                             formulas.insert(identity, json!({"row":row_id,"column":column_id}));
                         } else {
                             content["blocks"]["table-1"]["rows"][&row][&column] =
-                                cell["value"].clone();
+                                cell.value.clone();
                             if content["blocks"]["table-1"]["title"].is_null() {
                                 content["blocks"]["table-1"]["title"] = json!("本文");
                             }
                             if !font.is_null() {
-                                content["fonts"]["table-1"][&row][&column] = font.clone();
+                                elements::set_grid_font(
+                                    &mut content,
+                                    "table-1",
+                                    &row,
+                                    &column,
+                                    font.clone(),
+                                );
                             }
                         }
-                        if cell["type"] == "formula" {
+                        if cell.kind == CellKind::Formula {
                             slots.insert((
                                 "formulas".to_owned(),
-                                string(&cell["id"])?.to_owned(),
+                                cell.id.to_string(),
                                 "formula".to_owned(),
                             ));
                         } else {
@@ -355,14 +385,17 @@ impl Store {
                     let ids: Vec<String> = cells
                         .iter()
                         .filter_map(|(row, column)| {
-                            Some(elements::cell_id(
-                                &identity::identity_of(layout_sheet, "rows", row)?,
-                                &identity::identity_of(layout_sheet, "columns", column)?,
-                            ))
+                            Some(elements::cell_id(&identity(0, row)?, &identity(1, column)?))
                         })
                         .collect();
-                    if let Some(classified) = &interpreted {
-                        elements::restore_groups(layout_sheet, &classified["sheets"][&page], &ids)?;
+                    if let Some(classified) = interpreted.as_ref().and_then(|c| c.get(&page)) {
+                        let groups = match page_groups.entry(page.clone()) {
+                            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(elements::metadata_groups(&layout_sheet.metadata)?)
+                            }
+                        };
+                        elements::restore_groups(groups, classified, &ids);
                     }
                     restored.push(Restored {
                         file: file.clone(),
@@ -380,11 +413,9 @@ impl Store {
                     .map(|f| f["message"].clone())
                     .unwrap_or(json!(""));
                 for (name, index, page) in &slide_pages {
-                    let source = &array(&after["sheets"])?[*index];
-                    if let Some(classified) = &interpreted
-                        && let Some(groups) = classified["sheets"][page].get("groups")
-                    {
-                        layout["sheets"][page]["groups"] = groups.clone();
+                    let source = &after.sheets[*index];
+                    if let Some(groups) = interpreted.as_ref().and_then(|c| c.get(page)) {
+                        page_groups.insert(page.clone(), groups.clone());
                     }
                     let file = format!("content/{}", excel::filename(name));
                     ensure!(
@@ -412,13 +443,14 @@ impl Store {
             &layout,
             &before,
         )?;
-        for (name, page) in &pages {
-            let body = elements::encode(page, &mut layout)?;
-            planned.insert(name.clone(), Some(elements::page_bytes(&body, &layout)?));
+        for (name, page) in pages {
+            let groups = page_groups.remove(string(&page["page_id"])?);
+            let body = elements::encode(page, &mut layout, groups)?;
+            planned.insert(name, Some(elements::content_bytes(&body, &layout)?));
         }
         planned.insert(
             "layout.yml".into(),
-            Some(identity::stored(&mut layout, extraction)?),
+            Some(identity::stored(layout, extraction)?),
         );
         let checked = self
             .inspect_with(&dir, false, &planned)
@@ -445,6 +477,10 @@ impl Store {
         }
         self.commit(&dir, &planned, &inspected.fingerprint)?;
         report["state"] = json!("written");
+        // The written content was inspected above; its status is made from
+        // that inspection rather than by inspecting the document again.
+        let row = self.state_of(id, &dir, Ok(checked));
+        self.remember_state(id, &dir, &row);
         Ok(report)
     }
 }
@@ -467,10 +503,22 @@ fn reapply(
     records: &Value,
     restored: &[Restored],
     pages: &mut BTreeMap<String, Value>,
-    layout: &Value,
-    extraction: &Value,
+    layout: &Layout,
+    extraction: &Extraction,
 ) -> Result<usize> {
     let mut count = 0;
+    // The formula cells of each sheet by address, and what the element IDs
+    // of each page name, read once for all the edits rather than for each.
+    let mut formulas: HashMap<(&str, &str), &Cell> = HashMap::new();
+    for sheet in &extraction.sheets {
+        let name = sheet["name"].as_str().unwrap_or_default();
+        for cell in &sheet.cells {
+            if cell.kind == CellKind::Formula {
+                formulas.entry((name, &*cell.address)).or_insert(cell);
+            }
+        }
+    }
+    let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::new();
     for edit in records
         .as_array()
         .into_iter()
@@ -481,17 +529,16 @@ fn reapply(
         let Some(target) = restored.iter().find(|r| r.sheet == sheet) else {
             continue;
         };
-        let layout_sheet = &layout["sheets"][&target.page];
+        let layout_sheet = &layout.sheet(&target.page)?.fields;
+        let lookup = lookups
+            .entry(target.page.as_str())
+            .or_insert_with(|| identity::SheetLookup::new(layout_sheet, &target.page));
         let slot = if let Some(cell) = edit["cell"].as_str() {
-            let formula = array(&extraction["sheets"])?
-                .iter()
-                .filter(|s| s["name"] == sheet)
-                .flat_map(|s| s["cells"].as_array().into_iter().flatten())
-                .find(|c| c["address"] == cell && c["type"] == "formula");
+            let formula = formulas.get(&(sheet, cell)).copied();
             match formula {
                 Some(c) => Some((
                     "formulas".to_owned(),
-                    string(&c["id"])?.to_owned(),
+                    c.id.to_string(),
                     "formula".to_owned(),
                 )),
                 None => {
@@ -504,11 +551,11 @@ fn reapply(
                 }
             }
         } else if let Some(element) = edit["element"].as_str() {
-            let Ok((block, row, column)) = elements::Bindings::of(layout_sheet)?.get(element)
-            else {
+            let Ok((block, row, column)) = lookup.binding(element)? else {
                 continue;
             };
-            identity::runtime_place(layout_sheet, &target.page, &block, &row, &column)?
+            lookup
+                .place(&block, &row, &column)?
                 .map(|(row, column)| (block, row, column))
         } else {
             None
@@ -539,7 +586,7 @@ fn reapply(
             }
         }
         if let Some(font) = edit.get("font") {
-            let present = page["fonts"][&block][&row][&column].clone();
+            let present = elements::grid_font(page, &block, &row, &column)?.clone();
             let matches = font["before"].as_object().is_some_and(|before| {
                 before
                     .iter()
@@ -547,7 +594,7 @@ fn reapply(
             });
             if matches && !present.is_null() {
                 let change = crate::fonts::FontEdit::parse(&font["after"])?;
-                page["fonts"][&block][&row][&column] = change.applied(&present);
+                elements::set_grid_font(page, &block, &row, &column, change.applied(&present));
                 made = true;
             }
         }

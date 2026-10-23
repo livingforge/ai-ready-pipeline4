@@ -90,16 +90,17 @@ impl Store {
             // Scalar writers provide this proof; table-label/structural paths
             // have their own explicit operations and still require visual review.
             let labels = array(&plan["changes"])?.iter().any(|change| {
-                let sheet = array(&inspected.extraction["sheets"])
-                    .ok()
-                    .and_then(|sheets| {
-                        sheets.iter().find(|sheet| sheet["name"] == change["sheet"])
-                    });
+                let sheet = inspected
+                    .extraction
+                    .sheets
+                    .iter()
+                    .find(|sheet| sheet["name"] == change["sheet"]);
                 let cell = change["cell"]
                     .as_str()
                     .and_then(|cell| excel::coordinate(cell).ok());
                 sheet.zip(cell).is_some_and(|(sheet, (column, row))| {
-                    excel::table_label(sheet, column, row).is_ok_and(|label| label.is_some())
+                    excel::table_label(&sheet.fields, column, row)
+                        .is_ok_and(|label| label.is_some())
                 })
             });
             if !labels {

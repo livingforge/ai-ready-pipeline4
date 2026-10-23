@@ -339,6 +339,16 @@ impl Workflow {
             units = selected;
         }
         let previous = self.previous_review_model(root, &context.input_path)?;
+        // The model is read and checked once for every unit; the previous
+        // one only when a unit is compared with its review.
+        let model = crate::specifications::load_model(&assembled.join("model.json"))?;
+        let catalog: crate::registry::Catalog =
+            serde_json::from_value(read(&assembled.join("catalog.json"))?)?;
+        let basis = crate::semantic::ReviewBasis::new(typed_input, &model, &catalog)?;
+        let mut prior_basis = None;
+        // The escalation context of each document, made once for its units:
+        // it gathers every finding, which adding the review tasks leaves alone.
+        let mut contexts: BTreeMap<Option<String>, Value> = BTreeMap::new();
         let mut review_paths = Vec::new();
         for (i, (doc, sheet, region)) in units.iter().enumerate() {
             let scope = region
@@ -350,15 +360,15 @@ impl Workflow {
                     })
                 })
                 .transpose()?;
-            let packet = crate::semantic::review_packet_selected(
-                typed_input,
-                &crate::specifications::load_model(&assembled.join("model.json"))?,
-                &serde_json::from_value(read(&assembled.join("catalog.json"))?)?,
-                doc.as_deref(),
-                sheet.as_deref(),
-                scope.as_ref(),
-            )?;
-            let mut review_context = escalated_context(doc.as_ref())?;
+            let packet = basis.packet(doc.as_deref(), sheet.as_deref(), scope.as_ref())?;
+            let mut review_context = match contexts.get(doc) {
+                Some(context) => context.clone(),
+                None => {
+                    let context = escalated_context(doc.as_ref())?;
+                    contexts.insert(doc.clone(), context.clone());
+                    context
+                }
+            };
             if !self
                 .state
                 .reviews
@@ -366,10 +376,14 @@ impl Workflow {
                 .is_some_and(|r| r.contains_key(packet["packet"].as_str().unwrap()))
                 && let Some((model, catalog)) = &previous
             {
-                let prior = crate::semantic::review_packet_selected(
-                    typed_input,
-                    model,
-                    catalog,
+                if prior_basis.is_none() {
+                    prior_basis = Some(crate::semantic::ReviewBasis::new(
+                        typed_input,
+                        model,
+                        catalog,
+                    )?);
+                }
+                let prior = prior_basis.as_ref().unwrap().packet(
                     doc.as_deref(),
                     sheet.as_deref(),
                     scope.as_ref(),

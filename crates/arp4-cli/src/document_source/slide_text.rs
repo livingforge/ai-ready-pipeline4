@@ -510,14 +510,19 @@ fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
 }
 
 impl SlideLayout<'_, '_> {
-    pub fn sheet(&self, name: &str, part: &str, fonts: &super::slide_fonts::SlideFonts) -> Value {
+    pub fn sheet(
+        &self,
+        name: &str,
+        part: &str,
+        fonts: &super::slide_fonts::SlideFonts,
+    ) -> crate::extraction::Sheet {
         blocks_sheet(
             name,
             part,
             &self.blocks,
             &self.merges,
             &self.tables,
-            Some(&|block| fonts.block_font(block)),
+            &|block| fonts.block_font(block),
         )
     }
 
@@ -806,7 +811,12 @@ mod tests {
             &document,
         )
         .unwrap();
-        let sheet = layout.sheet("slide-1", "ppt/slides/slide1.xml", &fonts);
+        let sheet = crate::extraction::sheet_view(&layout.sheet(
+            "slide-1",
+            "ppt/slides/slide1.xml",
+            &fonts,
+        ))
+        .unwrap();
         assert_eq!(sheet["merges"], json!(["A5:B5"]));
         assert_eq!(
             sheet["tables"],

@@ -19,8 +19,21 @@ pub struct Output {
     pub offset: Option<usize>,
 }
 
+/// The length of the JSON of `value`, counted without writing it out.
 fn bytes(value: &Value) -> usize {
-    serde_json::to_vec(value).expect("JSON value").len()
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).expect("JSON value");
+    count.0
 }
 
 // Never shorten a value in place: missing data must be visibly distinguishable
@@ -37,15 +50,30 @@ fn bounded(mut value: Value, budget: usize) -> Value {
         Some(Value::Array(earlier)) => earlier,
         _ => Vec::new(),
     };
-    while bytes(&value) > budget.saturating_sub(512) {
-        let largest = value
-            .as_object()
-            .unwrap()
+    // Each member is measured once: the object is its braces and its
+    // members, `"key":value`, with a comma between each two.
+    let mut members: Vec<(String, usize)> = value
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), bytes(v)))
+        .collect();
+    let total = |members: &[(String, usize)]| {
+        1 + members.len()
+            + members
+                .iter()
+                .map(|(k, v)| bytes(&json!(k)) + 1 + v)
+                .sum::<usize>()
+    };
+    while total(&members).max(2) > budget.saturating_sub(512) {
+        let largest = members
             .iter()
-            .filter(|(k, _)| !["ok", "state", "summary", "page"].contains(&k.as_str()))
-            .max_by_key(|(k, v)| k.len() + bytes(v))
-            .map(|(k, _)| k.clone());
-        let Some(key) = largest else { break };
+            .enumerate()
+            .filter(|(_, (k, _))| !["ok", "state", "summary", "page"].contains(&k.as_str()))
+            .max_by_key(|(_, (k, v))| k.len() + v)
+            .map(|(at, _)| at);
+        let Some(at) = largest else { break };
+        let (key, _) = members.remove(at);
         value.as_object_mut().unwrap().remove(&key);
         omitted.push(json!(key));
     }
@@ -339,6 +367,62 @@ pub fn error(code: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_values_drop_the_members_whole_serialization_would() {
+        // [`bounded`] as written first: every member measured again after
+        // each one is dropped.
+        fn by_serializing(mut value: Value, budget: usize) -> Value {
+            let size = |value: &Value| serde_json::to_vec(value).unwrap().len();
+            if size(&value) <= budget {
+                return value;
+            }
+            let original_bytes = size(&value);
+            if !value.is_object() {
+                return json!({"omitted":true,"bytes":original_bytes});
+            }
+            let mut omitted = match value.as_object_mut().unwrap().remove("omitted_fields") {
+                Some(Value::Array(earlier)) => earlier,
+                _ => Vec::new(),
+            };
+            while size(&value) > budget.saturating_sub(512) {
+                let largest = value
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(k, _)| !["ok", "state", "summary", "page"].contains(&k.as_str()))
+                    .max_by_key(|(k, v)| k.len() + size(v))
+                    .map(|(k, _)| k.clone());
+                let Some(key) = largest else { break };
+                value.as_object_mut().unwrap().remove(&key);
+                omitted.push(json!(key));
+            }
+            value["omitted_fields"] = json!(omitted);
+            if size(&value) > budget {
+                return json!({"ok":value.get("ok"),"omitted":true,"bytes":original_bytes});
+            }
+            value
+        }
+        let long = |n: usize| "引用\"\\\n\u{1}".repeat(n);
+        let values = [
+            json!({}),
+            json!([long(900)]),
+            json!({"ok":true,"page":{"total":3},"a\"b":long(300),"日本":long(300),"b":long(300)}),
+            json!({"tie":"x".repeat(1000),"tied":"x".repeat(999),"z":[long(50), {"k":long(50)}]}),
+            json!({"state":long(2000),"summary":"s","omitted_fields":["earlier"],"x":long(10)}),
+            json!({"items":(0..200).map(|i| json!({"i":i,"t":long(i % 7)})).collect::<Vec<_>>()}),
+        ];
+        for value in values {
+            for budget in [600, 1500, 4096, MAX_RESPONSE_BYTES - 1] {
+                assert_eq!(
+                    bounded(value.clone(), budget),
+                    by_serializing(value.clone(), budget),
+                    "{budget}"
+                );
+            }
+            assert_eq!(bytes(&value), serde_json::to_vec(&value).unwrap().len());
+        }
+    }
 
     #[test]
     fn pages_fit_budget_and_advance_without_losing_items() {

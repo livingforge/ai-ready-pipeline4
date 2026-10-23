@@ -1,10 +1,11 @@
 //! Read-only interpretations of Office/PDF text and visual objects. Never used by writeback.
 use crate::data::{array, encoded, hash, immutable, read, string, under, write};
+use crate::extraction::{Cell, CellKind, Extraction, Sheet};
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -15,10 +16,12 @@ mod corrections;
 mod edit;
 mod grid;
 mod inference;
+mod model;
 mod policy;
 mod rebase;
 mod relations;
 pub use grid::Axes;
+pub use model::{Element, ElementCell, Role, Structure, TextState};
 pub use policy::{policy as requirement_policy, requirements};
 
 pub fn schema() -> Value {
@@ -28,7 +31,7 @@ pub fn schema() -> Value {
     .unwrap()
 }
 
-pub fn empty_corrections(extraction: &Value, extraction_hash: &str) -> Value {
+pub fn empty_corrections(extraction: &Extraction, extraction_hash: &str) -> Value {
     corrections::empty(extraction, extraction_hash)
 }
 
@@ -41,9 +44,9 @@ pub fn validate_corrections(value: &Value) -> Result<()> {
 pub fn replay_corrections(
     root: &Path,
     journal: &Value,
-    extraction: &Value,
+    extraction: &Extraction,
     axes: &Axes,
-) -> Result<(Value, Value)> {
+) -> Result<(Structure, Value)> {
     rebase::rebase(
         root,
         journal,
@@ -59,10 +62,10 @@ pub fn replay_corrections(
 pub fn replay_verified_corrections(
     root: &Path,
     journal: &Value,
-    extraction: &Value,
+    extraction: &Extraction,
     extraction_hash: &str,
     axes: &Axes,
-) -> Result<(Value, Value)> {
+) -> Result<(Structure, Value)> {
     rebase::rebase(root, journal, extraction, extraction_hash, true, axes)
 }
 
@@ -72,10 +75,10 @@ pub fn replay_verified_corrections(
 pub fn replay_earlier_corrections(
     root: &Path,
     journal: &Value,
-    extraction: &Value,
+    extraction: &Extraction,
     extraction_hash: &str,
     axes: &Axes,
-) -> Result<(Value, Value)> {
+) -> Result<(Structure, Value)> {
     rebase::rebase(root, journal, extraction, extraction_hash, false, axes)
 }
 
@@ -103,8 +106,8 @@ impl Carrier {
 /// `before` into those of `after`, found by aligning their values, for an
 /// original edited outside ARP.
 pub fn align_operations(
-    before: &Value,
-    after: &Value,
+    before: &Extraction,
+    after: &Extraction,
 ) -> Result<Vec<crate::excel::StructuralOperation>> {
     align::operations(before, after)
 }
@@ -116,9 +119,9 @@ pub fn align_operations(
 /// was kept.
 pub fn carry_corrections(
     root: &Path,
-    structure: &Value,
-    before: &Value,
-    after: &Value,
+    structure: &Structure,
+    before: &Extraction,
+    after: &Extraction,
     operations: &[crate::excel::StructuralOperation],
     carrier: Carrier,
     axes: &Axes,
@@ -130,7 +133,7 @@ pub fn carry_corrections(
 /// the identities of their rows and columns in `axes`.
 pub fn record_corrections(
     root: &Path,
-    extraction: &Value,
+    extraction: &Extraction,
     structure: &Value,
     axes: &Axes,
 ) -> Result<Value> {
@@ -244,14 +247,25 @@ pub enum StructureCommand {
     },
 }
 
-pub fn content_hash(value: &Value) -> String {
+/// The hash a review binds: of the structure without its review, as
+/// encoded, a cell at a time.
+pub fn content_hash(structure: &Structure) -> String {
+    crate::data::hash_encoded_lazy(structure.lazy(Some("review")))
+        .expect("typed cells always encode")
+}
+
+/// [`content_hash`] of a structure given as JSON.
+pub fn json_content_hash(value: &Value) -> String {
     // Hashed as encoded, without copying the structure to leave the review out.
     crate::data::hash_encoded_without(value, "review")
 }
 
 fn validate_schema(value: &Value) -> Result<()> {
-    let validator = jsonschema::validator_for(&schema())?;
-    let errors: Vec<_> = validator
+    // Compiled once: every replay validates the interpretation.
+    static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {
+        jsonschema::validator_for(&schema()).expect("embedded structure schema compiles")
+    });
+    let errors: Vec<_> = VALIDATOR
         .iter_errors(value)
         .map(|e| e.to_string())
         .collect();
@@ -311,7 +325,7 @@ fn png(root: &Path, image: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn extraction(path: &Path) -> Result<Value> {
+fn extraction(path: &Path) -> Result<Extraction> {
     let value = crate::extraction::read(path)?;
     let extension = Path::new(string(&value["source"]["path"])?)
         .extension()
@@ -326,29 +340,68 @@ fn extraction(path: &Path) -> Result<Value> {
     Ok(value)
 }
 
-pub fn initialize(root: &Path, extraction: &Value) -> Result<Value> {
+pub fn initialize(root: &Path, extraction: &Extraction) -> Result<Structure> {
     let extraction_hash = crate::extraction::hash(extraction)?;
-    let value = inferred(extraction, &extraction_hash)?;
+    let value = inferred(root, extraction, &extraction_hash)?;
     validate_hashed(root, extraction, &extraction_hash, &value, true)?;
     Ok(value)
 }
 
 /// The unreviewed interpretation inferred from `extraction`, whose hash the caller supplies.
-fn inferred(extraction: &Value, extraction_hash: &str) -> Result<Value> {
-    let elements = inference::elements(extraction)?;
-    Ok(
-        json!({"schema_version":1,"document":extraction["document_id"],"source":{"path":extraction["source"]["path"],"sha256":extraction["source"]["sha256"]},
-        "extraction_hash":extraction_hash,"regions":[],"elements":elements,"visuals":policy::visuals(extraction)?,"review":{"status":"pending"}}),
-    )
+/// [`infer`] saved in the project's cache: every status, check, edit and
+/// search refresh replays the corrections on the inferred interpretation, and
+/// inferring the tables of a large sheet takes seconds. It depends on nothing
+/// but the extraction, which `extraction_hash` names with the document and
+/// original it records apart, and the program.
+fn inferred(root: &Path, extraction: &Extraction, extraction_hash: &str) -> Result<Structure> {
+    let arp = root.join(".arp");
+    if !arp.is_dir() {
+        return infer(extraction, extraction_hash);
+    }
+    let directory = crate::data::under(&arp, "cache/structure")?;
+    let key = crate::data::hash(&crate::data::encoded(&json!({
+        "program":crate::data::program()?,"extraction":extraction_hash,
+        "document":extraction["document_id"],"source":extraction["source"]})));
+    let path = directory.join(format!("{key}.json"));
+    if let Some(saved) = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        return Ok(saved);
+    }
+    let value = infer(extraction, extraction_hash)?;
+    // An interpretation that cannot be saved is inferred again next time.
+    if let Ok(bytes) = serde_json::to_vec(&value)
+        && crate::data::replace_cache(&path, &bytes).is_ok()
+    {
+        crate::data::keep_newest(&directory, 16);
+    }
+    Ok(value)
+}
+
+fn infer(extraction: &Extraction, extraction_hash: &str) -> Result<Structure> {
+    let fields = json!({"schema_version":1,"document":extraction["document_id"],"source":{"path":extraction["source"]["path"],"sha256":extraction["source"]["sha256"]},
+        "extraction_hash":extraction_hash,"regions":[],"visuals":policy::visuals(extraction)?,"review":{"status":"pending"}});
+    Ok(Structure::new(fields, inference::elements(extraction)?))
 }
 
 /// Validity is distinct from readiness: pending/unreadable cells remain inspectable.
-pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value> {
+pub fn validate(root: &Path, extraction: &Extraction, value: &Value) -> Result<Value> {
+    validate_schema(value)?;
+    validate_structure(root, extraction, &Structure::from_value(value.clone())?)
+}
+
+/// [`validate`] of a structure held typed.
+pub fn validate_structure(
+    root: &Path,
+    extraction: &Extraction,
+    structure: &Structure,
+) -> Result<Value> {
     validate_hashed(
         root,
         extraction,
         &crate::extraction::hash(extraction)?,
-        value,
+        structure,
         true,
     )
 }
@@ -358,13 +411,13 @@ pub fn validate(root: &Path, extraction: &Value, value: &Value) -> Result<Value>
 /// interpretation, read to carry it onto the new one, is validated without.
 fn validate_hashed(
     root: &Path,
-    extraction: &Value,
+    extraction: &Extraction,
     extraction_hash: &str,
-    value: &Value,
+    value: &Structure,
     current: bool,
 ) -> Result<Value> {
-    validate_schema(value)?;
-    relations::validate(value)?;
+    value.check(validate_schema)?;
+    relations::validate_elements(&value.elements, &value.fields)?;
     ensure!(
         value["document"] == extraction["document_id"]
             && value["source"]["path"] == extraction["source"]["path"]
@@ -379,7 +432,8 @@ fn validate_hashed(
             "original changed; re-import and reinterpret"
         );
     }
-    let sheets: BTreeMap<_, _> = array(&extraction["sheets"])?
+    let sheets: BTreeMap<_, _> = extraction
+        .sheets
         .iter()
         .map(|s| (s["name"].as_str().unwrap(), s))
         .collect();
@@ -410,12 +464,17 @@ fn validate_hashed(
             "image bbox outside image"
         );
     }
-    let mut ids = BTreeSet::new();
-    let mut owned = BTreeSet::new();
-    let mut unresolved = policy::validate_visuals(extraction, value)?;
+    // Every cell is looked up in these a few times; hashed, as their order is
+    // never read, and made as large as they become, they take a fraction of
+    // the time ordered ones took.
+    let elements = &value.elements;
+    let cell_count: usize = elements.iter().map(|e| e.cells.len()).sum();
+    let mut ids = HashSet::with_capacity(elements.len() + cell_count);
+    let mut owned = HashSet::with_capacity(cell_count);
+    let mut unresolved = policy::validate_visuals(extraction, &value.fields)?;
     // Built once per sheet: a sheet holds many elements, each looking up its cells.
-    let mut sheet_cells: BTreeMap<&str, BTreeMap<&str, &Value>> = BTreeMap::new();
-    for element in array(&value["elements"])? {
+    let mut sheet_cells: HashMap<&str, HashMap<&str, &Cell>> = HashMap::new();
+    for element in elements {
         ensure!(
             ids.insert(string(&element["id"])?),
             "duplicate element/cell ID"
@@ -423,19 +482,13 @@ fn validate_hashed(
         let sheet_name = string(&element["sheet"])?;
         let sheet = sheets.get(sheet_name).context("unknown element sheet")?;
         let original_cells = match sheet_cells.entry(sheet_name) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
-                array(&sheet["cells"])?
-                    .iter()
-                    .map(|c| (c["address"].as_str().unwrap(), c))
-                    .collect(),
-            ),
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(sheet.cells.iter().map(|c| (&*c.address, c)).collect())
+            }
         };
-        let cells = array(&element["cells"])?;
-        let local: BTreeMap<_, _> = cells
-            .iter()
-            .map(|c| (c["id"].as_str().unwrap(), c))
-            .collect();
+        let cells = &element.cells;
+        let local: HashMap<&str, &ElementCell> = cells.iter().map(|c| (&*c.id, c)).collect();
         let evidence: Vec<_> = array(&element["evidence"])?
             .iter()
             .map(|id| {
@@ -444,97 +497,99 @@ fn validate_hashed(
                 range(string(&r["range"])?)
             })
             .collect::<Result<_>>()?;
-        if element["reading"]["method"] == "vision" {
+        let vision = element["reading"]["method"] == "vision";
+        if vision {
             ensure!(
                 !evidence.is_empty(),
                 "vision reading requires image evidence"
             );
         }
         for cell in cells {
-            let id = string(&cell["id"])?;
+            let id = &*cell.id;
             ensure!(ids.insert(id), "duplicate element/cell ID");
-            let address = string(&cell["address"])?;
+            let address = &*cell.address;
             let point = crate::excel::coordinate(address)?;
             ensure!(
                 owned.insert((sheet_name, address)),
                 "cell belongs to multiple elements"
             );
-            if element["reading"]["method"] == "vision" {
+            if vision {
                 ensure!(
                     evidence.iter().any(|r| contains(*r, point)),
                     "vision cell outside supplied image regions"
                 );
             }
-            let text = original_cells.get(address).map(|c| &c["value"]);
-            match string(&cell["text_state"])? {
-                "read" => ensure!(
+            let original = original_cells.get(address);
+            let text = original.map(|c| &c.value);
+            match cell.text_state {
+                TextState::Read => ensure!(
                     text.is_some_and(|t| !t.is_null() && t.as_str().is_none_or(|s| !s.is_empty()))
-                        || original_cells
-                            .get(address)
-                            .is_some_and(|c| c["formula"].is_string()),
+                        || original.is_some_and(|c| c.formula.is_some()),
                     "read cell has no captured text; OCR cannot become an exact source quote"
                 ),
-                "empty" => ensure!(
+                TextState::Empty => ensure!(
                     text.is_none_or(|t| t.is_null() || t == "")
-                        && original_cells
-                            .get(address)
-                            .is_none_or(|c| !c["formula"].is_string()),
+                        && original.is_none_or(|c| c.formula.is_none()),
                     "empty cell contains original content"
                 ),
-                _ => unresolved
-                    .push(json!({"element":element["id"],"cell":id,"state":cell["text_state"]})),
+                _ => unresolved.push(
+                    json!({"element":element["id"],"cell":id,"state":cell.text_state.as_str()}),
+                ),
             }
-            if cell["role"] == "unassigned" {
+            if cell.role == Role::Unassigned {
                 unresolved.push(json!({"cell":id,"state":"unassigned_role"}));
             }
-            for header in array(&cell["headers"])? {
+            for header in &cell.headers {
                 let h = local
-                    .get(string(header)?)
+                    .get(&**header)
                     .context("header must reference a cell in the same element")?;
-                ensure!(
-                    ["row_header", "column_header"].contains(&string(&h["role"])?),
-                    "header target is not a header"
-                );
+                ensure!(h.role.heads(), "header target is not a header");
             }
         }
         // Iterative traversal avoids recursive overflow for deeply nested
         // headers. A cell is finished once all its headers are, and is not
         // followed again, so a header repeated down a long table is read once
         // rather than from every record; a header still on the path is a cycle.
-        let mut finished: BTreeMap<&str, bool> = BTreeMap::new();
-        for id in local.keys() {
+        // Whether there is a cycle does not depend on the order cells are visited.
+        // Cells are visited in their order, which reads them where they lie in
+        // memory, and the path keeps the headers of each cell on it.
+        let mut finished: HashMap<&str, bool> = HashMap::with_capacity(local.len());
+        let mut path: Vec<(&str, &[Box<str>], usize)> = vec![];
+        for cell in cells {
+            let id = &*cell.id;
             if finished.contains_key(id) {
                 continue;
             }
             finished.insert(id, false);
-            let mut path = vec![(*id, 0)];
-            while let Some(&(current, next)) = path.last() {
-                let Some(h) = array(&local[current]["headers"])?.get(next) else {
+            path.push((id, &cell.headers, 0));
+            while let Some(top) = path.last_mut() {
+                let (current, headers, next) = *top;
+                let Some(h) = headers.get(next) else {
                     finished.insert(current, true);
                     path.pop();
                     continue;
                 };
-                path.last_mut().unwrap().1 += 1;
-                let h = string(h)?;
+                top.2 += 1;
+                let h = &**h;
                 ensure!(
                     finished.get(h) != Some(&false),
                     "cyclic header relationship"
                 );
                 if !finished.contains_key(h) {
                     finished.insert(h, false);
-                    path.push((h, 0));
+                    path.push((h, &local[h].headers, 0));
                 }
             }
         }
     }
     // A structure edit cannot silently drop captured cells, including formulas/notes.
     for (name, sheet) in &sheets {
-        for cell in array(&sheet["cells"])? {
+        for cell in &sheet.cells {
             ensure!(
-                owned.contains(&(*name, string(&cell["address"])?)),
+                owned.contains(&(*name, &*cell.address)),
                 "structure omits original cell {}!{}",
                 name,
-                cell["address"]
+                json!(&*cell.address)
             );
         }
     }
@@ -653,7 +708,8 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
         } => {
             let ext = extraction(&path)?;
             ensure!(!out.exists(), "structure output already exists");
-            write(&out, &initialize(root, &ext)?)?;
+            let structure = initialize(root, &ext)?;
+            crate::data::write_lazy(&out, structure.lazy(None))?;
             Ok(json!({"structure":out,"state":"needs_review"}))
         }
         StructureCommand::Check {
@@ -736,7 +792,7 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
                     "unexamined/unreadable cells, unassigned roles, or unresolved visual/OCR readings remain"
                 );
             }
-            value["review"] = json!({"status":if matches!(decision,Decision::Accepted) {"accepted"} else {"rejected"},"content_hash":content_hash(&value),"actor":actor,"reason":reason});
+            value["review"] = json!({"status":if matches!(decision,Decision::Accepted) {"accepted"} else {"rejected"},"content_hash":json_content_hash(&value),"actor":actor,"reason":reason});
             let report = validate(root, &ext, &value)?;
             write(&structure, &value)?;
             Ok(report)
@@ -790,7 +846,7 @@ pub fn apply(
 
 pub fn attach(
     root: &Path,
-    extraction: &Value,
+    extraction: &Extraction,
     structure: &Value,
     input: &mut crate::specifications::Input,
 ) -> Result<()> {
@@ -806,7 +862,10 @@ pub fn attach(
     );
     input.revisions.insert(
         document.into(),
-        hash(&encoded(&json!([extraction, structure]))),
+        hash(&encoded(&Value::Array(vec![
+            extraction.to_value(),
+            structure.clone(),
+        ]))),
     );
     input.structures.insert(document.into(), structure.clone());
     Ok(())
@@ -821,11 +880,11 @@ pub fn sheet_context(value: &Value, sheet: &str) -> Value {
 
 pub fn validate_snapshot(document: &str, value: &Value) -> Result<()> {
     validate_schema(value)?;
-    relations::validate(value)?;
+    relations::validate_elements(array(&value["elements"])?, value)?;
     ensure!(
         value["document"] == document
             && value["review"]["status"] == "accepted"
-            && value["review"]["content_hash"] == content_hash(value),
+            && value["review"]["content_hash"] == json_content_hash(value),
         "invalid or stale structure snapshot"
     );
     ensure!(

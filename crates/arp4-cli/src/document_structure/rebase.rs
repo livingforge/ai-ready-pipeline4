@@ -32,23 +32,19 @@ fn uses_region(visual: &Value, region_ids: &BTreeSet<String>) -> Result<bool> {
         .any(|reference| reference.as_str().is_some_and(|id| region_ids.contains(id))))
 }
 
-fn holding_index(elements: &[Value]) -> BTreeMap<String, BTreeMap<String, (usize, usize)>> {
+fn holding_index(elements: &[Element]) -> BTreeMap<String, BTreeMap<String, (usize, usize)>> {
     let mut holding: BTreeMap<String, BTreeMap<String, (usize, usize)>> = BTreeMap::new();
     for (element_index, element) in elements.iter().enumerate() {
         let Some(sheet) = element["sheet"].as_str() else {
             continue;
         };
-        if let Ok(cells) = array(&element["cells"]) {
-            for (cell_index, cell) in cells.iter().enumerate() {
-                if let Some(address) = cell["address"].as_str() {
-                    // The first element wins when inferred elements overlap.
-                    holding
-                        .entry(sheet.to_owned())
-                        .or_default()
-                        .entry(address.to_owned())
-                        .or_insert((element_index, cell_index));
-                }
-            }
+        for (cell_index, cell) in element.cells.iter().enumerate() {
+            // The first element wins when inferred elements overlap.
+            holding
+                .entry(sheet.to_owned())
+                .or_default()
+                .entry(cell.address.to_string())
+                .or_insert((element_index, cell_index));
         }
     }
     holding
@@ -60,17 +56,23 @@ fn holding_index(elements: &[Value]) -> BTreeMap<String, BTreeMap<String, (usize
 pub(super) fn rebase(
     root: &Path,
     journal: &Value,
-    current: &Value,
+    current: &Extraction,
     extraction_hash: &str,
     original: bool,
     axes: &Axes,
-) -> Result<(Value, Value)> {
+) -> Result<(Structure, Value)> {
     corrections::validate_journal(journal)?;
     let same_source = journal["source_sha256"] == current["source"]["sha256"];
     let sheets = corrections::sheets(current)?;
     // Validated once below, after the corrections are applied.
-    let mut result = inferred(current, extraction_hash)?;
-    let defaults = corrections::Defaults::of(array(&result["elements"])?)?;
+    let mut result = inferred(root, current, extraction_hash)?;
+    // What the parser gives each cell, read only to replay corrections of
+    // elements: a large sheet has a default per cell.
+    let defaults = if array(&journal["elements"])?.is_empty() {
+        corrections::Defaults::default()
+    } else {
+        corrections::Defaults::of(&result.elements)
+    };
     let region_ids: BTreeSet<String> = array(&journal["regions"])?
         .iter()
         .map(|region| string(&region["id"]).map(str::to_owned))
@@ -94,17 +96,19 @@ pub(super) fn rebase(
         let id = string(&correction["element"]["id"])?.to_owned();
         let name = string(&correction["element"]["sheet"])?;
         let replayed = match sheets.get(name) {
-            Some(sheet) => corrections::replayed(correction, sheet, &defaults, &ids, axes)?,
+            Some(sheet) => corrections::replayed(correction, sheet, &defaults, &ids, axes)?
+                .map(|(element, matched)| {
+                    Ok::<_, anyhow::Error>((Element::from_value(element)?, matched))
+                })
+                .transpose()?,
             None => None,
         };
         // A cell another correction holds is missing to this one.
         let Some((mut element, matched)) = replayed.filter(|(element, _)| {
-            element["cells"].as_array().unwrap().iter().all(|cell| {
-                !claimed.contains(&(
-                    name.to_owned(),
-                    cell["address"].as_str().unwrap().to_owned(),
-                ))
-            })
+            element
+                .cells
+                .iter()
+                .all(|cell| !claimed.contains(&(name.to_owned(), cell.address.to_string())))
         }) else {
             conflicts.push(json!({"kind":"element","id":id,"reason":"source_cells_missing"}));
             continue;
@@ -114,30 +118,26 @@ pub(super) fn rebase(
                 "reason":"image_evidence_requires_new_source_review"}));
             continue;
         }
-        let cells = element["cells"].as_array_mut().unwrap();
-        claimed.extend(cells.iter().map(|cell| {
-            (
-                name.to_owned(),
-                cell["address"].as_str().unwrap().to_owned(),
-            )
-        }));
+        let cells = &mut element.cells;
+        claimed.extend(
+            cells
+                .iter()
+                .map(|cell| (name.to_owned(), cell.address.to_string())),
+        );
         // Its cells, or what the parser gives them, changed since it was
         // recorded: each cell is read again, and keeps only headers that are
         // still headers of the element.
         let mut changed = Vec::new();
         if !matched {
-            let headers: BTreeSet<String> = cells
+            let headers: BTreeSet<Box<str>> = cells
                 .iter()
-                .filter(|cell| cell["role"] == "row_header" || cell["role"] == "column_header")
-                .filter_map(|cell| cell["id"].as_str().map(str::to_owned))
+                .filter(|cell| cell.role.heads())
+                .map(|cell| cell.id.clone())
                 .collect();
             for cell in cells.iter_mut() {
-                cell["text_state"] = json!("not_examined");
-                cell["headers"]
-                    .as_array_mut()
-                    .unwrap()
-                    .retain(|header| header.as_str().is_some_and(|h| headers.contains(h)));
-                changed.push(cell["address"].clone());
+                cell.text_state = TextState::NotExamined;
+                cell.headers.retain(|header| headers.contains(header));
+                changed.push(json!(&*cell.address));
             }
         }
         ensure!(
@@ -178,22 +178,19 @@ pub(super) fn rebase(
     if same_source {
         result["regions"] = journal["regions"].clone();
     }
-    let retained: Vec<Value> = candidates
+    let retained: Vec<Element> = candidates
         .into_iter()
         .filter(|(id, _)| transferable.contains(id))
         .map(|(_, element)| element)
         .collect();
-    let owned: BTreeSet<(String, String)> = retained
-        .iter()
-        .flat_map(|element| {
-            let sheet = element["sheet"].as_str().unwrap().to_owned();
-            element["cells"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(move |cell| (sheet.clone(), cell["address"].as_str().unwrap().to_owned()))
-        })
-        .collect();
+    // The addresses the corrected elements hold, by sheet.
+    let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for element in &retained {
+        owned
+            .entry(string(&element["sheet"])?.to_owned())
+            .or_default()
+            .extend(element.cells.iter().map(|cell| cell.address.to_string()));
+    }
     let mut fresh = Vec::new();
     let mut renamed: BTreeMap<String, Value> = BTreeMap::new();
     let mut used_ids: BTreeSet<String> = retained
@@ -202,28 +199,28 @@ pub(super) fn rebase(
         .collect();
     // The inferred elements are moved, not copied: there is one per table and
     // text of the extraction, each with its cells.
-    let Value::Array(inferred_elements) = result["elements"].take() else {
-        anyhow::bail!("inferred elements missing");
-    };
-    for mut element in inferred_elements {
-        let sheet = string(&element["sheet"])?.to_owned();
-        element["cells"].as_array_mut().unwrap().retain(|cell| {
-            !owned.contains(&(sheet.clone(), cell["address"].as_str().unwrap().to_owned()))
-        });
-        if element["cells"].as_array().unwrap().is_empty() {
+    for mut element in std::mem::take(&mut result.elements) {
+        if let Some(held) = owned.get(string(&element["sheet"])?) {
+            element.cells.retain(|cell| !held.contains(&*cell.address));
+        }
+        if element.cells.is_empty() {
             continue;
         }
-        let local: BTreeSet<String> = element["cells"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|cell| cell["id"].as_str().unwrap().to_owned())
-            .collect();
-        for cell in element["cells"].as_array_mut().unwrap() {
-            cell["headers"]
-                .as_array_mut()
-                .unwrap()
-                .retain(|header| local.contains(header.as_str().unwrap_or("")));
+        // Headers outside the cells left go; the cells are only read when
+        // some header is.
+        let outside = {
+            let local: HashSet<&str> = element.cells.iter().map(|cell| &*cell.id).collect();
+            element
+                .cells
+                .iter()
+                .any(|cell| cell.headers.iter().any(|h| !local.contains(&**h)))
+        };
+        if outside {
+            let local: HashSet<Box<str>> =
+                element.cells.iter().map(|cell| cell.id.clone()).collect();
+            for cell in &mut element.cells {
+                cell.headers.retain(|header| local.contains(header));
+            }
         }
         let inferred_id = string(&element["id"])?.to_owned();
         element["id"] = json!(fresh_id(&mut used_ids, &inferred_id));
@@ -243,7 +240,7 @@ pub(super) fn rebase(
         .map(|element| element["id"].as_str().unwrap().to_owned())
         .collect();
     let carried_elements = retained.len();
-    let mut elements: Vec<Value> = retained.into_iter().chain(fresh).collect();
+    let mut elements: Vec<Element> = retained.into_iter().chain(fresh).collect();
     for id in relations::prune_parents(&mut elements) {
         if corrected.contains(&id) {
             conflicts.push(json!({"kind":"element","id":id,"reason":"parent_dependency_changed"}));
@@ -252,7 +249,12 @@ pub(super) fn rebase(
 
     // A reading of an element the parser got right goes to the parser's
     // element holding its anchor cell, while that cell is what was read.
-    let holding = holding_index(&elements);
+    let holding =
+        if array(&journal["readings"])?.is_empty() && array(&journal["cell_states"])?.is_empty() {
+            BTreeMap::new()
+        } else {
+            holding_index(&elements)
+        };
     // The address and source cell a cell name of the journal names now.
     let source = |sheet: &str, cell: &Value| -> Result<Option<(String, Option<SourceCell<'_>>)>> {
         let Ok(point) = axes.point(sheet, string(cell)?) else {
@@ -299,15 +301,15 @@ pub(super) fn rebase(
             continue;
         };
         let changed = corrections::cell_hash(now)? != state["sha256"];
-        let cell = &mut elements[index]["cells"][cell_index];
+        let cell = &mut elements[index].cells[cell_index];
         if changed {
-            cell["text_state"] = json!("not_examined");
-            conflicts.push(json!({"kind":"cell","id":cell["id"],"reason":"source_cells_changed"}));
+            cell.text_state = TextState::NotExamined;
+            conflicts.push(json!({"kind":"cell","id":&*cell.id,"reason":"source_cells_changed"}));
         } else {
-            cell["text_state"] = state["text_state"].clone();
+            cell.text_state = TextState::parse(string(&state["text_state"])?)?;
         }
     }
-    result["elements"] = Value::Array(elements);
+    result.elements = elements;
 
     let mut visuals = result["visuals"].as_array().unwrap().clone();
     let carried_visuals = rebase_visuals(
@@ -326,15 +328,12 @@ pub(super) fn rebase(
             .enumerate()
             .map(|(index, id)| Ok((string(id)?.to_owned(), index)))
             .collect::<Result<_>>()?;
-        result["elements"]
-            .as_array_mut()
-            .unwrap()
-            .sort_by_key(|element| {
-                order
-                    .get(element["id"].as_str().unwrap_or(""))
-                    .copied()
-                    .unwrap_or(usize::MAX)
-            });
+        result.elements.sort_by_key(|element| {
+            order
+                .get(element["id"].as_str().unwrap_or(""))
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
         if journal["review"]["content_hash"] == content_hash(&result) {
             result["review"] = journal["review"].clone();
         }
@@ -369,6 +368,26 @@ mod performance_tests {
             })
             .collect();
         let addresses: Vec<_> = (0..3000).map(|i| format!("C{i}")).collect();
+        let typed: Vec<Element> = elements
+            .iter()
+            .map(|element| {
+                let cells = array(&element["cells"])
+                    .unwrap()
+                    .iter()
+                    .map(|cell| {
+                        let address = cell["address"].as_str().unwrap();
+                        ElementCell {
+                            address: address.into(),
+                            headers: vec![],
+                            id: address.into(),
+                            role: Role::Data,
+                            text_state: TextState::Read,
+                        }
+                    })
+                    .collect();
+                Element::new(json!({"sheet":"Sheet"}), cells)
+            })
+            .collect();
         let mut old = vec![];
         let mut new = vec![];
         for _ in 0..5 {
@@ -386,7 +405,7 @@ mod performance_tests {
                 .collect();
             old.push(started.elapsed().as_secs_f64() * 1000.0);
             let started = Instant::now();
-            let index = holding_index(&elements);
+            let index = holding_index(&typed);
             let indexed: Vec<_> = addresses
                 .iter()
                 .map(|address| {
@@ -411,7 +430,7 @@ mod performance_tests {
 fn rebase_visuals(
     visuals: &mut [Value],
     corrections: &[Value],
-    current: &Value,
+    current: &Extraction,
     same_source: bool,
     region_ids: &BTreeSet<String>,
     conflicts: &mut Vec<Value>,
@@ -474,7 +493,7 @@ mod visual_measurement {
             rebase_visuals(
                 &mut visuals,
                 &corrections,
-                &json!({}),
+                &Extraction::from_value(json!({"sheets":[]})).unwrap(),
                 true,
                 &BTreeSet::new(),
                 &mut conflicts
@@ -493,7 +512,7 @@ mod visual_measurement {
     fn measure_visual_corrections() {
         for count in [500, 2_000] {
             let visuals: Vec<_> = (0..count).map(|i| json!({"id":format!("v{i}"),"sources":[format!("/drawing/{i}")],"evidence":[]})).collect();
-            let current = json!({"anchor":"original"});
+            let current = Extraction::from_value(json!({"anchor":"original","sheets":[]})).unwrap();
             let corrections: Vec<_> = visuals.iter().map(|visual| json!({"visual":visual,"sources":[{"pointer":"/anchor","sha256":hash(&encoded(&current["anchor"]))}]})).collect();
             let mut times = vec![];
             for _ in 0..5 {

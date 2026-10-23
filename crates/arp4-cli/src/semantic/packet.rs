@@ -98,10 +98,12 @@ pub fn compact_review(packet: &Value) -> Value {
                 .iter()
                 .map(|i| Value::Array(columns.iter().map(|c| i[c].clone()).collect()))
                 .collect();
-            compact["items"] = json!({"columns":columns,"rows":rows});
+            compact["items"] = json!({"columns":columns});
+            compact["items"]["rows"] = Value::Array(rows);
         }
     }
-    compact["span_table"] = json!({"columns":["source","start","end","quote"],"rows":spans});
+    compact["span_table"] = json!({"columns":["source","start","end","quote"]});
+    compact["span_table"]["rows"] = Value::Array(spans);
     compact["encoding"] = json!("review-tables-v1");
     compact
 }
@@ -138,8 +140,8 @@ pub(super) fn source_rows(input: &Input, rows: &[&Source]) -> Value {
                 let index = *table_indices
                     .entry((&s.document, &c.sheet))
                     .or_insert_with(|| {
-                        let mut table =
-                            json!({"document":s.document,"sheet":c.sheet,"merges":c.merges});
+                        let mut table = json!({"document":s.document,"sheet":c.sheet,
+                                "merges":input.sheet_merges(&s.document, &c.sheet)});
                         if let Some(structure) = input.structures.get(&s.document) {
                             table["structure"] =
                                 crate::document_structure::sheet_context(structure, &c.sheet);
@@ -175,7 +177,7 @@ pub(super) fn source_rows(input: &Input, rows: &[&Source]) -> Value {
             if has_positions {
                 row.push(json!(s.context.as_ref().and_then(|c| c.position.as_ref())));
             }
-            json!(row)
+            Value::Array(row)
         })
         .collect::<Vec<_>>();
     let mut columns = vec![
@@ -189,7 +191,10 @@ pub(super) fn source_rows(input: &Input, rows: &[&Source]) -> Value {
     if has_positions {
         columns.push("position");
     }
-    json!({"columns":columns,"tables":tables,"rows":data})
+    let mut out = json!({"columns":columns});
+    out["tables"] = Value::Array(tables);
+    out["rows"] = Value::Array(data);
+    out
 }
 
 /// The fingerprint includes the protocol and source context, not unrelated document revisions.

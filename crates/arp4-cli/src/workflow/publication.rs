@@ -113,8 +113,8 @@ mod tests {
         let set = |status: &str, text: &str| {
             let store = Store::open(&root).unwrap();
             let digest = store.put(text.as_bytes()).unwrap();
-            let mut state = json!({"version":1,"engine":"arp4-rust","status":status,"exports":{"design.md":digest}});
-            store.save(&mut state).unwrap();
+            let state = json!({"version":1,"engine":"arp4-rust","status":status,"exports":{"design.md":digest}});
+            store.save(&state).unwrap();
         };
         set("complete", "first");
         assert!(publish(&root, &output).unwrap());

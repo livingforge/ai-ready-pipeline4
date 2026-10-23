@@ -55,19 +55,18 @@ pub fn apply_reviews(
         .map(|r| r.plan.clone())
         .unwrap_or_default();
     plan.validate(input)?;
+    // The model is checked once for the packets of every reply.
+    let basis = ReviewBasis::new(input, &model, catalog);
     let mut combined = Vec::new();
     if let Some(previous) = previous {
         for saved in previous.replies {
             let mut review: Review = serde_json::from_value(saved["reply"].clone())?;
-            let current = review_packet_selected(
-                input,
-                &model,
-                catalog,
-                review.document.as_deref(),
-                review.sheet.as_deref(),
-                review.scope.as_ref(),
-            );
-            if let Ok(packet) = current
+            if let Ok(basis) = &basis
+                && let Ok(packet) = basis.packet(
+                    review.document.as_deref(),
+                    review.sheet.as_deref(),
+                    review.scope.as_ref(),
+                )
                 && packet["packet"] == review.packet
             {
                 let incoming: Vec<_> = reviews
@@ -116,11 +115,12 @@ pub fn apply_reviews(
     let mut findings = Vec::new();
     let mut replies = Vec::new();
     for (review, reviewer) in combined {
+        let basis = match &basis {
+            Ok(basis) => basis,
+            Err(error) => anyhow::bail!("{error:#}"),
+        };
         ensure!(
-            review_packet_selected(
-                input,
-                &model,
-                catalog,
+            basis.packet(
                 review.document.as_deref(),
                 review.sheet.as_deref(),
                 review.scope.as_ref()

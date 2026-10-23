@@ -1,24 +1,61 @@
 //! References authored during structure interpretation; also checked in saved packets.
 use super::*;
 
+/// An element as its references read it, held typed or as JSON: its members
+/// and the IDs of its cells.
+pub(super) trait Node {
+    fn members(&self) -> &Value;
+    fn members_mut(&mut self) -> &mut Value;
+    /// The IDs of its cells; none when its cells are not a list.
+    fn cell_ids(&self) -> Option<Vec<&str>>;
+}
+
+impl Node for Value {
+    fn members(&self) -> &Value {
+        self
+    }
+    fn members_mut(&mut self) -> &mut Value {
+        self
+    }
+    fn cell_ids(&self) -> Option<Vec<&str>> {
+        Some(
+            self["cells"]
+                .as_array()?
+                .iter()
+                .filter_map(|c| c["id"].as_str())
+                .collect(),
+        )
+    }
+}
+
+impl Node for Element {
+    fn members(&self) -> &Value {
+        &self.fields
+    }
+    fn members_mut(&mut self) -> &mut Value {
+        &mut self.fields
+    }
+    fn cell_ids(&self) -> Option<Vec<&str>> {
+        Some(self.cells.iter().map(|c| &*c.id).collect())
+    }
+}
+
 /// Keeps each table's parent only while it is still a table on the same sheet,
 /// and its context only to cells that table still holds. Returns the IDs of the
 /// elements whose parent was dropped.
-pub(super) fn prune_parents(elements: &mut [Value]) -> Vec<String> {
+pub(super) fn prune_parents<T: Node>(elements: &mut [T]) -> Vec<String> {
     let tables: BTreeMap<String, (Value, BTreeSet<String>)> = elements
         .iter()
-        .filter(|e| e["kind"] == "table")
+        .filter(|e| e.members()["kind"] == "table")
         .filter_map(|e| {
-            let cells = e["cells"]
-                .as_array()?
-                .iter()
-                .filter_map(|c| c["id"].as_str().map(str::to_owned))
-                .collect();
+            let cells = e.cell_ids()?.into_iter().map(str::to_owned).collect();
+            let e = e.members();
             Some((e["id"].as_str()?.to_owned(), (e["sheet"].clone(), cells)))
         })
         .collect();
     let mut dropped = vec![];
     for element in elements.iter_mut() {
+        let element = element.members_mut();
         let Some(parent) = element.get("parent") else {
             continue;
         };
@@ -42,19 +79,23 @@ pub(super) fn prune_parents(elements: &mut [Value]) -> Vec<String> {
     dropped
 }
 
-pub(super) fn validate(value: &Value) -> Result<()> {
-    let elements = array(&value["elements"])?;
+/// Checks the references of `elements` and of the visuals and regions of
+/// `structure`, the other members of their interpretation.
+pub(super) fn validate_elements<T: Node>(elements: &[T], structure: &Value) -> Result<()> {
+    let value = structure;
     let by_id: BTreeMap<_, _> = elements
         .iter()
-        .map(|e| Ok((string(&e["id"])?, e)))
+        .map(|e| Ok((string(&e.members()["id"])?, e)))
         .collect::<Result<_>>()?;
     ensure!(by_id.len() == elements.len(), "duplicate element ID");
-    for element in elements {
+    for node in elements {
+        let element = node.members();
         if let Some(descriptions) = element.get("descriptions") {
             for id in array(descriptions)? {
                 let description = by_id
                     .get(string(id)?)
-                    .context("unknown table description")?;
+                    .context("unknown table description")?
+                    .members();
                 ensure!(
                     description["kind"] == "text",
                     "table description must reference a text element"
@@ -66,9 +107,11 @@ pub(super) fn validate(value: &Value) -> Result<()> {
             }
         }
         if let Some(parent) = element.get("parent") {
-            let container = by_id
+            let container = *by_id
                 .get(string(&parent["element"])?)
                 .context("unknown parent table")?;
+            let ids = container.cell_ids().context("expected array")?;
+            let container = container.members();
             ensure!(
                 container["kind"] == "table" && container["id"] != element["id"],
                 "table parent must reference another table"
@@ -77,10 +120,7 @@ pub(super) fn validate(value: &Value) -> Result<()> {
                 container["sheet"] == element["sheet"],
                 "table parent on different sheet"
             );
-            let cells: BTreeSet<_> = array(&container["cells"])?
-                .iter()
-                .filter_map(|cell| cell["id"].as_str())
-                .collect();
+            let cells: BTreeSet<_> = ids.into_iter().collect();
             for id in array(&parent["context"])? {
                 ensure!(
                     cells.contains(string(id)?),
@@ -92,11 +132,11 @@ pub(super) fn validate(value: &Value) -> Result<()> {
     // A table cannot be nested in itself through its ancestors.
     for element in elements {
         let mut seen = BTreeSet::new();
-        let mut current: &Value = element;
+        let mut current: &Value = element.members();
         while let Some(parent) = current.get("parent") {
             let id = string(&parent["element"])?;
             ensure!(seen.insert(id), "cyclic table parent relationship");
-            current = by_id[id];
+            current = by_id[id].members();
         }
     }
     for visual in array(&value["visuals"])? {
@@ -172,6 +212,10 @@ mod tests {
 
     fn structure(elements: Vec<Value>) -> Value {
         json!({"elements":elements,"visuals":[],"regions":[]})
+    }
+
+    fn validate(value: &Value) -> Result<()> {
+        validate_elements(array(&value["elements"])?, value)
     }
 
     #[test]

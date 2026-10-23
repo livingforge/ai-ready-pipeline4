@@ -2,7 +2,7 @@ use super::grid::{Axes, Cells, Point};
 use super::*;
 use std::collections::HashMap;
 
-pub(super) fn empty(extraction: &Value, extraction_hash: &str) -> Value {
+pub(super) fn empty(extraction: &Extraction, extraction_hash: &str) -> Value {
     json!({"schema_version":2,
         "source_sha256":extraction["source"]["sha256"],
         "baseline_extraction_hash":extraction_hash,
@@ -34,11 +34,9 @@ pub(super) fn validate_journal(journal: &Value) -> Result<()> {
 
 /// The text_state the parser reads from a cell's value: `read` when it holds
 /// text or a formula, `empty` otherwise, also for a cell the extraction lacks.
-pub(super) fn text_state(cell: Option<&Value>) -> &'static str {
+pub(super) fn text_state(cell: Option<&Cell>) -> &'static str {
     match cell {
-        Some(cell)
-            if (!cell["value"].is_null() && cell["value"] != "") || cell["formula"].is_string() =>
-        {
+        Some(cell) if (!cell.value.is_null() && cell.value != "") || cell.formula.is_some() => {
             "read"
         }
         _ => "empty",
@@ -47,7 +45,7 @@ pub(super) fn text_state(cell: Option<&Value>) -> &'static str {
 
 /// A cell of an extraction with the sheet it is on, which holds its font and
 /// style.
-pub(super) type SourceCell<'a> = (&'a Value, &'a Value);
+pub(super) type SourceCell<'a> = (&'a crate::extraction::Sheet, &'a Cell);
 
 /// A cell as a correction binds it: with its font, style and cached result in
 /// place, and without its address and ID, which follow from where it is, so a
@@ -74,8 +72,8 @@ pub(super) fn cell_hash(cell: Option<SourceCell<'_>>) -> Result<String> {
 /// cells start with, and its cells by address and by position.
 pub(super) struct Sheet<'a> {
     pub(super) number: usize,
-    value: &'a Value,
-    by_address: HashMap<&'a str, &'a Value>,
+    value: &'a crate::extraction::Sheet,
+    by_address: HashMap<&'a str, &'a Cell>,
     pub(super) cells: Cells,
 }
 
@@ -86,24 +84,28 @@ impl<'a> Sheet<'a> {
 }
 
 /// The sheets of an extraction by name.
-pub(super) fn sheets(extraction: &Value) -> Result<HashMap<&str, Sheet<'_>>> {
-    array(&extraction["sheets"])?
+pub(super) fn sheets(extraction: &Extraction) -> Result<HashMap<&str, Sheet<'_>>> {
+    extraction
+        .sheets
         .iter()
         .enumerate()
         .map(|(index, sheet)| {
-            let cells = array(&sheet["cells"])?;
-            let by_address: HashMap<_, _> = cells
+            let by_address: HashMap<_, _> = sheet
+                .cells
                 .iter()
-                .map(|cell| Ok((string(&cell["address"])?, cell)))
-                .collect::<Result<_>>()?;
-            ensure!(by_address.len() == cells.len(), "duplicate source cell");
+                .map(|cell| (&*cell.address, cell))
+                .collect();
+            ensure!(
+                by_address.len() == sheet.cells.len(),
+                "duplicate source cell"
+            );
             Ok((
                 string(&sheet["name"])?,
                 Sheet {
                     number: index + 1,
                     value: sheet,
                     by_address,
-                    cells: Cells::of(sheet)?,
+                    cells: Cells::of(sheet.cells.iter().map(|cell| &*cell.address))?,
                 },
             ))
         })
@@ -117,52 +119,44 @@ pub(super) fn address((column, row): Point) -> Result<String> {
 
 /// What the parser gives each cell of the elements it infers: its ID, role
 /// and headers, by sheet and address.
-pub(super) struct Defaults {
-    cells: HashMap<(String, String), (Value, Value, Value)>,
+#[derive(Default)]
+pub(super) struct Defaults<'a> {
+    cells: HashMap<(&'a str, &'a str), &'a ElementCell>,
     /// The address of each of those cells by ID, which headers name.
-    addresses: HashMap<String, String>,
+    addresses: HashMap<&'a str, &'a str>,
 }
 
-impl Defaults {
-    pub(super) fn of(elements: &[Value]) -> Result<Self> {
-        let mut defaults = Self {
-            cells: HashMap::new(),
-            addresses: HashMap::new(),
-        };
+impl<'a> Defaults<'a> {
+    pub(super) fn of(elements: &'a [Element]) -> Self {
+        let mut defaults = Self::default();
         for element in elements {
-            let sheet = string(&element["sheet"])?;
-            for cell in array(&element["cells"])? {
-                let address = string(&cell["address"])?;
-                defaults
-                    .addresses
-                    .insert(string(&cell["id"])?.to_owned(), address.to_owned());
-                defaults.cells.insert(
-                    (sheet.to_owned(), address.to_owned()),
-                    (
-                        cell["id"].clone(),
-                        cell["role"].clone(),
-                        cell["headers"].clone(),
-                    ),
-                );
+            let Some(sheet) = element["sheet"].as_str() else {
+                continue;
+            };
+            for cell in &element.cells {
+                defaults.addresses.insert(&cell.id, &cell.address);
+                defaults.cells.insert((sheet, &cell.address), cell);
             }
         }
-        Ok(defaults)
+        defaults
     }
 
     /// The ID, role and headers the parser gives the cell at `address` of the
     /// sheet `name`, numbered `number`: for a cell of none of its elements, the
     /// ID it would take, no role and no headers.
     pub(super) fn get(&self, number: usize, name: &str, address: &str) -> (Value, Value, Value) {
-        self.cells
-            .get(&(name.to_owned(), address.to_owned()))
-            .cloned()
-            .unwrap_or_else(|| {
-                (
-                    json!(format!("s{number}-{address}")),
-                    json!("unassigned"),
-                    json!([]),
-                )
-            })
+        match self.cells.get(&(name, address)) {
+            Some(cell) => (
+                json!(&*cell.id),
+                json!(cell.role.as_str()),
+                json!(cell.headers),
+            ),
+            None => (
+                json!(format!("s{number}-{address}")),
+                json!("unassigned"),
+                json!([]),
+            ),
+        }
     }
 }
 
@@ -191,7 +185,7 @@ pub(super) fn element_hash(
                     header
                         .as_str()
                         .and_then(|id| defaults.addresses.get(id))
-                        .and_then(|address| places.get(address.as_str()))
+                        .and_then(|address| places.get(*address))
                         .copied()
                 })
                 .collect();
@@ -405,14 +399,22 @@ pub(super) fn replayed(
 /// by the identities of their rows and columns in `axes`.
 pub(super) fn record(
     root: &Path,
-    extraction: &Value,
+    extraction: &Extraction,
     structure: &Value,
     axes: &Axes,
 ) -> Result<Value> {
     validate(root, extraction, structure)?;
-    let inferred = inference::elements(extraction)?;
-    let inferred_structures: Vec<Value> = inferred.iter().map(structure_of).collect();
-    let defaults = Defaults::of(&inferred)?;
+    let typed = inference::elements(extraction)?;
+    let defaults = Defaults::of(&typed);
+    let inferred: Vec<Value> = typed.iter().map(Element::to_value).collect();
+    // The first inferred element of each structure, by its canonical text: an
+    // element is looked up, not compared with every inferred element.
+    let mut inferred_structures: HashMap<String, usize> = HashMap::new();
+    for (index, element) in inferred.iter().enumerate() {
+        inferred_structures
+            .entry(structure_of(element).to_string())
+            .or_insert(index);
+    }
     let original_visuals = policy::visuals(extraction)?;
     let sheets = sheets(extraction)?;
     let mut addresses = HashMap::new();
@@ -438,7 +440,7 @@ pub(super) fn record(
             }
         }
         let own = structure_of(element);
-        if let Some(index) = inferred_structures.iter().position(|e| *e == own) {
+        if let Some(&index) = inferred_structures.get(&own.to_string()) {
             if element["reading"] != inferred[index]["reading"] {
                 let anchor = string(&element["cells"][0]["address"])?;
                 readings.push(json!({"element":element["id"],"sheet":name,

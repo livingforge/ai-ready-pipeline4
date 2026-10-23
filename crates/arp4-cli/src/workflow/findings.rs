@@ -196,15 +196,20 @@ impl Workflow {
     /// is read and stored once for all of them.
     pub(super) fn note_unresolved(&mut self, entries: Vec<Value>) -> Result<()> {
         let mut list = self.unresolved()?;
+        // The first entry of each signature, looked up rather than found by
+        // signing every entry again for each one added.
+        let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (index, entry) in list.iter().enumerate() {
+            at.entry(Self::unresolved_signature(entry)).or_insert(index);
+        }
         for entry in entries {
             let signature = Self::unresolved_signature(&entry);
-            if let Some(existing) = list
-                .iter_mut()
-                .find(|e| Self::unresolved_signature(e) == signature)
-            {
+            if let Some(&index) = at.get(&signature) {
+                let existing = &mut list[index];
                 existing["reports"] = json!(existing["reports"].as_u64().unwrap_or(1) + 1);
                 existing["reason"] = entry["reason"].clone();
             } else {
+                at.insert(signature, list.len());
                 list.push(entry);
             }
         }

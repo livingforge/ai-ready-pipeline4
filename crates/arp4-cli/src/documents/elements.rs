@@ -1,23 +1,35 @@
 //! Coordinate-free editable document bodies and their separately stored bindings.
 use super::*;
+use crate::document_body::Content;
+use crate::document_structure::{Element, ElementCell, Role};
+use std::collections::HashSet;
+
+/// The bytes an ID part keeps as they are; [`token`] escapes the others.
+fn plain(byte: u8) -> bool {
+    matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'/' | b'#')
+}
 
 pub(super) fn token(kind: &str, parts: &[&str]) -> String {
     // Keep the immutable identity components readable. Escape the separator
     // and escape marker so user-supplied operation IDs cannot alias each other.
-    let parts: Vec<String> = parts
-        .iter()
-        .map(|part| {
-            part.bytes()
-                .map(|byte| match byte {
-                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'/' | b'#' => {
-                        char::from(byte).to_string()
-                    }
-                    _ => format!("%{byte:02X}"),
-                })
-                .collect()
-        })
-        .collect();
-    format!("{kind}_{}", parts.join("_"))
+    // Written into one string: a large sheet makes an ID for every cell.
+    let mut id =
+        String::with_capacity(kind.len() + parts.iter().map(|p| p.len() + 1).sum::<usize>());
+    id.push_str(kind);
+    id.push('_');
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            id.push('_');
+        }
+        for byte in part.bytes() {
+            if plain(byte) {
+                id.push(char::from(byte));
+            } else {
+                id.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    id
 }
 pub(super) fn cell_id(row: &str, column: &str) -> String {
     token("cell", &[row, column])
@@ -36,50 +48,63 @@ pub(super) fn cell_axes(id: &str) -> Option<(String, String)> {
 }
 
 /// The kind and the parts of an ID that [`token`] made, or `None` for any
-/// other string.
+/// other string. A part is read as [`token`] writes it, so the ID is the one
+/// it makes of them: kept bytes as they are, any other as `%` and two
+/// upper-case hex digits.
 fn parts(id: &str) -> Option<(&str, Vec<String>)> {
     let (kind, rest) = id.split_once('_')?;
     let parts = rest
         .split('_')
         .map(|part| {
-            let mut bytes = vec![];
+            let mut bytes = Vec::with_capacity(part.len());
             let mut rest = part.as_bytes();
             while let Some((&byte, after)) = rest.split_first() {
                 if byte == b'%' {
-                    let hex = std::str::from_utf8(after.get(..2)?).ok()?;
-                    bytes.push(u8::from_str_radix(hex, 16).ok()?);
+                    let hex = after.get(..2)?;
+                    if !hex.iter().all(|d| matches!(d, b'0'..=b'9' | b'A'..=b'F')) {
+                        return None;
+                    }
+                    let escaped = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+                    if plain(escaped) {
+                        return None;
+                    }
+                    bytes.push(escaped);
                     rest = &after[2..];
-                } else {
+                } else if plain(byte) {
                     bytes.push(byte);
                     rest = after;
+                } else {
+                    return None;
                 }
             }
             String::from_utf8(bytes).ok()
         })
         .collect::<Option<Vec<_>>>()?;
-    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    (token(kind, &refs) == id).then_some((kind, parts))
+    Some((kind, parts))
 }
 
 /// Where the elements of a page write in its grid, read from their IDs: a
 /// shape's text, a formula of the sheet, or a cell of the body.
 pub(super) struct Bindings {
-    formulas: HashMap<(String, String), String>,
+    /// The formula in each cell holding one, by row and column: looked up
+    /// for every element without copying its row and column.
+    formulas: HashMap<String, HashMap<String, String>>,
 }
 
 impl Bindings {
     pub(super) fn of(sheet: &Value) -> Result<Self> {
-        let mut formulas = HashMap::new();
+        let mut formulas: HashMap<String, HashMap<String, String>> = HashMap::new();
         for (id, target) in sheet["formulas"]
             .as_object()
             .context("layout formulas missing")?
         {
-            let at = (
-                string(&target["row"])?.to_owned(),
-                string(&target["column"])?.to_owned(),
-            );
+            let (row, column) = (string(&target["row"])?, string(&target["column"])?);
             ensure!(
-                formulas.insert(at, id.clone()).is_none(),
+                formulas
+                    .entry(row.to_owned())
+                    .or_default()
+                    .insert(column.to_owned(), id.clone())
+                    .is_none(),
                 "two formulas in one cell"
             );
         }
@@ -108,7 +133,7 @@ impl Bindings {
         let row = parts.pop().unwrap();
         Ok(match kind {
             "shape" => ("shapes".into(), row, column),
-            "cell" => match self.formulas.get(&(row.clone(), column.clone())) {
+            "cell" => match self.formulas.get(&row).and_then(|row| row.get(&column)) {
                 Some(formula) => ("formulas".into(), formula.clone(), "formula".into()),
                 None => ("table-1".into(), row, column),
             },
@@ -123,34 +148,115 @@ impl Bindings {
 pub(super) struct Fonts {
     pub(super) list: Vec<Value>,
     index: HashMap<String, usize>,
+    /// The JSON of the font being added: a page adds one per cell, and most
+    /// are added before.
+    key: Vec<u8>,
 }
 
 impl Fonts {
     pub(super) fn add(&mut self, font: &Value) -> Value {
-        let key = serde_json::to_string(font).unwrap();
-        let next = self.list.len();
-        let index = *self.index.entry(key).or_insert(next);
-        if index == next {
-            self.list.push(font.clone());
-        }
+        self.key.clear();
+        serde_json::to_writer(&mut self.key, font).unwrap();
+        let key = std::str::from_utf8(&self.key).unwrap();
+        let index = match self.index.get(key) {
+            Some(index) => *index,
+            None => {
+                let index = self.list.len();
+                self.index.insert(key.to_owned(), index);
+                self.list.push(font.clone());
+                index
+            }
+        };
         json!(index)
     }
 }
 
+/// The member of a grid page that holds the fonts its `fonts` refer to by
+/// index: a page has a font for each cell, and few fonts.
+pub(super) const FONT_TABLE: &str = "font_table";
+
+/// The font of `table` that `index` refers to, null for none.
+pub(super) fn table_font<'a>(table: &'a Value, index: &Value) -> Result<&'a Value> {
+    if index.is_null() {
+        return Ok(&Value::Null);
+    }
+    let index = index.as_u64().context("font index must be a number")?;
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| table.get(index))
+        .with_context(|| format!("unknown font index {index}"))
+}
+
+/// The font of the field at `block`, `row` and `column` of a grid `page`, null
+/// for none.
+pub(super) fn grid_font<'a>(
+    page: &'a Value,
+    block: &str,
+    row: &str,
+    column: &str,
+) -> Result<&'a Value> {
+    table_font(&page[FONT_TABLE], &page["fonts"][block][row][column])
+}
+
+/// Gives the field at `block`, `row` and `column` of a grid `page` the font
+/// `font`, kept once in the page's [`FONT_TABLE`].
+pub(super) fn set_grid_font(page: &mut Value, block: &str, row: &str, column: &str, font: Value) {
+    if !page[FONT_TABLE].is_array() {
+        page[FONT_TABLE] = json!([]);
+    }
+    let table = page[FONT_TABLE].as_array_mut().unwrap();
+    let index = table
+        .iter()
+        .position(|kept| *kept == font)
+        .unwrap_or_else(|| {
+            table.push(font);
+            table.len() - 1
+        });
+    page["fonts"][block][row][column] = json!(index);
+}
+
 /// The font an element or table cell of `sheet`'s metadata refers to, null
 /// for none.
-pub(super) fn font(sheet: &Value, element: &Value) -> Result<Value> {
-    if element["font"].is_null() {
-        return Ok(Value::Null);
-    }
-    let index = element["font"]
-        .as_u64()
-        .context("font index must be a number")?;
-    let font = usize::try_from(index)
-        .ok()
-        .and_then(|index| sheet["fonts"].get(index))
-        .with_context(|| format!("unknown font index {index}"))?;
-    Ok(font.clone())
+pub(super) fn font<E>(sheet: &Value, element: &E) -> Result<Value>
+where
+    E: for<'k> std::ops::Index<&'k str, Output = Value> + ?Sized,
+{
+    Ok(table_font(&sheet["fonts"], &element["font"])?.clone())
+}
+
+/// The ID of the first cell of the record `row`.
+pub(super) fn first_id(row: &MetaRow) -> Result<&str> {
+    string(row.cells.first().map_or(&Value::Null, |cell| &cell["id"]))
+}
+
+/// What a table cell of a page takes from the interpretation, and what
+/// [`encode`] arranges the table with: its table, whether it is a cell of a
+/// heading record (`heading`) or a mark (`mark`), the heading its column's
+/// key is from (`label`), the row of its record's parent (`parent`: none when
+/// the group places no record, null when the record has no parent), the
+/// category it is a cell of or a blank cell under (`category`) and the
+/// categories around it, outer first (`within`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Group {
+    pub(super) table: Option<Arc<str>>,
+    pub(super) heading: bool,
+    pub(super) mark: bool,
+    pub(super) label: Option<Box<str>>,
+    pub(super) parent: Option<Option<Box<str>>>,
+    pub(super) category: Option<Box<str>>,
+    pub(super) within: Vec<Box<str>>,
+}
+
+/// The groups of the table cells of a page, by cell ID. A page has a group
+/// for each cell of its tables, so they are typed rather than JSON.
+pub(super) type Groups = BTreeMap<String, Group>;
+
+/// The group of a cell no table holds.
+static NO_GROUP: std::sync::LazyLock<Group> = std::sync::LazyLock::new(Group::default);
+
+/// The group of the cell `cell` of the element metadata, or [`NO_GROUP`].
+fn group_of<'a>(groups: &'a Groups, cell: &MetaCell) -> Result<&'a Group> {
+    Ok(groups.get(string(&cell["id"])?).unwrap_or(&NO_GROUP))
 }
 
 /// The group of every table cell, as the element `metadata` of a page records
@@ -161,17 +267,18 @@ pub(super) fn font(sheet: &Value, element: &Value) -> Result<Value> {
 /// parent it has without the category), a cell of a category or a blank one
 /// under it the category as its `category`, and the categories its record is
 /// in, or a category's cell those around it, as its `within`.
-fn groups(metadata: &Value) -> Result<Value> {
-    let mut groups = serde_json::Map::new();
-    for element in array(metadata)? {
+pub(super) fn metadata_groups(metadata: &[Meta]) -> Result<Groups> {
+    let mut groups = Groups::new();
+    for element in metadata {
         if element["type"] != "table" {
             continue;
         }
-        let rows = array(&element["rows"])?;
+        let table: Option<Arc<str>> = element["id"].as_str().map(Arc::from);
+        let rows = element.rows()?;
         let headings = element["headings"].as_u64().unwrap_or(0);
         let mut record_rows = HashMap::new();
         for row in rows {
-            let first = string(&row["cells"][0]["id"])?;
+            let first = first_id(row)?;
             if let (Some(id), Some((axis, _))) = (row["id"].as_str(), cell_axes(first)) {
                 record_rows.insert(id, axis);
             }
@@ -193,7 +300,7 @@ fn groups(metadata: &Value) -> Result<Value> {
             let mut parent = row["parent"].as_str();
             while let Some(key) = parent.filter(|p| categories.contains_key(*p)) {
                 let first = |id: &str| cell_axes(id).map(|(row, _)| row);
-                if first(key) != first(string(&row["cells"][0]["id"])?) {
+                if first(key) != first(first_id(row)?) {
                     parent = None;
                     break;
                 }
@@ -201,7 +308,7 @@ fn groups(metadata: &Value) -> Result<Value> {
             }
             let parent = parent
                 .and_then(|p| record_rows.get(p))
-                .map_or(Value::Null, |axis| json!(axis));
+                .map(|axis| Box::from(axis.as_str()));
             let mut chain: Vec<&str> = match row["parent"].as_str() {
                 Some(p) if categories.contains_key(p) => {
                     let mut chain = around(p, categories, &within)?;
@@ -211,7 +318,8 @@ fn groups(metadata: &Value) -> Result<Value> {
                 Some(p) => within.get(p).cloned().unwrap_or_default(),
                 None => vec![],
             };
-            let node_chains: HashMap<&str, Vec<&str>> = array(&row["cells"])?
+            let node_chains: HashMap<&str, Vec<&str>> = row
+                .cells
                 .iter()
                 .filter_map(|c| node_cells.get(c["id"].as_str()?).copied())
                 .map(|key| Ok((key, around(key, categories, &within)?)))
@@ -220,12 +328,15 @@ fn groups(metadata: &Value) -> Result<Value> {
                 within.insert(id, std::mem::take(&mut chain));
             }
             let chain = row["id"].as_str().map_or(&chain, |id| &within[id]);
-            for cell in array(&row["cells"])? {
-                let mut group = json!({"table":element["id"]});
+            for cell in &row.cells {
+                let mut group = Group {
+                    table: table.clone(),
+                    ..Group::default()
+                };
                 if i < headings {
-                    group["heading"] = json!(true);
+                    group.heading = true;
                 } else {
-                    group["parent"] = parent.clone();
+                    group.parent = Some(parent.clone());
                 }
                 let id = string(&cell["id"])?;
                 let category = node_cells
@@ -236,27 +347,19 @@ fn groups(metadata: &Value) -> Result<Value> {
                     Some(key) => &node_chains[key],
                     None => chain,
                 };
-                if let Some(key) = category {
-                    group["category"] = json!(key);
-                }
-                if !around.is_empty() {
-                    group["within"] = json!(around);
-                }
-                if cell["mark"] == true {
-                    group["mark"] = json!(true);
-                }
+                group.category = category.map(Box::from);
+                group.within = around.iter().map(|&key| Box::from(key)).collect();
+                group.mark = cell["mark"] == true;
                 let column = string(&cell["column"])?;
-                if let Some(label) = cell["label"]
+                group.label = cell["label"]
                     .as_str()
                     .or_else(|| element["labels"][column].as_str())
-                {
-                    group["label"] = json!(label);
-                }
+                    .map(Box::from);
                 groups.insert(string(&cell["id"])?.to_owned(), group);
             }
         }
     }
-    Ok(Value::Object(groups))
+    Ok(groups)
 }
 
 /// The categories around the category `key` of the table `categories`,
@@ -309,8 +412,7 @@ const MAX_TREE_DEPTH: usize = 16;
 /// without it, with its records under it: no record is under a record of
 /// another category. A blank cell under a category is marked with it as its
 /// `category`.
-fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
-    let groups = &sheet["groups"];
+fn arrange(sheet: &Value, groups: &Groups, metadata: &mut [Meta]) -> Result<()> {
     let position = |axis: &str, id: &str| sheet[axis][id]["position"].as_u64();
     // The last row of each merged cell, by its first row and column.
     let mut bottoms: HashMap<(u64, u64), u64> = HashMap::new();
@@ -323,8 +425,12 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
         bottoms.insert((u64::from(y), u64::from(x)), u64::from(bottom));
     }
     // Whether the record `row` lies below the merge of the cell `key`.
-    let beyond = |key: &str, row: &Value| -> bool {
-        let record = row["cells"][0]["id"].as_str().and_then(cell_axes);
+    let beyond = |key: &str, row: &MetaRow| -> bool {
+        let record = row
+            .cells
+            .first()
+            .and_then(|cell| cell["id"].as_str())
+            .and_then(cell_axes);
         let (Some((key_row, key_column)), Some((record, _))) = (cell_axes(key), record) else {
             return false;
         };
@@ -337,34 +443,33 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
             _ => false,
         }
     };
-    for element in metadata
-        .as_array_mut()
-        .context("element metadata missing")?
-        .iter_mut()
-        .filter(|e| e["type"] == "table")
-    {
-        let rows = element["rows"]
-            .as_array_mut()
-            .context("table rows missing")?;
-        let group = |cell: &Value| -> Result<&Value> { Ok(&groups[string(&cell["id"])?]) };
+    for element in metadata.iter_mut().filter(|e| e["type"] == "table") {
+        let Meta::Table {
+            fields: element,
+            rows,
+        } = element
+        else {
+            bail!("table rows missing");
+        };
+        let group = |cell: &MetaCell| group_of(groups, cell);
         let mut headings = 0;
         for row in rows.iter() {
-            let mut cells = array(&row["cells"])?.iter();
-            if !cells.all(|c| group(c).is_ok_and(|g| g["heading"] == true)) {
+            let mut cells = row.cells.iter();
+            if !cells.all(|c| group(c).is_ok_and(|g| g.heading)) {
                 break;
             }
             headings += 1;
         }
         let mut heading_cells = HashMap::new();
         for row in &rows[..headings] {
-            for cell in array(&row["cells"])? {
+            for cell in &row.cells {
                 heading_cells.insert(string(&cell["id"])?.to_owned(), heading_cells.len());
             }
         }
         let mut votes: BTreeMap<String, HashMap<String, usize>> = BTreeMap::new();
         let mut record_index = HashMap::new();
         for (i, row) in rows.iter().enumerate().skip(headings) {
-            let first = string(&row["cells"][0]["id"])?;
+            let first = first_id(row)?;
             if let Some((axis, _)) = cell_axes(first) {
                 record_index.insert(axis, i);
             }
@@ -372,14 +477,15 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
         let mut proposed: Vec<(Option<usize>, bool)> = vec![(None, true); rows.len()];
         for (i, row) in rows.iter_mut().enumerate().skip(headings) {
             let mut known = false;
-            for cell in row["cells"].as_array_mut().context("table cells missing")? {
+            for cell in &mut row.cells {
                 let g = group(cell)?;
-                if g["mark"] == true {
+                if g.mark {
                     cell["mark"] = json!(true);
                     continue;
                 }
-                if let Some(label) = g["label"]
-                    .as_str()
+                if let Some(label) = g
+                    .label
+                    .as_deref()
                     .filter(|l| heading_cells.contains_key(*l))
                 {
                     *votes
@@ -388,9 +494,9 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
                         .entry(label.to_owned())
                         .or_default() += 1;
                 }
-                if let Some(parent) = g.get("parent") {
+                if let Some(parent) = &g.parent {
                     known = true;
-                    if let Some(&j) = parent.as_str().and_then(|p| record_index.get(p))
+                    if let Some(&j) = parent.as_deref().and_then(|p| record_index.get(p))
                         && j < i
                     {
                         proposed[i].0 = proposed[i].0.max(Some(j));
@@ -418,7 +524,7 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
         // columns under the heading of another column keeps its column's.
         let mut heading_columns: HashMap<String, String> = HashMap::new();
         for row in &rows[..headings] {
-            for cell in array(&row["cells"])? {
+            for cell in &row.cells {
                 heading_columns.insert(
                     string(&cell["id"])?.to_owned(),
                     string(&cell["column"])?.to_owned(),
@@ -426,14 +532,15 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
             }
         }
         for row in rows.iter_mut().skip(headings) {
-            for cell in row["cells"].as_array_mut().context("table cells missing")? {
+            for cell in &mut row.cells {
                 let g = group(cell)?;
-                if g["mark"] == true {
+                if g.mark {
                     continue;
                 }
                 let column = string(&cell["column"])?;
-                if let Some(label) = g["label"]
-                    .as_str()
+                if let Some(label) = g
+                    .label
+                    .as_deref()
                     .filter(|l| heading_columns.get(*l).map(String::as_str) == Some(column))
                     && labels.get(column).and_then(Value::as_str) != Some(label)
                 {
@@ -448,6 +555,12 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
         let mut path: Vec<Node<'_>> = vec![];
         let mut assigned: Vec<Option<Node<'_>>> = vec![None; rows.len()];
         let mut placed: BTreeMap<&str, Option<Node<'_>>> = BTreeMap::new();
+        // The first parent proposed after each record, found in one pass
+        // rather than by scanning the rest of the table for every record.
+        let mut later = vec![None; rows.len()];
+        for i in (0..rows.len().saturating_sub(1)).rev() {
+            later[i] = proposed[i + 1].0.or(later[i + 1]);
+        }
         for i in headings..rows.len() {
             let (proposal, known) = proposed[i];
             // A category is put where the first of its records would be
@@ -473,10 +586,7 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
             // one passes over goes with that record, so that it does not cut
             // the records after it off their parents.
             if parent.is_none() && known && i > headings {
-                parent = proposed[i + 1..]
-                    .iter()
-                    .find_map(|&(p, _)| p)
-                    .filter(|&p| p < i && same(&p));
+                parent = later[i].filter(|&p| p < i && same(&p));
             }
             assigned[i] = put(&mut path, &assigned, category(i), parent, MAX_TREE_DEPTH);
             path.push(Node::Record(i));
@@ -495,7 +605,7 @@ fn arrange(sheet: &Value, metadata: &mut Value) -> Result<()> {
             }
         }
         for &(i, at, ref key) in &sorted.covered {
-            rows[i]["cells"][at]["category"] = json!(name(key));
+            rows[i].cells[at]["category"] = json!(name(key));
         }
         if headings > 0 {
             element["headings"] = json!(headings);
@@ -597,18 +707,18 @@ struct CategoryNode {
 /// rows above it (`beyond` tells whether the record lies below the merge),
 /// as Excel does not grow a merge by a row inserted under it.
 fn categorize(
-    rows: &[Value],
+    rows: &[MetaRow],
     headings: usize,
-    groups: &Value,
-    beyond: &dyn Fn(&str, &Value) -> bool,
+    groups: &Groups,
+    beyond: &dyn Fn(&str, &MetaRow) -> bool,
 ) -> Result<Categories> {
-    let group = |cell: &Value| -> Result<&Value> { Ok(&groups[string(&cell["id"])?]) };
+    let group = |cell: &MetaCell| group_of(groups, cell);
     // The records holding each category's cells, the first holding the
     // category itself.
     let mut held: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
     for (i, row) in rows.iter().enumerate().skip(headings) {
-        for (at, cell) in array(&row["cells"])?.iter().enumerate() {
-            if let Some(key) = group(cell)?["category"].as_str() {
+        for (at, cell) in row.cells.iter().enumerate() {
+            if let Some(key) = group(cell)?.category.as_deref() {
                 held.entry(key.to_owned()).or_default().push((i, at));
             }
         }
@@ -617,34 +727,27 @@ fn categorize(
         .iter()
         .map(|(key, at)| (key.as_str(), at.iter().map(|(i, _)| *i).min().unwrap()))
         .collect();
-    let node_cell = |i: usize, g: &Value| {
-        g["category"]
-            .as_str()
+    let node_cell = |i: usize, g: &Group| {
+        g.category
+            .as_deref()
             .is_some_and(|key| first.get(key) == Some(&i))
     };
-    let listed = |g: &Value| -> Vec<String> {
-        g["within"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|k| k.as_str().map(str::to_owned))
-            .collect()
-    };
+    let listed = |g: &Group| -> Vec<String> { g.within.iter().map(|k| k.to_string()).collect() };
     // The categories each record placed by the groups is in, outer first.
     let mut chains: Vec<Option<Vec<String>>> = vec![None; rows.len()];
     for (i, row) in rows.iter().enumerate().skip(headings) {
-        let cells = array(&row["cells"])?;
+        let cells = &row.cells;
         let mut own: Option<Vec<String>> = None;
         let mut deepest: Option<Vec<String>> = None;
         for cell in cells {
             let g = group(cell)?;
             if node_cell(i, g) {
                 let mut chain = listed(g);
-                chain.push(g["category"].as_str().unwrap().to_owned());
+                chain.push(g.category.as_deref().unwrap().to_owned());
                 if deepest.as_ref().is_none_or(|d| chain.len() > d.len()) {
                     deepest = Some(chain);
                 }
-            } else if own.is_none() && g.get("parent").is_some() {
+            } else if own.is_none() && g.parent.is_some() {
                 own = Some(listed(g));
             }
         }
@@ -654,38 +757,7 @@ fn categorize(
     for chain in chains.iter_mut().flatten() {
         chain.retain(|k| kept.contains(k));
     }
-    // A category whose records do not follow each other from its first, or
-    // are not all in the categories around it, is none.
-    loop {
-        let broken = kept.iter().find(|&key| {
-            let members: Vec<(usize, &Vec<String>)> = chains
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| Some((i, c.as_ref()?)))
-                .filter(|(_, c)| c.contains(key))
-                .collect();
-            let Some(&(start, chain)) = members.first() else {
-                return true;
-            };
-            let end = members.last().unwrap().0;
-            let before = |c: &Vec<String>| c[..c.iter().position(|k| k == key).unwrap()].to_vec();
-            let around = before(chain);
-            start != first[key.as_str()]
-                || around.len() + 2 > MAX_TREE_DEPTH
-                || chains[start..=end]
-                    .iter()
-                    .flatten()
-                    .any(|c| !c.contains(key))
-                || members.iter().any(|(_, c)| before(c) != around)
-        });
-        let Some(key) = broken.cloned() else {
-            break;
-        };
-        kept.remove(&key);
-        for chain in chains.iter_mut().flatten() {
-            chain.retain(|k| *k != key);
-        }
-    }
+    drop_broken(&mut kept, &mut chains, &first);
     let mut nodes = BTreeMap::new();
     for key in &kept {
         let start = first[key.as_str()];
@@ -694,7 +766,7 @@ fn categorize(
         let cells = held[key]
             .iter()
             .filter(|(i, _)| *i == start)
-            .map(|&(i, at)| Ok(string(&rows[i]["cells"][at]["id"])?.to_owned()))
+            .map(|&(i, at)| Ok(string(&rows[i].cells[at]["id"])?.to_owned()))
             .collect::<Result<Vec<_>>>()?;
         nodes.insert(
             key.clone(),
@@ -730,7 +802,7 @@ fn categorize(
             continue;
         }
         for &(i, place) in at.iter().filter(|(i, _)| *i != first[key.as_str()]) {
-            let cell = &rows[i]["cells"][place];
+            let cell = &rows[i].cells[place];
             let member = chains[i].as_ref().is_some_and(|c| c.contains(key));
             if member && cell.get("formula").is_none() && cell["value"].is_null() {
                 covered.push((i, place, key.clone()));
@@ -753,37 +825,108 @@ fn categorize(
     })
 }
 
+/// Drops from `kept` and the `chains` of the records the categories whose
+/// records do not follow each other from their `first`, or are not all in
+/// the categories around them, or lie too deep for a record under them: the
+/// first such in order, then again, until none is left. Whether a category's
+/// records follow each other does not change as others are dropped; the
+/// categories around them do, for the categories sharing a record with the
+/// one dropped, so only those are looked at again.
+fn drop_broken(
+    kept: &mut BTreeSet<String>,
+    chains: &mut [Option<Vec<String>>],
+    first: &BTreeMap<&str, usize>,
+) {
+    // The records each category is in, in order.
+    let mut members: BTreeMap<String, Vec<usize>> =
+        kept.iter().map(|key| (key.clone(), vec![])).collect();
+    for (i, chain) in chains.iter().enumerate() {
+        for key in chain.iter().flatten() {
+            if let Some(records) = members.get_mut(key)
+                && records.last() != Some(&i)
+            {
+                records.push(i);
+            }
+        }
+    }
+    // The records the groups place, counted up to each record.
+    let mut placed = vec![0; chains.len() + 1];
+    for (i, chain) in chains.iter().enumerate() {
+        placed[i + 1] = placed[i] + usize::from(chain.is_some());
+    }
+    let follows = |key: &str| match members[key].as_slice() {
+        [] => false,
+        records => {
+            let (start, end) = (records[0], records[records.len() - 1]);
+            start == first[key] && placed[end + 1] - placed[start] == records.len()
+        }
+    };
+    let nested = |key: &str, chains: &[Option<Vec<String>>]| {
+        let around = |i: usize| {
+            let chain = chains[i].as_deref().unwrap_or_default();
+            &chain[..chain.iter().position(|k| k == key).unwrap_or(chain.len())]
+        };
+        let records = &members[key];
+        let outer = around(records[0]);
+        outer.len() + 2 <= MAX_TREE_DEPTH && records.iter().all(|&i| around(i) == outer)
+    };
+    let scattered: BTreeSet<String> = kept.iter().filter(|key| !follows(key)).cloned().collect();
+    let mut broken: BTreeSet<String> = kept
+        .iter()
+        .filter(|key| scattered.contains(*key) || !nested(key, chains))
+        .cloned()
+        .collect();
+    while let Some(key) = broken.pop_first() {
+        kept.remove(&key);
+        let mut sharing = BTreeSet::new();
+        for &i in &members[&key] {
+            if let Some(chain) = chains[i].as_mut() {
+                chain.retain(|k| *k != key);
+                sharing.extend(chain.iter().cloned());
+            }
+        }
+        for other in sharing.into_iter().filter(|k| !scattered.contains(k)) {
+            if nested(&other, chains) {
+                broken.remove(&other);
+            } else {
+                broken.insert(other);
+            }
+        }
+    }
+}
+
 /// The digest of what [`classify`] takes from the elements of a structure
 /// interpretation: each table's sheet and its cells with their roles and
 /// headers. A layout classified from another interpretation, such as one an
 /// earlier inference made, has another.
-pub(super) fn interpretation_digest(structure: &[Value]) -> Result<String> {
-    let mut tables = vec![];
-    for element in structure.iter().filter(|e| e["kind"] == "table") {
-        let cells: Vec<Value> = array(&element["cells"])?
-            .iter()
-            .map(|cell| {
-                json!({"id":cell["id"],"address":cell["address"],"role":cell["role"],"headers":cell["headers"]})
-            })
-            .collect();
-        tables.push(json!({"sheet":element["sheet"],"cells":cells}));
-    }
-    Ok(crate::data::hash_encoded(&json!(tables)))
+pub(super) fn interpretation_digest(structure: &[Element]) -> Result<String> {
+    use crate::data::Lazy;
+    // Hashed cell by cell, as each table is made: the cells are not copied.
+    let tables = structure
+        .iter()
+        .filter(|e| e["kind"] == "table")
+        .map(|element| {
+            let cells = element.cells.iter().map(|cell| {
+                Ok(Lazy::Value(
+                    json!({"id":&*cell.id,"address":&*cell.address,"role":cell.role.as_str(),"headers":cell.headers}),
+                ))
+            });
+            Ok(Lazy::Object(vec![
+                ("sheet", Lazy::Borrowed(&element["sheet"])),
+                ("cells", Lazy::Items(Box::new(cells))),
+            ]))
+        });
+    crate::data::hash_encoded_lazy(Lazy::Items(Box::new(tables)))
 }
 
-/// Puts in each table cell of the element metadata of `layout` the role and
-/// headers `structure`, an interpretation of the extraction the layout belongs
-/// to, gives it: the layout keeps only which table a cell is in. Cells are
-/// matched by the keys their rows and columns have in the extraction, and a
-/// cell's headers are those in the same table of the metadata. A cell the
-/// interpretation does not place in a table, such as one of a row an
-/// insertion adds, is `unassigned`.
-pub(super) fn interpret(layout: &mut Value, structure: &[Value]) -> Result<()> {
-    for sheet in layout["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
+/// The role and headers `structure`, an interpretation of the extraction the
+/// layout belongs to, gives each table cell of the element metadata of
+/// `layout`, by page and cell ID: the layout keeps only which table a cell
+/// is in. Cells are matched by the keys their rows and columns have in the
+/// extraction. [`interpret_cell`] puts them in a cell.
+pub(super) fn interpret(layout: &Layout, structure: &[Element]) -> Result<Interpretation> {
+    let mut pages = BTreeMap::new();
+    for (page, sheet) in &layout.sheets {
         let identities = |axis: &str| -> Result<HashMap<String, String>> {
             sheet[axis]
                 .as_object()
@@ -794,15 +937,15 @@ pub(super) fn interpret(layout: &mut Value, structure: &[Value]) -> Result<()> {
         };
         let rows = identities("rows")?;
         let columns = identities("columns")?;
-        let mut ids = HashMap::new();
+        let mut ids: HashMap<&str, String> = HashMap::new();
         for element in structure.iter().filter(|e| e["sheet"] == sheet["name"]) {
-            for cell in array(&element["cells"])? {
-                let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+            for cell in &element.cells {
+                let (column, row) = excel::coordinate(&cell.address)?;
                 if let (Some(row), Some(column)) = (
                     rows.get(&format!("r{row}")),
                     columns.get(&excel::column_name(column)?),
                 ) {
-                    ids.insert(string(&cell["id"])?.to_owned(), cell_id(row, column));
+                    ids.insert(&cell.id, cell_id(row, column));
                 }
             }
         }
@@ -811,45 +954,42 @@ pub(super) fn interpret(layout: &mut Value, structure: &[Value]) -> Result<()> {
             .iter()
             .filter(|e| e["sheet"] == sheet["name"] && e["kind"] == "table")
         {
-            for cell in array(&element["cells"])? {
-                if let Some(id) = ids.get(string(&cell["id"])?) {
-                    let headers = array(&cell["headers"])?
+            for cell in &element.cells {
+                if let Some(id) = ids.get(&*cell.id) {
+                    let headers = cell
+                        .headers
                         .iter()
-                        .filter_map(|h| h.as_str().and_then(|h| ids.get(h)))
+                        .filter_map(|h| ids.get(&**h))
                         .cloned()
                         .collect();
-                    found.insert(id.clone(), (cell["role"].clone(), headers));
+                    found.insert(id.clone(), (json!(cell.role.as_str()), headers));
                 }
             }
         }
-        for element in sheet["element_metadata"]
-            .as_array_mut()
-            .context("element metadata missing")?
-            .iter_mut()
-            .filter(|e| e["type"] == "table")
-        {
-            let rows = element["rows"]
-                .as_array_mut()
-                .context("table rows missing")?;
-            let mut present = BTreeSet::new();
-            for row in rows.iter() {
-                for cell in array(&row["cells"])? {
-                    present.insert(string(&cell["id"])?.to_owned());
-                }
-            }
-            for row in rows {
-                for cell in row["cells"].as_array_mut().context("table cells missing")? {
-                    let (role, mut headers) = found
-                        .get(string(&cell["id"])?)
-                        .cloned()
-                        .unwrap_or_else(|| (json!("unassigned"), vec![]));
-                    headers.retain(|h| present.contains(h));
-                    cell["role"] = role;
-                    cell["headers"] = json!(headers);
-                }
-            }
-        }
+        pages.insert(page.clone(), found);
     }
+    Ok(pages)
+}
+
+/// What [`interpret`] gives the table cells of a layout, by page and cell ID.
+pub(super) type Interpretation = BTreeMap<String, HashMap<String, (Value, Vec<String>)>>;
+
+/// Puts in the table cell `cell`, given as JSON, of a table whose cells are
+/// `present` the role and headers `found` gives it, the headers among those
+/// cells. A cell the interpretation does not place in a table, such as one of
+/// a row an insertion adds, is `unassigned`.
+pub(super) fn interpret_cell(
+    cell: &mut Value,
+    found: &HashMap<String, (Value, Vec<String>)>,
+    present: &HashSet<&str>,
+) -> Result<()> {
+    let (role, mut headers) = found
+        .get(string(&cell["id"])?)
+        .cloned()
+        .unwrap_or_else(|| (json!("unassigned"), vec![]));
+    headers.retain(|h| present.contains(h.as_str()));
+    cell["role"] = role;
+    cell["headers"] = json!(headers);
     Ok(())
 }
 
@@ -857,14 +997,36 @@ pub(super) fn interpret(layout: &mut Value, structure: &[Value]) -> Result<()> {
 /// Text cells remain individually reversible: no lossy concatenation is performed.
 /// The layout records the [`interpretation_digest`] of `structure`; the roles
 /// and headers of the cells are not kept, [`interpret`] gives them.
-pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
+pub(super) fn classify(
+    layout: &mut Layout,
+    extraction: &Extraction,
+    structure: &[Element],
+) -> Result<BTreeMap<String, Groups>> {
     layout["structure_sha256"] = json!(interpretation_digest(structure)?);
-    for sheet in layout["sheets"]
-        .as_object_mut()
-        .context("layout sheets missing")?
-        .values_mut()
-    {
-        let mut groups = json!({});
+    interpreted_groups(layout, extraction, structure)
+}
+
+/// The groups [`classify`] gives the table cells of each page of `layout`,
+/// by page, without classifying the layout.
+pub(super) fn interpreted_groups<'e>(
+    layout: &Layout,
+    extraction: &'e Extraction,
+    structure: &[Element],
+) -> Result<BTreeMap<String, Groups>> {
+    let mut classified = BTreeMap::new();
+    for (page, sheet) in &layout.sheets {
+        let mut groups = Groups::new();
+        // The values of the extraction cells of the sheet, by address, which
+        // tell the cells written under a row header from blank ones.
+        let values: HashMap<&str, &Value> = extraction
+            .sheets
+            .iter()
+            .find(|source| source["name"] == sheet["name"])
+            .into_iter()
+            .flat_map(|source| source.cells.iter().map(|c| (&*c.address, &c.value)))
+            .collect();
+        let value_at: &dyn Fn(&str) -> &'e Value =
+            &|address| values.get(address).copied().unwrap_or(&Value::Null);
         // Cells are matched by the keys their rows and columns have in the
         // extraction, which pending operations leave as they are.
         let identities = |axis: &str| -> Result<HashMap<String, String>> {
@@ -877,15 +1039,15 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
         };
         let rows = identities("rows")?;
         let columns = identities("columns")?;
-        let mut ids = BTreeMap::new();
+        let mut ids: HashMap<&str, String> = HashMap::new();
         for element in structure.iter().filter(|e| e["sheet"] == sheet["name"]) {
-            for cell in array(&element["cells"])? {
-                let (column, row) = excel::coordinate(string(&cell["address"])?)?;
+            for cell in &element.cells {
+                let (column, row) = excel::coordinate(&cell.address)?;
                 if let (Some(row), Some(column)) = (
                     rows.get(&format!("r{row}")),
                     columns.get(&excel::column_name(column)?),
                 ) {
-                    ids.insert(string(&cell["id"])?.to_owned(), cell_id(row, column));
+                    ids.insert(&cell.id, cell_id(row, column));
                 }
             }
         }
@@ -893,43 +1055,40 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
             .iter()
             .filter(|e| e["sheet"] == sheet["name"] && e["kind"] == "table")
         {
-            let cells = array(&element["cells"])?;
-            let Some(first) = cells.iter().find_map(|c| ids.get(c["id"].as_str()?)) else {
+            let cells = &element.cells;
+            let Some(first) = cells.iter().find_map(|c| ids.get(&*c.id)) else {
                 continue;
             };
-            let table = token("table", &[first]);
+            let table: Option<Arc<str>> = Some(token("table", &[first]).into());
             // The role and place of each cell of the table, by its ID in the
             // interpretation.
             let mut places = HashMap::new();
             // The names of each row, by column.
             let mut names: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
             for cell in cells {
-                let (x, y) = excel::coordinate(string(&cell["address"])?)?;
-                places.insert(string(&cell["id"])?, (cell["role"].as_str(), y, x));
-                if cell["role"] == "row_header" {
-                    names.entry(y).or_default().push((x, string(&cell["id"])?));
+                let (x, y) = excel::coordinate(&cell.address)?;
+                places.insert(&*cell.id, (cell.role, y, x));
+                if cell.role == Role::RowHeader {
+                    names.entry(y).or_default().push((x, &*cell.id));
                 }
             }
             for cell in cells {
-                let Some(id) = ids.get(string(&cell["id"])?) else {
+                let Some(id) = ids.get(&*cell.id) else {
                     continue;
                 };
-                let own = places[string(&cell["id"])?];
-                let mut group = json!({"table":table});
-                match own.0 {
-                    Some("column_header") => group["heading"] = json!(true),
-                    Some("text") => group["mark"] = json!(true),
-                    _ => {}
-                }
+                let own = places[&*cell.id];
+                let mut group = Group {
+                    table: table.clone(),
+                    heading: own.0 == Role::ColumnHeader,
+                    mark: own.0 == Role::Text,
+                    ..Group::default()
+                };
                 // The nearest heading over the cell names its key, and the
                 // nearest name heading it from an earlier row its parent. A
                 // record holding a deeper name that heads no part of the cell,
                 // as a folder beside the group the cell is in, is no parent:
                 // the cell is beside that folder, not in it.
-                let headers: Vec<&str> = array(&cell["headers"])?
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect();
+                let headers: Vec<&str> = cell.headers.iter().map(|h| &**h).collect();
                 let beside = |y: u32, x: u32| {
                     names.get(&y).is_some_and(|row| {
                         row.iter()
@@ -944,10 +1103,10 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
                         continue;
                     };
                     match role {
-                        Some("column_header") if label.is_none_or(|(p, _)| (y, x) > p) => {
+                        Role::ColumnHeader if label.is_none_or(|(p, _)| (y, x) > p) => {
                             label = Some(((y, x), at));
                         }
-                        Some("row_header")
+                        Role::RowHeader
                             if y < own.1
                                 && !beside(y, x)
                                 && parent.is_none_or(|(p, _)| (y, x) > p) =>
@@ -957,55 +1116,84 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
                         _ => {}
                     }
                 }
-                if let Some((_, at)) = label {
-                    group["label"] = json!(at);
-                }
-                group["parent"] = parent
-                    .and_then(|(_, at)| cell_axes(at))
-                    .map_or(Value::Null, |(row, _)| json!(row));
-                groups[id] = group;
+                group.label = label.map(|(_, at)| Box::from(at.as_str()));
+                group.parent = Some(
+                    parent
+                        .and_then(|(_, at)| cell_axes(at))
+                        .map(|(row, _)| row.into_boxed_str()),
+                );
+                groups.insert(id.clone(), group);
             }
             // Each cell of a category names it, by the ID of its first cell,
             // as its `category`, and so does a blank cell under it in its
             // column; every other cell of the records of a category lists the
             // categories its row is in, outer first, as its `within`, and a
             // cell of a category those around it.
-            let found: Vec<(String, Category)> = categories(cells)?
+            let found: Vec<(String, Category)> = categories(cells, value_at)?
                 .into_iter()
                 .filter_map(|c| Some((ids.get(c.cells[0].1)?.clone(), c)))
                 .collect();
+            // Indexed once rather than scanned per cell: a table may have a
+            // category every few rows. `owners` lists the categories of each
+            // cell and `covering` those around each row, both in `found` order.
+            let mut owners: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (i, (_, category)) in found.iter().enumerate() {
+                for &(_, at) in &category.cells {
+                    owners.entry(at).or_default().push(i);
+                }
+            }
+            let mut starts: Vec<usize> = (0..found.len()).collect();
+            starts.sort_by_key(|&i| found[i].1.row);
+            let mut rows = BTreeSet::new();
             for cell in cells {
-                let Some(id) = ids.get(string(&cell["id"])?) else {
+                rows.insert(excel::coordinate(&cell.address)?.1);
+            }
+            let mut covering: HashMap<u32, Vec<usize>> = HashMap::new();
+            let (mut next, mut active) = (0, BTreeSet::new());
+            for y in rows {
+                while let Some(&i) = starts.get(next).filter(|&&i| found[i].1.row <= y) {
+                    active.insert(i);
+                    next += 1;
+                }
+                active.retain(|&i| found[i].1.end >= y);
+                covering.insert(y, active.iter().copied().collect());
+            }
+            for cell in cells {
+                let Some(id) = ids.get(&*cell.id) else {
                     continue;
                 };
-                if cell["role"] == "column_header" {
+                if cell.role == Role::ColumnHeader {
                     continue;
                 }
-                let (x, y) = excel::coordinate(string(&cell["address"])?)?;
-                let own = found
+                let (x, y) = excel::coordinate(&cell.address)?;
+                let own = owners
+                    .get(&*cell.id)
+                    .and_then(|list| list.iter().find(|&&i| found[i].1.row == y))
+                    .map(|&i| &found[i]);
+                let within: Vec<&(String, Category)> = covering[&y]
                     .iter()
-                    .find(|(_, c)| c.row == y && c.cells.iter().any(|&(_, at)| at == cell["id"]));
-                let within: Vec<&(String, Category)> = found
-                    .iter()
-                    .filter(|(_, c)| c.row <= y && y <= c.end)
+                    .map(|&i| &found[i])
                     .filter(|(_, c)| own.is_none_or(|(_, o)| c.cells[0].0 < o.cells[0].0))
                     .collect();
                 let category = own.or_else(|| {
                     within.iter().copied().find(|(_, c)| {
-                        c.row < y && c.cells.iter().any(|&(at, _)| at == x) && blank(&cell["value"])
+                        c.row < y
+                            && c.cells.iter().any(|&(at, _)| at == x)
+                            && blank(value_at(&cell.address))
                     })
                 });
+                let group = groups.entry(id.clone()).or_default();
                 if let Some((key, _)) = category {
-                    groups[id]["category"] = json!(key);
+                    group.category = Some(Box::from(key.as_str()));
                 }
                 if !within.is_empty() {
-                    groups[id]["within"] = json!(within.iter().map(|(k, _)| k).collect::<Vec<_>>());
+                    group.within = within.iter().map(|(k, _)| Box::from(k.as_str())).collect();
                 }
             }
         }
-        sheet["groups"] = groups;
+        classified.insert(page.clone(), groups);
     }
-    Ok(())
+    Ok(classified)
 }
 
 /// Puts each cell of `cells`, given a value the page's element metadata
@@ -1013,10 +1201,7 @@ pub(super) fn classify(layout: &mut Value, structure: &[Value]) -> Result<()> {
 /// are around it, as an insertion's cells go: a cell of a record joins its
 /// record, a heading of the leading records as a heading. The groups the
 /// next [`encode`] arranges the page with are those of the metadata and these.
-pub(super) fn adopt_cells(sheet: &mut Value, cells: &[String]) -> Result<()> {
-    if sheet.get("groups").is_none() {
-        sheet["groups"] = groups(&sheet["element_metadata"])?;
-    }
+pub(super) fn adopt_cells(sheet: &Value, groups: &mut Groups, cells: &[String]) -> Result<()> {
     let position = |sheet: &Value, id: &str| -> Option<(u64, u64)> {
         let (row, column) = cell_axes(id)?;
         Some((
@@ -1025,8 +1210,8 @@ pub(super) fn adopt_cells(sheet: &mut Value, cells: &[String]) -> Result<()> {
         ))
     };
     let mut bounds: BTreeMap<String, (u64, u64, u64, u64)> = BTreeMap::new();
-    for (id, group) in sheet["groups"].as_object().context("groups missing")? {
-        let (Some(table), Some((y, x))) = (group["table"].as_str(), position(sheet, id)) else {
+    for (id, group) in groups.iter() {
+        let (Some(table), Some((y, x))) = (group.table.as_deref(), position(sheet, id)) else {
             continue;
         };
         let b = bounds.entry(table.to_owned()).or_insert((y, x, y, x));
@@ -1036,7 +1221,7 @@ pub(super) fn adopt_cells(sheet: &mut Value, cells: &[String]) -> Result<()> {
         b.3 = b.3.max(x);
     }
     for id in cells {
-        if !sheet["groups"][id].is_null() {
+        if groups.contains_key(id) {
             continue;
         }
         let Some((y, x)) = position(sheet, id) else {
@@ -1057,26 +1242,25 @@ pub(super) fn adopt_cells(sheet: &mut Value, cells: &[String]) -> Result<()> {
         };
         let (row, _) = cell_axes(id).context("cell ID")?;
         // The other cells of its record, in the same table.
-        let record: Vec<&Value> = sheet["groups"]
-            .as_object()
-            .unwrap()
+        let record: Vec<&Group> = groups
             .iter()
             .filter(|(other, group)| {
-                group["table"] == table.as_str() && cell_axes(other).is_some_and(|(r, _)| r == row)
+                group.table.as_deref() == Some(table.as_str())
+                    && cell_axes(other).is_some_and(|(r, _)| r == row)
             })
             .map(|(_, group)| group)
             .collect();
-        let mut group = json!({"table":table});
-        if !record.is_empty() && record.iter().all(|g| g["heading"] == true) {
-            group["heading"] = json!(true);
+        let mut group = Group {
+            table: Some(table.as_str().into()),
+            ..Group::default()
+        };
+        if !record.is_empty() && record.iter().all(|g| g.heading) {
+            group.heading = true;
         } else if let Some(first) = record.first() {
-            for key in ["parent", "within"] {
-                if let Some(value) = first.get(key) {
-                    group[key] = value.clone();
-                }
-            }
+            group.parent = first.parent.clone();
+            group.within = first.within.clone();
         }
-        sheet["groups"][id] = group;
+        groups.insert(id.clone(), group);
     }
     Ok(())
 }
@@ -1086,30 +1270,26 @@ pub(super) fn adopt_cells(sheet: &mut Value, cells: &[String]) -> Result<()> {
 /// coming back to the page, as when an operation deleting them is taken
 /// back. A table the sheet holds other cells of keeps the ID the sheet gives
 /// it.
-pub(super) fn restore_groups(sheet: &mut Value, classified: &Value, ids: &[String]) -> Result<()> {
-    if sheet.get("groups").is_none() {
-        sheet["groups"] = groups(&sheet["element_metadata"])?;
-    }
-    let mut names: HashMap<&str, String> = HashMap::new();
-    for (id, group) in classified["groups"].as_object().into_iter().flatten() {
+pub(super) fn restore_groups(groups: &mut Groups, classified: &Groups, ids: &[String]) {
+    let mut names: HashMap<&str, Arc<str>> = HashMap::new();
+    for (id, group) in classified {
         if let (Some(table), Some(current)) = (
-            group["table"].as_str(),
-            sheet["groups"][id]["table"].as_str(),
+            group.table.as_deref(),
+            groups.get(id).and_then(|current| current.table.as_ref()),
         ) {
-            names.entry(table).or_insert_with(|| current.to_owned());
+            names.entry(table).or_insert_with(|| current.clone());
         }
     }
     for id in ids {
-        let mut group = classified["groups"][id].clone();
-        if group.is_null() {
+        let Some(group) = classified.get(id) else {
             continue;
+        };
+        let mut group = group.clone();
+        if let Some(name) = group.table.as_deref().and_then(|table| names.get(table)) {
+            group.table = Some(name.clone());
         }
-        if let Some(name) = group["table"].as_str().and_then(|table| names.get(table)) {
-            group["table"] = json!(name);
-        }
-        sheet["groups"][id] = group;
+        groups.insert(id.clone(), group);
     }
-    Ok(())
 }
 
 /// The key of the first category of the element `metadata` of a page whose
@@ -1117,17 +1297,17 @@ pub(super) fn restore_groups(sheet: &mut Value, classified: &Value, ids: &[Strin
 /// cell, as when the row holding a category merged down over other records is
 /// deleted: Excel would drop the category's value with that row.
 pub(super) fn orphaned_category(
-    metadata: &Value,
+    metadata: &[Meta],
     deleted: &BTreeSet<String>,
 ) -> Result<Option<String>> {
-    for element in array(metadata)?.iter().filter(|e| e["type"] == "table") {
+    for element in metadata.iter().filter(|e| e["type"] == "table") {
         let Some(categories) = element["categories"].as_object() else {
             continue;
         };
         // The categories each record is in, by its ID.
         let mut within: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut kept: BTreeSet<&str> = BTreeSet::new();
-        for row in array(&element["rows"])? {
+        for row in element.rows()? {
             let chain = match row["parent"].as_str() {
                 Some(p) if categories.contains_key(p) => {
                     let mut chain = around(p, categories, &within)?;
@@ -1137,7 +1317,8 @@ pub(super) fn orphaned_category(
                 Some(p) => within.get(p).cloned().unwrap_or_default(),
                 None => vec![],
             };
-            if array(&row["cells"])?
+            if row
+                .cells
                 .iter()
                 .any(|c| c["id"].as_str().is_some_and(|id| !deleted.contains(id)))
             {
@@ -1189,7 +1370,10 @@ struct Category<'a> {
 /// header of it with a name to its right and nothing under it is one, as a
 /// category over a single record. Cells of a row reaching as far are one
 /// category; one crossing the bounds of a category left of it is none.
-fn categories(cells: &[Value]) -> Result<Vec<Category<'_>>> {
+fn categories<'a, 'v>(
+    cells: &'a [ElementCell],
+    value_at: &dyn Fn(&str) -> &'v Value,
+) -> Result<Vec<Category<'a>>> {
     struct Seen<'a> {
         id: &'a str,
         x: u32,
@@ -1201,16 +1385,13 @@ fn categories(cells: &[Value]) -> Result<Vec<Category<'_>>> {
     let mut written = BTreeSet::new();
     let mut heads: HashMap<&str, Vec<usize>> = HashMap::new();
     for cell in cells {
-        let (x, y) = excel::coordinate(string(&cell["address"])?)?;
-        let id = string(&cell["id"])?;
-        let headers: Vec<&str> = array(&cell["headers"])?
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-        if cell["role"] == "row_header" {
+        let (x, y) = excel::coordinate(&cell.address)?;
+        let id = &*cell.id;
+        let headers: Vec<&str> = cell.headers.iter().map(|h| &**h).collect();
+        if cell.role == Role::RowHeader {
             names.entry(y).or_default().push((x, id));
         }
-        if !blank(&cell["value"]) {
+        if !blank(value_at(&cell.address)) {
             written.insert((x, y));
         }
         for header in &headers {
@@ -1249,9 +1430,10 @@ fn categories(cells: &[Value]) -> Result<Vec<Category<'_>>> {
         }
     }
     let columns: BTreeSet<u32> = found.iter().map(|(c, _)| c.x).collect();
+    let first: BTreeSet<&str> = found.iter().map(|(f, _)| f.id).collect();
     for &c in &row_headers {
         if columns.contains(&c.x)
-            && !found.iter().any(|(f, _)| f.id == c.id)
+            && !first.contains(c.id)
             && name_beyond(c, &[])
             && let Some(end) = reach(c)
         {
@@ -1270,12 +1452,24 @@ fn categories(cells: &[Value]) -> Result<Vec<Category<'_>>> {
         })
         .collect();
     found.sort_by_key(|c| (c.cells[0].0, c.row));
+    // A category crossing the bounds of one kept before it is none. One kept
+    // overlaps it without holding it when it starts in (row, end] or ends in
+    // [row, end): looked up by the rows kept categories start and end on,
+    // rather than against every category kept.
     let mut kept: Vec<Category<'_>> = vec![];
+    let (mut starts, mut ends) = (BTreeSet::new(), BTreeSet::new());
     for c in found {
-        if !kept
-            .iter()
-            .any(|k| k.row <= c.end && c.row <= k.end && !(k.row <= c.row && c.end <= k.end))
-        {
+        let crossing = starts
+            .range((
+                std::ops::Bound::Excluded(c.row),
+                std::ops::Bound::Included(c.end),
+            ))
+            .next()
+            .is_some()
+            || ends.range(c.row..c.end).next().is_some();
+        if !crossing {
+            starts.insert(c.row);
+            ends.insert(c.end);
             kept.push(c);
         }
     }
@@ -1283,13 +1477,18 @@ fn categories(cells: &[Value]) -> Result<Vec<Category<'_>>> {
 }
 
 pub(super) fn geometry(
-    layout: &mut Value,
-    extraction: &Value,
+    layout: &mut Layout,
+    extraction: &Extraction,
     operations: &[excel::StructuralOperation],
 ) -> Result<()> {
-    for (i, source) in array(&extraction["sheets"])?.iter().enumerate() {
-        layout["sheets"][identity::page_id(source, i)]["merges"] =
-            json!(excel::merges_after(source, operations)?);
+    for (i, source) in extraction.sheets.iter().enumerate() {
+        layout
+            .sheets
+            .entry(identity::page_id(&source.fields, i))
+            .or_insert_with(|| LayoutSheet {
+                fields: json!({}),
+                metadata: vec![],
+            })["merges"] = json!(excel::merges_after(&source.fields, operations)?);
     }
     super::visual_elements::refresh(layout, extraction, operations)?;
     Ok(())
@@ -1347,7 +1546,7 @@ fn logical_columns(
 /// that a merged cell spans, a span of one being the cell itself. The
 /// positions are those of the sheet's rows and columns, the merges its
 /// `merges`.
-pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
+pub(super) fn complete(sheet: &Value, metadata: &mut [Meta]) -> Result<()> {
     let position = |axis: &str, id: &str, missing: u64| {
         sheet[axis][id]["position"].as_u64().unwrap_or(missing)
     };
@@ -1363,21 +1562,23 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
             (u64::from(bottom), u64::from(right)),
         );
     }
-    let elements = metadata
-        .as_array_mut()
-        .context("element metadata missing")?;
+    let elements = metadata;
     for element in elements.iter_mut().filter(|e| e["type"] == "table") {
-        let rows = element["rows"]
-            .as_array_mut()
-            .context("table rows missing")?;
+        let Meta::Table {
+            fields: element,
+            rows,
+        } = element
+        else {
+            bail!("table rows missing");
+        };
         let mut cells = vec![];
         let mut names = BTreeMap::new();
         for (record, row) in rows.iter_mut().enumerate() {
-            let first = string(&row["cells"][0]["id"])?;
+            let first = first_id(row)?;
             let (id, _) =
                 cell_axes(first).with_context(|| format!("table cell {first} names no cell"))?;
             row["id"] = json!(token("record", &[&id]));
-            for cell in row["cells"].as_array_mut().context("table cells missing")? {
+            for cell in &mut row.cells {
                 let id = string(&cell["id"])?;
                 let (row, column) =
                     cell_axes(id).with_context(|| format!("table cell {id} names no cell"))?;
@@ -1397,10 +1598,7 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
             .map(|first| (*first, json!({"id":names[first]})))
             .collect();
         for (_, (y, x), cell) in cells {
-            let cell = cell
-                .as_object_mut()
-                .context("table cell must be an object")?;
-            cell.insert("column".into(), json!(names[&logical[&x]]));
+            cell.insert("column", json!(names[&logical[&x]]));
             cell.remove("row_span");
             cell.remove("column_span");
             if let Some((bottom, right)) = merged.get(&(y, x)) {
@@ -1410,13 +1608,17 @@ pub(super) fn complete(sheet: &Value, metadata: &mut Value) -> Result<()> {
                     ("column_span", spanned.len()),
                 ] {
                     if count > 1 {
-                        cell.insert(key.into(), json!(count));
+                        cell.insert(key, json!(count));
                     }
                 }
             }
         }
         element["columns"] = json!(logical_columns.into_values().collect::<Vec<_>>());
-        let first = string(&element["rows"][0]["cells"][0]["id"])?.to_owned();
+        let first = match rows.first() {
+            Some(row) => first_id(row)?,
+            None => string(&Value::Null)?,
+        }
+        .to_owned();
         element["id"] = json!(token("table", &[&first]));
     }
     for at in 0..elements.len() {
@@ -1443,22 +1645,192 @@ pub(crate) const CONTENT_VERSION: &str = "6";
 
 /// The YAML of the content `page` of `layout`, as [`crate::document_body::yaml`]
 /// orders it.
-pub(super) fn page_bytes(page: &Value, layout: &Value) -> Result<Vec<u8>> {
+pub(super) fn page_bytes(page: &Value, layout: &Layout) -> Result<Vec<u8>> {
     let page_id = string(&page["page_id"])?;
-    crate::document_body::yaml(page, &layout["sheets"][page_id]["element_metadata"])
+    crate::document_body::yaml(page, &layout.sheet(page_id)?.metadata)
+}
+
+/// [`page_bytes`] of a page [`encode`] made.
+pub(super) fn content_bytes(page: &Content, layout: &Layout) -> Result<Vec<u8>> {
+    let mut bytes = vec![];
+    let metadata = &layout.sheet(string(&page.fields["page_id"])?)?.metadata;
+    crate::document_body::content_yaml_to(page, metadata, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Stores [`content_bytes`] at `path`, written as they are made.
+pub(super) fn write_page(path: &Path, page: &Content, layout: &Layout) -> Result<()> {
+    let metadata = &layout.sheet(string(&page.fields["page_id"])?)?.metadata;
+    crate::data::replace_streamed(path, |out| {
+        crate::document_body::content_yaml_to(page, metadata, out)
+    })
 }
 
 /// Encode the writer's private grid into reading-order elements, updating only
 /// the separate layout record with physical targets and a checked body shape.
-pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
-    let grid = identity::grid(page.clone(), layout, false)?;
-    let page_id = string(&page["page_id"])?;
-    let sheet = &mut layout["sheets"][page_id];
-    // Not stored: the interpretation the metadata records, unless classify
-    // has just set a new one.
-    if sheet.get("groups").is_none() {
-        sheet["groups"] = groups(&sheet["element_metadata"])?;
+/// The values and fonts of `page` are moved into the elements, as a page holds
+/// one of each per cell. The tables are arranged by `groups`, those classify
+/// or an edit gives the page, or else those its element metadata records.
+pub(super) fn encode(page: Value, layout: &mut Layout, groups: Option<Groups>) -> Result<Content> {
+    let grid = GridPage::from_value(identity::grid(page, layout, false)?)?;
+    encode_grid(grid, layout, groups)
+}
+
+/// A grid page as [`encode_grid`] reads it, its values and their fonts typed:
+/// a large sheet has one of each per cell, and the JSON object of each row,
+/// one of its values and one of their fonts, took several times its cells,
+/// the most for a row of one cell, as a Word paragraph is.
+#[derive(Debug, PartialEq)]
+pub(super) struct GridPage {
+    /// The page without its blocks, fonts and font table.
+    pub(super) fields: Value,
+    /// The block of extraction notes, null for none.
+    pub(super) notes: Value,
+    /// The title of each block with rows.
+    pub(super) titles: serde_json::Map<String, Value>,
+    /// The values of the blocks with rows, in the order of their block, row
+    /// and column, as the page lists them.
+    pub(super) values: Vec<GridValue>,
+    /// The fonts the values refer to.
+    pub(super) font_table: Value,
+}
+
+/// A value of a [`GridPage`], at `row` and `column` of `block`.
+#[derive(Debug, PartialEq)]
+pub(super) struct GridValue {
+    pub(super) block: Arc<str>,
+    pub(super) row: String,
+    pub(super) column: String,
+    pub(super) value: Value,
+    /// The index of its font in the font table, null for none.
+    pub(super) font: Value,
+}
+
+impl GridPage {
+    /// The grid page given as JSON, its values and fonts moved out of it.
+    pub(super) fn from_value(mut page: Value) -> Result<Self> {
+        let Value::Object(blocks) = page["blocks"].take() else {
+            bail!("grid blocks missing")
+        };
+        let mut fonts = page["fonts"].take();
+        let font_table = page[FONT_TABLE].take();
+        let members = page.as_object_mut().context("page must be an object")?;
+        members.remove("blocks");
+        members.remove("fonts");
+        members.remove(FONT_TABLE);
+        let notes = blocks.get("extraction-notes").cloned().unwrap_or_default();
+        let titles = blocks
+            .iter()
+            .filter(|(_, body)| body["rows"].is_object())
+            .map(|(id, body)| (id.clone(), body["title"].clone()))
+            .collect();
+        let mut values = vec![];
+        for (block, mut body) in blocks {
+            let Value::Object(rows) = body["rows"].take() else {
+                continue;
+            };
+            let mut block_fonts = fonts
+                .get_mut(block.as_str())
+                .map(Value::take)
+                .unwrap_or_default();
+            let block: Arc<str> = block.into();
+            for (row, cells) in rows {
+                let row_fonts = block_fonts
+                    .get_mut(row.as_str())
+                    .map(Value::take)
+                    .unwrap_or_default();
+                let Value::Object(cells) = cells else {
+                    bail!("grid row missing")
+                };
+                for (column, value) in cells {
+                    let font = row_fonts[column.as_str()].clone();
+                    values.push(GridValue {
+                        block: block.clone(),
+                        row: row.clone(),
+                        column,
+                        value,
+                        font,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            fields: page,
+            notes,
+            titles,
+            values,
+            font_table,
+        })
     }
+}
+
+impl GridPage {
+    /// Puts the values in the order of their block, row and column, as the
+    /// page lists them, the last of any at the same place kept, as the page
+    /// keeps it.
+    pub(super) fn order(&mut self) {
+        self.values
+            .sort_by(|a, b| (&*a.block, &a.row, &a.column).cmp(&(&*b.block, &b.row, &b.column)));
+        let mut kept: Vec<GridValue> = Vec::with_capacity(self.values.len());
+        for value in std::mem::take(&mut self.values) {
+            match kept.last_mut() {
+                Some(last)
+                    if (&*last.block, &last.row, &last.column)
+                        == (&*value.block, &value.row, &value.column) =>
+                {
+                    *last = value;
+                }
+                _ => kept.push(value),
+            }
+        }
+        self.values = kept;
+    }
+
+    /// The values of `block`, from the values in order ([`GridPage::order`]).
+    pub(super) fn block(&self, block: &str) -> &[GridValue] {
+        let start = self.values.partition_point(|v| &*v.block < block);
+        let end = self.values.partition_point(|v| &*v.block <= block);
+        &self.values[start..end]
+    }
+
+    /// The grid page as JSON, as an edit reads it: its notes, each block of
+    /// `titles` with its rows, and the fonts the values have.
+    pub(super) fn to_value(&self) -> Value {
+        let mut page = self.fields.clone();
+        let mut blocks = json!({"extraction-notes":self.notes});
+        for (block, title) in &self.titles {
+            blocks[block] = json!({"title":title,"rows":{}});
+        }
+        let mut fonts = json!({});
+        for value in &self.values {
+            blocks[&*value.block]["rows"][&value.row][&value.column] = value.value.clone();
+            if !value.font.is_null() {
+                fonts[&*value.block][&value.row][&value.column] = value.font.clone();
+            }
+        }
+        page["blocks"] = blocks;
+        if fonts.as_object().is_some_and(|fonts| !fonts.is_empty()) {
+            page["fonts"] = fonts;
+        }
+        page[FONT_TABLE] = self.font_table.clone();
+        page
+    }
+}
+
+/// [`encode`] of a grid page given typed, as import makes it of an extraction.
+pub(super) fn encode_grid(
+    grid: GridPage,
+    layout: &mut Layout,
+    groups: Option<Groups>,
+) -> Result<Content> {
+    let page_id = string(&grid.fields["page_id"])?.to_owned();
+    let sheet = layout.sheet_mut(&page_id)?;
+    // Not stored: the interpretation the metadata records, unless classify
+    // or an edit gives another.
+    let mut groups = match groups {
+        Some(groups) => groups,
+        None => metadata_groups(&sheet.metadata)?,
+    };
     let mut spans = BTreeMap::new();
     for range in array(&sheet["merges"])? {
         let (start, end) = string(range)?
@@ -1475,138 +1847,166 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
     // innermost when tables are nested. Their semantic role needs
     // interpretation; do not copy a neighbouring header.
     let mut bounds: BTreeMap<String, (u64, u64, u64, u64)> = BTreeMap::new();
-    if let Some(rows) = grid["blocks"]["table-1"]["rows"].as_object() {
-        for (row, values) in rows {
-            let y = sheet["rows"][row]["position"]
-                .as_u64()
-                .context("row position missing")?;
-            for column in values.as_object().context("grid row missing")?.keys() {
-                let x = sheet["columns"][column]["position"]
-                    .as_u64()
-                    .context("column position missing")?;
-                if let Some(table) = sheet["groups"][cell_id(row, column)]["table"].as_str() {
-                    let b = bounds.entry(table.to_owned()).or_insert((y, x, y, x));
-                    b.0 = b.0.min(y);
-                    b.1 = b.1.min(x);
-                    b.2 = b.2.max(y);
-                    b.3 = b.3.max(x);
-                }
-            }
-        }
-        for (row, values) in rows {
-            let y = sheet["rows"][row]["position"].as_u64().unwrap();
-            for column in values.as_object().unwrap().keys() {
-                let inserted = [(&sheet["rows"], row), (&sheet["columns"], column)]
-                    .iter()
-                    .any(|(axis, id)| axis[*id]["key"].as_str().is_some_and(|k| k.contains('-')));
-                let id = cell_id(row, column);
-                if !inserted || !sheet["groups"][&id].is_null() {
-                    continue;
-                }
-                let x = sheet["columns"][column]["position"].as_u64().unwrap();
-                // A table nested in another lies inside its bounds; the
-                // innermost one around the insertion takes it.
-                let area = |b: &(u64, u64, u64, u64)| (b.2 - b.0 + 1) * (b.3 - b.1 + 1);
-                let around: Vec<_> = bounds
-                    .iter()
-                    .filter(|(_, b)| b.0 <= y && y <= b.2 && b.1 <= x && x <= b.3)
-                    .collect();
-                let smallest = around.iter().map(|(_, b)| area(b)).min();
-                let candidates: Vec<_> = around
-                    .into_iter()
-                    .filter(|(_, b)| Some(area(b)) == smallest)
-                    .collect();
-                if let [(table, _)] = candidates.as_slice() {
-                    sheet["groups"][&id] = json!({"table":table});
-                }
-            }
+    let body = || grid.values.iter().filter(|v| &*v.block == "table-1");
+    for GridValue { row, column, .. } in body() {
+        let y = sheet["rows"][row]["position"]
+            .as_u64()
+            .context("row position missing")?;
+        let x = sheet["columns"][column]["position"]
+            .as_u64()
+            .context("column position missing")?;
+        if let Some(table) = groups
+            .get(&cell_id(row, column))
+            .and_then(|group| group.table.as_deref())
+        {
+            let b = bounds.entry(table.to_owned()).or_insert((y, x, y, x));
+            b.0 = b.0.min(y);
+            b.1 = b.1.min(x);
+            b.2 = b.2.max(y);
+            b.3 = b.3.max(x);
         }
     }
-    let derived = Bindings::of(sheet)?;
-    let mut ids = BTreeSet::new();
-    let mut fonts = Fonts::default();
-    let mut placed: Vec<((u64, u64), u64, Value)> = vec![];
-    type TableCell = (u64, u64, Value);
-    let mut tables: BTreeMap<String, Vec<TableCell>> = BTreeMap::new();
-    for (block, body) in grid["blocks"].as_object().context("grid blocks missing")? {
-        let Some(rows) = body["rows"].as_object() else {
+    let inserted =
+        |axis: &Value, id: &str| axis[id]["key"].as_str().is_some_and(|k| k.contains('-'));
+    for GridValue { row, column, .. } in body() {
+        if !inserted(&sheet["rows"], row) && !inserted(&sheet["columns"], column) {
             continue;
+        }
+        let id = cell_id(row, column);
+        if groups.contains_key(&id) {
+            continue;
+        }
+        let y = sheet["rows"][row]["position"].as_u64().unwrap();
+        let x = sheet["columns"][column]["position"].as_u64().unwrap();
+        // A table nested in another lies inside its bounds; the
+        // innermost one around the insertion takes it.
+        let area = |b: &(u64, u64, u64, u64)| (b.2 - b.0 + 1) * (b.3 - b.1 + 1);
+        let around: Vec<_> = bounds
+            .iter()
+            .filter(|(_, b)| b.0 <= y && y <= b.2 && b.1 <= x && x <= b.3)
+            .collect();
+        let smallest = around.iter().map(|(_, b)| area(b)).min();
+        let candidates: Vec<_> = around
+            .into_iter()
+            .filter(|(_, b)| Some(area(b)) == smallest)
+            .collect();
+        if let [(table, _)] = candidates.as_slice() {
+            let table = Some(table.as_str().into());
+            groups.insert(
+                id,
+                Group {
+                    table,
+                    ..Group::default()
+                },
+            );
+        }
+    }
+    let derived = Bindings::of(&sheet.fields)?;
+    // The visual of each shape text by its text key, the first in order as
+    // a search through them finds it, looked up once per shape rather than by
+    // going through every visual.
+    let mut visual_of: HashMap<String, (String, Value)> = HashMap::new();
+    for (id, v) in sheet["visuals"].as_object().into_iter().flatten() {
+        if let Some(key) = v["text_key"].as_str() {
+            visual_of
+                .entry(key.to_owned())
+                .or_insert_with(|| (id.clone(), v.clone()));
+        }
+    }
+    let GridPage {
+        fields: mut out,
+        notes,
+        titles: block_titles,
+        values,
+        font_table,
+    } = grid;
+    let mut ids = HashSet::new();
+    let mut fonts = Fonts::default();
+    let mut placed: Vec<((u64, u64), u64, Meta)> = vec![];
+    type TableCell = (u64, u64, MetaCell);
+    let mut tables: BTreeMap<String, Vec<TableCell>> = BTreeMap::new();
+    for GridValue {
+        block,
+        row,
+        column,
+        value,
+        font,
+    } in values
+    {
+        let block = &*block;
+        let (axis_row, axis_column) = if block == "formulas" {
+            let target = &sheet["formulas"][row.as_str()];
+            (string(&target["row"])?, string(&target["column"])?)
+        } else {
+            (row.as_str(), column.as_str())
         };
-        for (row, values) in rows {
-            for (column, value) in values.as_object().context("grid row missing")? {
-                let (axis_row, axis_column) = if block == "formulas" {
-                    let target = &sheet["formulas"][row];
-                    (
-                        string(&target["row"])?.to_owned(),
-                        string(&target["column"])?.to_owned(),
-                    )
-                } else {
-                    (row.clone(), column.clone())
-                };
-                let id = if block == "shapes" {
-                    token("shape", &[row, column])
-                } else {
-                    cell_id(&axis_row, &axis_column)
-                };
-                ensure!(ids.insert(id.clone()), "duplicate element binding");
-                // Not stored: decode reads the binding back from the ID.
-                ensure!(
-                    derived.get(&id)? == (block.clone(), row.clone(), column.clone()),
-                    "element ID {id} does not name its place in block {block}"
-                );
-                let mut y = sheet["rows"][&axis_row]["position"]
-                    .as_u64()
-                    .unwrap_or(u64::MAX);
-                let mut x = sheet["columns"][&axis_column]["position"]
-                    .as_u64()
-                    .unwrap_or(0);
-                let visual = if block == "shapes" {
-                    sheet["visuals"]
-                        .as_object()
-                        .context("visual bindings missing")?
-                        .iter()
-                        .find(|(_, v)| v["text_key"] == *row)
-                        .map(|(id, v)| (id.clone(), v.clone()))
-                } else {
-                    None
-                };
-                if let Some((_, v)) = &visual {
-                    let position = super::visual_elements::position(v);
-                    y = position.0;
-                    x = position.1;
-                }
-                let group = &sheet["groups"][&id];
-                let font = grid["fonts"][block.as_str()][row.as_str()][column.as_str()].clone();
-                let mut cell = json!({"id":id});
-                let field = if block == "formulas" {
-                    "formula"
-                } else {
-                    "value"
-                };
-                cell[field] = value.clone();
-                if !font.is_null() {
-                    cell["font"] = fonts.add(&font);
-                }
-                if let Some(table) = group["table"].as_str() {
-                    tables
-                        .entry(table.to_owned())
-                        .or_default()
-                        .push((y, x, cell));
-                } else {
-                    let mut element = if block == "formulas" {
-                        json!({"id":id,"type":"formula","formula":value})
-                    } else {
-                        json!({"id":id,"type":"text","text":value})
-                    };
-                    if let Some((reference, _)) = visual {
-                        element["visual"] = json!(reference);
-                    }
-                    if !font.is_null() {
-                        element["font"] = fonts.add(&font);
-                    }
-                    placed.push(((y, x), spans.get(&(y, x)).map_or(y, |s| s.0), element));
-                }
+        let id = if block == "shapes" {
+            token("shape", &[&row, &column])
+        } else {
+            cell_id(axis_row, axis_column)
+        };
+        ensure!(ids.insert(id.clone()), "duplicate element binding");
+        // Not stored: decode reads the binding back from the ID.
+        let (bound_block, bound_row, bound_column) = derived.get(&id)?;
+        ensure!(
+            bound_block == block && bound_row == row && bound_column == column,
+            "element ID {id} does not name its place in block {block}"
+        );
+        let mut y = sheet["rows"][axis_row]["position"]
+            .as_u64()
+            .unwrap_or(u64::MAX);
+        let mut x = sheet["columns"][axis_column]["position"]
+            .as_u64()
+            .unwrap_or(0);
+        let visual = if block == "shapes" {
+            ensure!(sheet["visuals"].is_object(), "visual bindings missing");
+            visual_of.get(&row).cloned()
+        } else {
+            None
+        };
+        if let Some((_, v)) = &visual {
+            let position = super::visual_elements::position(v);
+            y = position.0;
+            x = position.1;
+        }
+        let table = groups.get(&id).and_then(|group| group.table.as_deref());
+        let font = table_font(&font_table, &font)?;
+        let field = if block == "formulas" {
+            "formula"
+        } else {
+            "value"
+        };
+        if let Some(table) = table {
+            let mut cell = MetaCell::with_id(id);
+            if !font.is_null() {
+                cell.insert("font", fonts.add(font));
             }
+            cell.insert(field, value);
+            tables
+                .entry(table.to_owned())
+                .or_default()
+                .push((y, x, cell));
+        } else {
+            let kind = if block == "formulas" {
+                "formula"
+            } else {
+                "text"
+            };
+            let mut element = MetaText::default();
+            element.insert("id", Value::String(id));
+            element.insert("type", json!(kind));
+            element.insert(kind, value);
+            if let Some((reference, _)) = visual {
+                element.insert("visual", json!(reference));
+            }
+            if !font.is_null() {
+                element.insert("font", fonts.add(font));
+            }
+            placed.push((
+                (y, x),
+                spans.get(&(y, x)).map_or(y, |s| s.0),
+                Meta::Text(element),
+            ));
         }
     }
     for mut cells in tables.into_values() {
@@ -1620,16 +2020,15 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
         // Named as [`complete`] names it, by its first cell: the blank after
         // the table is named by it.
         let id = token("table", &[string(&cells[0].2["id"])?]);
-        let mut rows: BTreeMap<u64, Value> = BTreeMap::new();
+        let mut rows: BTreeMap<u64, MetaRow> = BTreeMap::new();
         for (y, _, cell) in cells {
-            let row = rows.entry(y).or_insert_with(|| json!({"cells":[]}));
-            row["cells"].as_array_mut().unwrap().push(cell);
+            rows.entry(y).or_default().cells.push(cell);
         }
-        placed.push((
-            first,
-            end,
-            json!({"id":id,"type":"table","rows":rows.into_values().collect::<Vec<_>>()}),
-        ));
+        let table = Meta::table(
+            json!({"id":id,"type":"table"}),
+            rows.into_values().collect(),
+        );
+        placed.push((first, end, table));
     }
     for (reference, visual) in sheet["visuals"]
         .as_object()
@@ -1644,7 +2043,7 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
         placed.push((
             position,
             end,
-            json!({"id":reference,"type":visual["kind"],"ref":reference}),
+            Meta::Other(json!({"id":reference,"type":visual["kind"],"ref":reference})),
         ));
     }
     placed.sort_by(|a, b| {
@@ -1661,84 +2060,194 @@ pub(super) fn encode(page: &Value, layout: &mut Value) -> Result<Value> {
             && last != u64::MAX
             && y > last.saturating_add(1)
         {
-            elements.push(json!({"type":"blank"}));
+            elements.push(Meta::Other(json!({"type":"blank"})));
         }
         previous = Some(previous.map_or(end, |last| last.max(end)));
         elements.push(element);
     }
-    let mut out = identity::copy_except(page, &[&["blocks"], &["fonts"]]);
-    ensure!(out.is_object(), "page must be an object");
     out["schema_version"] = json!(CONTENT_VERSION);
-    let mut elements = Value::Array(elements);
-    complete(sheet, &mut elements)?;
-    arrange(sheet, &mut elements)?;
-    let (body, metadata) = crate::document_body::split(&elements)?;
-    out["elements"] = body;
-    sheet["element_metadata"] = metadata;
+    complete(&sheet.fields, &mut elements)?;
+    arrange(&sheet.fields, &groups, &mut elements)?;
+    let (body, metadata) = crate::document_body::split(elements)?;
+    sheet.metadata = metadata;
     sheet["fonts"] = Value::Array(fonts.list);
-    sheet["notes"] = grid["blocks"]["extraction-notes"].clone();
-    sheet["block_titles"] = Value::Object(
-        grid["blocks"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter(|(_, body)| body["rows"].is_object())
-            .map(|(id, body)| (id.clone(), body["title"].clone()))
-            .collect(),
-    );
-    validate("content", &out)?;
-    Ok(out)
+    sheet["notes"] = notes;
+    sheet["block_titles"] = Value::Object(block_titles);
+    let Value::Object(fields) = out else {
+        bail!("page must be an object")
+    };
+    let page = Content {
+        fields,
+        elements: body,
+    };
+    page.check(|part| validate("content", part))?;
+    Ok(page)
 }
 
 /// Bind values to recorded slots. Shape changes are refused; same-shape manual
 /// permutations are value edits and cannot move the recorded identities.
-pub(super) fn decode(page: &Value, layout: &Value) -> Result<Value> {
+pub(super) fn decode(page: &Value, layout: &Layout) -> Result<Value> {
+    Ok(decode_grid(page, layout)?.to_value())
+}
+
+/// [`decode`] held typed, as an inspection reads the pages of a document.
+pub(super) fn decode_grid(page: &Value, layout: &Layout) -> Result<GridPage> {
     ensure!(
         page["schema_version"] == CONTENT_VERSION,
         "Document content must use the tree of table records; re-import the original"
     );
-    let sheet = &layout["sheets"][string(&page["page_id"])?];
+    let typed = layout.sheet(string(&page["page_id"])?)?;
+    let sheet = &typed.fields;
     // The body is read beside its metadata rather than joined into a copy:
     // its shape is checked first, as joining it would.
-    let metadata = &sheet["element_metadata"];
-    crate::document_body::each(&page["elements"], metadata, |_, _| Ok(()))?;
+    // The shape is checked once, the values it gives kept for binding.
+    let metadata = &typed.metadata;
+    let mut slots = vec![];
+    crate::document_body::each(&page["elements"], metadata, |element, value| {
+        slots.push((element, value));
+        Ok(())
+    })?;
     super::visual_elements::validate_references(metadata, sheet)?;
-    let mut out = identity::copy_except(page, &[&["elements"]]);
-    ensure!(out.is_object(), "page must be an object");
-    out["schema_version"] = json!(identity::GRID_VERSION);
-    out["blocks"] = json!({"extraction-notes":sheet["notes"]});
-    for (block, title) in sheet["block_titles"]
+    let mut fields = identity::copy_except(page, &[&["elements"]]);
+    ensure!(fields.is_object(), "page must be an object");
+    fields["schema_version"] = json!(identity::GRID_VERSION);
+    let mut titles: serde_json::Map<String, Value> = sheet["block_titles"]
         .as_object()
         .context("block titles missing")?
-    {
-        out["blocks"][block] = json!({"title":title,"rows":{}});
-    }
+        .clone();
     let bindings = Bindings::of(sheet)?;
-    let mut used = BTreeSet::new();
-    let mut put = |id: &str, value: &Value, element: &Value| -> Result<()> {
-        ensure!(used.insert(id.to_owned()), "duplicate element cell ID");
+    let mut used = HashSet::new();
+    let mut blocks: HashMap<String, Arc<str>> = HashMap::new();
+    let mut values = Vec::with_capacity(slots.len());
+    for (element, value) in slots {
+        let id = string(element.member("id"))?;
+        ensure!(used.insert(id), "duplicate element cell ID");
         let (block, row, column) = bindings.get(id)?;
-        let (block, row, column) = (block.as_str(), row.as_str(), column.as_str());
-        let font = font(sheet, element)?;
-        if out["blocks"][block].is_null() {
-            out["blocks"][block] = json!({"title":match block {"table-1"=>"本文","formulas"=>"数式原文",_=>"図形の文字"},"rows":{}});
+        // The fields refer to the fonts of the layout by their indexes.
+        let font = if table_font(&sheet["fonts"], element.member("font"))?.is_null() {
+            Value::Null
+        } else {
+            element.member("font").clone()
+        };
+        if !titles.contains_key(&block) {
+            let title = match block.as_str() {
+                "table-1" => "本文",
+                "formulas" => "数式原文",
+                _ => "図形の文字",
+            };
+            titles.insert(block.clone(), json!(title));
         }
-        out["blocks"][block]["rows"][row][column] = value.clone();
-        if !font.is_null() {
-            out["fonts"][block][row][column] = font;
-        }
-        Ok(())
+        let block = blocks
+            .entry(block)
+            .or_insert_with_key(|block| block.as_str().into())
+            .clone();
+        values.push(GridValue {
+            block,
+            row,
+            column,
+            value: value.clone(),
+            font,
+        });
+    }
+    let mut grid = GridPage {
+        fields,
+        notes: sheet["notes"].clone(),
+        titles,
+        values,
+        font_table: match &sheet["fonts"] {
+            Value::Null => json!([]),
+            fonts => fonts.clone(),
+        },
     };
-    crate::document_body::each(&page["elements"], metadata, |element, value| {
-        put(string(&element["id"])?, value, element)
-    })?;
-    Ok(out)
+    grid.order();
+    Ok(grid)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{arrange, categories, complete, token};
+    use super::{Group, Groups, categories, parts, token};
+    use crate::document_structure::{Element, ElementCell};
     use serde_json::{Value, json};
+
+    /// [`super::complete`] of element metadata given as JSON.
+    fn complete(sheet: &Value, metadata: &mut Value) -> anyhow::Result<()> {
+        let mut typed = crate::documents::metadata_from(metadata.take())?;
+        super::complete(sheet, &mut typed)?;
+        *metadata = crate::documents::metadata_value(&typed);
+        Ok(())
+    }
+
+    /// [`super::arrange`] of element metadata given as JSON.
+    fn arrange(sheet: &Value, groups: &Groups, metadata: &mut Value) -> anyhow::Result<()> {
+        let mut typed = crate::documents::metadata_from(metadata.take())?;
+        super::arrange(sheet, groups, &mut typed)?;
+        *metadata = crate::documents::metadata_value(&typed);
+        Ok(())
+    }
+
+    /// [`super::metadata_groups`] of element metadata given as JSON.
+    fn metadata_groups(metadata: &Value) -> anyhow::Result<Groups> {
+        super::metadata_groups(&crate::documents::metadata_from(metadata.clone())?)
+    }
+
+    /// The groups a test gives as JSON, as [`Group`]s.
+    fn typed(groups: &Value) -> Groups {
+        groups
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(id, g)| {
+                let group = Group {
+                    table: g["table"].as_str().map(Into::into),
+                    heading: g["heading"] == true,
+                    mark: g["mark"] == true,
+                    label: g["label"].as_str().map(Box::from),
+                    parent: g.get("parent").map(|p| p.as_str().map(Box::from)),
+                    category: g["category"].as_str().map(Box::from),
+                    within: g["within"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|k| k.as_str().map(Box::from))
+                        .collect(),
+                };
+                (id.clone(), group)
+            })
+            .collect()
+    }
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn ids_are_read_only_as_token_writes_them() {
+        for given in [
+            &["r1", "B"][..],
+            &["ins-1", "AA"],
+            &["a_b", "%", "日本"],
+            &["", "x/y.z#1"],
+        ] {
+            let id = token("cell", given);
+            let (kind, read) = parts(&id).unwrap();
+            assert_eq!(
+                (kind, read.iter().map(String::as_str).collect::<Vec<_>>()),
+                ("cell", given.to_vec())
+            );
+        }
+        assert_eq!(token("cell", &["a_b", "%"]), "cell_a%5Fb_%25");
+        // Another spelling of the same parts is no ID: a lower-case escape, an
+        // escaped byte kept as it is, a byte kept escaped, a short escape.
+        for other in [
+            "cell_a%5fb",
+            "cell_a_b%",
+            "cell_%41",
+            "cell_a b",
+            "cell_%+1",
+            "cell_日本",
+        ] {
+            assert!(parts(other).is_none(), "{other}");
+        }
+        assert_eq!(parts("cell_").unwrap().1, vec![String::new()]);
+        assert!(parts("cell").is_none());
+    }
 
     #[test]
     fn columns_under_a_merged_heading_are_one_unless_a_record_uses_two() {
@@ -1770,8 +2279,8 @@ mod tests {
         assert_eq!(cell(0, 1)["row_span"], 2);
         assert!(cell(0, 1).get("column_span").is_none());
         assert_eq!(cell(0, 2)["column_span"], 2);
-        let (body, _) = crate::document_body::split(
-            &metadata
+        let (body, _) = crate::document_body::split_json(
+            metadata
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1820,9 +2329,10 @@ mod tests {
             groups.insert(id.clone(), group);
             rows.push(json!({"id":format!("record_r{y}"),"cells":[{"id":id,"column":format!("column_{x}")}]}));
         }
-        let sheet = json!({"groups":groups});
+        let sheet = json!({});
+        let groups = typed(&json!(groups));
         let mut metadata = json!([{"type":"table","rows":rows}]);
-        arrange(&sheet, &mut metadata).unwrap();
+        arrange(&sheet, &groups, &mut metadata).unwrap();
         let parents: Vec<Value> = metadata[0]["rows"]
             .as_array()
             .unwrap()
@@ -1844,31 +2354,84 @@ mod tests {
         );
     }
 
-    #[test]
-    fn categories_nest_hold_the_cells_of_their_first_row_and_cover_blanks_under_them() {
-        // 販売 merged down A4:A8; 受注 and its note merged down B4:C6 beside
-        // JU001-JU003; 出荷 written on row 7 alone with a blank B8 under it.
-        // Each record is named in D.
-        fn put(cells: &mut Vec<Value>, address: &str, role: &str, value: Value, headers: &[&str]) {
-            cells.push(
-                json!({"id":address,"address":address,"role":role,"value":value,"headers":headers}),
+    /// A cell of the interpretation in `cells` and its value in `values`, the
+    /// extraction's, as classify reads them apart.
+    /// `cells` as an interpretation holds them.
+    fn element_cells(cells: &[Value]) -> Vec<ElementCell> {
+        cells
+            .iter()
+            .map(|cell| ElementCell::from_value(cell.clone()).unwrap())
+            .collect()
+    }
+
+    fn put(
+        cells: &mut Vec<Value>,
+        values: &mut BTreeMap<String, Value>,
+        address: &str,
+        role: &str,
+        value: Value,
+        headers: &[&str],
+    ) {
+        cells.push(json!({"id":address,"address":address,"role":role,"headers":headers,"text_state":"read"}));
+        values.insert(address.to_owned(), value);
+    }
+
+    /// 販売 merged down A4:A8; 受注 and its note merged down B4:C6 beside
+    /// JU001-JU003; 出荷 written on row 7 alone with a blank B8 under it.
+    /// Each record is named in D.
+    fn sales_table() -> (Vec<Value>, BTreeMap<String, Value>) {
+        let mut cells = vec![];
+        let mut values = BTreeMap::new();
+        for x in ["A", "B", "C", "D", "E"] {
+            put(
+                &mut cells,
+                &mut values,
+                &format!("{x}3"),
+                "column_header",
+                json!(x),
+                &[],
             );
         }
-        let mut cells = vec![];
-        for x in ["A", "B", "C", "D", "E"] {
-            put(&mut cells, &format!("{x}3"), "column_header", json!(x), &[]);
-        }
-        put(&mut cells, "A4", "row_header", json!("販売"), &["A3"]);
-        put(&mut cells, "B4", "row_header", json!("受注"), &["B3", "A4"]);
         put(
             &mut cells,
+            &mut values,
+            "A4",
+            "row_header",
+            json!("販売"),
+            &["A3"],
+        );
+        put(
+            &mut cells,
+            &mut values,
+            "B4",
+            "row_header",
+            json!("受注"),
+            &["B3", "A4"],
+        );
+        put(
+            &mut cells,
+            &mut values,
             "C4",
             "row_header",
             json!("受注の説明"),
             &["C3", "A4"],
         );
-        put(&mut cells, "B7", "row_header", json!("出荷"), &["B3", "A4"]);
-        put(&mut cells, "B8", "data", Value::Null, &["B3", "A4", "B7"]);
+        put(
+            &mut cells,
+            &mut values,
+            "B7",
+            "row_header",
+            json!("出荷"),
+            &["B3", "A4"],
+        );
+        put(
+            &mut cells,
+            &mut values,
+            "B8",
+            "data",
+            Value::Null,
+            &["B3", "A4", "B7"],
+        );
         for (y, around) in [
             (4, ["A4", "B4", "C4"]),
             (5, ["A4", "B4", "C4"]),
@@ -1879,6 +2442,7 @@ mod tests {
             let name = format!("D{y}");
             put(
                 &mut cells,
+                &mut values,
                 &name,
                 "row_header",
                 json!(format!("ID{y}")),
@@ -1886,13 +2450,24 @@ mod tests {
             );
             put(
                 &mut cells,
+                &mut values,
                 &format!("E{y}"),
                 "data",
                 json!(y),
                 &[&["E3", name.as_str()][..], &around[..]].concat(),
             );
         }
-        let found = categories(&cells).unwrap();
+        (cells, values)
+    }
+
+    #[test]
+    fn categories_nest_hold_the_cells_of_their_first_row_and_cover_blanks_under_them() {
+        let (mut cells, mut values) = sales_table();
+        let interpreted = element_cells(&cells);
+        let found = categories(&interpreted, &|address| {
+            values.get(address).unwrap_or(&Value::Null)
+        })
+        .unwrap();
         let shown: Vec<(Vec<&str>, u32, u32)> = found
             .iter()
             .map(|c| (c.cells.iter().map(|(_, id)| *id).collect(), c.row, c.end))
@@ -1909,14 +2484,62 @@ mod tests {
         for y in 5..=8 {
             put(
                 &mut cells,
+                &mut values,
                 &format!("A{y}"),
                 "row_header",
                 json!("販売"),
                 &["A3"],
             );
         }
-        let found = categories(&cells).unwrap();
+        let interpreted = element_cells(&cells);
+        let found = categories(&interpreted, &|address| {
+            values.get(address).unwrap_or(&Value::Null)
+        })
+        .unwrap();
         assert!(found.iter().all(|c| c.cells[0].1 != "A4"));
+    }
+
+    #[test]
+    fn classify_reads_what_is_written_under_a_category_from_the_extraction() {
+        // The interpretation's cells hold no values: whether a row header has
+        // anything written under it is read from the extraction's cells.
+        let groups = |cells: &[Value], values: &BTreeMap<String, Value>| {
+            let cells_of_sheet: Vec<Value> = values
+                .iter()
+                .map(|(address, value)| json!({"address":address,"value":value}))
+                .collect();
+            let extraction = crate::extraction::sample(
+                json!({"sheets":[{"name":"S","merges":[],"cells":cells_of_sheet}]}),
+            );
+            let layout = super::super::identity::initial(&extraction).unwrap();
+            let table = Element::new(
+                json!({"id":"table-1","kind":"table","sheet":"S"}),
+                element_cells(cells),
+            );
+            super::interpreted_groups(&layout, &extraction, &[table])
+                .unwrap()
+                .remove("sheet-1")
+                .unwrap()
+        };
+        let categorized = |groups: &Groups| {
+            groups
+                .values()
+                .any(|g| g.category.as_deref() == Some("cell_r4_A"))
+        };
+        let (mut cells, mut values) = sales_table();
+        assert!(categorized(&groups(&cells, &values)));
+        // 販売 written on every row heads nothing as a category.
+        for y in 5..=8 {
+            put(
+                &mut cells,
+                &mut values,
+                &format!("A{y}"),
+                "row_header",
+                json!("販売"),
+                &["A3"],
+            );
+        }
+        assert!(!categorized(&groups(&cells, &values)));
     }
 
     #[test]
@@ -1970,15 +2593,16 @@ mod tests {
             }
             rows.push(json!({"id":format!("record_r{y}"),"cells":cells}));
         }
-        let sheet = json!({"groups":groups});
+        let sheet = json!({});
+        let groups = typed(&json!(groups));
         let mut metadata = json!([{"type":"table","rows":rows}]);
-        arrange(&sheet, &mut metadata).unwrap();
+        arrange(&sheet, &groups, &mut metadata).unwrap();
         assert_eq!(
             metadata[0]["categories"],
             json!({"cell_r4_A":{},"cell_r4_B":{"parent":"cell_r4_A","cells":["cell_r4_C"]},"cell_r7_B":{"parent":"cell_r4_A"}})
         );
         assert_eq!(metadata[0]["rows"][5]["cells"][0]["category"], "cell_r7_B");
-        let (body, stored) = crate::document_body::split(&metadata).unwrap();
+        let (body, stored) = crate::document_body::split_json(metadata.clone()).unwrap();
         assert_eq!(
             body[0]["table"]["rows"],
             json!([{"A":"A4","children":[
@@ -1987,11 +2611,11 @@ mod tests {
             ]}])
         );
         assert_eq!(
-            crate::document_body::join(&body, &stored).unwrap(),
+            crate::document_body::join_json(&body, &stored).unwrap(),
             metadata
         );
         // The groups the metadata gives back arrange it the same way.
-        let regrouped = json!({"groups":super::groups(&stored).unwrap()});
+        let regrouped = metadata_groups(&stored).unwrap();
         let mut rearranged = metadata.clone();
         rearranged[0].as_object_mut().unwrap().remove("categories");
         for row in rearranged[0]["rows"].as_array_mut().unwrap() {
@@ -2000,7 +2624,7 @@ mod tests {
                 cell.as_object_mut().unwrap().remove("category");
             }
         }
-        arrange(&regrouped, &mut rearranged).unwrap();
+        arrange(&sheet, &regrouped, &mut rearranged).unwrap();
         assert_eq!(rearranged, metadata);
     }
 
@@ -2023,24 +2647,25 @@ mod tests {
             "cell_r5_C":{"parent":"r4","within":["cell_r5_B"]},
             "cell_r6_C":{"parent":"r4","within":["cell_r5_B"]},
         });
-        let sheet = json!({"groups":groups});
-        arrange(&sheet, &mut metadata).unwrap();
+        let sheet = json!({});
+        let groups = typed(&json!(groups));
+        arrange(&sheet, &groups, &mut metadata).unwrap();
         assert_eq!(
             metadata[0]["categories"],
             json!({"cell_r5_B":{"parent":"record_r4"}})
         );
-        let (body, stored) = crate::document_body::split(&metadata).unwrap();
+        let (body, stored) = crate::document_body::split_json(metadata.clone()).unwrap();
         assert_eq!(
             body[0]["table"]["rows"],
             json!([{"A":"＜本番＞","children":[{"B":"AP01","children":[{"C":"/opt"},{"C":"/var"}]}]}])
         );
-        let regrouped = json!({"groups":super::groups(&stored).unwrap()});
+        let regrouped = metadata_groups(&stored).unwrap();
         let mut rearranged = metadata.clone();
         rearranged[0].as_object_mut().unwrap().remove("categories");
         for row in rearranged[0]["rows"].as_array_mut().unwrap() {
             row.as_object_mut().unwrap().remove("parent");
         }
-        arrange(&regrouped, &mut rearranged).unwrap();
+        arrange(&sheet, &regrouped, &mut rearranged).unwrap();
         assert_eq!(rearranged, metadata);
     }
 
@@ -2058,5 +2683,147 @@ mod tests {
             inputs.iter().map(|parts| token("cell", parts)).collect();
         assert_eq!(ids.len(), inputs.len());
         assert_eq!(token("cell", &["r7", "B"]), "cell_r7_B");
+    }
+
+    /// A table of `categories` categories of `records` records each, the
+    /// last `broken` of them with a record in the middle outside them, as
+    /// [`super::categorize`] takes it: its rows and their groups.
+    fn categorized_table(categories: usize, records: usize, broken: usize) -> (Vec<Value>, Groups) {
+        let mut rows = vec![];
+        let mut groups = serde_json::Map::new();
+        for k in 0..categories {
+            let key = format!("cell_r{}_A", rows.len() + 1);
+            for r in 0..=records {
+                let id = format!(
+                    "cell_r{}_{}",
+                    rows.len() + 1,
+                    if r == 0 { "A" } else { "B" }
+                );
+                let group = if r == 0 {
+                    json!({"category":key,"parent":null})
+                } else if k >= categories - broken && r == records / 2 {
+                    json!({"parent":null,"within":[]})
+                } else {
+                    json!({"parent":null,"within":[key]})
+                };
+                groups.insert(id.clone(), group);
+                rows.push(json!({"cells":[{"id":id}]}));
+            }
+        }
+        (rows, typed(&Value::Object(groups)))
+    }
+
+    /// [`super::drop_broken`] as it was written first: every category
+    /// checked over every record each time one is dropped.
+    fn drop_broken_by_scanning(
+        kept: &mut BTreeSet<String>,
+        chains: &mut [Option<Vec<String>>],
+        first: &BTreeMap<&str, usize>,
+    ) {
+        loop {
+            let broken = kept.iter().find(|&key| {
+                let members: Vec<(usize, &Vec<String>)> = chains
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| Some((i, c.as_ref()?)))
+                    .filter(|(_, c)| c.contains(key))
+                    .collect();
+                let Some(&(start, chain)) = members.first() else {
+                    return true;
+                };
+                let end = members.last().unwrap().0;
+                let before =
+                    |c: &Vec<String>| c[..c.iter().position(|k| k == key).unwrap()].to_vec();
+                let around = before(chain);
+                start != first[key.as_str()]
+                    || around.len() + 2 > super::MAX_TREE_DEPTH
+                    || chains[start..=end]
+                        .iter()
+                        .flatten()
+                        .any(|c| !c.contains(key))
+                    || members.iter().any(|(_, c)| before(c) != around)
+            });
+            let Some(key) = broken.cloned() else {
+                break;
+            };
+            kept.remove(&key);
+            for chain in chains.iter_mut().flatten() {
+                chain.retain(|k| *k != key);
+            }
+        }
+    }
+
+    #[test]
+    fn broken_categories_are_dropped_in_order() {
+        // A small linear congruential generator, so that the cases repeat.
+        let mut seed: u64 = 7;
+        let mut next = |bound: usize| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize % bound
+        };
+        let mut dropped = 0;
+        for case in 0..400 {
+            let keys: Vec<String> = (0..1 + next(12)).map(|k| format!("k{k:02}")).collect();
+            let deep = case % 10 == 0;
+            let mut chains: Vec<Option<Vec<String>>> = (0..1 + next(40))
+                .map(|_| {
+                    (next(6) != 0).then(|| {
+                        let length = if deep { 10 + next(8) } else { next(4) };
+                        (0..length)
+                            .map(|_| keys[next(keys.len())].clone())
+                            .collect()
+                    })
+                })
+                .collect();
+            let mut first = BTreeMap::new();
+            for (i, chain) in chains.iter().enumerate() {
+                for key in chain.iter().flatten() {
+                    first.entry(key.clone()).or_insert(i);
+                }
+            }
+            for key in &keys {
+                if next(5) == 0 {
+                    first.insert(key.clone(), next(chains.len()));
+                }
+                first.entry(key.clone()).or_insert(0);
+            }
+            let first: BTreeMap<&str, usize> =
+                first.iter().map(|(key, at)| (key.as_str(), *at)).collect();
+            let mut kept: BTreeSet<String> = keys.iter().cloned().collect();
+            let (mut expected_kept, mut expected_chains) = (kept.clone(), chains.clone());
+            drop_broken_by_scanning(&mut expected_kept, &mut expected_chains, &first);
+            super::drop_broken(&mut kept, &mut chains, &first);
+            assert_eq!(
+                (&kept, &chains),
+                (&expected_kept, &expected_chains),
+                "case {case}"
+            );
+            dropped += keys.len() - kept.len();
+        }
+        assert!(dropped > 100);
+    }
+
+    #[test]
+    #[ignore = "manual category performance measurement"]
+    fn measure_broken_categories() {
+        use std::time::Instant;
+        for (categories, broken) in [(500, 0), (500, 50), (2000, 0), (2000, 100)] {
+            let (rows, groups) = categorized_table(categories, 10, broken);
+            let start = Instant::now();
+            let rows: Vec<_> = rows
+                .into_iter()
+                .map(|row| crate::documents::MetaRow::from_value(row).unwrap())
+                .collect();
+            let sorted = super::categorize(&rows, 0, &groups, &|_, _| false).unwrap();
+            eprintln!(
+                "categorize categories={categories} broken={broken} rows={} kept={} ms={:.1}",
+                rows.len(),
+                sorted.nodes.len(),
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+            assert_eq!(sorted.nodes.len(), categories - broken);
+        }
     }
 }

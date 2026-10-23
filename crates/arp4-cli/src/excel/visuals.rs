@@ -493,6 +493,9 @@ pub(super) fn extract_visuals(
                 if diagram.is_none() && object["text"].as_str().is_some_and(|t| !t.is_empty()) {
                     let (runs, empty) = super::fonts::shape_runs(node, theme);
                     object["font"] = crate::fonts::element_font(&runs, &empty);
+                    if let Some(style) = crate::fonts::element_emphasis(&runs, &empty).style() {
+                        object["style"] = style;
+                    }
                 }
             }
         }

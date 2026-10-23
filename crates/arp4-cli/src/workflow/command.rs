@@ -299,7 +299,6 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
             drafts: Value::Null,
             reviewed_replies: Value::Null,
             review_findings: Value::Null,
-            previous: Value::Null,
         };
         let mut flow = Workflow {
             store,
@@ -330,6 +329,9 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
         return flow.advance();
     }
     let state = store.load()?;
+    // The status a page is cut from is kept under the state it shows.
+    let state_digest = matches!(command, WorkflowCommand::Status { .. })
+        .then(|| crate::data::hash_encoded(&state));
     ensure!(
         state["version"] == 1 && state["engine"] == "arp4-rust",
         "unsupported workflow state; version 1 and engine arp4-rust required"
@@ -366,11 +368,7 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
     }
     match command {
         WorkflowCommand::Status { summary } => {
-            if summary {
-                flow.status_summary()
-            } else {
-                flow.status()
-            }
+            flow.kept_status(summary, state_digest.as_deref().unwrap_or_default())
         }
         WorkflowCommand::History => flow.history(),
         WorkflowCommand::RecordUsage {

@@ -1,6 +1,6 @@
 //! The fonts of cells and shape text as Excel shows them, and font edits.
 use super::*;
-use crate::fonts::{Color, ColorContext, FontEdit, RunFont, Theme, tinted};
+use crate::fonts::{Color, ColorContext, Emphasis, FontEdit, RunFont, Theme, tinted};
 
 /// Excel's default colour palette (`indexed` 0–63); 64 is the automatic
 /// (system) text colour.
@@ -122,6 +122,7 @@ impl Palette {
 
     /// The properties a cell font (`font`) or rich text run (`rPr`, whose
     /// name element is `rFont`) sets. A cell font without a colour is automatic.
+    /// Either sets every emphasis mark, as Excel writes a run's properties whole.
     pub(super) fn font(&self, node: Node<'_, '_>, run: bool) -> RunFont {
         let name = child(node, if run { "rFont" } else { "name" })
             .and_then(|n| n.attribute("val"))
@@ -152,6 +153,14 @@ impl Palette {
                 Some(color) => self.color(color),
                 None if !run => Some(Color::Auto),
                 None => None,
+            },
+            emphasis: Emphasis {
+                italic: Some(super::on(node, "i")),
+                underline: Some(
+                    child(node, "u").is_some_and(|u| u.attribute("val") != Some("none")),
+                ),
+                strike: Some(super::on(node, "strike")),
+                highlight: None,
             },
         }
     }

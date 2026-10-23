@@ -8,14 +8,20 @@ mod import;
 use import::Carry;
 pub use import::Unprotection;
 mod inspection;
+mod result_cache;
 pub mod search;
 mod sheet_edit;
+mod status_cache;
 pub use sheet_edit::{Axis, EditKind, Position, SheetEdit};
 mod elements;
 pub(crate) use elements::CONTENT_VERSION;
 mod export_confirmation;
 mod identity;
 mod image_edit;
+mod layout;
+pub(crate) use layout::{
+    Layout, LayoutSheet, Meta, MetaCell, MetaRow, MetaText, metadata_from, metadata_value,
+};
 mod operation_edit;
 mod render;
 mod shape_edit;
@@ -31,6 +37,7 @@ use crate::{
     data::*,
     document_source::{Source, is_slide_operation, parse_slide_operations, slide_view},
     excel,
+    extraction::{Cell, CellKind, Extraction, Sheet},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -39,6 +46,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const RECORDS: [&str; 7] = [
@@ -66,14 +74,14 @@ pub struct Store {
 }
 pub struct Inspection {
     pub meta: Value,
-    pub extraction: Value,
+    pub extraction: Extraction,
     pub mappings: Value,
     /// The complete mapping entries; `mappings` keeps none.
     entries: Vec<Entry>,
-    /// Content values by page, block and field.
-    pub values: HashMap<(String, String, String), Value>,
-    /// The fonts of content values by page, block and field (see `crate::fonts`).
-    pub fonts: HashMap<(String, String, String), Value>,
+    /// Content values and their fonts by page, block and field: one map, as
+    /// a large sheet has a value for each cell, and a key for each in two
+    /// maps took as much as the values.
+    pub content: HashMap<(String, String, String), Field>,
     /// Content file name by validated page ID.
     pub page_files: BTreeMap<String, String>,
     pub fingerprint: String,
@@ -83,9 +91,16 @@ pub struct Inspection {
     /// The identities of the rows and columns of the extraction, which the
     /// correction journal names cells by.
     pub axes: crate::document_structure::Axes,
+    /// The digest of the stored rows and columns `axes` is read from.
+    axes_digest: String,
     /// The digest of the structure interpretation the layout's element
     /// metadata was classified from (`elements::interpretation_digest`).
     pub structure_sha256: Option<String>,
+    /// The mapping entries still to be resolved before export.
+    pub pending: usize,
+    /// Whether the content differs from the extraction: an operation is
+    /// pending or a value written back to a cell changed.
+    pub content_edited: bool,
 }
 impl Inspection {
     /// The complete mapping entries, as mappings.yml writes them.
@@ -97,10 +112,16 @@ impl Inspection {
     /// largest parts besides the extraction, before a step that reads none of
     /// them, such as replaying the structure.
     pub(super) fn release_content(&mut self) {
-        self.values = HashMap::new();
-        self.fonts = HashMap::new();
+        self.content = HashMap::new();
         self.entries = Vec::new();
     }
+}
+
+/// A content value and its font, if the field has one (see `crate::fonts`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    pub value: Value,
+    pub font: Option<Arc<Value>>,
 }
 fn nonempty(value: &str) -> Result<()> {
     ensure!(
@@ -114,10 +135,13 @@ impl Store {
     /// The interpretation of the adopted document, or of its proposal, and the
     /// report of its replay: a view of the extraction plus the corrections in
     /// mappings.yml.
-    pub fn structure(&self, id: &str, proposal: bool) -> Result<(Value, Value)> {
+    pub fn structure(
+        &self,
+        id: &str,
+        proposal: bool,
+    ) -> Result<(crate::document_structure::Structure, Value)> {
         let dir = self.structure_dir(id, proposal)?;
-        let mut inspected = self.inspect(&dir, false)?;
-        inspected.release_content();
+        let (inspected, _) = self.inspect_records(&dir, false, false)?;
         self.interpretation(&inspected)?
             .context("document has no structure interpretation")
     }
@@ -128,10 +152,34 @@ impl Store {
     /// its references point to: what is read beside the body, as the
     /// `document-elements` contract.
     pub fn elements(&self, id: &str, proposal: bool) -> Result<Value> {
+        let (layout, interpretation) = self.interpreted_layout(id, proposal)?;
+        let out = elements_view(id, proposal, &layout, &interpretation)?.into_value()?;
+        validate("document-elements", &out)?;
+        Ok(out)
+    }
+
+    /// Writes [`Store::elements`] to `out`, made as it is written and checked
+    /// a part at a time; returns the number of its pages.
+    pub fn write_elements(&self, id: &str, proposal: bool, out: &Path) -> Result<usize> {
+        let (layout, interpretation) = self.interpreted_layout(id, proposal)?;
+        check_elements(id, proposal, &layout, &interpretation, |part| {
+            validate("document-elements", part)
+        })?;
+        write_lazy(out, elements_view(id, proposal, &layout, &interpretation)?)?;
+        Ok(layout.sheets.len())
+    }
+
+    /// The layout of the adopted document, or of its proposal, with the roles
+    /// and headers the structure interpretation gives its table cells. The
+    /// extraction and the interpretation are let go once they are in it.
+    fn interpreted_layout(
+        &self,
+        id: &str,
+        proposal: bool,
+    ) -> Result<(Layout, elements::Interpretation)> {
         let dir = self.structure_dir(id, proposal)?;
-        let (mut inspected, layout) = self.inspect_layout(&dir, false, &Planned::new(), true)?;
-        let mut layout = layout.context("layout kept")?;
-        inspected.release_content();
+        let (inspected, layout) = self.inspect_records(&dir, false, true)?;
+        let layout = layout.context("layout kept")?;
         // The interpretation of the stored extraction, as import classifies
         // the layout from, whether or not the original has changed since.
         let (structure, _) = crate::document_structure::replay_verified_corrections(
@@ -141,45 +189,19 @@ impl Store {
             string(&inspected.meta["extraction"])?,
             &inspected.axes,
         )?;
-        elements::interpret(&mut layout, array(&structure["elements"])?)?;
-        let mut pages = serde_json::Map::new();
-        for (page_id, sheet) in layout["sheets"]
-            .as_object()
-            .context("layout sheets missing")?
-        {
-            let mut metadata = sheet["element_metadata"].clone();
-            for element in metadata
-                .as_array_mut()
-                .context("element metadata missing")?
-            {
-                if let Some(rows) = element.get_mut("rows") {
-                    for row in rows.as_array_mut().context("table rows missing")? {
-                        for cell in row["cells"].as_array_mut().context("table cells missing")? {
-                            resolve_font(sheet, cell)?;
-                        }
-                    }
-                } else {
-                    resolve_font(sheet, element)?;
-                }
-            }
-            pages.insert(
-                page_id.clone(),
-                json!({"name":sheet["name"],"element_metadata":metadata,"visuals":sheet["visuals"]}),
-            );
-        }
-        let out = json!({"schema_version":"1","document_id":id,"proposal":proposal,"pages":pages});
-        validate("document-elements", &out)?;
-        Ok(out)
+        let interpretation = elements::interpret(&layout, &structure.elements)?;
+        Ok((layout, interpretation))
     }
 
-    /// The extraction of the adopted document, or of its proposal, with every
-    /// cell's font, style and cached result in place, as the `extraction-view`
-    /// contract.
-    pub fn extraction_view(&self, id: &str, proposal: bool) -> Result<Value> {
+    /// Writes the extraction of the adopted document, or of its proposal, to
+    /// `out` with every cell's font, style and cached result in place, as the
+    /// `extraction-view` contract: made as it is written and checked a part
+    /// at a time.
+    pub fn write_extraction_view(&self, id: &str, proposal: bool, out: &Path) -> Result<()> {
         let dir = self.structure_dir(id, proposal)?;
-        let extraction = crate::extraction::view(&self.inspect(&dir, false)?.extraction)?;
-        validate("extraction-view", &extraction)?;
-        Ok(extraction)
+        let extraction = self.inspect_records(&dir, false, false)?.0.extraction;
+        crate::extraction::check_view(&extraction, |part| validate("extraction-view", part))?;
+        write_lazy(out, crate::extraction::view_lazy(&extraction))
     }
 
     /// Saves `structure` as the corrections of the adopted document, or of its
@@ -208,7 +230,7 @@ impl Store {
             &inspected.axes,
         )?;
         ensure!(
-            reconstructed == *structure,
+            reconstructed.to_value() == *structure,
             "structure cannot be reproduced from corrections"
         );
         let path = dir.join("mappings.yml");
@@ -225,15 +247,17 @@ impl Store {
                 array(&mappings["operations"])?.is_empty(),
                 "apply row/column operations before changing element structure"
             );
-            elements::classify(&mut layout, array(&structure["elements"])?)?;
+            let mut classified =
+                elements::classify(&mut layout, &inspected.extraction, &reconstructed.elements)?;
             for name in inspected.page_files.values() {
                 let page = self.read_content(&dir, name, &inspected.extraction)?;
-                let body = elements::encode(&page, &mut layout)?;
-                planned.insert(name.clone(), Some(elements::page_bytes(&body, &layout)?));
+                let groups = classified.remove(string(&page["page_id"])?);
+                let body = elements::encode(page, &mut layout, groups)?;
+                planned.insert(name.clone(), Some(elements::content_bytes(&body, &layout)?));
             }
             planned.insert(
                 "layout.yml".into(),
-                Some(identity::stored(&mut layout, &inspected.extraction)?),
+                Some(identity::stored(layout, &inspected.extraction)?),
             );
         }
         planned.insert(
@@ -456,15 +480,18 @@ fn read_planned(name: &str, path: &Path, planned: &Planned, schema: &str) -> Res
 pub fn read_layout(path: &Path) -> Result<Value> {
     let dir = path.parent().context("layout has no document directory")?;
     let extraction = crate::extraction::read_record(&dir.join("extraction.json"))?;
-    identity::load(dir, &extraction, &Planned::new())
+    Ok(identity::load(dir, &extraction, &Planned::new())?.to_value())
 }
 
 /// Writes a layout as [`read_layout`] gives it to `layout.yml` at `path`, in
 /// its stored form.
-pub fn write_layout(path: &Path, layout: &mut Value) -> Result<()> {
+pub fn write_layout(path: &Path, layout: Value) -> Result<()> {
     let dir = path.parent().context("layout has no document directory")?;
     let extraction = crate::extraction::read_record(&dir.join("extraction.json"))?;
-    replace(path, &identity::stored(layout, &extraction)?)
+    replace(
+        path,
+        &identity::stored(Layout::from_value(layout)?, &extraction)?,
+    )
 }
 
 /// The block, row and column of the grid of a layout `sheet` that the element
@@ -483,6 +510,147 @@ fn resolve_font(sheet: &Value, element: &mut Value) -> Result<()> {
     let font = elements::font(sheet, element)?;
     if !font.is_null() {
         element["font"] = font;
+    }
+    Ok(())
+}
+
+/// The `document-elements` read of `layout`, the interpreted layout of the
+/// document `id` or of its proposal, made as it is written: the fonts of
+/// every table cell resolved held several times the memory of the layout.
+fn elements_view<'a>(
+    id: &'a str,
+    proposal: bool,
+    layout: &'a Layout,
+    interpretation: &'a elements::Interpretation,
+) -> Result<Lazy<'a>> {
+    let mut pages = vec![];
+    for (page_id, sheet) in &layout.sheets {
+        let found = &interpretation[page_id];
+        let metadata =
+            Lazy::Items(Box::new(sheet.metadata.iter().map(move |element| {
+                resolved_element(&sheet.fields, element, found)
+            })));
+        pages.push((
+            page_id.as_str(),
+            Lazy::Object(vec![
+                ("name", Lazy::Borrowed(&sheet["name"])),
+                ("visuals", Lazy::Borrowed(&sheet["visuals"])),
+                ("element_metadata", metadata),
+            ]),
+        ));
+    }
+    Ok(Lazy::Object(vec![
+        ("schema_version", Lazy::Value(json!("1"))),
+        ("document_id", Lazy::Value(json!(id))),
+        ("proposal", Lazy::Value(json!(proposal))),
+        ("pages", Lazy::Object(pages)),
+    ]))
+}
+
+/// The element metadata `element` of the layout `sheet` with its fonts
+/// resolved: those of the cells of each row of a table, made row by row.
+fn resolved_element<'a>(
+    sheet: &'a Value,
+    element: &'a Meta,
+    found: &'a HashMap<String, (Value, Vec<String>)>,
+) -> Result<Lazy<'a>> {
+    let Some(rows) = element.records() else {
+        let mut element = element.to_value();
+        resolve_font(sheet, &mut element)?;
+        return Ok(Lazy::Value(element));
+    };
+    // The cells of the table, which a cell's headers are among.
+    let present: std::collections::HashSet<&str> = rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .map(|cell| string(&cell["id"]))
+        .collect::<Result<_>>()?;
+    let mut members = Lazy::members(
+        element.fields().context("table metadata missing")?,
+        &["rows"],
+    );
+    members.push((
+        "rows",
+        Lazy::Items(Box::new(rows.iter().map(move |row| {
+            let mut row = row.to_value();
+            for cell in row["cells"].as_array_mut().context("table cells missing")? {
+                elements::interpret_cell(cell, found, &present)?;
+                resolve_font(sheet, cell)?;
+            }
+            Ok(Lazy::Value(row))
+        }))),
+    ));
+    Ok(Lazy::Object(members))
+}
+
+/// The elements or table rows [`check_elements`] checks together.
+const ELEMENTS_PART: usize = 2048;
+
+/// Checks [`elements_view`] of `layout` with `check` a part at a time: each
+/// page with its visuals and no elements, then with at most
+/// [`ELEMENTS_PART`] of its elements, and each table with at most as many of
+/// its rows, as no part of the contract relates the items of a list.
+fn check_elements(
+    id: &str,
+    proposal: bool,
+    layout: &Layout,
+    interpretation: &elements::Interpretation,
+    check: impl Fn(&Value) -> Result<()>,
+) -> Result<()> {
+    let read = |pages: serde_json::Map<String, Value>| {
+        let mut out = json!({"schema_version":"1","document_id":id,"proposal":proposal});
+        out["pages"] = Value::Object(pages);
+        out
+    };
+    check(&read(serde_json::Map::new()))?;
+    for (page_id, typed) in &layout.sheets {
+        let sheet = &typed.fields;
+        let found = &interpretation[page_id];
+        let page = |metadata: Vec<Value>, visuals: Value| {
+            let mut page = json!({"name":sheet["name"],"visuals":visuals});
+            page["element_metadata"] = Value::Array(metadata);
+            read([(page_id.clone(), page)].into_iter().collect())
+        };
+        check(&page(vec![], sheet["visuals"].clone()))?;
+        let mut batch = vec![];
+        for element in &typed.metadata {
+            let members = match resolved_element(sheet, element, found)? {
+                Lazy::Object(members) => members,
+                other => {
+                    batch.push(other.into_value()?);
+                    if batch.len() == ELEMENTS_PART {
+                        check(&page(std::mem::take(&mut batch), json!({})))?;
+                    }
+                    continue;
+                }
+            };
+            let mut head = serde_json::Map::new();
+            let mut rows = None;
+            for (key, member) in members {
+                match member {
+                    Lazy::Items(items) if key == "rows" => rows = Some(items),
+                    member => {
+                        head.insert(key.to_owned(), member.into_value()?);
+                    }
+                }
+            }
+            let mut rows = rows.context("table rows missing")?.peekable();
+            let mut first = true;
+            while first || rows.peek().is_some() {
+                first = false;
+                let chunk = rows
+                    .by_ref()
+                    .take(ELEMENTS_PART)
+                    .map(|row| row?.into_value())
+                    .collect::<Result<Vec<_>>>()?;
+                let mut table = Value::Object(head.clone());
+                table["rows"] = Value::Array(chunk);
+                check(&page(vec![table], json!({})))?;
+            }
+        }
+        if !batch.is_empty() {
+            check(&page(batch, json!({})))?;
+        }
     }
     Ok(())
 }

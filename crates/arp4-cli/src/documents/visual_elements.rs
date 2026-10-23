@@ -3,11 +3,11 @@
 use super::*;
 
 pub(super) fn refresh(
-    layout: &mut Value,
-    extraction: &Value,
+    layout: &mut Layout,
+    extraction: &Extraction,
     operations: &[excel::StructuralOperation],
 ) -> Result<()> {
-    for (si, sheet) in array(&extraction["sheets"])?.iter().enumerate() {
+    for (si, sheet) in extraction.sheets.iter().enumerate() {
         let mut visuals = json!({});
         let operations: Vec<_> = operations
             .iter()
@@ -80,7 +80,13 @@ pub(super) fn refresh(
                 ensure!(visuals.get(parent).is_some(), "visual parent missing");
             }
         }
-        layout["sheets"][identity::page_id(sheet, si)]["visuals"] = visuals;
+        layout
+            .sheets
+            .entry(identity::page_id(&sheet.fields, si))
+            .or_insert_with(|| LayoutSheet {
+                fields: json!({}),
+                metadata: vec![],
+            })["visuals"] = visuals;
     }
     Ok(())
 }
@@ -95,13 +101,13 @@ pub(super) fn position(visual: &Value) -> (u64, u64) {
 
 /// Checks the references of a page's element `metadata` to the visuals of its
 /// layout `sheet`.
-pub(super) fn validate_references(metadata: &Value, sheet: &Value) -> Result<()> {
+pub(super) fn validate_references(metadata: &[Meta], sheet: &Value) -> Result<()> {
     let visuals = sheet["visuals"]
         .as_object()
         .context("visual bindings missing")?;
     let bindings = super::elements::Bindings::of(sheet)?;
     let mut seen = BTreeSet::new();
-    for element in array(metadata)? {
+    for element in metadata {
         if let Some(reference) = element["ref"].as_str() {
             let visual = visuals.get(reference).context("unknown visual reference")?;
             ensure!(

@@ -3,14 +3,20 @@
 //! documents; search reads the last saved snapshot.
 mod analyzer;
 mod corpus;
+mod format;
+mod ranking;
 mod stamp;
 mod timing;
+pub use format::FormatFilter;
+pub(super) use stamp::READ_BUFFER_SIZE;
+use std::io::{Read, Write};
 use std::time::Instant;
 pub use timing::SearchTimings;
 use timing::Timer;
 
 use super::*;
 use analyzer::{Query, dictionary, grams, identifiers, normalize, words};
+use ranking::Ranked;
 use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Default)]
@@ -20,6 +26,9 @@ pub struct SearchOptions<'a> {
     pub offset: usize,
     pub limit: Option<usize>,
     pub revision: Option<&'a str>,
+    /// Only passages with text in this format; with it, an empty query
+    /// searches by format alone.
+    pub format: FormatFilter,
 }
 
 pub struct BatchSearchResult {
@@ -40,6 +49,14 @@ pub struct SearchResult {
     pub query_terms: Vec<Vec<String>>,
 }
 
+/// The formats of the indexed text, as [`Store::search_formats`] lists them.
+pub struct FormatInventory {
+    pub items: Vec<Value>,
+    pub failed: Vec<Value>,
+    pub indexed_documents: usize,
+    pub indexed_at_unix: u64,
+}
+
 pub struct SearchRefreshResult {
     pub indexed_documents: usize,
     pub refreshed_documents: usize,
@@ -52,10 +69,12 @@ const SQL: &str = include_str!("../../../../../contracts/document-search.sql");
 fn signature() -> String {
     hash(
         format!(
-            "{SQL}{}{}{}{}{}{}",
+            "{SQL}{}{}{}{}{}{}{}{}",
             include_str!("mod.rs"),
             include_str!("corpus.rs"),
             include_str!("analyzer.rs"),
+            include_str!("format.rs"),
+            include_str!("ranking.rs"),
             include_str!("stamp.rs"),
             include_str!("../../excel/number_format.rs"),
             env!("CARGO_PKG_VERSION")
@@ -66,19 +85,211 @@ fn signature() -> String {
 
 /// A passage as stored: JSON, deflate-compressed. A table row repeats its
 /// keys, sheet and headers for every cell, which compresses several times over.
+/// The JSON is compressed whole: written straight into the encoder, it went
+/// through the compressor a few bytes at a time.
 fn pack(passage: &Value) -> Result<Vec<u8>> {
     let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
-    serde_json::to_writer(&mut encoder, passage)?;
+    encoder.write_all(&serde_json::to_vec(passage)?)?;
     Ok(encoder.finish()?)
 }
 
 fn unpack(stored: &[u8]) -> Result<Value> {
-    Ok(serde_json::from_reader(flate2::read::DeflateDecoder::new(
-        stored,
-    ))?)
+    let mut json = vec![];
+    flate2::read::DeflateDecoder::new(stored).read_to_end(&mut json)?;
+    Ok(serde_json::from_slice(&json)?)
+}
+
+/// Whether the document `id` is in `scope`, a document or folder ID; without
+/// a scope every document is.
+fn within(id: &str, scope: Option<&str>) -> bool {
+    scope.is_none_or(|scope| {
+        id == scope || id.strip_prefix(scope).is_some_and(|s| s.starts_with('/'))
+    })
+}
+
+/// SQL that holds when passage `p` is in the scope bound to `param`, as
+/// [`within`] decides it; an empty scope holds every passage.
+fn in_scope(param: &str) -> String {
+    format!(
+        "({param}='' OR p.document={param} OR substr(p.document,1,length({param})+1)={param}||'/')"
+    )
+}
+
+/// The metadata of a saved index this version made: its corpus revision,
+/// failed documents, last refresh and number of documents.
+fn snapshot(db: &Connection, signature: &str) -> Result<(String, Vec<Value>, u64, usize)> {
+    let (saved, failed, indexed_at_unix, corpus_revision, indexed_documents): (
+        String,
+        String,
+        u64,
+        String,
+        usize,
+    ) = db
+        .query_row(
+            "SELECT signature,failed,refreshed_unix,corpus_revision,indexed_documents FROM metadata",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .context("invalid search index; run documents search-refresh")?;
+    ensure!(
+        saved == signature,
+        "search index version changed; run documents search-refresh"
+    );
+    Ok((
+        corpus_revision,
+        serde_json::from_str(&failed)?,
+        indexed_at_unix,
+        indexed_documents,
+    ))
+}
+
+/// Moves the format of each source of `passage` into the `formats` table,
+/// leaving its ID in its place, and gives the cells of the passage in each
+/// format. A source continuing a value from an earlier fragment is counted
+/// with that fragment.
+fn store_formats(
+    db: &Connection,
+    known: &mut HashMap<String, i64>,
+    passage: &mut Value,
+) -> Result<BTreeMap<i64, i64>> {
+    let mut cells = BTreeMap::new();
+    for source in passage["sources"].as_array_mut().into_iter().flatten() {
+        let Some(format) = source.as_object_mut().and_then(|s| s.remove("format")) else {
+            continue;
+        };
+        let key = format.to_string();
+        let id = match known.get(&key) {
+            Some(id) => *id,
+            None => {
+                db.execute("INSERT OR IGNORE INTO formats(format) VALUES (?1)", [&key])?;
+                let id = db.query_row("SELECT id FROM formats WHERE format=?1", [&key], |r| {
+                    r.get(0)
+                })?;
+                known.insert(key, id);
+                id
+            }
+        };
+        source["format"] = json!(id);
+        *cells.entry(id).or_default() += i64::from(source["start"] == 0);
+    }
+    Ok(cells)
+}
+
+/// Takes the format IDs out of a hit's sources and, when the search filters
+/// by format, lists the sources in a `wanted` format as `formatted`: a cell
+/// by its address, a shape's text by its pointer.
+fn mark_formats(item: &mut Value, wanted: Option<&BTreeSet<i64>>) {
+    let mut formatted: Vec<Value> = vec![];
+    for source in item["sources"].as_array_mut().into_iter().flatten() {
+        let Some(id) = source.as_object_mut().and_then(|s| s.remove("format")) else {
+            continue;
+        };
+        if wanted.is_some_and(|wanted| id.as_i64().is_some_and(|id| wanted.contains(&id))) {
+            let place = match source["address"].as_str() {
+                Some(address) if !address.is_empty() => json!(address),
+                _ => source["pointer"].clone(),
+            };
+            if !formatted.contains(&place) {
+                formatted.push(place);
+            }
+        }
+    }
+    if wanted.is_some() {
+        item["formatted"] = json!(formatted);
+    }
+}
+
+/// The SQL ranking the hits of a search with a query (`query`) or by format
+/// alone, and the SQL counting them. Each ranked row starts with the columns
+/// [`Ranked::read`] reads, then the number of hits; a `paged` ranking adds
+/// the passage and its document's state and stops at the limit.
+///
+/// Parameters: with a query, the FTS expression (1), the scope (2), the
+/// wanted format IDs as JSON or null (3), the query as an identifier (4) and
+/// normalized (5) and its terms as JSON (6); by format alone, the format IDs
+/// (1) and the scope (2). A paged ranking takes the limit last. The count
+/// takes the first three with a query, the first two without.
+fn ranking_sql(query: bool, paged: bool) -> (String, String) {
+    let (page, limit) = if paged {
+        (
+            ",p.payload,d.state",
+            if query { " LIMIT ?7" } else { " LIMIT ?3" },
+        )
+    } else {
+        ("", "")
+    };
+    if query {
+        let filter = format!(
+            "FROM terms JOIN passages p ON p.id=terms.rowid WHERE terms MATCH ?1 AND {} AND (?3 IS NULL OR EXISTS (SELECT 1 FROM passage_formats f WHERE f.passage=p.id AND f.format IN (SELECT value FROM json_each(?3))))",
+            in_scope("?2")
+        );
+        let joined = if paged {
+            " JOIN passages p ON p.id=r.id JOIN documents d ON d.id=r.document"
+        } else {
+            ""
+        };
+        // Materialize BM25 while the FTS cursor is active, before window ranking.
+        // Count the same candidates for a nonempty page instead of running MATCH twice.
+        // Repeated text with the same header text is deferred, never discarded:
+        // different sheets/positions remain addressable through normal paging.
+        // Hits whose body holds no query term matched only their headings;
+        // they follow the body hits, one per heading group before the rest.
+        (
+            format!(
+                "WITH matches AS MATERIALIZED (
+            SELECT p.id,p.document,p.repetition_group,p.heading_group,
+                bm25(terms,3.0,1.0,1.5,0.15) AS cost,
+                instr(p.identifiers,?4)>0 AS exact, instr(p.body,?5)>0 AS phrase,
+                instr(p.title,?5)>0 AS heading,
+                NOT EXISTS (SELECT 1 FROM json_each(?6) WHERE instr(p.body,value)>0) AS headed
+                {filter}
+            ), ranked AS (
+                SELECT *,row_number() OVER (
+                    PARTITION BY document,repetition_group
+                    ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
+                ) AS repetition,
+                row_number() OVER (
+                    PARTITION BY headed,document,heading_group
+                    ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
+                ) AS deferral,
+                count(*) OVER (PARTITION BY headed,document,heading_group) AS group_hits
+                FROM matches
+            ) SELECT r.id,-r.cost,r.exact,r.phrase,r.heading,r.headed,r.group_hits,
+                     (SELECT count(*) FROM matches){page}
+            FROM ranked r{joined}
+            ORDER BY r.headed,CASE WHEN r.headed THEN r.deferral ELSE 1 END,
+                r.exact DESC,r.phrase DESC,r.heading DESC,r.repetition,r.cost,r.document,r.id{limit}"
+            ),
+            format!("SELECT count(*) {filter}"),
+        )
+    } else {
+        // Without a query nothing ranks the hits: they keep the order of the
+        // documents and of each document's passages.
+        let filter = format!(
+            "FROM passage_formats f JOIN passages p ON p.id=f.passage WHERE f.format IN (SELECT value FROM json_each(?1)) AND {}",
+            in_scope("?2")
+        );
+        let joined = if paged {
+            " JOIN passages p ON p.id=m.id JOIN documents d ON d.id=m.document"
+        } else {
+            ""
+        };
+        (
+            format!(
+                "WITH matches AS MATERIALIZED (SELECT DISTINCT p.id,p.document {filter})
+            SELECT m.id,NULL,0,0,0,0,0,(SELECT count(*) FROM matches){page}
+            FROM matches m{joined} ORDER BY m.document,m.id{limit}"
+            ),
+            format!("SELECT count(*) FROM (SELECT DISTINCT p.id {filter})"),
+        )
+    }
 }
 
 fn delete_document(db: &Connection, id: &str) -> Result<()> {
+    db.execute(
+        "DELETE FROM passage_formats WHERE passage IN (SELECT id FROM passages WHERE document = ?1)",
+        [id],
+    )?;
     db.execute(
         "DELETE FROM terms WHERE rowid IN (SELECT id FROM passages WHERE document = ?1)",
         [id],
@@ -103,6 +314,65 @@ impl Store {
         options: SearchOptions<'_>,
     ) -> Result<BatchSearchResult> {
         self.search_many_internal(texts, options, false, false)
+    }
+
+    /// The hash of every file the document in `dir` is made from: its own,
+    /// its original and region images, and the configuration (`config_hash`).
+    pub(super) fn document_stamp(
+        &self,
+        dir: &Path,
+        config_hash: &str,
+        buffer: &mut [u8],
+    ) -> Result<String> {
+        Ok(self.search_stamp(dir, config_hash, None, buffer)?.0)
+    }
+
+    /// Each font color, theme color, font name, size and emphasis of the text
+    /// indexed in `scope` (every document for none), with the hits a search
+    /// filtering by it alone returns and the cells in it.
+    pub fn search_formats(&self, scope: Option<&str>) -> Result<FormatInventory> {
+        if let Some(scope) = scope {
+            document_id(scope)?;
+        }
+        let path = under(&self.arp, "cache/search/index.sqlite")?;
+        let mut db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .context("search index unavailable; run documents search-refresh")?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        let tx = db.transaction()?;
+        let (_, failed, indexed_at_unix, indexed_documents) = snapshot(&tx, &signature())?;
+        let formats = tx
+            .prepare("SELECT id,format FROM formats")?
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .map(|row| {
+                let (id, format) = row?;
+                Ok((id, serde_json::from_str::<Value>(&format)?))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let rows = tx
+            .prepare(&format!(
+                "SELECT f.passage,f.format,f.cells FROM passage_formats f JOIN passages p ON p.id=f.passage WHERE {}",
+                in_scope("?1")
+            ))?
+            .query_map([scope.unwrap_or("")], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })?
+            .map(|row| {
+                let (passage, format, cells) = row?;
+                let format = formats
+                    .get(&format)
+                    .with_context(|| format!("search index lacks format {format}"))?;
+                Ok((passage, format, cells))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(FormatInventory {
+            items: format::inventory(rows),
+            failed: failed
+                .into_iter()
+                .filter(|failure| within(failure["document_id"].as_str().unwrap_or(""), scope))
+                .collect(),
+            indexed_documents,
+            indexed_at_unix,
+        })
     }
 
     /// Explicitly reconcile canonical files with the disposable index.
@@ -151,7 +421,13 @@ impl Store {
         let dictionary = dictionary(synonyms)?;
         let queries = texts
             .iter()
-            .map(|text| Query::new(text, &dictionary))
+            .map(|text| {
+                if !options.format.is_empty() && normalize(text).is_empty() {
+                    Ok(None)
+                } else {
+                    Query::new(text, &dictionary).map(Some)
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
         let path = under(&self.arp, "cache/search/index.sqlite")?;
         for suffix in ["-journal", "-wal", "-shm"] {
@@ -185,7 +461,7 @@ impl Store {
                 .optional()
                 .unwrap_or(None);
             if saved.as_deref() != Some(&signature) {
-                tx.execute_batch("DROP TABLE IF EXISTS terms; DROP TABLE IF EXISTS passages; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS metadata;")?;
+                tx.execute_batch("DROP TABLE IF EXISTS terms; DROP TABLE IF EXISTS passage_formats; DROP TABLE IF EXISTS formats; DROP TABLE IF EXISTS passages; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS metadata;")?;
                 tx.execute_batch(SQL)?;
                 tx.execute("INSERT INTO metadata VALUES (?1,'[]',0,'',0)", [&signature])?;
             }
@@ -200,11 +476,7 @@ impl Store {
         if let Some(scope) = options.document {
             document_id(scope)?;
         }
-        let selected = |id: &str| {
-            options.document.is_none_or(|scope| {
-                id == scope || id.strip_prefix(scope).is_some_and(|s| s.starts_with('/'))
-            })
-        };
+        let selected = |id: &str| within(id, options.document);
         let (corpus_revision, indexed_documents, failed, refreshed, indexed_at_unix, config_hash) =
             if refresh {
                 let base = under(&self.arp, "documents")?;
@@ -232,6 +504,7 @@ impl Store {
                 }
                 let mut failed = vec![];
                 let mut refreshed = 0;
+                let mut known_formats = HashMap::new();
                 let mut stamps = BTreeMap::new();
                 // BM25 uses corpus-wide frequencies. Refresh the same complete corpus for
                 // every scope so ranking never depends on which folder was searched first.
@@ -245,23 +518,17 @@ impl Store {
                         if cached.get(id).map(|(stamp, _)| stamp) != Some(&stamp) {
                             // Revalidate paths before reading a changed document for indexing.
                             let dir = under(&base, id)?;
-                            let inspected = self.inspect(&dir, false)?;
+                            let (inspected, _) = self.inspect_records(&dir, false, false)?;
                             self.formation(&dir)?;
-                            let (passages, state) = {
-                                let _timer = Timer::new(&mut timings.index_update);
-                                (corpus::build(self, &inspected)?, search_state(&inspected)?)
-                            };
-                            ensure!(
-                                self.search_stamp(&dir, &config_hash, None, &mut read_buffer)?
-                                    .0
-                                    == stamp,
-                                "document changed while indexing; retry search-refresh"
-                            );
                             let _timer = Timer::new(&mut timings.index_update);
+                            // Each passage is stored as it is made. A build or
+                            // check failing below leaves the rows written so far,
+                            // which the failure removes with the rest.
                             delete_document(&tx, id)?;
                             let mut repetition_groups = BTreeMap::<(String, String), i64>::new();
                             let mut heading_groups = BTreeMap::<(String, String), i64>::new();
-                            for passage in passages {
+                            corpus::build(self, &inspected, |mut passage| {
+                                let formats = store_formats(&tx, &mut known_formats, &mut passage)?;
                                 let title = normalize(string(&passage["title"])?);
                                 let body = normalize(string(&passage["text"])?);
                                 let context = normalize(&corpus::headings(&passage));
@@ -276,9 +543,24 @@ impl Store {
                                 let identifiers = identifiers(string(&passage["text"])?);
                                 tx.execute("INSERT INTO passages(document,payload,title,body,repetition_group,heading_group,identifiers) VALUES (?1,?2,?3,?4,?5,?6,?7)",
                             params![id, pack(&passage)?, title, body, repetition_group, heading_group, identifiers])?;
+                                let passage_id = tx.last_insert_rowid();
                                 tx.execute("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)",
-                            params![tx.last_insert_rowid(), words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
-                            }
+                            params![passage_id, words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
+                                for (format, cells) in formats {
+                                    tx.execute(
+                                        "INSERT INTO passage_formats(passage,format,cells) VALUES (?1,?2,?3)",
+                                        params![passage_id, format, cells],
+                                    )?;
+                                }
+                                Ok(())
+                            })?;
+                            let state = search_state(&inspected)?;
+                            ensure!(
+                                self.search_stamp(&dir, &config_hash, None, &mut read_buffer)?
+                                    .0
+                                    == stamp,
+                                "document changed while indexing; retry search-refresh"
+                            );
                             tx.execute(
                                 "INSERT INTO documents VALUES (?1,?2,?3,?4)",
                                 params![
@@ -300,6 +582,15 @@ impl Store {
                         failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
                     }
                 }
+                {
+                    // Formats no passage is in any more go, so that the table
+                    // keeps the formats of the documents, not of their history.
+                    let _timer = Timer::new(&mut timings.index_update);
+                    tx.execute(
+                        "DELETE FROM formats WHERE id NOT IN (SELECT format FROM passage_formats)",
+                        [],
+                    )?;
+                }
                 let indexed_at_unix = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
                     .as_secs();
@@ -319,18 +610,8 @@ impl Store {
                     Some(config_hash),
                 )
             } else {
-                let (saved, failed_json, indexed_at_unix, corpus_revision, indexed_documents): (String, String, u64, String, usize) = tx
-                .query_row(
-                    "SELECT signature,failed,refreshed_unix,corpus_revision,indexed_documents FROM metadata",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                )
-                .context("invalid search index; run documents search-refresh")?;
-                ensure!(
-                    saved == signature,
-                    "search index version changed; run documents search-refresh"
-                );
-                let failed: Vec<Value> = serde_json::from_str(&failed_json)?;
+                let (corpus_revision, failed, indexed_at_unix, indexed_documents) =
+                    snapshot(&tx, &signature)?;
                 (
                     corpus_revision,
                     indexed_documents,
@@ -343,22 +624,48 @@ impl Store {
         timings.integrity = integrity_started
             .elapsed()
             .saturating_sub(timings.index_update);
+        // The formats the filter keeps; the formats table holds few rows.
+        let formats = if options.format.is_empty() {
+            None
+        } else {
+            let started = Instant::now();
+            let mut wanted = BTreeSet::new();
+            let mut statement = tx.prepare("SELECT id,format FROM formats")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                if options
+                    .format
+                    .matches(&serde_json::from_str(&row.get::<_, String>(1)?)?)
+                {
+                    wanted.insert(row.get::<_, i64>(0)?);
+                }
+            }
+            timings.sql += started.elapsed();
+            Some(wanted)
+        };
+        let format_ids = formats.as_ref().map(serde_json::to_string).transpose()?;
+        let scope = options.document.unwrap_or("");
+        let rankings = under(&self.arp, "cache/search/rankings")?;
         let mut results: Vec<SearchResult> = Vec::with_capacity(texts.len());
         let mut query_cache: BTreeMap<_, usize> = BTreeMap::new();
         for (text, query) in texts.iter().zip(queries) {
             let revision_started = Instant::now();
+            let terms = query
+                .as_ref()
+                .map(|query| query.groups.clone())
+                .unwrap_or_default();
             let revision = hash(&encoded(
-                &json!({"corpus":corpus_revision,"query":text,"scope":options.document,"terms":query.groups}),
+                &json!({"corpus":corpus_revision,"query":text,"scope":options.document,"terms":terms,
+                    "format":options.format.describe()}),
             ));
             timings.integrity += revision_started.elapsed();
-            let mut sql_started = Instant::now();
-            let scope = options.document.unwrap_or("");
-            let filter = "FROM terms JOIN passages p ON p.id=terms.rowid WHERE terms MATCH ?1 AND (?2='' OR p.document=?2 OR substr(p.document,1,length(?2)+1)=?2||'/')";
-            let cache_key = (
-                query.expression.clone(),
-                query.identifier.clone(),
-                query.normalized.clone(),
-            );
+            let cache_key = query.as_ref().map(|query| {
+                (
+                    query.expression.clone(),
+                    query.identifier.clone(),
+                    query.normalized.clone(),
+                )
+            });
             if let Some(&index) = query_cache.get(&cache_key) {
                 let items = results[index].items.clone();
                 let total = results[index].total;
@@ -375,94 +682,105 @@ impl Store {
                     indexed_documents,
                     refreshed_documents: refreshed,
                     indexed_at_unix,
-                    query_terms: query.groups,
+                    query_terms: terms,
                 });
                 continue;
             }
-            // Materialize BM25 while the FTS cursor is active, before window ranking.
-            // Count the same candidates for a nonempty page instead of running MATCH twice.
-            // Repeated text with the same header text is deferred, never discarded:
-            // different sheets/positions remain addressable through normal paging.
-            // Hits whose body holds no query term matched only their headings;
-            // they follow the body hits, one per heading group before the rest.
-            let sql = format!(
-                "WITH matches AS MATERIALIZED (
-            SELECT p.id,p.document,p.repetition_group,p.heading_group,
-                bm25(terms,3.0,1.0,1.5,0.15) AS cost,
-                instr(p.identifiers,?3)>0 AS exact, instr(p.body,?4)>0 AS phrase,
-                instr(p.title,?4)>0 AS heading,
-                NOT EXISTS (SELECT 1 FROM json_each(?7) WHERE instr(p.body,value)>0) AS headed
-                {filter}
-            ), ranked AS (
-                SELECT *,row_number() OVER (
-                    PARTITION BY document,repetition_group
-                    ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
-                ) AS repetition,
-                row_number() OVER (
-                    PARTITION BY headed,document,heading_group
-                    ORDER BY exact DESC,phrase DESC,heading DESC,cost,id
-                ) AS deferral,
-                count(*) OVER (PARTITION BY headed,document,heading_group) AS group_hits
-                FROM matches
-            ) SELECT p.payload,d.state,-r.cost,r.exact,r.phrase,r.heading,
-                     (SELECT count(*) FROM matches),r.headed,r.group_hits
-            FROM ranked r JOIN passages p ON p.id=r.id JOIN documents d ON d.id=r.document
-            ORDER BY r.headed,CASE WHEN r.headed THEN r.deferral ELSE 1 END,
-                r.exact DESC,r.phrase DESC,r.heading DESC,r.repetition,r.cost,r.document,r.id
-            LIMIT ?5 OFFSET ?6"
-            );
-            let limit = options.limit.map(i64::try_from).transpose()?.unwrap_or(-1);
-            let mut statement = tx.prepare(&sql)?;
-            let mut rows = statement.query(params![
-                query.expression,
-                scope,
-                query.identifier,
-                query.normalized,
-                limit,
-                i64::try_from(options.offset)?,
-                serde_json::to_string(&query.groups.concat())?
-            ])?;
-            let mut items = vec![];
-            let mut total = None;
-            loop {
-                let row = rows.next()?;
-                timings.sql += sql_started.elapsed();
-                let Some(row) = row else { break };
-                if total.is_none() {
-                    total = Some(row.get::<_, usize>(6)?);
+            let sql_started = Instant::now();
+            let mut values: Vec<rusqlite::types::Value> = match &query {
+                Some(query) => vec![
+                    query.expression.clone().into(),
+                    scope.to_owned().into(),
+                    format_ids.clone().into(),
+                    query.identifier.clone().into(),
+                    query.normalized.clone().into(),
+                    serde_json::to_string(&query.groups.concat())?.into(),
+                ],
+                None => vec![format_ids.clone().into(), scope.to_owned().into()],
+            };
+            let counted = if query.is_some() { 3 } else { 2 };
+            let mut hits: Vec<(Ranked, Vec<u8>, String)> = vec![];
+            let total = if options.offset == 0 {
+                // The first page ranks with its passages, keeping only the
+                // hits it shows.
+                let (sql, count) = ranking_sql(query.is_some(), true);
+                values.push(options.limit.map_or(-1, |limit| limit as i64).into());
+                let mut statement = tx.prepare(&sql)?;
+                let mut rows = statement.query(rusqlite::params_from_iter(&values))?;
+                let mut total = None;
+                while let Some(row) = rows.next()? {
+                    total.get_or_insert(row.get::<_, usize>(7)?);
+                    hits.push((Ranked::read(row)?, row.get(8)?, row.get(9)?));
                 }
-                let response_started = Instant::now();
-                let mut item = unpack(&row.get::<_, Vec<u8>>(0)?)?;
-                item["state"] = serde_json::from_str(&row.get::<_, String>(1)?)?;
-                item["score"] = json!(row.get::<_, f64>(2)?);
-                item["match"] = json!({"exact_identifier":row.get::<_, bool>(3)?,"phrase_in_body":row.get::<_, bool>(4)?,"phrase_in_title":row.get::<_, bool>(5)?});
-                if row.get::<_, bool>(7)? {
-                    item["heading_only"] = json!({"group_hits":row.get::<_, usize>(8)?});
+                drop(rows);
+                drop(statement);
+                // An empty page (including a limit of 0) still needs its exact
+                // total. This path is uncommon and keeps normal pages to one MATCH.
+                match total {
+                    Some(total) => total,
+                    None => tx.query_row(
+                        &count,
+                        rusqlite::params_from_iter(&values[..counted]),
+                        |r| r.get(0),
+                    )?,
                 }
+            } else {
+                // A later page reads its hits from the ranking saved for this
+                // revision, ranking every hit and saving them only when none is.
+                let key = ranking::key(&revision, indexed_at_unix);
+                let (total, page) =
+                    match ranking::load(&rankings, &key, options.offset, options.limit) {
+                        Some(saved) => saved,
+                        None => {
+                            let (sql, _) = ranking_sql(query.is_some(), false);
+                            let ranked = tx
+                                .prepare(&sql)?
+                                .query_map(rusqlite::params_from_iter(&values), Ranked::read)?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
+                            ranking::save(&rankings, &key, &ranked);
+                            let start = options.offset.min(ranked.len());
+                            let end = options.limit.map_or(ranked.len(), |limit| {
+                                start.saturating_add(limit).min(ranked.len())
+                            });
+                            (ranked.len(), ranked[start..end].to_vec())
+                        }
+                    };
+                let ids: Vec<i64> = page.iter().map(|hit| hit.id).collect();
+                let mut passages = tx
+                    .prepare("SELECT p.id,p.payload,d.state FROM passages p JOIN documents d ON d.id=p.document WHERE p.id IN (SELECT value FROM json_each(?1))")?
+                    .query_map([serde_json::to_string(&ids)?], |r| {
+                        Ok((r.get::<_, i64>(0)?, (r.get::<_, Vec<u8>>(1)?, r.get::<_, String>(2)?)))
+                    })?
+                    .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+                for hit in page {
+                    let (payload, state) = passages.remove(&hit.id).context(
+                        "saved search ranking names a passage the index lacks; search again",
+                    )?;
+                    hits.push((hit, payload, state));
+                }
+                total
+            };
+            timings.sql += sql_started.elapsed();
+            let response_started = Instant::now();
+            let mut items = Vec::with_capacity(hits.len());
+            for (hit, payload, state) in hits {
+                let mut item = unpack(&payload)?;
+                item["state"] = serde_json::from_str(&state)?;
+                if let Some(score) = hit.score {
+                    item["score"] = json!(score);
+                    item["match"] = json!({"exact_identifier":hit.exact,"phrase_in_body":hit.phrase,"phrase_in_title":hit.heading});
+                    if let Some(group_hits) = hit.group_hits {
+                        item["heading_only"] = json!({"group_hits":group_hits});
+                    }
+                }
+                mark_formats(&mut item, formats.as_ref());
                 item["extraction_path"] = json!(format!(
                     ".arp/documents/{}/extraction.json",
                     string(&item["document_id"])?
                 ));
                 items.push(item);
-                timings.response += response_started.elapsed();
-                sql_started = Instant::now();
             }
-            drop(rows);
-            drop(statement);
-            // An empty page (including an offset beyond the end) still needs its
-            // exact total. This path is uncommon and keeps normal pages to one MATCH.
-            let total = if let Some(total) = total {
-                total
-            } else {
-                let count_started = Instant::now();
-                let total = tx.query_row(
-                    &format!("SELECT count(*) {filter}"),
-                    params![query.expression, scope],
-                    |r| r.get(0),
-                )?;
-                timings.sql += count_started.elapsed();
-                total
-            };
+            timings.response += response_started.elapsed();
             query_cache.insert(cache_key, results.len());
             results.push(SearchResult {
                 timings: SearchTimings::default(),
@@ -477,7 +795,7 @@ impl Store {
                 indexed_documents,
                 refreshed_documents: refreshed,
                 indexed_at_unix,
-                query_terms: query.groups,
+                query_terms: terms,
             });
         }
         let integrity_started = Instant::now();
@@ -504,6 +822,9 @@ impl Store {
         {
             let _timer = Timer::new(&mut timings.index_update);
             tx.commit()?;
+            if refresh {
+                ranking::clear(&rankings, &self.arp)?;
+            }
         }
         Ok(BatchSearchResult {
             timings,
@@ -514,26 +835,7 @@ impl Store {
 }
 
 fn search_state(inspected: &Inspection) -> Result<Value> {
-    let mut originals = BTreeMap::new();
-    for sheet in array(&inspected.extraction["sheets"])? {
-        for cell in array(&sheet["cells"])? {
-            originals.insert(
-                (string(&sheet["name"])?, string(&cell["address"])?),
-                &cell["value"],
-            );
-        }
-    }
-    let mut edited = !array(&inspected.mappings["operations"])?.is_empty();
-    for entry in &inspected.entries {
-        if entry.writeback().is_ok_and(|w| w == "cell")
-            && let Some(MappingTarget::Cell { sheet, cell }) = entry.target()?
-            && let Some(value) = inspected.values.get(&entry.key()?)
-        {
-            edited |= originals
-                .get(&(sheet, cell))
-                .is_some_and(|old| **old != *value);
-        }
-    }
+    let edited = inspected.content_edited;
     Ok(
         json!({"source_sha256":inspected.meta["source"]["sha256"],"source_current":inspected.source_current,
         "source_missing":inspected.source_missing,"reviewed":inspected.reviewed,"content_differs_from_extraction":edited,

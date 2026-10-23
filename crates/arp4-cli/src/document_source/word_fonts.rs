@@ -3,7 +3,7 @@
 //! the theme, and font edits written to the runs.
 use super::word::Block;
 use super::*;
-use crate::fonts::{AUTO, Color, FontEdit, RunFont, Theme};
+use crate::fonts::{AUTO, Color, Emphasis, FontEdit, RunFont, Theme};
 
 /// A style of `word/styles.xml`.
 struct Style {
@@ -162,6 +162,13 @@ impl WordStyles {
                 _ => None,
             }
         });
+        // ST_OnOff: `false` and `off` turn a property off as `0` does.
+        let toggle = |name: &str| {
+            word_child(properties, name)
+                .map(|n| !matches!(word_value(n), Some("0" | "false" | "off")))
+        };
+        let unless_none =
+            |name: &str| word_child(properties, name).map(|n| word_value(n) != Some("none"));
         RunFont {
             latin: face("asciiTheme", "ascii"),
             east_asian: face("eastAsiaTheme", "eastAsia"),
@@ -170,6 +177,16 @@ impl WordStyles {
                 .and_then(|v| v.parse::<f64>().ok())
                 .map(|half| half / 2.0),
             color,
+            emphasis: Emphasis {
+                italic: toggle("i"),
+                underline: unless_none("u"),
+                // A single or a double line.
+                strike: match (toggle("strike"), toggle("dstrike")) {
+                    (None, None) => None,
+                    (single, double) => Some(single == Some(true) || double == Some(true)),
+                },
+                highlight: unless_none("highlight"),
+            },
         }
     }
 
@@ -287,14 +304,17 @@ impl WordStyles {
         font.or(&self.style(id))
     }
 
-    /// The font of a block of Word text from the runs that show it.
-    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> Value {
+    /// The font and emphasis of a block of Word text from the runs that show it.
+    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, Emphasis) {
         let runs: Vec<_> = block
             .runs
             .iter()
             .map(|run| self.run(*run, block.place.as_ref()))
             .collect();
-        crate::fonts::element_font(&runs, &RunFont::default())
+        (
+            crate::fonts::element_font(&runs, &RunFont::default()),
+            crate::fonts::element_emphasis(&runs, &RunFont::default()),
+        )
     }
 }
 

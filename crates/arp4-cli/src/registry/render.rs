@@ -29,7 +29,8 @@ pub(super) fn md(s: &str) -> String {
         .replace('`', "\\`")
 }
 
-type SourceIndex<'a> = BTreeMap<&'a str, BTreeMap<&'a str, &'a spec::Source>>;
+/// Each snapshot's sources by ID, with the input holding them.
+type SourceIndex<'a> = BTreeMap<&'a str, BTreeMap<&'a str, (&'a spec::Source, &'a spec::Input)>>;
 
 fn source_index(inputs: &BTreeMap<String, spec::Input>) -> SourceIndex<'_> {
     inputs
@@ -40,7 +41,7 @@ fn source_index(inputs: &BTreeMap<String, spec::Input>) -> SourceIndex<'_> {
                 input
                     .sources
                     .iter()
-                    .map(|source| (source.id.as_str(), source))
+                    .map(|source| (source.id.as_str(), (source, input)))
                     .collect(),
             )
         })
@@ -312,7 +313,7 @@ pub fn render(r: &Registry, out: &Path) -> Result<()> {
                 );
             }
             for ev in &e.evidence {
-                let s = sources[ev.snapshot.as_str()][ev.span.source.as_str()];
+                let (s, _) = sources[ev.snapshot.as_str()][ev.span.source.as_str()];
                 let location = s
                     .context
                     .as_ref()
@@ -379,7 +380,7 @@ mod tests {
     fn table_fixture(count: usize) -> (Entry, BTreeMap<String, spec::Input>) {
         let sources: Vec<_> = (0..count).map(|index| json!({
             "id":format!("s{index}"),"document":"doc","location":format!("/cell/{index}"),"text":"文😀",
-            "context":{"sheet":"S","cell":format!("A{}",index+1),"row":index+1,"column":1,"merges":[],"number_format":"General"}
+            "context":{"sheet":"S","cell":format!("A{}",index+1),"row":index+1,"column":1,"number_format":"General"}
         })).collect();
         let spans: Vec<_> = (0..count)
             .map(|index| json!({"source":format!("s{index}"),"start":0,"end":2,"quote":"文😀"}))

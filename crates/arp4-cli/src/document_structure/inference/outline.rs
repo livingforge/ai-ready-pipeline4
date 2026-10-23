@@ -15,7 +15,9 @@ enum Numbering {
 
 fn numbering(c: &Cell<'_>) -> Option<Numbering> {
     if !c.string() {
-        return c.source["value"]
+        return c
+            .source
+            .value
             .as_f64()
             .is_some_and(|v| v >= 0.0 && v.fract() == 0.0)
             .then_some(Numbering::Parts(1));
@@ -323,7 +325,7 @@ fn choose<T: PartialEq>(scored: &[(T, Score)]) -> Option<(usize, Option<usize>)>
 /// The roles and header links of a hierarchy, and another reading that fits
 /// as well, when there is one.
 pub(super) struct Outline {
-    pub(super) cells: Vec<Value>,
+    pub(super) cells: Vec<ElementCell>,
     pub(super) competing: Option<String>,
 }
 
@@ -343,10 +345,7 @@ fn labels<'c, 'a>(
     let mut others = vec![];
     for x in columns {
         let column: Vec<&Cell<'_>> = cells.iter().copied().filter(|c| c.left == x).collect();
-        let texts: HashSet<String> = column
-            .iter()
-            .map(|c| c.source["value"].to_string())
-            .collect();
+        let texts: HashSet<String> = column.iter().map(|c| c.source.value.to_string()).collect();
         let numbers = column
             .iter()
             .all(|c| c.bottom == c.top && numbering(c) == Some(Numbering::Parts(1)))
@@ -362,14 +361,24 @@ fn labels<'c, 'a>(
     (key, groups, others)
 }
 
-/// The label of row `y` in a column of labels: the one merged down over it
-/// or the nearest written above it.
-fn label<'c, 'a>(column: &[&'c Cell<'a>], y: u32) -> Option<&'c Cell<'a>> {
-    column
-        .iter()
-        .copied()
-        .filter(|c| c.top <= y)
-        .max_by_key(|c| c.top)
+/// A column of labels in row order, so that the label of each of many rows
+/// is found by binary search rather than by scanning the column for every
+/// row, which grew with the rows times the column.
+struct LabelColumn<'c, 'a>(Vec<&'c Cell<'a>>);
+
+impl<'c, 'a> LabelColumn<'c, 'a> {
+    fn new(column: &[&'c Cell<'a>]) -> Self {
+        let mut cells = column.to_vec();
+        cells.sort_by_key(|c| c.top);
+        Self(cells)
+    }
+
+    /// The label of row `y`: the one merged down over it or the nearest
+    /// written above it.
+    fn at(&self, y: u32) -> Option<&'c Cell<'a>> {
+        let below = self.0.partition_point(|c| c.top <= y);
+        below.checked_sub(1).map(|last| self.0[last])
+    }
 }
 
 /// Whether a column on the left of a tree groups its rows, as the machine a
@@ -379,7 +388,8 @@ fn label<'c, 'a>(column: &[&'c Cell<'a>], y: u32) -> Option<&'c Cell<'a>> {
 /// ancestors. A label on every row, such as a kind of each name, that
 /// changes within a branch describes the names rather than groups them.
 fn grouping(column: &[&Cell<'_>], names: &[&Cell<'_>], tree: &Tree) -> bool {
-    let text = |y: u32| label(column, y).map(|c| c.text().trim());
+    let column = LabelColumn::new(column);
+    let text = |y: u32| column.at(y).map(|c| c.text().trim());
     let Some(first) = names.iter().map(|c| c.top).min() else {
         return false;
     };
@@ -825,14 +835,8 @@ pub(super) fn outline(
             })
         })
         .collect();
-    let id_for = |c: &Cell<'_>| {
-        format!(
-            "s{}-{}",
-            sheet_index + 1,
-            c.source["address"].as_str().unwrap_or("")
-        )
-    };
-    let assemble = |reading: &Reading<'_, '_>| -> Vec<Value> {
+    let id_for = |c: &Cell<'_>| format!("s{}-{}", sheet_index + 1, &*c.source.address);
+    let assemble = |reading: &Reading<'_, '_>| -> Vec<ElementCell> {
         let Reading {
             names,
             span,
@@ -873,15 +877,17 @@ pub(super) fn outline(
         let keyed = |c: &Cell<'_>| c.nonempty() && !heading(c) && key == Some(c.left);
         // A column grouping the rows labels them as an ancestor merged down over
         // them does, by the label nearest above each row.
-        let grouped = |c: &Cell<'_>| {
-            groups
-                .iter()
-                .any(|column| column.iter().any(|g| (g.top, g.left) == (c.top, c.left)))
-        };
+        let grouping_cells: HashSet<(u32, u32)> =
+            groups.iter().flatten().map(|g| (g.top, g.left)).collect();
+        let grouped = |c: &Cell<'_>| grouping_cells.contains(&(c.top, c.left));
+        let label_columns: Vec<LabelColumn<'_, '_>> = groups
+            .iter()
+            .map(|column| LabelColumn::new(column))
+            .collect();
         let labels = |y: u32| -> Vec<String> {
-            groups
+            label_columns
                 .iter()
-                .filter_map(|column| label(column, y))
+                .filter_map(|column| column.at(y))
                 .map(&id_for)
                 .collect()
         };
@@ -896,12 +902,12 @@ pub(super) fn outline(
             .iter()
             .map(|c| {
                 let headed: Vec<String> = heading_of(c).into_iter().map(&id_for).collect();
-                let (role, headers): (&str, Vec<String>) = if title(c) {
-                    ("text", vec![])
+                let (role, headers): (Role, Vec<String>) = if title(c) {
+                    (Role::Text, vec![])
                 } else if heading(c) {
-                    ("column_header", headed)
+                    (Role::ColumnHeader, headed)
                 } else if keyed(c) || grouped(c) {
-                    ("row_header", headed)
+                    (Role::RowHeader, headed)
                 } else if field(c) && c.nonempty() {
                     let owner = row_name(c.top);
                     let lineage = owner
@@ -923,12 +929,12 @@ pub(super) fn outline(
                         .chain(labels(c.top))
                         .chain(lineage.map(|p| id_for(names[p])))
                         .collect();
-                    ("data", headers)
+                    (Role::Data, headers)
                 } else if let Some(&k) = index.get(&(c.top, c.left)) {
                     let role = if tree.parents.contains(&k) || owners.contains(&k) {
-                        "row_header"
+                        Role::RowHeader
                     } else {
-                        "data"
+                        Role::Data
                     };
                     let headers = headed
                         .into_iter()
@@ -937,12 +943,17 @@ pub(super) fn outline(
                         .collect();
                     (role, headers)
                 } else if c.nonempty() {
-                    ("text", vec![])
+                    (Role::Text, vec![])
                 } else {
-                    ("data", headed.into_iter().collect())
+                    (Role::Data, headed.into_iter().collect())
                 };
-                json!({"id":id_for(c),"address":c.source["address"],"role":role,"headers":headers,
-                    "text_state":if c.nonempty() || c.source["formula"].is_string() {"read"} else {"empty"}})
+                ElementCell {
+                    address: Box::from(&*c.source.address),
+                    headers: headers.into_iter().map(String::into_boxed_str).collect(),
+                    id: id_for(c).into(),
+                    role,
+                    text_state: c.text_state(),
+                }
             })
             .collect()
     };
@@ -952,7 +963,7 @@ pub(super) fn outline(
     // names spread over headings of several depths each, as kinds in a column
     // of their own read as the deepest names, where headings of the levels
     // each head one depth.
-    let scored: Vec<(Vec<Value>, Score)> = readings
+    let scored: Vec<(Vec<ElementCell>, Score)> = readings
         .iter()
         .map(|reading| {
             let interpreted = assemble(reading);
@@ -964,12 +975,7 @@ pub(super) fn outline(
                 .collect();
             let headers: HashMap<&str, HashSet<&str>> = interpreted
                 .iter()
-                .map(|c| {
-                    let headers = c["headers"].as_array().map_or(HashSet::new(), |h| {
-                        h.iter().filter_map(Value::as_str).collect()
-                    });
-                    (c["id"].as_str().unwrap_or(""), headers)
-                })
+                .map(|c| (&*c.id, c.headers.iter().map(|h| &**h).collect()))
                 .collect();
             let cut_off = body
                 .iter()

@@ -306,7 +306,11 @@ pub(super) fn drawings(
                         .is_some_and(|t| !t.is_empty())
                 })
                 .collect();
-            object["font"] = fonts.runs_font(&runs, None, None);
+            let (font, emphasis) = fonts.runs_font(&runs, None, None);
+            object["font"] = font;
+            if let Some(style) = emphasis.style() {
+                object["style"] = style;
+            }
         }
         objects.push(object);
     }

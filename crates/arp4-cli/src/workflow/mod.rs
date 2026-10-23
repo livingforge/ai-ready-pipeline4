@@ -76,10 +76,7 @@ impl Workflow {
     fn save(&mut self) -> Result<()> {
         self.register_transport_refs()?;
         self.index_reply_modules()?;
-        let mut value = serde_json::to_value(&self.state)?;
-        self.store.save(&mut value)?;
-        self.state.previous = value["previous"].clone();
-        Ok(())
+        self.store.save(&serde_json::to_value(&self.state)?)
     }
     fn index(&self, id: &str) -> Result<usize> {
         let normalized = id.to_ascii_lowercase();
@@ -107,21 +104,9 @@ impl Workflow {
         self.short_ref(task.id.as_str())
     }
     /// Shortest prefix (at least 8 characters) unique among the current tasks.
+    /// A view naming many tasks takes [`TaskRefs`] once instead.
     fn short_ref(&self, id: &str) -> String {
-        for length in 8..id.len() {
-            let prefix = &id[..length];
-            if self
-                .state
-                .tasks
-                .iter()
-                .filter(|t| t.id.starts_with(prefix))
-                .count()
-                == 1
-            {
-                return prefix.to_owned();
-            }
-        }
-        id.to_owned()
+        TaskRefs::new(&self.state.tasks).short(id)
     }
     fn find(&self, id: &str) -> Result<&Task> {
         Ok(&self.state.tasks[self.index(id)?])
@@ -272,4 +257,70 @@ fn finding_known(finding: &Value, known: &BTreeSet<String>) -> bool {
 }
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// The IDs of the tasks in order, so that the reference of each of many tasks
+/// is found by binary search rather than by scanning every task for each.
+struct TaskRefs<'a>(Vec<&'a str>);
+
+impl<'a> TaskRefs<'a> {
+    fn new(tasks: &'a [Task]) -> Self {
+        let mut ids: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+        ids.sort_unstable();
+        Self(ids)
+    }
+
+    /// Shortest prefix of `id` (at least 8 characters) that exactly one task
+    /// has; the whole `id` when none is.
+    fn short(&self, id: &str) -> String {
+        for length in 8..id.len() {
+            let prefix = &id[..length];
+            // The IDs with the prefix follow each other from the first not
+            // before it.
+            let first = self.0.partition_point(|task| *task < prefix);
+            let has = |at: usize| self.0.get(at).is_some_and(|task| task.starts_with(prefix));
+            if has(first) && !has(first + 1) {
+                return prefix.to_owned();
+            }
+        }
+        id.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod task_ref_tests {
+    use super::*;
+
+    #[test]
+    fn task_refs_give_the_prefix_a_scan_of_every_task_gives() {
+        let ids: Vec<String> = (0..400u64)
+            .map(|i| crate::data::hash(&(i % 300).to_le_bytes()))
+            .chain([
+                "aaaaaaaaaaaa".into(),
+                "aaaaaaaaaaab".into(),
+                "aaaaaaaa".into(),
+            ])
+            .collect();
+        let refs = TaskRefs({
+            let mut sorted: Vec<&str> = ids.iter().map(String::as_str).collect();
+            sorted.sort_unstable();
+            sorted
+        });
+        let scanned = |id: &str| {
+            for length in 8..id.len() {
+                let prefix = &id[..length];
+                if ids.iter().filter(|t| t.starts_with(prefix)).count() == 1 {
+                    return prefix.to_owned();
+                }
+            }
+            id.to_owned()
+        };
+        for id in ids
+            .iter()
+            .map(String::as_str)
+            .chain(["aaaaaaaaz", "zzzzzzzzzz"])
+        {
+            assert_eq!(refs.short(id), scanned(id), "{id}");
+        }
+    }
 }

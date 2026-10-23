@@ -115,15 +115,20 @@ fn semantic_changes(
     let am = complete_mappings(value(after, "mappings.yml")?);
     let source_changed = value(before, "document.yml")?["source"]["sha256"]
         != value(after, "document.yml")?["source"]["sha256"];
-    // An empty history is not stored.
+    // An empty history is not stored. The IDs of the earlier one are looked
+    // up, not scanned for each operation of the later one.
+    let earlier: BTreeSet<&str> = a["history"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|old| old["id"].as_str())
+        .collect();
     let history: Vec<_> = b["history"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|o| {
-            !a["history"]
-                .as_array()
-                .is_some_and(|history| history.iter().any(|old| old["id"] == o["id"]))
+            !o["id"].as_str().is_some_and(|id| earlier.contains(id))
                 || (source_changed
                     && bm["operations"].as_array().is_some_and(|pending| {
                         pending.iter().any(|old| {
@@ -185,7 +190,7 @@ fn semantic_changes(
     }
     // Rows and columns are stored as their keys; place them as each version's
     // pending operations do.
-    let extraction = |files: &BTreeMap<String, DiffFile>| -> Result<Value> {
+    let extraction = |files: &BTreeMap<String, DiffFile>| -> Result<Extraction> {
         let Some(DiffFile::Text(text)) = files.get("extraction.json") else {
             bail!("extraction.json missing");
         };
@@ -193,12 +198,11 @@ fn semantic_changes(
     };
     let a = identity::placed(a, &extraction(before)?, &bm["operations"])?;
     let b = identity::placed(b, &extraction(after)?, &am["operations"])?;
-    for (page, sheet) in b["sheets"].as_object().context("layout sheets missing")? {
-        let previous = &a["sheets"][page];
-        if previous.is_null() {
+    for (page, sheet) in &b.sheets {
+        let Some(previous) = a.sheets.get(page) else {
             out.push(json!({"kind":"ambiguous_correspondence","page":page,"reason":"sheet identities differ"}));
             continue;
-        }
+        };
         for (axis, added, removed) in [
             ("columns", "column_added", "column_removed"),
             ("rows", "row_added", "row_removed"),
@@ -291,23 +295,34 @@ impl Store {
         Ok(out)
     }
     pub fn diff(&self, proposal: Option<&str>, document: Option<&str>) -> Result<Value> {
+        self.compare(proposal, document, true)
+    }
+
+    /// The differences [`Store::diff`] gives, with the semantic changes only
+    /// when `semantic`: a page of changes shows none of them.
+    pub(super) fn compare(
+        &self,
+        proposal: Option<&str>,
+        document: Option<&str>,
+        semantic: bool,
+    ) -> Result<Value> {
         let mut comparisons = vec![];
         let mut source_impact = None;
         let changed;
         let pairs = if let Some(id) = proposal {
             let p = self.proposal(id)?;
-            let after = self.inspect(&p, false)?.extraction;
+            let after = self.inspect_records(&p, false, false)?.0.extraction;
             let plan = read(&p.join("proposal.json"), Some("proposal"))?;
             let current = self.document(string(&plan["document_id"])?)?;
             changed = self.fingerprint(&current)? != plan["base"].as_str().map(str::to_owned);
-            let native_text = |e: &Value| {
+            let native_text = |e: &Extraction| {
                 e["parser"]
                     .as_str()
                     .is_some_and(|p| p.contains(";native-text/"))
             };
             // Source impact compares two text extractions; only then is the current one read.
             if current.exists() && native_text(&after) {
-                let before = self.inspect(&current, false)?.extraction;
+                let before = self.inspect_records(&current, false, false)?.0.extraction;
                 if native_text(&before) {
                     let registry_path = under(&self.arp, "registry")?;
                     let registry = if registry_path.join("registry.json").exists() {
@@ -325,7 +340,7 @@ impl Store {
             vec![("current_to_proposal", Some(current), Some(p))]
         } else {
             let current = self.document(document.context("document or proposal required")?)?;
-            self.inspect(&current, false)?;
+            self.inspect_records(&current, false, false)?;
             let relative = current
                 .strip_prefix(&self.root)?
                 .to_string_lossy()
@@ -376,16 +391,23 @@ impl Store {
             }
             let after = self.diff_files(Some(&current))?;
             let changes = compare_files(&before, &after)?;
-            let semantic = semantic_changes(&before, &after)?;
+            let mut comparison = json!({"kind":"git_to_current", "changes":changes});
+            if semantic {
+                comparison["semantic_changes"] = json!(semantic_changes(&before, &after)?);
+            }
             return Ok(
-                json!({"schema_version":"1", "implementation":"rust", "comparisons":[{"kind":"git_to_current", "changes":changes, "semantic_changes":semantic}], "authority_changed":false}),
+                json!({"schema_version":"1", "implementation":"rust", "comparisons":[comparison], "authority_changed":false}),
             );
         };
         for (label, left, right) in pairs {
             let before = self.diff_files(left.as_deref())?;
             let after = self.diff_files(right.as_deref())?;
             let changes = compare_files(&before, &after)?;
-            comparisons.push(json!({"kind":label,"changes":changes,"semantic_changes":semantic_changes(&before,&after)?}));
+            let mut comparison = json!({"kind":label,"changes":changes});
+            if semantic {
+                comparison["semantic_changes"] = json!(semantic_changes(&before, &after)?);
+            }
+            comparisons.push(comparison);
         }
         if let Some(impact) = source_impact {
             comparisons.push(impact);
