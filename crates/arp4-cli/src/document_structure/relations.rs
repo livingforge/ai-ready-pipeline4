@@ -44,9 +44,21 @@ impl Node for Element {
 /// and its context only to cells that table still holds. Returns the IDs of the
 /// elements whose parent was dropped.
 pub(super) fn prune_parents<T: Node>(elements: &mut [T]) -> Vec<String> {
+    // Only the tables named as parents are read, as each holds a set of its
+    // cell IDs.
+    let named: BTreeSet<String> = elements
+        .iter()
+        .filter_map(|e| e.members().get("parent")?["element"].as_str())
+        .map(str::to_owned)
+        .collect();
     let tables: BTreeMap<String, (Value, BTreeSet<String>)> = elements
         .iter()
-        .filter(|e| e.members()["kind"] == "table")
+        .filter(|e| {
+            e.members()["kind"] == "table"
+                && e.members()["id"]
+                    .as_str()
+                    .is_some_and(|id| named.contains(id))
+        })
         .filter_map(|e| {
             let cells = e.cell_ids()?.into_iter().map(str::to_owned).collect();
             let e = e.members();
@@ -65,7 +77,6 @@ pub(super) fn prune_parents<T: Node>(elements: &mut [T]) -> Vec<String> {
             .filter(|(sheet, _)| *sheet == element["sheet"] && parent["element"] != element["id"]);
         match found {
             Some((_, cells)) => {
-                let cells = cells.clone();
                 if let Some(context) = element["parent"]["context"].as_array_mut() {
                     context.retain(|id| id.as_str().is_some_and(|id| cells.contains(id)));
                 }

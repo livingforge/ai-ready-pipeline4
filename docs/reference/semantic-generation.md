@@ -121,9 +121,9 @@ document IDを維持して再captureします。出力のreextractだけを再�
 
 `spec workflow` は最新の返信をassembleし、機械診断・レビュー指摘から局所修正タスクを作成します。`inspect` は概要を返し、`read` で本文・context・scopeを取得します。入力はreadの全ページをpage.completeまでpage.next_commandで読み継いで取得します。子pointerは辿りません。修正返信は指定されたbaseハッシュと対象キーに対して検証し、対象外・重複変更・ローカル参照切れを拒否します。抽出を変更しない返信は、残りを忠実には直せないという回答として扱い、workflowは停止せずに残った指摘を独立レビューへ回します（`escalation.reason: repair_no_progress`）。
 
-contextには対象項目と直接の参照先・参照元が使うシートの全文を残します。見出し・単位・離れた脚注・結合情報は削りません。明示的なregion計画があれば、その出典範囲と共通文脈を使います。別文書の根拠や関係をまたぐ問題は `external_context_required` として局所修正から外し、範囲を定めたrestructureタスク（`scoped_restructure`）へ回します。
+contextには対象項目と直接の参照先・参照元が使うシートの全文を残します。見出し・単位・離れた脚注は削りません。contextの `sources.tables` には表示する表だけを、表番号 `table` を付けて載せます。`sources.rows` のtable列はこの表番号です。各表の構造（structure）と結合（merges）は、表示するセルとそれが示す見出しの分に絞ります。文書の表がいくつあっても、各contextの表は表示する分だけです。明示的なregion計画があれば、その出典範囲と共通文脈を使います。別文書の根拠や関係をまたぐ問題は `external_context_required` として局所修正から外し、範囲を定めたrestructureタスク（`scoped_restructure`）へ回します。
 
-不足するシートが必要なら、修正の代わりに `{"base":"<readが返したbase>","request_tables":[2],"reason":"別シートの注記が必要"}` を返せます。表番号はcontextのavailable_tablesから選びます。ワークフローは要求を検証して新しいタスクを作り、追加要求を修正として適用しません。
+不足するシートが必要なら、修正の代わりに `{"base":"<readが返したbase>","request_tables":[2],"reason":"別シートの注記が必要"}` を返せます。表番号はcontextのavailable_tables（表番号・シート名・出典数）から選びます。ワークフローは要求を検証して新しいタスクを作り、追加要求を修正として適用しません。
 
 ```powershell
 arp4 spec workflow --root C:/my-project status

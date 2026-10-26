@@ -244,6 +244,9 @@ impl<'de> Deserialize<'de> for Element {
     }
 }
 
+/// The most elements [`Structure::check`] checks against the schema at once.
+const STRUCTURE_PART: usize = 2048;
+
 /// A structure interpretation: its elements, and its other members
 /// (`fields`), such as its document, original, regions, visuals and review.
 #[derive(Clone, Debug, PartialEq)]
@@ -319,27 +322,43 @@ impl Structure {
 
     /// The contract checks of `self` that typed cells do not already hold:
     /// the structure with the first cell of each element against the schema,
-    /// and the texts of every cell.
+    /// and the texts of every cell. The schema relates no two elements, so it
+    /// checks at most [`STRUCTURE_PART`] of them at a time: the skeleton of a
+    /// document with an element per paragraph took as much memory as the
+    /// structure. A structure failing a part is checked whole, to name each
+    /// error.
     pub(super) fn check(&self, schema: impl Fn(&Value) -> Result<()>) -> Result<()> {
-        let mut skeleton = self.fields.clone();
-        skeleton["elements"] = Value::Array(
-            self.elements
-                .iter()
-                .map(|element| {
-                    let mut element_value = element.fields.clone();
-                    element_value["cells"] = Value::Array(
-                        element
-                            .cells
-                            .first()
-                            .map(ElementCell::to_value)
-                            .into_iter()
-                            .collect(),
-                    );
-                    element_value
-                })
-                .collect(),
-        );
-        schema(&skeleton)?;
+        let skeleton = |elements: &[Element]| {
+            let mut skeleton = self.fields.clone();
+            skeleton["elements"] = Value::Array(
+                elements
+                    .iter()
+                    .map(|element| {
+                        let mut element_value = element.fields.clone();
+                        element_value["cells"] = Value::Array(
+                            element
+                                .cells
+                                .first()
+                                .map(ElementCell::to_value)
+                                .into_iter()
+                                .collect(),
+                        );
+                        element_value
+                    })
+                    .collect(),
+            );
+            skeleton
+        };
+        let mut parts: Vec<&[Element]> = self.elements.chunks(STRUCTURE_PART).collect();
+        if parts.is_empty() {
+            parts.push(&[]);
+        }
+        if parts
+            .into_iter()
+            .any(|part| schema(&skeleton(part)).is_err())
+        {
+            schema(&skeleton(&self.elements))?;
+        }
         for element in &self.elements {
             for cell in &element.cells {
                 cell.check()?;

@@ -101,7 +101,8 @@ pub(super) fn move_corners(
 }
 
 /// Project captured DrawingML anchors with exactly the same placement rules as
-/// native writeback. Coordinates and offsets remain in their original units.
+/// native writeback. Coordinates and offsets remain in their original units;
+/// an offset of 0 is left out, as an extracted anchor leaves it out.
 pub(crate) fn project_anchor(anchor: &Value, operations: &[StructuralOperation]) -> Result<Value> {
     let mut result = anchor.clone();
     if anchor["kind"] == "absoluteAnchor" {
@@ -133,8 +134,10 @@ pub(crate) fn project_anchor(anchor: &Value, operations: &[StructuralOperation])
         if let Some(point) = point {
             for (axis, name) in ["col", "row"].iter().enumerate() {
                 result[key][name] = json!(point[axis].0);
-                if point[axis].1 {
-                    result[key][format!("{name}Off")] = json!(0);
+                if point[axis].1
+                    && let Some(marker) = result[key].as_object_mut()
+                {
+                    marker.remove(&format!("{name}Off"));
                 }
             }
         }
@@ -261,15 +264,12 @@ pub(super) fn worksheet_drawing(
     )))
 }
 
-pub(super) fn next_part(
-    parts: &BTreeMap<String, Vec<u8>>,
-    directory: &str,
-    prefix: &str,
-) -> String {
+/// The first `{directory}/{prefix}{n}.xml` for which `exists` is false.
+pub(super) fn next_part(exists: impl Fn(&str) -> bool, directory: &str, prefix: &str) -> String {
     let mut number = 1u32;
     loop {
         let candidate = format!("{directory}/{prefix}{number}.xml");
-        if !parts.contains_key(&candidate) {
+        if !exists(&candidate) {
             return candidate;
         }
         number += 1;
@@ -319,8 +319,9 @@ pub(super) fn ensure_content_type(
     append_xml_child(original, &element)
 }
 
-pub(super) fn next_media_name(
-    parts: &BTreeMap<String, Vec<u8>>,
+/// A media part name for `bytes`: one `part` gives no bytes for, or these bytes.
+pub(super) fn next_media_name<'a>(
+    part: impl Fn(&str) -> Option<&'a Vec<u8>>,
     requested: &str,
     bytes: &[u8],
 ) -> Result<String> {
@@ -339,7 +340,7 @@ pub(super) fn next_media_name(
         } else {
             format!("xl/media/{stem}-{suffix}.png")
         };
-        match parts.get(&name) {
+        match part(&name) {
             None => return Ok(name),
             Some(existing) if existing == bytes => return Ok(name),
             Some(_) => {}
@@ -364,13 +365,22 @@ pub(super) fn next_doc_pr_id(drawing: &str) -> Result<u32> {
     max.checked_add(1).context("drawing non-visual ID overflow")
 }
 
-pub(super) fn picture_name(drawing: &str, requested: Option<&str>, asset: &str) -> Result<String> {
+/// The names of the drawing objects in `drawing`, a drawing part or anchors of one.
+pub(super) fn picture_names(drawing: &str) -> Result<BTreeSet<String>> {
     let doc = xml(drawing.as_bytes())?;
-    let names: BTreeSet<String> = doc
+    Ok(doc
         .descendants()
         .filter(|node| node.has_tag_name((XDR, "cNvPr")))
         .filter_map(|node| node.attribute("name").map(str::to_owned))
-        .collect();
+        .collect())
+}
+
+/// The name of a picture added beside the drawing objects named `names`.
+pub(super) fn picture_name(
+    names: &BTreeSet<String>,
+    requested: Option<&str>,
+    asset: &str,
+) -> Result<String> {
     let default = asset
         .rsplit('/')
         .next()
@@ -452,28 +462,90 @@ pub(super) fn append_drawing_anchor(drawing: &str, anchor: &str) -> Result<Strin
     insert_before_root_children(drawing, anchor, &[(XDR, "extLst")])
 }
 
-pub(super) fn update_drawing_relationships(
-    parts: &BTreeMap<String, Vec<u8>>,
-    patched: &mut BTreeMap<String, Vec<u8>>,
-    drawing_part: &str,
-    image_part: &str,
-) -> Result<String> {
-    let rels_part = relationships_part(drawing_part)?;
-    let current = patched
-        .get(&rels_part)
-        .or_else(|| parts.get(&rels_part))
-        .map(|bytes| std::str::from_utf8(bytes))
-        .transpose()?;
-    let id = relationship_id(current)?;
-    let target = relative_target(drawing_part, image_part)?;
-    let rels = append_relationship(
-        current,
-        &id,
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
-        &target,
-    )?;
-    patched.insert(rels_part, rels.into_bytes());
-    Ok(id)
+/// The relationships of a drawing part as pictures are added to it, read
+/// once: each picture takes the first ID not in use, and the relationships
+/// added are written in after those there, in order, as one after the other.
+struct DrawingRelationships {
+    part: String,
+    current: Option<String>,
+    used: BTreeSet<String>,
+    next: u32,
+    added: String,
+}
+
+impl DrawingRelationships {
+    fn read(
+        parts: &BTreeMap<String, Vec<u8>>,
+        patched: &BTreeMap<String, Vec<u8>>,
+        drawing_part: &str,
+    ) -> Result<Self> {
+        let part = relationships_part(drawing_part)?;
+        let current = patched
+            .get(&part)
+            .or_else(|| parts.get(&part))
+            .map(|bytes| std::str::from_utf8(bytes).map(str::to_owned))
+            .transpose()?;
+        let used = match &current {
+            Some(rels) => relationship_ids(rels)?,
+            None => BTreeSet::new(),
+        };
+        Ok(Self {
+            part,
+            current,
+            used,
+            next: 1,
+            added: String::new(),
+        })
+    }
+
+    /// The ID of a relationship of the drawing to the picture `image_part`.
+    fn add(&mut self, drawing_part: &str, image_part: &str) -> Result<String> {
+        let target = relative_target(drawing_part, image_part)?;
+        // What `append_relationship` checks of the part, which pictures added
+        // do not change.
+        if self.added.is_empty()
+            && let Some(rels) = &self.current
+        {
+            ensure!(
+                xml(rels.as_bytes())?
+                    .root_element()
+                    .has_tag_name((PKG_REL, "Relationships")),
+                "invalid relationships part"
+            );
+            ensure!(rels.contains("</"), "relationships root has no closing tag");
+        }
+        let id = loop {
+            ensure!(self.next < u32::MAX, "relationship ID space exhausted");
+            let candidate = format!("rId{}", self.next);
+            self.next += 1;
+            if !self.used.contains(&candidate) {
+                break candidate;
+            }
+        };
+        self.used.insert(id.clone());
+        self.added.push_str(&format!(
+            r#"<Relationship Id="{}" Type="{}" Target="{}"/>"#,
+            xml_attr(&id),
+            xml_attr("http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"),
+            xml_attr(&target)
+        ));
+        Ok(id)
+    }
+
+    fn write(self, patched: &mut BTreeMap<String, Vec<u8>>) -> Result<()> {
+        if self.added.is_empty() {
+            return Ok(());
+        }
+        let mut output = self
+            .current
+            .unwrap_or_else(|| format!(r#"<Relationships xmlns="{PKG_REL}"></Relationships>"#));
+        let end = output
+            .rfind("</")
+            .context("relationships root has no closing tag")?;
+        output.insert_str(end, &self.added);
+        patched.insert(self.part, output.into_bytes());
+        Ok(())
+    }
 }
 
 pub(super) fn apply_image_operations(
@@ -511,11 +583,11 @@ pub(super) fn apply_image_operations(
         let drawing_part = if let Some(existing) = existing {
             existing.0
         } else {
-            let mut available = parts.clone();
-            for (name, value) in patched.iter() {
-                available.insert(name.clone(), value.clone());
-            }
-            let drawing_part = next_part(&available, "xl/drawings", "drawing");
+            let drawing_part = next_part(
+                |name| patched.contains_key(name) || parts.contains_key(name),
+                "xl/drawings",
+                "drawing",
+            );
             let drawing_rels_part = relationships_part(&drawing_part)?;
             patched.insert(drawing_part.clone(), new_drawing().into_bytes());
             patched.insert(
@@ -549,31 +621,51 @@ pub(super) fn apply_image_operations(
             .context("drawing part missing")?;
         let drawing = std::str::from_utf8(drawing_bytes)?;
         let mut drawing = rewrite_drawing_anchors(drawing, &sheet_operations)?;
-        let mut current_parts = parts.clone();
-        for (name, value) in patched.iter() {
-            current_parts.insert(name.clone(), value.clone());
-        }
         let mut doc_pr_id = next_doc_pr_id(&drawing)?;
+        // The drawing's relationships and the names of its objects, read when
+        // the first picture is added; the pictures go in after the objects
+        // there, together.
+        let mut relationships: Option<DrawingRelationships> = None;
+        let mut names: Option<BTreeSet<String>> = None;
+        let mut anchors = String::new();
         for operation in sheet_images {
             let bytes = assets
                 .get(&operation.asset)
                 .with_context(|| format!("image asset missing: {}", operation.asset))?;
             validate_image_asset(&operation.asset, bytes)?;
-            let media_part = next_media_name(&current_parts, &operation.asset, bytes)?;
-            if !current_parts.contains_key(&media_part) {
-                patched.insert(media_part.clone(), bytes.clone());
-                current_parts.insert(media_part.clone(), bytes.clone());
-            }
-            let relationship_id =
-                update_drawing_relationships(&current_parts, patched, &drawing_part, &media_part)?;
-            let name = picture_name(&drawing, operation.name.as_deref(), &operation.asset)?;
-            drawing = append_drawing_anchor(
-                &drawing,
-                &image_anchor_xml(operation, &relationship_id, doc_pr_id, &name),
+            let media_part = next_media_name(
+                |name| patched.get(name).or_else(|| parts.get(name)),
+                &operation.asset,
+                bytes,
             )?;
+            if !patched.contains_key(&media_part) && !parts.contains_key(&media_part) {
+                patched.insert(media_part.clone(), bytes.clone());
+            }
+            let relationship_id = match &mut relationships {
+                Some(relationships) => relationships,
+                None => {
+                    relationships.insert(DrawingRelationships::read(parts, patched, &drawing_part)?)
+                }
+            }
+            .add(&drawing_part, &media_part)?;
+            let names = match &mut names {
+                Some(names) => names,
+                None => names.insert(picture_names(&drawing)?),
+            };
+            let name = picture_name(names, operation.name.as_deref(), &operation.asset)?;
+            let anchor = image_anchor_xml(operation, &relationship_id, doc_pr_id, &name);
+            // The name as the drawing reads it back.
+            names.extend(picture_names(&anchor)?);
+            anchors.push_str(&anchor);
             doc_pr_id = doc_pr_id
                 .checked_add(1)
                 .context("drawing non-visual ID overflow")?;
+        }
+        if let Some(relationships) = relationships {
+            relationships.write(patched)?;
+        }
+        if !anchors.is_empty() {
+            drawing = append_drawing_anchor(&drawing, &anchors)?;
         }
         let drawing_part_name = format!("/{drawing_part}");
         patched.insert(drawing_part, drawing.into_bytes());

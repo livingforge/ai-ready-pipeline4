@@ -74,9 +74,9 @@ impl Workflow {
                         json!({"document":doc,"packet":digest}),
                     )?);
                 } else {
+                    let scoper = extraction::Scoper::new(&packet, &self.state.modules);
                     for (index, region) in regions.iter().enumerate() {
-                        let scoped =
-                            extraction::scoped_packet(&packet, region, &self.state.modules)?;
+                        let scoped = scoper.scoped(region)?;
                         let text = extraction::task_text(&scoped);
                         tasks.push(self.task(Stage::Extract,text.as_bytes(),json!({"document":doc,"packet":self.store.put_json(&scoped)?,"partition":index}))?);
                     }
@@ -226,9 +226,15 @@ impl Workflow {
         let assembled = root.join("assembled");
         let mut tasks = Vec::new();
         // Reviewers see what repair could not resolve, limited to their document.
-        let escalated_context = |doc: Option<&String>| -> Result<Value> {
+        // Every concern is gathered once and then sorted out by document.
+        let mut concerns = None;
+        let mut escalated_context = |doc: Option<&String>| -> Result<Value> {
+            if concerns.is_none() {
+                concerns = Some(self.concern_rows(open)?);
+            }
+            let concerns = Self::concerns_of(concerns.as_ref().unwrap(), doc.map(String::as_str));
             let mut context = json!({"escalation":{"reason":self.state.escalation["reason"],
-                "guidance":ESCALATION_GUIDANCE,"concerns":self.concerns(doc.map(String::as_str), open)?}});
+                "guidance":ESCALATION_GUIDANCE,"concerns":concerns}});
             if !self.reference_paths().is_empty() {
                 context["references"] =
                     json!({"guidance":REFERENCE_GUIDANCE,"documents":self.references()?});
@@ -239,6 +245,8 @@ impl Workflow {
         let reviewed_before = self.state.reviewed_replies == self.state.replies;
         let mut unreviewed = false;
         let mut units: Vec<(Option<String>, Option<String>, Option<Value>)> = Vec::new();
+        // The input's sources of each document, gathered when first needed.
+        let mut by_document: Option<BTreeMap<&str, Vec<&Value>>> = None;
         for doc in documents {
             if !partitions[doc].is_empty() {
                 units.extend(
@@ -258,10 +266,20 @@ impl Workflow {
                 );
                 continue;
             }
-            let source_rows: Vec<_> = arr(&inputs["sources"])?
-                .iter()
-                .filter(|v| v["document"] == *doc)
-                .collect();
+            if by_document.is_none() {
+                let mut sources = BTreeMap::<&str, Vec<&Value>>::new();
+                for source in arr(&inputs["sources"])? {
+                    if let Some(document) = source["document"].as_str() {
+                        sources.entry(document).or_default().push(source);
+                    }
+                }
+                by_document = Some(sources);
+            }
+            let source_rows: &[&Value] = by_document
+                .as_ref()
+                .unwrap()
+                .get(doc.as_str())
+                .map_or(&[], Vec::as_slice);
             let source_bytes: usize = source_rows
                 .iter()
                 .filter_map(|v| v["text"].as_str())
@@ -276,9 +294,8 @@ impl Workflow {
                 units.push((Some(doc.clone()), None, None));
                 continue;
             }
-            let sheets: BTreeSet<Option<String>> = arr(&inputs["sources"])?
+            let sheets: BTreeSet<Option<String>> = source_rows
                 .iter()
-                .filter(|v| v["document"] == *doc)
                 .map(|v| v["context"]["sheet"].as_str().map(str::to_owned))
                 .collect();
             if sheets.contains(&None) {
@@ -295,12 +312,29 @@ impl Workflow {
         if let Some(plan) = &self.state.review_plan {
             plan.validate(typed_input)?;
             let mut selected = Vec::new();
+            // The sources of each document in packet order, and the positions of
+            // those on each sheet, made once for all its units.
+            type Rows<'a> = (
+                Vec<&'a crate::specifications::Source>,
+                BTreeMap<&'a str, Vec<usize>>,
+            );
+            let mut document_rows = BTreeMap::<String, Rows>::new();
             for (doc, sheet, region) in units {
                 let Some(document) = doc.as_deref() else {
                     selected.push((doc, sheet, region));
                     continue;
                 };
-                let rows = crate::semantic::sources(typed_input, Some(document))?;
+                if !document_rows.contains_key(document) {
+                    let rows = crate::semantic::sources(typed_input, Some(document))?;
+                    let mut sheets = BTreeMap::<&str, Vec<usize>>::new();
+                    for (i, source) in rows.iter().enumerate() {
+                        if let Some(context) = &source.context {
+                            sheets.entry(&context.sheet).or_default().push(i);
+                        }
+                    }
+                    document_rows.insert(document.to_owned(), (rows, sheets));
+                }
+                let (rows, sheets) = &document_rows[document];
                 let mut targets = Vec::new();
                 let mut context: BTreeSet<String> = region
                     .as_ref()
@@ -309,17 +343,32 @@ impl Workflow {
                     .flatten()
                     .filter_map(|s| s.as_str().map(str::to_owned))
                     .collect();
-                for (i, source) in rows.iter().enumerate() {
+                // The positions of a region's sources: those of the aliases it
+                // lists, `s<n>` naming position n - 1. Those on the sheet of a
+                // sheet's unit, and every source otherwise.
+                let positions: Vec<usize> = match (&region, &sheet) {
+                    (None, Some(sheet)) => sheets.get(sheet.as_str()).cloned().unwrap_or_default(),
+                    (None, None) => (0..rows.len()).collect(),
+                    (Some(r), _) => r["sources"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|alias| {
+                            let alias = alias.as_str()?;
+                            let n: usize = alias.strip_prefix('s')?.parse().ok()?;
+                            (n >= 1 && n <= rows.len() && alias == format!("s{n}")).then(|| n - 1)
+                        })
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                };
+                for i in positions {
+                    let source = rows[i];
                     let alias = format!("s{}", i + 1);
-                    let in_region = region.as_ref().is_none_or(|r| {
-                        r["sources"]
-                            .as_array()
-                            .is_some_and(|a| a.contains(&json!(alias)))
-                    });
                     let in_sheet = sheet
                         .as_ref()
                         .is_none_or(|s| source.context.as_ref().is_some_and(|c| &c.sheet == s));
-                    if !in_region || !in_sheet {
+                    if !in_sheet {
                         continue;
                     }
                     if plan.omitted_sources.contains_key(&source.id) {
@@ -350,6 +399,8 @@ impl Workflow {
         // it gathers every finding, which adding the review tasks leaves alone.
         let mut contexts: BTreeMap<Option<String>, Value> = BTreeMap::new();
         let mut review_paths = Vec::new();
+        // The signatures of the findings already known, read once for every unit.
+        let mut known: Option<BTreeSet<String>> = None;
         for (i, (doc, sheet, region)) in units.iter().enumerate() {
             let scope = region
                 .as_ref()
@@ -423,11 +474,16 @@ impl Workflow {
                     Ok::<_, anyhow::Error>((digest.clone(), self.store.json(s(digest)?)?))
                 })
                 .transpose()?;
-            let known: BTreeSet<String> = arr(findings)?
-                .iter()
-                .map(finding_signature)
-                .chain(self.unresolved()?.iter().map(Self::unresolved_signature))
-                .collect();
+            if known.is_none() {
+                known = Some(
+                    arr(findings)?
+                        .iter()
+                        .map(finding_signature)
+                        .chain(self.unresolved()?.iter().map(Self::unresolved_signature))
+                        .collect(),
+                );
+            }
+            let known = known.as_ref().unwrap();
             match cached {
                 Some((digest, review))
                     if arr(&review["findings"])?
@@ -444,7 +500,7 @@ impl Workflow {
                 Some((_, review))
                     if arr(&review["findings"])?
                         .iter()
-                        .all(|f| finding_known(f, &known)) =>
+                        .all(|f| finding_known(f, known)) =>
                 {
                     unreviewed = true;
                 }

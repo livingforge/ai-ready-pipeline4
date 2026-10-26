@@ -13,6 +13,7 @@ use std::{
 };
 
 mod yaml;
+pub(crate) use yaml::{Node as YamlNode, Reader as YamlReader};
 
 /// Replaces non-overlapping `edits` of `original` in one pass. Replacing each
 /// range in place would move the rest of a large part for every edit.
@@ -313,6 +314,9 @@ pub enum Lazy<'a> {
     /// An object, its members in any order.
     Object(Vec<(&'a str, Lazy<'a>)>),
     Items(Box<dyn Iterator<Item = Result<Lazy<'a>>> + 'a>),
+    /// A value the line encodings write whole on one line, as a list short
+    /// enough to read at a glance.
+    Line(Value),
 }
 
 impl<'a> Lazy<'a> {
@@ -330,7 +334,7 @@ impl<'a> Lazy<'a> {
     /// The value `self` stands for, made whole.
     pub fn into_value(self) -> Result<Value> {
         Ok(match self {
-            Lazy::Value(value) => value,
+            Lazy::Value(value) | Lazy::Line(value) => value,
             Lazy::Borrowed(value) => value.clone(),
             Lazy::Object(members) => Value::Object(
                 members
@@ -363,7 +367,7 @@ impl serde::Serialize for Once<'_> {
             .take()
             .ok_or_else(|| S::Error::custom("a lazy value is written once"))?;
         match lazy {
-            Lazy::Value(value) => value.serialize(serializer),
+            Lazy::Value(value) | Lazy::Line(value) => value.serialize(serializer),
             Lazy::Borrowed(value) => value.serialize(serializer),
             Lazy::Object(mut members) => {
                 members.sort_by(|a, b| a.0.cmp(b.0));
@@ -386,11 +390,13 @@ impl serde::Serialize for Once<'_> {
 }
 
 /// [`render`] of `value`, the items of an array held by a member named in
-/// `inline` on one line of their own, as [`encoded_lines`] writes them.
+/// `inline` on one line of their own, as [`encoded_lines`] writes them, and a
+/// [`Lazy::Line`] whole on one line.
 fn render_lazy(value: Lazy<'_>, depth: usize, inline: &[&str], out: &mut impl Sink) -> Result<()> {
     match value {
         Lazy::Value(value) => render(&value, depth, inline, out),
         Lazy::Borrowed(value) => render(value, depth, inline, out),
+        Lazy::Line(value) => render_line(&value, out),
         Lazy::Object(mut members) => {
             if members.is_empty() {
                 out.put("{}");
@@ -606,6 +612,16 @@ impl<'de> Deserialize<'de> for Strict {
     }
 }
 
+/// The members of a mapping besides a list, and the key and value of each
+/// item of the list ([`parse_listing`]).
+pub type Listing = (serde_json::Map<String, Value>, Vec<(String, Value)>);
+
+/// The YAML document `text`, a mapping whose member `list` is a list of
+/// mappings of one member each, as its other members and the key and value of
+/// each item of `list`; none for any other document or one [`parse`] refuses.
+pub fn parse_listing(text: &str, list: &str) -> Option<Listing> {
+    yaml::parse_listing(text, list)
+}
 pub fn parse(text: &str, is_json: bool) -> Result<Value> {
     if is_json {
         Ok(serde_json::from_str::<Strict>(text)?.0)
@@ -625,7 +641,8 @@ fn validator(name: &str) -> Result<std::sync::Arc<jsonschema::Validator>> {
     if let Some(validator) = validators.get(name) {
         return Ok(validator.clone());
     }
-    let validator = std::sync::Arc::new(jsonschema::validator_for(&crate::schemas()[name])?);
+    let schema = crate::schema(name).unwrap_or(Value::Null);
+    let validator = std::sync::Arc::new(jsonschema::validator_for(&schema)?);
     validators.insert(name.to_owned(), validator.clone());
     Ok(validator)
 }
@@ -660,10 +677,17 @@ pub fn write(path: &Path, value: &Value) -> Result<()> {
 /// [`write`] of the value `lazy` stands for, made only as it is written: a
 /// large output is not held whole.
 pub fn write_lazy(path: &Path, lazy: Lazy<'_>) -> Result<()> {
+    write_lazy_lines(path, lazy, &[])
+}
+
+/// [`write_lazy`], a JSON file with each item of an array held by a member
+/// named in `inline` on one line of its own, as [`encoded_lazy_lines`] writes
+/// it.
+pub fn write_lazy_lines(path: &Path, lazy: Lazy<'_>, inline: &[&str]) -> Result<()> {
     replace_streamed(path, |out| {
         if path.extension().is_some_and(|s| s == "json") {
             let mut sink = WriteSink { out, error: None };
-            render_lazy(lazy, 0, &[], &mut sink)?;
+            render_lazy(lazy, 0, inline, &mut sink)?;
             sink.put("\n");
             if let Some(error) = sink.error {
                 return Err(error.into());
@@ -674,13 +698,49 @@ pub fn write_lazy(path: &Path, lazy: Lazy<'_>) -> Result<()> {
         Ok(())
     })
 }
+/// `items` in as much room as they take, for a list held long after it is
+/// made. `Vec::shrink_to_fit` leaves a list in its room when the list takes
+/// half of it or more, as the allocator keeps a block shrunk by no more than
+/// half where it is: the items are moved to room of their own instead.
+pub fn exact<T>(mut items: Vec<T>) -> Vec<T> {
+    if items.capacity() == items.len() {
+        return items;
+    }
+    let mut exact = Vec::with_capacity(items.len());
+    exact.append(&mut items);
+    exact
+}
+/// [`exact`] of a text.
+pub fn exact_text(text: String) -> String {
+    if text.capacity() == text.len() {
+        return text;
+    }
+    let mut exact = String::with_capacity(text.len());
+    exact.push_str(&text);
+    exact
+}
 /// [`replace`] with the bytes `fill` writes, buffered, rather than bytes
 /// held whole first.
 pub fn replace_streamed(
     path: &Path,
     fill: impl FnOnce(&mut std::io::BufWriter<&mut fs::File>) -> Result<()>,
 ) -> Result<()> {
-    replace_with(path, true, |file| {
+    replace_buffered(path, true, fill)
+}
+/// [`replace_cache`] with the bytes `fill` writes, buffered, as
+/// [`replace_streamed`] writes them.
+pub fn replace_cache_streamed(
+    path: &Path,
+    fill: impl FnOnce(&mut std::io::BufWriter<&mut fs::File>) -> Result<()>,
+) -> Result<()> {
+    replace_buffered(path, false, fill)
+}
+fn replace_buffered(
+    path: &Path,
+    durable: bool,
+    fill: impl FnOnce(&mut std::io::BufWriter<&mut fs::File>) -> Result<()>,
+) -> Result<()> {
+    replace_with(path, durable, |file| {
         let mut out = std::io::BufWriter::with_capacity(1 << 16, file);
         fill(&mut out)?;
         out.flush()?;
@@ -902,10 +962,63 @@ pub fn rejection(error: &anyhow::Error) -> Option<&Value> {
         .map(|r| &r.0)
 }
 
+/// A text that JSON values equal by `==` share and no unequal value has, so
+/// that a set or map can look values up instead of comparing with each one.
+/// Object keys are written sorted, and both zeros of a float as one.
+pub fn value_key(value: &Value) -> String {
+    fn write(value: &Value, key: &mut String) {
+        match value {
+            Value::Null => key.push('n'),
+            Value::Bool(true) => key.push('t'),
+            Value::Bool(false) => key.push('f'),
+            Value::Number(number) => {
+                if let Some(n) = number.as_u64() {
+                    key.push_str(&format!("u{n};"));
+                } else if let Some(n) = number.as_i64() {
+                    key.push_str(&format!("i{n};"));
+                } else {
+                    // `-0.0 == 0.0`; any other floats are equal only when the same.
+                    let n = number.as_f64().unwrap_or(f64::NAN);
+                    let n = if n == 0.0 { 0.0 } else { n };
+                    key.push_str(&format!("d{n:?};"));
+                }
+            }
+            Value::String(text) => {
+                key.push('s');
+                key.push_str(&Value::String(text.clone()).to_string());
+            }
+            Value::Array(values) => {
+                key.push('[');
+                for value in values {
+                    write(value, key);
+                }
+                key.push(']');
+            }
+            Value::Object(fields) => {
+                let mut names: Vec<&String> = fields.keys().collect();
+                names.sort_unstable();
+                key.push('{');
+                for name in names {
+                    key.push_str(&Value::String(name.clone()).to_string());
+                    write(&fields[name], key);
+                }
+                key.push('}');
+            }
+        }
+    }
+    let mut key = String::new();
+    write(value, &mut key);
+    key
+}
+
 /// Group `"<document>: {finding JSON}"` warnings so a finding repeated across
 /// documents is shown once with its document list. Unparseable entries keep their text.
 pub fn grouped_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Value {
     let mut groups: Vec<Value> = Vec::new();
+    // The group of each finding by its fields other than `documents`, and the
+    // documents each group lists, looked up rather than compared with every group.
+    let mut by_finding: std::collections::HashMap<String, usize> = Default::default();
+    let mut listed: Vec<std::collections::HashSet<&str>> = Vec::new();
     for warning in warnings {
         let parsed = warning.split_once(": ").and_then(|(document, rest)| {
             serde_json::from_str::<Value>(rest)
@@ -915,30 +1028,28 @@ pub fn grouped_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Valu
         });
         let Some((document, finding)) = parsed else {
             groups.push(json!({"message":warning}));
+            listed.push(Default::default());
             continue;
         };
-        let existing = groups.iter_mut().find(|g| {
-            g["documents"].is_array()
-                && g.as_object().unwrap().iter().all(|(k, v)| {
-                    k == "documents" || finding.get(k).is_some_and(|other| other == v)
-                })
-                && finding
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .all(|k| g.get(k).is_some())
-        });
-        match existing {
-            Some(group) => {
-                let documents = group["documents"].as_array_mut().unwrap();
-                if !documents.iter().any(|d| d == document) {
-                    documents.push(json!(document));
+        // A group matches a finding with the same fields besides `documents`.
+        let mut fields = finding.clone();
+        fields.as_object_mut().unwrap().remove("documents");
+        match by_finding.entry(value_key(&fields)) {
+            std::collections::hash_map::Entry::Occupied(group) => {
+                let index = *group.get();
+                if listed[index].insert(document) {
+                    groups[index]["documents"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!(document));
                 }
             }
-            None => {
+            std::collections::hash_map::Entry::Vacant(group) => {
+                group.insert(groups.len());
                 let mut group = finding;
                 group["documents"] = json!([document]);
                 groups.push(group);
+                listed.push(std::collections::HashSet::from([document]));
             }
         }
     }
@@ -1173,6 +1284,121 @@ mod tests {
             ])
         );
         assert_eq!(grouped_warnings([]), json!([]));
+    }
+
+    #[test]
+    fn value_keys_are_shared_exactly_by_equal_values() {
+        let values = [
+            json!(null),
+            json!(true),
+            json!(false),
+            json!(0),
+            json!(0.0),
+            json!(-0.0),
+            json!(-1),
+            json!(1),
+            json!(1.0),
+            json!(u64::MAX),
+            json!(""),
+            json!("0"),
+            json!("u0;"),
+            json!([]),
+            json!([[]]),
+            json!(["a", "b"]),
+            json!(["ab"]),
+            json!({}),
+            json!({"a":1,"b":[2]}),
+            json!({"b":[2],"a":1}),
+            json!({"a":"1"}),
+            json!({"ab":null}),
+            json!({"a":{"b":null}}),
+        ];
+        for a in &values {
+            for b in &values {
+                assert_eq!(a == b, value_key(a) == value_key(b), "{a} {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_warnings_match_comparing_each_group() {
+        // The grouping as it was made before findings were looked up by their
+        // fields: each finding compared with every group. Kept as the reference.
+        fn scanned(warnings: &[&str]) -> Value {
+            let mut groups: Vec<Value> = Vec::new();
+            for warning in warnings {
+                let parsed = warning.split_once(": ").and_then(|(document, rest)| {
+                    serde_json::from_str::<Value>(rest)
+                        .ok()
+                        .filter(Value::is_object)
+                        .map(|finding| (document, finding))
+                });
+                let Some((document, finding)) = parsed else {
+                    groups.push(json!({"message":warning}));
+                    continue;
+                };
+                let existing = groups.iter_mut().find(|g| {
+                    g["documents"].is_array()
+                        && g.as_object().unwrap().iter().all(|(k, v)| {
+                            k == "documents" || finding.get(k).is_some_and(|other| other == v)
+                        })
+                        && finding
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .all(|k| g.get(k).is_some())
+                });
+                match existing {
+                    Some(group) => {
+                        let documents = group["documents"].as_array_mut().unwrap();
+                        if !documents.iter().any(|d| d == document) {
+                            documents.push(json!(document));
+                        }
+                    }
+                    None => {
+                        let mut group = finding;
+                        group["documents"] = json!([document]);
+                        groups.push(group);
+                    }
+                }
+            }
+            json!(groups)
+        }
+        let findings = [
+            r#"{"code":"R1","level":"warning"}"#,
+            r#"{"level":"warning","code":"R1"}"#,
+            r#"{"code":"R1"}"#,
+            r#"{"code":"R1","level":"warning","documents":["x"]}"#,
+            r#"{"code":"R1","level":"warning","documents":"y"}"#,
+            r#"{"code":"R2","value":0.0}"#,
+            r#"{"code":"R2","value":-0.0}"#,
+            r#"{"code":"R2","value":0}"#,
+            r#"{"message":"m"}"#,
+            r#"["not","an","object"]"#,
+            "not json",
+        ];
+        let mut warnings = Vec::new();
+        for (i, finding) in findings.iter().enumerate() {
+            for document in ["a", "b", "a: c"] {
+                warnings.push(format!("{document}: {finding}"));
+                if i % 3 == 0 {
+                    warnings.push(format!(
+                        "{document}: {}",
+                        findings[(i * 7 + 3) % findings.len()]
+                    ));
+                }
+            }
+        }
+        warnings.push("plain".into());
+        let warnings: Vec<&str> = warnings.iter().map(String::as_str).collect();
+        for start in 0..warnings.len() {
+            let rotated: Vec<&str> = warnings[start..]
+                .iter()
+                .chain(&warnings[..start])
+                .copied()
+                .collect();
+            assert_eq!(grouped_warnings(rotated.iter().copied()), scanned(&rotated));
+        }
     }
 
     #[test]

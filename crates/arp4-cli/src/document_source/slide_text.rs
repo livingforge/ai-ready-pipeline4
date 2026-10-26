@@ -510,12 +510,40 @@ fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
 }
 
 impl SlideLayout<'_, '_> {
+    /// The rows of the paragraphs of each shape (`p:sp`), by the `cNvPr`
+    /// ID of the shape. Table rows belong to their graphic frame's table and
+    /// are left out.
+    pub(super) fn shape_rows(&self) -> BTreeMap<String, Vec<usize>> {
+        let mut rows: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (&row, node) in &self.rows {
+            if !drawing(*node, "p") {
+                continue;
+            }
+            let Some(id) = node
+                .ancestors()
+                .find(|n| n.has_tag_name((PRESENTATION, "sp")))
+                .and_then(|shape| {
+                    shape
+                        .children()
+                        .find(|n| n.has_tag_name((PRESENTATION, "nvSpPr")))?
+                        .children()
+                        .find(|n| n.has_tag_name((PRESENTATION, "cNvPr")))?
+                        .attribute("id")
+                })
+            else {
+                continue;
+            };
+            rows.entry(id.to_owned()).or_default().push(row);
+        }
+        rows
+    }
+
     pub fn sheet(
         &self,
         name: &str,
         part: &str,
         fonts: &super::slide_fonts::SlideFonts,
-    ) -> crate::extraction::Sheet {
+    ) -> Result<crate::extraction::Sheet> {
         blocks_sheet(
             name,
             part,
@@ -805,17 +833,20 @@ mod tests {
             ]
             .map(|(a, t)| (a.to_owned(), t.to_owned()))
         );
+        let parts = BTreeMap::new();
+        let texts = super::super::slide_fonts::PresentationTexts::new(&parts);
         let fonts = super::super::slide_fonts::SlideFonts::new(
-            &BTreeMap::new(),
+            &parts,
             "ppt/slides/slide1.xml",
             &document,
+            &super::super::slide_fonts::PresentationParts::new(&texts),
         )
         .unwrap();
-        let sheet = crate::extraction::sheet_view(&layout.sheet(
-            "slide-1",
-            "ppt/slides/slide1.xml",
-            &fonts,
-        ))
+        let sheet = crate::extraction::sheet_view(
+            &layout
+                .sheet("slide-1", "ppt/slides/slide1.xml", &fonts)
+                .unwrap(),
+        )
         .unwrap();
         assert_eq!(sheet["merges"], json!(["A5:B5"]));
         assert_eq!(

@@ -1498,19 +1498,29 @@ unsafe extern "C" {
 /// milliseconds freed memory is kept before it goes back to the system.
 const PURGE_DELAY: i32 = 15;
 
-/// Freed memory goes back to the system after 50 ms rather than mimalloc's
-/// 1000: a command reading a large document frees much of what each step
-/// made, and kept it while the next step made more, which raised its peak
-/// by a sixth to a third for no gain in time. MIMALLOC_PURGE_DELAY, when set,
-/// is left to decide.
-fn release_freed_memory_sooner() {
+/// Freed memory goes back to the system after 1 ms rather than mimalloc's
+/// 1000 ms: a command reading a large document frees much of what each step
+/// made, and kept it while the next step made more. Kept for 50 ms, it still
+/// raised the peak of importing a 16,000-row sheet and of its status by a
+/// sixth and a seventh, for a twentieth of the time of an import. Not given
+/// back at once (0 ms): mimalloc then decommits each freed area as it is
+/// freed, and where the cells of a sheet are made and freed across the edge
+/// of an area it decommitted and committed it again and again, which
+/// made one import in thirty to sixty of a sheet with drawings take twice
+/// its time (docs/records/allocator-purge-20261025.md).
+/// MIMALLOC_PURGE_DELAY, when set, is left to decide.
+fn release_freed_memory_soon() {
     if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
-        unsafe { mi_option_set(PURGE_DELAY, 50) };
+        unsafe { mi_option_set(PURGE_DELAY, RELEASE_AFTER_MS) };
     }
 }
 
+/// The milliseconds freed memory is kept, which mimalloc multiplies by ten
+/// for the areas it reserves.
+const RELEASE_AFTER_MS: std::ffi::c_long = 1;
+
 fn main() -> std::process::ExitCode {
-    release_freed_memory_sooner();
+    release_freed_memory_soon();
     #[cfg(windows)]
     if std::env::args_os()
         .nth(1)
@@ -1600,12 +1610,12 @@ mod tests {
     /// The option number names the purge delay: unset, it is mimalloc v3's
     /// 1000 ms, and setting it reads back.
     #[test]
-    fn the_purge_delay_option_is_the_one_released_sooner() {
+    fn the_purge_delay_option_is_the_one_released_at_once() {
         if std::env::var_os("MIMALLOC_PURGE_DELAY").is_some() {
             return;
         }
         assert_eq!(unsafe { mi_option_get(PURGE_DELAY) }, 1000);
-        release_freed_memory_sooner();
-        assert_eq!(unsafe { mi_option_get(PURGE_DELAY) }, 50);
+        release_freed_memory_soon();
+        assert_eq!(unsafe { mi_option_get(PURGE_DELAY) }, RELEASE_AFTER_MS);
     }
 }

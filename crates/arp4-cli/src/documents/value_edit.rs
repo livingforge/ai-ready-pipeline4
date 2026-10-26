@@ -181,7 +181,7 @@ impl Store {
         let mut positioned: HashMap<(&str, &str, &str, &str), usize> = HashMap::new();
         let mut targeted: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
         let mut shaped: HashMap<(&str, &str), usize> = HashMap::new();
-        for (index, entry) in inspected.entries.iter().enumerate() {
+        for (index, entry) in inspected.entries().enumerate() {
             if let Some(position) = entry.position()? {
                 positioned.insert(
                     (entry.page()?, entry.block()?, position.row, position.column),
@@ -203,10 +203,13 @@ impl Store {
             .iter()
             .flat_map(|sheet| {
                 let name = sheet["name"].as_str().unwrap_or_default();
-                sheet.cells.iter().map(move |cell| (name, &*cell.address))
+                sheet.cells.iter().map(move |cell| (name, cell.address()))
             })
             .collect();
         let mut pages: BTreeMap<String, Value> = BTreeMap::new();
+        // The blocks of the pages whose values were cleared, which leave out
+        // the rows holding no value once all edits are made.
+        let mut emptied = BTreeSet::new();
         let mut written = BTreeSet::new();
         let mut new_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
         // The edits changing their value or font, the ones mappings records.
@@ -222,7 +225,7 @@ impl Store {
             let Some(&page) = pages_by_name.get(sheet) else {
                 return Err(Rejection(json!({"code":"sheet_not_found","message":format!("the document has no sheet or page {sheet}"),"edit":index,"sheets":pages_by_name.keys().collect::<Vec<_>>()})).into());
             };
-            let layout_sheet = &current.sheet(page)?.fields;
+            let layout_sheet = current.sheet(page)?;
             let lookup = lookups
                 .entry(page)
                 .or_insert_with(|| identity::SheetLookup::new(layout_sheet, page));
@@ -239,7 +242,7 @@ impl Store {
                 entry,
             };
             let from_entry = |index: usize| -> Result<Slot> {
-                let entry = &inspected.entries[index];
+                let entry = inspected.entry(index);
                 let position = entry.position()?.context("entry without position")?;
                 Ok(slot_of(
                     entry.block()?,
@@ -254,7 +257,8 @@ impl Store {
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 let editable = found.iter().copied().find(|&i| {
-                    inspected.entries[i]
+                    inspected
+                        .entry(i)
                         .writeback()
                         .is_ok_and(|w| matches!(w, "cell" | "formula"))
                 });
@@ -265,7 +269,7 @@ impl Store {
                             "not_editable",
                             format!(
                                 "{sheet}!{cell} is not written back: {}",
-                                inspected.entries[entry].reason()?
+                                inspected.entry(entry).reason()?
                             ),
                         ));
                     }
@@ -358,8 +362,8 @@ impl Store {
                     "another edit of the request names the same value; give its value and its font in one edit".into(),
                 ));
             }
-            let entry = slot.entry.map(|index| &inspected.entries[index]);
-            let writeback = entry.map(Entry::writeback).transpose()?;
+            let entry = slot.entry.map(|index| inspected.entry(index));
+            let writeback = entry.map(EntryRef::writeback).transpose()?;
             if let (Some(entry), Some("excluded" | "pending")) = (entry, writeback) {
                 return Err(refuse(
                     "not_editable",
@@ -407,7 +411,7 @@ impl Store {
                 }
                 // A cell holding no value in the original, or one an operation
                 // inserts, is left empty again when its value is cleared.
-                let holds_none = match entry.map(Entry::target).transpose()?.flatten() {
+                let holds_none = match entry.map(EntryRef::target).transpose()?.flatten() {
                     None => true,
                     Some(MappingTarget::Cell { sheet, cell }) => {
                         !extracted.contains(&(sheet, cell))
@@ -426,12 +430,7 @@ impl Store {
                             values.remove(&slot.column);
                         }
                     }
-                    if let Some(rows) = content
-                        .pointer_mut(&format!("/blocks/{}/rows", slot.block))
-                        .and_then(Value::as_object_mut)
-                    {
-                        rows.retain(|_, values| values.as_object().is_none_or(|v| !v.is_empty()));
-                    }
+                    emptied.insert((slot.file.clone(), slot.block.clone()));
                 } else {
                     if slot.entry.is_none() {
                         let id = elements::cell_id(
@@ -451,17 +450,17 @@ impl Store {
                 }
             }
             if edit.get("font").is_some() {
-                let target = entry.map(Entry::target).transpose()?.flatten();
+                let target = entry.map(EntryRef::target).transpose()?.flatten();
                 let original = match &target {
                     Some(
                         MappingTarget::Cell { sheet, .. } | MappingTarget::Shape { sheet, .. },
                     ) => originals.contains(sheet),
                     _ => false,
                 };
-                let font = match entry {
-                    Some(entry) if original && book.font_edits_supported() => inspected
+                let font = match slot.entry {
+                    Some(index) if original && book.font_edits_supported() => inspected
                         .content
-                        .get(&entry.key()?)
+                        .get(index)
                         .and_then(|field| field.font.as_deref()),
                     _ => None,
                 };
@@ -500,13 +499,22 @@ impl Store {
                 elements::set_grid_font(content, &slot.block, &slot.row, &slot.column, applied);
             }
         }
+        for (file, block) in emptied {
+            if let Some(rows) = pages
+                .get_mut(&file)
+                .and_then(|content| content.pointer_mut(&format!("/blocks/{block}/rows")))
+                .and_then(Value::as_object_mut)
+            {
+                rows.retain(|_, values| values.as_object().is_none_or(|v| !v.is_empty()));
+            }
+        }
         let mut layout = identity::load(dir, extraction, &Planned::new())?;
         // The groups of the pages that take new cells, by page.
         let mut page_groups = BTreeMap::new();
         for (page, cells) in &new_cells {
             let sheet = layout.sheet(page)?;
             let mut groups = elements::metadata_groups(&sheet.metadata)?;
-            elements::adopt_cells(&sheet.fields, &mut groups, cells)?;
+            elements::adopt_cells(sheet, &mut groups, cells)?;
             page_groups.insert(page.clone(), groups);
         }
         let mut planned = Planned::new();
@@ -596,20 +604,17 @@ pub(super) fn shape_drawings(extraction: &Extraction) -> Result<BTreeMap<(&str, 
 }
 
 /// The font changes to write back: each original cell or shape whose current
-/// font (`fonts`, by mapping entry key) differs from the font extracted from the
+/// font (that of its content value) differs from the font extracted from the
 /// original, with the properties that changed.
-pub(super) fn font_changes(
-    extraction: &Extraction,
-    entries: &[Entry],
-    fields: &HashMap<(String, String, String), Field>,
-) -> Result<Vec<Value>> {
+pub(super) fn font_changes(inspected: &Inspection) -> Result<Vec<Value>> {
+    let (extraction, fields) = (&inspected.extraction, &inspected.content);
     if fields.values().all(|field| field.font.is_none()) {
         return Ok(vec![]);
     }
     let mut cells = BTreeMap::new();
     for sheet in &extraction.sheets {
         for cell in &sheet.cells {
-            cells.insert((string(&sheet["name"])?, &*cell.address), (sheet, cell));
+            cells.insert((string(&sheet["name"])?, cell.address()), (sheet, cell));
         }
     }
     let shapes = shape_drawings(extraction)?;
@@ -619,7 +624,7 @@ pub(super) fn font_changes(
         .filter_map(|sheet| sheet["name"].as_str())
         .collect();
     let mut changes = vec![];
-    for entry in entries {
+    for (index, entry) in inspected.entries().enumerate() {
         let entry = entry.json();
         let entry = &*entry;
         if !matches!(
@@ -628,10 +633,7 @@ pub(super) fn font_changes(
         ) {
             continue;
         }
-        let Some(current) = fields
-            .get(&key(entry)?)
-            .and_then(|field| field.font.as_ref())
-        else {
+        let Some(current) = fields.get(index).and_then(|field| field.font.as_ref()) else {
             continue;
         };
         // A slide copy has no original page; it takes the fonts of the page it
@@ -645,7 +647,7 @@ pub(super) fn font_changes(
         let (target, original) = match mapping_target(&entry["target"])? {
             Some(MappingTarget::Cell { sheet, cell }) => (json!({"sheet":sheet,"cell":cell}), {
                 let (sheet, cell) = cells.get(&(sheet, cell)).context("missing cell")?;
-                crate::extraction::font(sheet, cell)?
+                crate::extraction::font(sheet, *cell)?
             }),
             Some(MappingTarget::Shape { sheet, shape }) => (
                 json!({"sheet":sheet,"shape":shape}),

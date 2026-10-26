@@ -135,8 +135,9 @@ impl Store {
                     meta,
                     extraction,
                     mappings,
-                    entries: vec![],
-                    content: HashMap::new(),
+                    operated: None,
+                    entries: Entries::default(),
+                    content: ContentFields::default(),
                     page_files: known.page_files,
                     fingerprint: fp,
                     reviewed,
@@ -169,22 +170,22 @@ impl Store {
                 name.starts_with("content/") && (name.ends_with(".yml") || name.ends_with(".yaml")),
                 "unmanaged document file: {name}"
             );
-            let page = read_planned(&name, &path, planned, "content")?;
             // Held typed: as JSON, the rows of a page took several times its values.
-            let page = identity::runtime_grid(&page, &layout, &extraction)?;
+            let page = match planned.get(&name) {
+                Some(Some(bytes)) => {
+                    identity::runtime_grid(std::str::from_utf8(bytes)?, &layout, &extraction)?
+                }
+                _ => identity::runtime_grid(
+                    &fs::read_to_string(&path)
+                        .with_context(|| format!("read {}", path.display()))?,
+                    &layout,
+                    &extraction,
+                )?,
+            };
             page_files.insert(string(&page.fields["page_id"])?.to_owned(), name);
             content_pages.push(page);
         }
         let structure_sha256 = layout["structure_sha256"].as_str().map(str::to_owned);
-        // Validating the content takes the values out of the pages.
-        let kept_pages: BTreeMap<String, Value> = content_pages
-            .iter()
-            .filter(|page| {
-                keep.pages
-                    .contains(&page.fields["title"].as_str().unwrap_or(""))
-            })
-            .map(|page| Ok((string(&page.fields["page_id"])?.to_owned(), page.to_value())))
-            .collect::<Result<_>>()?;
         let layout = keep.layout.then_some(layout);
         let mut stored = complete_mappings(read_planned(
             "mappings.yml",
@@ -262,7 +263,9 @@ impl Store {
         let (mappings, entries) =
             regenerate_mappings(mappings, entries, &operated, &content_pages, &operations)?;
         // The pages give their values and fonts up; nothing reads them after.
-        let content = Self::validate_content(&entries, content_pages)?;
+        // Validating the content takes the values out of the pages but those kept.
+        let mut content = Self::validate_content(&entries, &operated, content_pages, keep.pages)?;
+        let kept_pages = std::mem::take(&mut content.kept);
         validate_coverage(
             &operated,
             &mappings,
@@ -289,10 +292,15 @@ impl Store {
             "content changed or not reviewed; run documents review"
         );
         let pending = entries
-            .iter()
+            .iter(&operated)
             .filter(|e| e.writeback().is_ok_and(|w| w == "pending"))
             .count();
-        let content_edited = content_edited(&extraction, &mappings, &entries, &fields)?;
+        let content_edited = content_edited(&extraction, &mappings, &entries, &operated, &fields)?;
+        // The defaults are read from the extraction the operations leave.
+        let operated = match operated {
+            Cow::Owned(operated) => Some(operated),
+            Cow::Borrowed(_) => None,
+        };
         self.save_known_inspection(
             &fp,
             &Known {
@@ -307,6 +315,7 @@ impl Store {
                 meta,
                 extraction,
                 mappings,
+                operated,
                 entries,
                 content: fields,
                 page_files,
@@ -381,31 +390,92 @@ struct Known {
     structure_sha256: Option<String>,
 }
 
+/// The cells of an extraction by sheet name and address: the cells of the
+/// sheets of each name in the order of their addresses, found by halves. A
+/// large workbook has a cell for each of its values, and a map of them took
+/// six times the room of this order.
+struct CellIndex<'a> {
+    extraction: &'a Extraction,
+    /// The sheet and cell numbers of the cells of the sheets of each name.
+    names: HashMap<&'a str, Vec<(u32, u32)>>,
+}
+
+impl<'a> CellIndex<'a> {
+    fn new(extraction: &'a Extraction) -> Result<Self> {
+        let mut names: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
+        for (si, sheet) in extraction.sheets.iter().enumerate() {
+            let cells = names.entry(string(&sheet["name"])?).or_default();
+            cells.extend((0..sheet.cells.len() as u32).map(|ci| (si as u32, ci)));
+        }
+        let address = |at| indexed(extraction, at).address();
+        for cells in names.values_mut() {
+            cells.sort_unstable_by(|&a, &b| address(a).cmp(address(b)));
+            ensure!(
+                cells
+                    .windows(2)
+                    .all(|pair| address(pair[0]) != address(pair[1])),
+                "duplicate extraction cell"
+            );
+        }
+        Ok(Self { extraction, names })
+    }
+
+    fn cell(&self, at: (u32, u32)) -> crate::extraction::Cell<'a> {
+        indexed(self.extraction, at)
+    }
+
+    fn address(&self, at: (u32, u32)) -> &'a str {
+        self.cell(at).address()
+    }
+
+    /// Where the cell `address` of the sheet `sheet` is in the order of the
+    /// cells of the sheets of its name.
+    fn place(&self, sheet: &str, address: &str) -> Option<usize> {
+        let cells = self.names.get(sheet)?;
+        cells
+            .binary_search_by(|&at| self.address(at).cmp(address))
+            .ok()
+    }
+
+    fn get(&self, sheet: &str, address: &str) -> Option<crate::extraction::Cell<'a>> {
+        let place = self.place(sheet, address)?;
+        Some(self.cell(self.names[sheet][place]))
+    }
+
+    fn len(&self) -> usize {
+        self.names.values().map(Vec::len).sum()
+    }
+}
+
+/// The cell numbered `ci` of the sheet numbered `si` of `extraction`.
+fn indexed(extraction: &Extraction, (si, ci): (u32, u32)) -> crate::extraction::Cell<'_> {
+    extraction.sheets[si as usize]
+        .cells
+        .get(ci as usize)
+        .expect("an indexed cell is a cell of its sheet")
+}
+
 /// Whether the content differs from the extraction: a row or column
 /// operation is pending, or a value written back to a cell is not the one
 /// the extraction holds there.
 fn content_edited(
     extraction: &Extraction,
     mappings: &Value,
-    entries: &[Entry],
-    fields: &HashMap<(String, String, String), Field>,
+    entries: &Entries,
+    operated: &Extraction,
+    fields: &ContentFields,
 ) -> Result<bool> {
     if !array(&mappings["operations"])?.is_empty() {
         return Ok(true);
     }
-    let mut originals = HashMap::new();
-    for sheet in &extraction.sheets {
-        for cell in &sheet.cells {
-            originals.insert((string(&sheet["name"])?, &*cell.address), &cell.value);
-        }
-    }
-    for entry in entries {
+    let originals = CellIndex::new(extraction)?;
+    for (index, entry) in entries.iter(operated).enumerate() {
         if entry.writeback().is_ok_and(|w| w == "cell")
             && let Some(MappingTarget::Cell { sheet, cell }) = entry.target()?
-            && let Some(Field { value, .. }) = fields.get(&entry.key()?)
+            && let Some(Field { value, .. }) = fields.get(index)
             && originals
-                .get(&(sheet, cell))
-                .is_some_and(|old| **old != *value)
+                .get(sheet, cell)
+                .is_some_and(|old| old.value() != *value)
         {
             return Ok(true);
         }
@@ -465,57 +535,76 @@ impl Store {
         Ok((!summary.is_null()).then_some(summary))
     }
     fn validate_content(
-        entries: &[Entry],
+        entries: &Entries,
+        extraction: &Extraction,
         pages: Vec<elements::GridPage>,
+        keep: &[&str],
     ) -> Result<ValidatedContent> {
         // Positioned entries by page and block, so that each table block does not
         // scan every entry of a document with many sheets, slides or pages.
-        let mut positioned: BTreeMap<(&str, &str), Vec<(&Entry, EntryPosition)>> = BTreeMap::new();
-        for e in entries {
-            if let Some(position) = e.position()? {
+        // The entries by number: their positions are read again where they
+        // are used, as a large sheet has an entry for each cell.
+        let mut positioned: BTreeMap<(&str, &str), Vec<u32>> = BTreeMap::new();
+        for (index, e) in entries.iter(extraction).enumerate() {
+            if e.position()?.is_some() {
                 positioned
                     .entry((e.page()?, e.block()?))
                     .or_default()
-                    .push((e, position));
+                    .push(u32::try_from(index)?);
             }
         }
-        let mut fields: HashMap<_, Field> = HashMap::new();
-        let mut expected = BTreeSet::new();
+        let mut fields = ContentFields::new(entries.len());
+        // The page, block and field of each entry given a value that may
+        // repeat another's.
+        let mut keyed = HashSet::new();
+        let mut kept_pages = BTreeMap::new();
+        let mut expected = BTreeMap::new();
         let mut page_ids = BTreeSet::new();
         for mut page in pages {
             let page_id = string(&page.fields["page_id"])?.to_owned();
             ensure!(page_ids.insert(page_id.clone()), "duplicate page ID");
-            // Values are moved into the maps rather than copied, and each
-            // font of the page is shared by the fields that have it.
-            let font_table: Vec<Arc<Value>> = match std::mem::take(&mut page.font_table) {
+            // Values are moved into the fields rather than copied, but those of a
+            // page kept, which the page keeps too, and each font of the page is
+            // shared by the fields that have it.
+            let kept = keep.contains(&page.fields["title"].as_str().unwrap_or(""));
+            let font_table = match kept {
+                true => page.font_table.clone(),
+                false => std::mem::take(&mut page.font_table),
+            };
+            let font_table: Vec<Arc<Value>> = match font_table {
                 Value::Array(fonts) => fonts.into_iter().map(Arc::new).collect(),
                 _ => vec![],
             };
             // The notes, and the blocks of rows: those titled and those of values.
             let mut blocks: BTreeSet<String> = page.titles.keys().cloned().collect();
             blocks.extend(page.values.iter().map(|v| v.block.to_string()));
-            for block in
-                std::iter::once("extraction-notes").chain(blocks.iter().map(String::as_str))
-            {
-                expected.insert((page_id.clone(), block.to_owned(), String::new()));
-            }
+            let mut page_blocks = blocks.clone();
+            page_blocks.insert("extraction-notes".into());
+            expected.insert(page_id.clone(), page_blocks);
             for block in blocks {
                 let start = page.values.partition_point(|v| *v.block < *block);
                 let rows = &mut page.values[start..];
                 let end = rows.partition_point(|v| *v.block == *block);
                 let rows = &mut rows[..end];
-                let mut consumed = HashSet::new();
-                for (e, pos) in positioned
+                // Whether each value is an entry's, by its place among the
+                // values in order, which is their position's.
+                let mut consumed = vec![false; rows.len()];
+                let block_entries = positioned
                     .get(&(page_id.as_str(), block.as_str()))
-                    .into_iter()
-                    .flatten()
-                {
+                    .map_or(&[][..], Vec::as_slice);
+                for &index in block_entries {
+                    let index = index as usize;
+                    let e = entries.get(index, extraction);
+                    let pos = e.position()?.context("table entry position missing")?;
                     let (row, col) = (pos.row, pos.column);
                     let at = rows
-                        .binary_search_by(|v| (v.row.as_str(), v.column.as_str()).cmp(&(row, col)))
+                        .binary_search_by(|v| (&*v.row, &*v.column).cmp(&(row, col)))
                         .ok()
                         .context("missing table position")?;
-                    ensure!(consumed.insert((row, col)), "duplicate table position");
+                    ensure!(
+                        !std::mem::replace(&mut consumed[at], true),
+                        "duplicate table position"
+                    );
                     let value = &mut rows[at];
                     ensure!(
                         kind(&value.value) != "object"
@@ -523,31 +612,40 @@ impl Store {
                         "table type/value mismatch"
                     );
                     ensure!(!e.field_is_null(), "table field required");
-                    let font = if value.font.is_null() {
-                        None
-                    } else {
-                        let index = &value.font;
-                        let font = index
-                            .as_u64()
-                            .and_then(|index| usize::try_from(index).ok())
-                            .and_then(|index| font_table.get(index))
-                            .with_context(|| format!("unknown font index {index}"))?;
-                        Some(Arc::clone(font))
+                    let font = match value.font {
+                        None => None,
+                        Some(index) => Some(Arc::clone(
+                            font_table
+                                .get(index as usize)
+                                .with_context(|| format!("unknown font index {index}"))?,
+                        )),
                     };
                     let field = Field {
-                        value: value.value.take(),
+                        value: match kept {
+                            true => value.value.clone(),
+                            false => value.value.take(),
+                        },
                         font,
                     };
                     ensure!(
-                        fields.insert(e.key()?, field).is_none(),
+                        e.unique()
+                            || keyed.insert((e.page()?, e.block()?, e.field().unwrap_or(""))),
                         "duplicate table field"
                     );
+                    fields.set(index, field);
                 }
-                ensure!(rows.len() == consumed.len(), "unmapped table value");
+                ensure!(consumed.iter().all(|&c| c), "unmapped table value");
+            }
+            if kept {
+                kept_pages.insert(page_id, page);
             }
         }
         ensure!(!page_ids.is_empty(), "content is empty");
-        Ok(ValidatedContent { fields, expected })
+        Ok(ValidatedContent {
+            fields,
+            expected,
+            kept: kept_pages,
+        })
     }
     pub fn status(
         &self,
@@ -683,58 +781,68 @@ pub(super) struct Keep<'a> {
 pub(super) struct Kept {
     pub(super) layout: Option<Layout>,
     /// The content pages by page ID, as the writer reads them.
-    pub(super) pages: BTreeMap<String, Value>,
+    pub(super) pages: BTreeMap<String, elements::GridPage>,
 }
 
 struct ValidatedContent {
-    fields: HashMap<(String, String, String), Field>,
-    /// The page blocks, keyed with an empty field. Every value is expected too.
-    expected: BTreeSet<(String, String, String)>,
+    fields: ContentFields,
+    /// The blocks of each page, by page ID, each the field of an entry
+    /// without a field. Every value is expected too.
+    expected: BTreeMap<String, BTreeSet<String>>,
+    /// The pages kept, whole, by page ID.
+    kept: BTreeMap<String, elements::GridPage>,
 }
 
 fn validate_coverage(
     extraction: &Extraction,
     mappings: &Value,
-    entries: &[Entry],
+    entries: &Entries,
     content: &ValidatedContent,
     operations: &[excel::StructuralOperation],
     native_text: bool,
     text_format: bool,
 ) -> Result<()> {
     let fields = &content.fields;
-    let value_of = |key: &(String, String, String)| fields.get(key).map(|field| &field.value);
-    let expected = &content.expected;
+    let expected = |page: &str, block: &str| {
+        content
+            .expected
+            .get(page)
+            .is_some_and(|blocks| blocks.contains(block))
+    };
     // Every cell is placed through the pending operations; each row and
     // column is mapped once.
     let coordinates = excel::CoordinateMap::new(operations);
-    // Keys borrow from the extraction and mappings: a large workbook has an entry per cell.
-    // Hashed: every entry looks up its key, target and destination, and a large
-    // workbook has an entry per cell.
-    let mut cells = HashMap::new();
-    for sheet in &extraction.sheets {
-        for c in &sheet.cells {
-            ensure!(
-                cells
-                    .insert((string(&sheet["name"])?, &*c.address), c)
-                    .is_none(),
-                "duplicate extraction cell"
-            );
-        }
-    }
+    // Every entry looks up its target, and a large workbook has an entry per cell.
+    let cells = CellIndex::new(extraction)?;
     let sheet_names: HashSet<&str> = extraction
         .sheets
         .iter()
         .map(|sheet| string(&sheet["name"]))
         .collect::<Result<_>>()?;
-    // The keys of the entries, as the content values or the expected fields
-    // hold them, and any that neither holds, which fail below: a large
-    // workbook has an entry per cell, and a copy of each key took a third of
-    // what the check held.
-    let mut actual = HashSet::with_capacity(entries.len());
+    // The entries with a value, those of them whose field is no expected
+    // block's, the expected blocks entries name, and the entries that name
+    // neither, which fail below. Only the page, block and field of an entry
+    // that may repeat another's are kept: a large workbook has an entry per
+    // cell.
+    let mut named = 0;
+    let mut named_fields = 0;
+    let mut actual = HashSet::new();
     let mut strays = HashSet::new();
+    let mut keyed = HashSet::new();
     // New table column names by sheet and cell, checked for duplicates below.
     let mut header_edits = HashMap::new();
-    let mut covered_cells = HashSet::new();
+    // Whether each cell is covered, by its place in `cells`.
+    let mut covered: HashMap<&str, Vec<bool>> = cells
+        .names
+        .iter()
+        .map(|(name, list)| (*name, vec![false; list.len()]))
+        .collect();
+    let mut cover = |sheet: &str, place: usize| {
+        let bit = &mut covered
+            .get_mut(sheet)
+            .expect("a covered cell's sheet is indexed")[place];
+        !std::mem::replace(bit, true)
+    };
     let mut destinations = HashSet::new();
     // Written positions are checked against the merges as they stand after
     // the operations: an insertion inside a merge grows it over the new cells.
@@ -754,20 +862,20 @@ fn validate_coverage(
         .iter()
         .map(|(name, merges)| Ok((name.as_str(), excel::Merges::new(merges)?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
-    for e in entries {
-        let k = e.key()?;
+    for (index, e) in entries.iter(extraction).enumerate() {
+        let (page, block, field) = (e.page()?, e.block()?, e.field().unwrap_or(""));
+        let value = fields.get(index).map(|field| &field.value);
         ensure!(!e.reason()?.trim().is_empty(), "new text requires reason");
         let mapped_target = e.target()?;
         if let Some(MappingTarget::Cell { sheet, cell }) = mapped_target {
-            let pair = (sheet, cell);
-            if cells.contains_key(&pair) {
-                if native_text && let Some(value) = value_of(&k) {
+            if let Some(place) = cells.place(sheet, cell) {
+                if native_text && let Some(value) = value {
                     ensure!(
-                        *value == cells[&pair].value,
+                        *value == cells.get(sheet, cell).expect("a placed cell").value(),
                         "text content is a read-only derived view; edit the original and re-import with the same document ID"
                     );
                 }
-                covered_cells.insert(pair);
+                cover(sheet, place);
             } else {
                 // A workbook cell holding nothing in the original takes a value.
                 ensure!(
@@ -785,14 +893,14 @@ fn validate_coverage(
                 ensure!(!reason.trim().is_empty(), "exclusion requires reason");
                 // An excluded cell is never written, so an edit would be lost.
                 if let (Some(MappingTarget::Cell { sheet, cell }), Some(value)) =
-                    (&mapped_target, value_of(&k))
+                    (&mapped_target, value)
                 {
-                    let source = &cells[&(*sheet, *cell)];
-                    let original = match source.formula.as_deref() {
+                    let source = cells.get(sheet, cell).context("missing Excel target")?;
+                    let original = match source.formula() {
                         Some(formula) if e.position()?.is_some_and(|p| p.column == "formula") => {
                             json!(format!("={formula}"))
                         }
-                        _ => source.value.clone(),
+                        _ => source.value().to_json(),
                     };
                     ensure!(
                         *value == original
@@ -803,7 +911,7 @@ fn validate_coverage(
             }
             "pending" => {}
             "cell" => {
-                let value = value_of(&k).context("writeback requires field")?;
+                let value = value.context("writeback requires field")?;
                 ensure!(
                     !text_format || value.is_string(),
                     "text replacement must be a string; use an empty string to clear text"
@@ -811,21 +919,21 @@ fn validate_coverage(
                 let destination = match mapped_target.context("cell writeback requires target")? {
                     MappingTarget::Cell { sheet, cell } => {
                         // A cell the original leaves empty holds no value or type.
-                        let source = cells.get(&(sheet, cell));
+                        let source = cells.get(sheet, cell);
                         if let Some(source) = source {
                             ensure!(
-                                !matches!(source.kind, CellKind::Formula | CellKind::Error),
+                                !matches!(source.kind(), CellKind::Formula | CellKind::Error),
                                 "formula/error cell cannot be overwritten"
                             );
                             ensure!(
                                 value.is_null()
-                                    || source.kind.as_str() == kind(value)
-                                    || source.kind == CellKind::Null,
+                                    || source.kind().as_str() == kind(value)
+                                    || source.kind() == CellKind::Null,
                                 "Excel target type mismatch"
                             );
                         }
-                        let original = source.map_or(&Value::Null, |source| &source.value);
-                        if !text_format && value != original {
+                        let original = source.map_or(CellValue::Null, |source| source.value());
+                        if !text_format && *value != original {
                             let (column, row) = excel::coordinate(cell)?;
                             let book_sheet = &extraction
                                 .sheets
@@ -905,7 +1013,7 @@ fn validate_coverage(
                 bail!("operation writeback entries are not supported; use operations")
             }
             "shape" => {
-                let value = value_of(&k).context("writeback requires field")?;
+                let value = value.context("writeback requires field")?;
                 let Some(MappingTarget::Shape { sheet, shape }) = mapped_target else {
                     bail!("shape writeback requires a shape target");
                 };
@@ -930,15 +1038,14 @@ fn validate_coverage(
                 }
             }
             "formula" => {
-                let value = value_of(&k).context("writeback requires field")?;
+                let value = value.context("writeback requires field")?;
                 let Some(MappingTarget::Cell { sheet, cell }) = mapped_target else {
                     bail!("formula writeback requires a cell target");
                 };
-                let source = &cells[&(sheet, cell)];
+                let source = cells.get(sheet, cell).context("missing Excel target")?;
                 let formula = source
-                    .formula
-                    .as_deref()
-                    .filter(|_| source.kind == CellKind::Formula);
+                    .formula()
+                    .filter(|_| source.kind() == CellKind::Formula);
                 let Some(formula) = formula else {
                     bail!(
                         "{sheet}!{cell} holds no formula; formula writeback replaces an existing formula"
@@ -965,14 +1072,17 @@ fn validate_coverage(
             }
             other => bail!("unsupported writeback: {other}"),
         }
-        let unique = match fields
-            .get_key_value(&k)
-            .map(|(key, _)| key)
-            .or_else(|| expected.get(&k))
-        {
-            Some(key) => actual.insert(key),
-            None => strays.insert(k),
-        };
+        let block_field = field.is_empty() && expected(page, block);
+        let unique = (e.unique() || keyed.insert((page, block, field)))
+            && if value.is_some() {
+                named += 1;
+                named_fields += usize::from(!block_field);
+                true
+            } else if block_field {
+                actual.insert((page, block))
+            } else {
+                strays.insert((page, block, field))
+            };
         ensure!(unique, "duplicate mapping");
     }
     if !header_edits.is_empty() {
@@ -982,33 +1092,38 @@ fn validate_coverage(
                 header_edits
                     .get(&(name, cell))
                     .map(|value| (*value).clone())
-                    .or_else(|| cells.get(&(name, cell)).map(|c| c.value.clone()))
+                    .or_else(|| cells.get(name, cell).map(|c| c.value().to_json()))
             })?;
         }
     }
-    let expected_count = expected.len() + fields.keys().filter(|k| !expected.contains(*k)).count();
+    // A field that is expected too is named as a field.
+    let expected_count = content.expected.values().map(BTreeSet::len).sum::<usize>() + named_fields;
     ensure!(
-        strays.is_empty() && actual.len() == expected_count,
+        strays.is_empty() && named + actual.len() == expected_count,
         "mapping coverage mismatch"
     );
     for o in array(&mappings["omissions"])? {
         ensure!(!string(&o["reason"])?.trim().is_empty(), "invalid omission");
-        let pair = target(&o["target"])?;
+        let (sheet, cell) = target(&o["target"])?;
         ensure!(
-            cells.contains_key(&pair) && covered_cells.insert(pair),
+            cells
+                .place(sheet, cell)
+                .is_some_and(|place| cover(sheet, place)),
             "invalid/duplicate omission target"
         );
     }
-    for &(sheet, cell) in cells.keys() {
-        if coordinates.map(sheet, cell)?.is_none() {
-            covered_cells.insert((sheet, cell));
+    for (sheet, list) in &cells.names {
+        for (place, &at) in list.iter().enumerate() {
+            if coordinates.map(sheet, cells.address(at))?.is_none() {
+                cover(sheet, place);
+            }
         }
     }
-    // Only existing cells are ever covered, so equal counts mean every cell is.
     ensure!(
-        covered_cells.len() == cells.len(),
+        covered.values().flatten().all(|&covered| covered),
         "source coverage incomplete"
     );
+    debug_assert_eq!(covered.values().map(Vec::len).sum::<usize>(), cells.len());
     Ok(())
 }
 
@@ -1052,4 +1167,34 @@ pub(super) fn structure_format(meta: &Value) -> Result<bool> {
         .unwrap_or("")
         .to_ascii_lowercase();
     Ok(crate::document_source::structure_formats().contains(&extension.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cell is found by its sheet's name and its address, the cells of
+    /// sheets of one name together, and a cell twice under one name fails.
+    #[test]
+    fn the_cell_index_finds_cells_by_sheet_and_address() {
+        let extraction = crate::extraction::sample(json!({"sheets":[
+            {"name":"A","cells":[{"address":"B2","value":1},{"address":"A10","value":2}]},
+            {"name":"B","cells":[{"address":"A1","value":3}]},
+            {"name":"A","cells":[{"address":"C1","value":4}]}]}));
+        let index = CellIndex::new(&extraction).unwrap();
+        assert_eq!(index.len(), 4);
+        let value = |sheet, address| index.get(sheet, address).map(|c| c.value().to_json());
+        assert_eq!(value("A", "B2"), Some(json!(1)));
+        assert_eq!(value("A", "A10"), Some(json!(2)));
+        assert_eq!(value("A", "C1"), Some(json!(4)));
+        assert_eq!(value("B", "A1"), Some(json!(3)));
+        assert_eq!((value("B", "B2"), value("C", "A1")), (None, None));
+        let twice = crate::extraction::sample(json!({"sheets":[
+            {"name":"A","cells":[{"address":"A1"}]},{"name":"A","cells":[{"address":"A1"}]}]}));
+        assert!(
+            CellIndex::new(&twice)
+                .err()
+                .is_some_and(|e| e.to_string() == "duplicate extraction cell")
+        );
+    }
 }

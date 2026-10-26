@@ -93,14 +93,14 @@ pub(super) fn operations(
 fn cells(sheet: &Sheet) -> Result<BTreeMap<(u32, u32), String>> {
     let mut cells = BTreeMap::new();
     for cell in &sheet.cells {
-        let (column, row) = crate::excel::coordinate(&cell.address)?;
-        let value = &cell.value;
-        if value.is_null() && cell.formula.is_none() {
+        let (column, row) = crate::excel::coordinate(cell.address())?;
+        let value = &cell.value();
+        if value.is_null() && cell.formula().is_none() {
             continue;
         }
         cells.insert(
             (row, column),
-            json!([cell.kind.as_str(), value]).to_string(),
+            json!([cell.kind().as_str(), value]).to_string(),
         );
     }
     Ok(cells)

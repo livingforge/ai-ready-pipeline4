@@ -6,6 +6,7 @@ use super::word::Block;
 use super::word_fonts::TablePlace;
 use super::*;
 use crate::fonts::{Color, ColorContext, Emphasis, FontEdit, RunFont, Theme};
+use std::cell::OnceCell;
 
 /// The sizes PowerPoint gives text whose master defines no text styles:
 /// titles 44 points, body text by level, notes 12 and other text 18 points.
@@ -39,6 +40,82 @@ pub(super) struct SlideFonts {
     tables: BTreeMap<String, BTreeMap<String, RunFont>>,
     default_table: Option<String>,
     notes: bool,
+}
+
+/// The texts of the parts the text of every slide inherits from: the
+/// presentation (`ppt/presentation.xml`) and its table styles, each read when
+/// a slide first needs it.
+pub(super) struct PresentationTexts<'p> {
+    parts: &'p BTreeMap<String, Vec<u8>>,
+    presentation: OnceCell<Option<String>>,
+    table_styles: OnceCell<Option<String>>,
+}
+
+impl<'p> PresentationTexts<'p> {
+    pub(super) fn new(parts: &'p BTreeMap<String, Vec<u8>>) -> Self {
+        Self {
+            parts,
+            presentation: OnceCell::new(),
+            table_styles: OnceCell::new(),
+        }
+    }
+
+    fn text<'s>(
+        &'s self,
+        cell: &'s OnceCell<Option<String>>,
+        part: &str,
+    ) -> Result<Option<&'s str>> {
+        if cell.get().is_none() {
+            let text = self
+                .parts
+                .get(part)
+                .map(|bytes| part_text(bytes).map(|(text, _)| text.into_owned()))
+                .transpose()?;
+            let _ = cell.set(text);
+        }
+        Ok(cell.get().and_then(Option::as_deref))
+    }
+}
+
+/// Those parts parsed, each once, when a slide first needs it.
+pub(super) struct PresentationParts<'t> {
+    texts: &'t PresentationTexts<'t>,
+    presentation: OnceCell<Option<Document<'t>>>,
+    table_styles: OnceCell<Option<Document<'t>>>,
+}
+
+impl<'t> PresentationParts<'t> {
+    pub(super) fn new(texts: &'t PresentationTexts<'t>) -> Self {
+        Self {
+            texts,
+            presentation: OnceCell::new(),
+            table_styles: OnceCell::new(),
+        }
+    }
+
+    fn presentation(&self) -> Result<Option<&Document<'t>>> {
+        if self.presentation.get().is_none() {
+            let text = self
+                .texts
+                .text(&self.texts.presentation, "ppt/presentation.xml")?;
+            let _ = self
+                .presentation
+                .set(text.map(Document::parse).transpose()?);
+        }
+        Ok(self.presentation.get().and_then(Option::as_ref))
+    }
+
+    fn table_styles(&self) -> Result<Option<&Document<'t>>> {
+        if self.table_styles.get().is_none() {
+            let text = self
+                .texts
+                .text(&self.texts.table_styles, "ppt/tableStyles.xml")?;
+            let _ = self
+                .table_styles
+                .set(text.map(Document::parse).transpose()?);
+        }
+        Ok(self.table_styles.get().and_then(Option::as_ref))
+    }
 }
 
 fn presentation_child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
@@ -155,6 +232,7 @@ impl SlideFonts {
         parts: &BTreeMap<String, Vec<u8>>,
         part: &str,
         xml: &Document<'_>,
+        presentation: &PresentationParts<'_>,
     ) -> Result<Self> {
         let notes = xml.root_element().has_tag_name((PRESENTATION, "notes"));
         let layout_part = if notes {
@@ -162,7 +240,7 @@ impl SlideFonts {
         } else {
             related(parts, part, "/slideLayout")?
         };
-        Self::with_layout(parts, part, layout_part, xml)
+        Self::with_layout(parts, part, layout_part, xml, presentation)
     }
 
     /// What the text of a slide made from `layout` inherits.
@@ -170,8 +248,9 @@ impl SlideFonts {
         parts: &BTreeMap<String, Vec<u8>>,
         layout: &str,
         xml: &Document<'_>,
+        presentation: &PresentationParts<'_>,
     ) -> Result<Self> {
-        Self::with_layout(parts, layout, Some(layout.to_owned()), xml)
+        Self::with_layout(parts, layout, Some(layout.to_owned()), xml, presentation)
     }
 
     fn with_layout(
@@ -179,6 +258,7 @@ impl SlideFonts {
         part: &str,
         layout_part: Option<String>,
         xml: &Document<'_>,
+        presentation: &PresentationParts<'_>,
     ) -> Result<Self> {
         let notes = xml.root_element().has_tag_name((PRESENTATION, "notes"));
         let master_part = match &layout_part {
@@ -235,22 +315,15 @@ impl SlideFonts {
         } else {
             (style("titleStyle"), style("bodyStyle"), style("otherStyle"))
         };
-        let presentation = parts
-            .get("ppt/presentation.xml")
-            .map(|bytes| part_text(bytes).map(|(text, _)| text.into_owned()))
-            .transpose()?;
-        let presentation_doc = presentation.as_deref().map(Document::parse).transpose()?;
         let defaults = levels(
-            presentation_doc
-                .as_ref()
+            presentation
+                .presentation()?
                 .and_then(|doc| presentation_child(doc.root_element(), "defaultTextStyle")),
             &context,
         );
         let mut tables = BTreeMap::new();
         let mut default_table = None;
-        if let Some(bytes) = parts.get("ppt/tableStyles.xml") {
-            let (text, _) = part_text(bytes)?;
-            let doc = Document::parse(&text)?;
+        if let Some(doc) = presentation.table_styles()? {
             default_table = doc.root_element().attribute("def").map(str::to_owned);
             for style in doc
                 .root_element()

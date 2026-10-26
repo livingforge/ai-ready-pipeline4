@@ -317,7 +317,7 @@
   },
   "content": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "All source formats use document elements (version 6). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout.",
+    "description": "All source formats use document elements (version 7). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -329,7 +329,7 @@
         "type": "string"
       },
       "schema_version": {
-        "const": "6"
+        "const": "7"
       },
       "elements": {
         "type": "array",
@@ -464,6 +464,135 @@
               "properties": {
                 "drawing": {
                   "type": "null"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "diagram"
+              ],
+              "properties": {
+                "diagram": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "lines"
+                  ],
+                  "description": "線でつながった図形のまとまり。図形・位置・線の両端は原本の図形から決まり、編集できるのは text だけ。線の両端は原本に記録された接続先、記録がなければ端が接する・載る図形（構造ポリシーの距離以内）、Excelでは文字のあるセルとし、推定した端は注記する",
+                  "properties": {
+                    "at": {
+                      "type": "string",
+                      "description": "Excel: まとまりが占めるセル範囲"
+                    },
+                    "shapes": {
+                      "type": "array",
+                      "minItems": 1,
+                      "description": "図形。ページの上から、左から順",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "id",
+                          "shape"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "図形のキー（s と原本の図形番号）"
+                          },
+                          "shape": {
+                            "type": "string",
+                            "description": "図形の種類。一覧は contracts/diagram-shapes.json。一覧にない種類は原本の名前"
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "Excelはセル範囲、PowerPointはスライド上の位置と大きさ（ポイント）"
+                          },
+                          "in": {
+                            "type": "string",
+                            "description": "この図形を囲む最も内側の図形のキー"
+                          },
+                          "text": {
+                            "description": "図形・線の文字。段落ごとに要素を持つ図形（PowerPoint）は段落のリスト。編集できるのはこの値だけ",
+                            "anyOf": [
+                              {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              {
+                                "type": "array",
+                                "minItems": 2,
+                                "items": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "boolean",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "lines": {
+                      "type": "array",
+                      "minItems": 1,
+                      "description": "線。「始点 → 終点」（矢印の向き）、「A ↔ B」（両端に矢印）、「A — B」（矢印なし）。端は図形の文字（文字がないか重なる図形はキー）、セル、画像、未接続で表し、破線と近接で推定した端を括弧で注記する。文字を持つ線は line と text の組",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "line",
+                              "text"
+                            ],
+                            "properties": {
+                              "line": {
+                                "type": "string"
+                              },
+                              "text": {
+                                "description": "図形・線の文字。段落ごとに要素を持つ図形（PowerPoint）は段落のリスト。編集できるのはこの値だけ",
+                                "anyOf": [
+                                  {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "boolean",
+                                      "null"
+                                    ]
+                                  },
+                                  {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "items": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "boolean",
+                                        "null"
+                                      ]
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -5424,7 +5553,7 @@
       },
       "print_settings": {
         "type": "array",
-        "description": "印刷設定のOpen XML要素。同じ要素は1回だけ置き、それを持つ部品を parts に最初に現れた順で並べる。読み込み時に部品ごとの一覧へ戻す",
+        "description": "印刷設定のOpen XML要素。同じ要素を同じ順に持つ部品をまとめ、部品名の一覧（parts）と要素のXML（xml）を1回だけ置く。読み込み時に部品名の順に部品ごとの一覧へ戻し、要素名を component として補う",
         "items": {
           "type": "object",
           "additionalProperties": false,
@@ -5437,18 +5566,17 @@
                 "minLength": 1
               }
             },
-            "component": {
-              "type": "string",
-              "minLength": 1
-            },
             "xml": {
-              "type": "string",
-              "minLength": 1
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           },
           "required": [
             "parts",
-            "component",
             "xml"
           ]
         }
@@ -5510,7 +5638,7 @@
         }
       },
       "schema_version": {
-        "const": "2"
+        "const": "4"
       },
       "sheets": {
         "items": {
@@ -5526,7 +5654,10 @@
                         "type": {
                           "const": "string"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -5542,7 +5673,10 @@
                         "type": {
                           "const": "error"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -5558,7 +5692,10 @@
                         "type": {
                           "const": "number"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -5574,7 +5711,10 @@
                         "type": {
                           "const": "boolean"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -5590,7 +5730,10 @@
                         "type": {
                           "const": "null"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -5602,9 +5745,16 @@
                   },
                   {
                     "else": {
-                      "properties": {
-                        "formula": {
-                          "type": "null"
+                      "if": {
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "formula": {
+                            "type": "null"
+                          }
                         }
                       }
                     },
@@ -5613,7 +5763,10 @@
                         "type": {
                           "const": "formula"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -5642,11 +5795,11 @@
                   "id": {
                     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
                     "type": "string",
-                    "description": "Excelのセルでシート番号とアドレスから決まるID（c-<シート番号>-<アドレス>）は保存しない"
+                    "description": "原本の形式から決まるID（Excelはシート番号とアドレスの c-<シート番号>-<アドレス>、ほかの形式はページの n 番目のセルの text-<n>）は保存しない"
                   },
                   "number_format": {
                     "type": "string",
-                    "description": "General は保存しない"
+                    "description": "原本の形式の既定（Excelは General、ほかの形式は空文字）は保存しない"
                   },
                   "type": {
                     "enum": [
@@ -5656,7 +5809,8 @@
                       "null",
                       "formula",
                       "error"
-                    ]
+                    ],
+                    "description": "数式があれば formula、なければ値の型（string・number・boolean・null）という、値と数式から決まる型は保存しない。error などそれ以外の型だけを持つ"
                   },
                   "value": {
                     "type": [
@@ -5722,19 +5876,24 @@
                     ]
                   },
                   "style": {
-                    "type": "integer",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
                     "minimum": 0,
-                    "description": "このシートの styles での番号"
+                    "description": "このシートの styles での番号。シートの cell_style と同じなら持たず、cell_style のあるシートで書式を持たないセルは null"
                   },
                   "font": {
-                    "type": "integer",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
                     "minimum": 0,
-                    "description": "このシートの fonts での番号"
+                    "description": "このシートの fonts での番号。シートの cell_font と同じなら持たず、cell_font のあるシートでフォントを持たないセルは null"
                   }
                 },
                 "required": [
                   "address",
-                  "type",
                   "value"
                 ],
                 "type": "object"
@@ -5859,7 +6018,8 @@
               "items": {
                 "type": "string"
               },
-              "type": "array"
+              "type": "array",
+              "description": "結合範囲。保存時は1行に並べる"
             },
             "name": {
               "minLength": 1,
@@ -6044,7 +6204,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           },
                           "row": {
                             "type": [
@@ -6056,7 +6217,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           }
                         },
                         "required": []
@@ -6075,7 +6237,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           },
                           "row": {
                             "type": [
@@ -6087,7 +6250,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           }
                         },
                         "required": []
@@ -6453,6 +6617,30 @@
                         ]
                       }
                     }
+                  },
+                  "paragraphs": {
+                    "description": "PowerPoint: the cells (column A) of the paragraphs of the shape's text, in order.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^A[1-9][0-9]*$"
+                    }
+                  },
+                  "head_end": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The mark at the start of the drawing's line (a:headEnd), such as triangle for an arrowhead. Absent for none."
+                  },
+                  "tail_end": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The mark at the end of the drawing's line (a:tailEnd), such as triangle for an arrowhead. Absent for none."
+                  },
+                  "dash": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The dash of the drawing's line (a:prstDash), such as dash or sysDot. Absent for a solid line."
                   }
                 },
                 "required": [
@@ -6461,6 +6649,85 @@
                   "anchor"
                 ]
               }
+            },
+            "grid": {
+              "description": "Excel sheets with drawings: the sizes of the columns and rows, which place the cells and the drawings anchored on them on the sheet.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "column_width",
+                "row_height",
+                "columns",
+                "rows"
+              ],
+              "properties": {
+                "column_width": {
+                  "description": "The default width of a column, in characters of the normal font's digits with padding, as Excel stores widths.",
+                  "type": "number",
+                  "minimum": 0
+                },
+                "row_height": {
+                  "description": "The default height of a row, in points.",
+                  "type": "number",
+                  "minimum": 0
+                },
+                "columns": {
+                  "description": "Columns of their own width: [first, last, width], numbered from 1. Adjacent columns of the same width are one run.",
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    ],
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                },
+                "rows": {
+                  "description": "Rows of their own height in points: [first, last, height], numbered from 1. Adjacent rows of the same height are one run.",
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    ],
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                }
+              }
+            },
+            "cell_font": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "fonts での番号。fonts の番号を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない"
+            },
+            "cell_style": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "styles での番号。styles の番号を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない"
             }
           },
           "required": [
@@ -6909,10 +7176,6 @@
         },
         "type": "array"
       },
-      "document_id": {
-        "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
-        "type": "string"
-      },
       "date1904": {
         "const": true,
         "description": "An Excel workbook counting date serials from 1904-01-01 (workbookPr date1904). Absent for the 1900 date system and other originals."
@@ -6966,26 +7229,30 @@
       },
       "print_settings": {
         "type": "array",
+        "description": "印刷設定のOpen XML要素。同じ要素を同じ順に持つ部品をまとめ、部品名の一覧（parts）と要素のXML（xml）を1回だけ置く。読み込み時に部品名の順に部品ごとの一覧へ戻し、要素名を component として補う",
         "items": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "part": {
-              "type": "string",
-              "minLength": 1
-            },
-            "component": {
-              "type": "string",
-              "minLength": 1
+            "parts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             },
             "xml": {
-              "type": "string",
-              "minLength": 1
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           },
           "required": [
-            "part",
-            "component",
+            "parts",
             "xml"
           ]
         }
@@ -7047,7 +7314,7 @@
         }
       },
       "schema_version": {
-        "const": "2"
+        "const": "4"
       },
       "sheets": {
         "items": {
@@ -7063,7 +7330,10 @@
                         "type": {
                           "const": "string"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -7079,7 +7349,10 @@
                         "type": {
                           "const": "error"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -7095,7 +7368,10 @@
                         "type": {
                           "const": "number"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -7111,7 +7387,10 @@
                         "type": {
                           "const": "boolean"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -7127,7 +7406,10 @@
                         "type": {
                           "const": "null"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
@@ -7139,12 +7421,16 @@
                   },
                   {
                     "else": {
-                      "properties": {
-                        "cached": {
-                          "type": "null"
-                        },
-                        "formula": {
-                          "type": "null"
+                      "if": {
+                        "required": [
+                          "type"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "formula": {
+                            "type": "null"
+                          }
                         }
                       }
                     },
@@ -7153,14 +7439,20 @@
                         "type": {
                           "const": "formula"
                         }
-                      }
+                      },
+                      "required": [
+                        "type"
+                      ]
                     },
                     "then": {
                       "properties": {
                         "formula": {
                           "type": "string"
                         }
-                      }
+                      },
+                      "required": [
+                        "formula"
+                      ]
                     }
                   }
                 ],
@@ -7169,26 +7461,21 @@
                     "pattern": "^[A-Z]+[1-9][0-9]*$",
                     "type": "string"
                   },
-                  "cached": {
-                    "type": [
-                      "string",
-                      "number",
-                      "boolean",
-                      "null"
-                    ]
-                  },
                   "formula": {
                     "type": [
                       "string",
                       "null"
-                    ]
+                    ],
+                    "description": "数式のないセルでは保存しない"
                   },
                   "id": {
                     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                    "type": "string"
+                    "type": "string",
+                    "description": "原本の形式から決まるID（Excelはシート番号とアドレスの c-<シート番号>-<アドレス>、ほかの形式はページの n 番目のセルの text-<n>）は保存しない"
                   },
                   "number_format": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "原本の形式の既定（Excelは General、ほかの形式は空文字）は保存しない"
                   },
                   "type": {
                     "enum": [
@@ -7198,7 +7485,8 @@
                       "null",
                       "formula",
                       "error"
-                    ]
+                    ],
+                    "description": "数式があれば formula、なければ値の型（string・number・boolean・null）という、値と数式から決まる型は保存しない。error などそれ以外の型だけを持つ"
                   },
                   "value": {
                     "type": [
@@ -7264,120 +7552,131 @@
                     ]
                   },
                   "style": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "bold": {
-                        "type": "boolean"
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "bold": {
+                            "type": "boolean"
+                          },
+                          "fill": {
+                            "description": "Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.",
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "border": {
+                            "description": "Excel border number; 0 when the border draws no side. Equal numbers are the same border.",
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "italic": {
+                            "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
+                            "type": "boolean"
+                          },
+                          "underline": {
+                            "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
+                            "type": "boolean"
+                          },
+                          "strike": {
+                            "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
+                            "type": "boolean"
+                          },
+                          "highlight": {
+                            "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
+                            "type": "boolean"
+                          },
+                          "indent": {
+                            "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        },
+                        "required": [
+                          "bold",
+                          "fill",
+                          "border"
+                        ]
                       },
-                      "fill": {
-                        "description": "Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.",
-                        "type": "integer",
-                        "minimum": 0
-                      },
-                      "border": {
-                        "description": "Excel border number; 0 when the border draws no side. Equal numbers are the same border.",
-                        "type": "integer",
-                        "minimum": 0
-                      },
-                      "italic": {
-                        "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
-                        "type": "boolean"
-                      },
-                      "underline": {
-                        "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
-                        "type": "boolean"
-                      },
-                      "strike": {
-                        "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
-                        "type": "boolean"
-                      },
-                      "highlight": {
-                        "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
-                        "type": "boolean"
-                      },
-                      "indent": {
-                        "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
-                        "type": "integer",
-                        "minimum": 1
+                      {
+                        "type": "null"
                       }
-                    },
-                    "required": [
-                      "bold",
-                      "fill",
-                      "border"
-                    ]
+                    ],
+                    "description": "シートの cell_style と異なるときだけ持つ。cell_style のあるシートで書式を持たないセルは null"
                   },
                   "font": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                    "required": [
-                      "latin",
-                      "east_asian",
-                      "size",
-                      "color"
-                    ],
-                    "properties": {
-                      "latin": {
-                        "type": [
-                          "string",
-                          "null"
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                        "required": [
+                          "latin",
+                          "east_asian",
+                          "size",
+                          "color"
                         ],
-                        "minLength": 1,
-                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                      },
-                      "east_asian": {
-                        "type": [
-                          "string",
-                          "null"
-                        ],
-                        "minLength": 1,
-                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                      },
-                      "size": {
-                        "description": "ポイント",
-                        "anyOf": [
-                          {
-                            "type": "number",
-                            "exclusiveMinimum": 0
+                        "properties": {
+                          "latin": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
                           },
-                          {
-                            "const": "mixed"
+                          "east_asian": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "minLength": 1,
+                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
                           },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "color": {
-                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                        "anyOf": [
-                          {
+                          "size": {
+                            "description": "ポイント",
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "const": "mixed"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color": {
+                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                             "type": "string",
-                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                          },
-                          {
-                            "type": "null"
+                            "minLength": 1
                           }
-                        ]
+                        }
                       },
-                      "color_theme": {
-                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                        "type": "string",
-                        "minLength": 1
+                      {
+                        "type": "null"
                       }
-                    }
+                    ],
+                    "description": "シートの cell_font と異なるときだけ持つ。cell_font のあるシートでフォントを持たないセルは null"
                   }
                 },
                 "required": [
-                  "id",
                   "address",
-                  "type",
-                  "value",
-                  "formula",
-                  "cached",
-                  "number_format"
+                  "value"
                 ],
                 "type": "object"
               },
@@ -7387,7 +7686,8 @@
               "items": {
                 "type": "string"
               },
-              "type": "array"
+              "type": "array",
+              "description": "結合範囲。保存時は1行に並べる"
             },
             "name": {
               "minLength": 1,
@@ -7572,7 +7872,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           },
                           "row": {
                             "type": [
@@ -7584,7 +7885,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           }
                         },
                         "required": []
@@ -7603,7 +7905,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           },
                           "row": {
                             "type": [
@@ -7615,7 +7918,8 @@
                             "type": [
                               "integer",
                               "null"
-                            ]
+                            ],
+                            "description": "EMU。0 のときは持たない"
                           }
                         },
                         "required": []
@@ -7981,26 +8285,214 @@
                         ]
                       }
                     }
+                  },
+                  "paragraphs": {
+                    "description": "PowerPoint: the cells (column A) of the paragraphs of the shape's text, in order.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^A[1-9][0-9]*$"
+                    }
+                  },
+                  "head_end": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The mark at the start of the drawing's line (a:headEnd), such as triangle for an arrowhead. Absent for none."
+                  },
+                  "tail_end": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The mark at the end of the drawing's line (a:tailEnd), such as triangle for an arrowhead. Absent for none."
+                  },
+                  "dash": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The dash of the drawing's line (a:prstDash), such as dash or sysDot. Absent for a solid line."
                   }
                 },
                 "required": [
                   "id",
-                  "part",
                   "kind",
-                  "name",
-                  "description",
-                  "text",
-                  "anchor",
-                  "group",
-                  "transform",
-                  "geometry",
-                  "connections",
-                  "image",
-                  "linked_image",
-                  "macro",
-                  "control"
+                  "anchor"
                 ]
               }
+            },
+            "grid": {
+              "description": "Excel sheets with drawings: the sizes of the columns and rows, which place the cells and the drawings anchored on them on the sheet.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "column_width",
+                "row_height",
+                "columns",
+                "rows"
+              ],
+              "properties": {
+                "column_width": {
+                  "description": "The default width of a column, in characters of the normal font's digits with padding, as Excel stores widths.",
+                  "type": "number",
+                  "minimum": 0
+                },
+                "row_height": {
+                  "description": "The default height of a row, in points.",
+                  "type": "number",
+                  "minimum": 0
+                },
+                "columns": {
+                  "description": "Columns of their own width: [first, last, width], numbered from 1. Adjacent columns of the same width are one run.",
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    ],
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                },
+                "rows": {
+                  "description": "Rows of their own height in points: [first, last, height], numbered from 1. Adjacent rows of the same height are one run.",
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    ],
+                    "minItems": 3,
+                    "maxItems": 3
+                  }
+                }
+              }
+            },
+            "cell_font": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "font を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない",
+              "required": [
+                "latin",
+                "east_asian",
+                "size",
+                "color"
+              ],
+              "properties": {
+                "latin": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1,
+                  "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                },
+                "east_asian": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1,
+                  "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                },
+                "size": {
+                  "description": "ポイント",
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "const": "mixed"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "color": {
+                  "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "color_theme": {
+                  "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "cell_style": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "bold": {
+                  "type": "boolean"
+                },
+                "fill": {
+                  "description": "Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "border": {
+                  "description": "Excel border number; 0 when the border draws no side. Equal numbers are the same border.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "italic": {
+                  "description": "Every run of the text is italic, as styles and themes resolve it. Absent when not.",
+                  "type": "boolean"
+                },
+                "underline": {
+                  "description": "Every run of the text is underlined, by a line of any kind. Absent when not.",
+                  "type": "boolean"
+                },
+                "strike": {
+                  "description": "Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.",
+                  "type": "boolean"
+                },
+                "highlight": {
+                  "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
+                  "type": "boolean"
+                },
+                "indent": {
+                  "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "bold",
+                "fill",
+                "border"
+              ],
+              "description": "style を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない"
             }
           },
           "required": [
@@ -8013,24 +8505,6 @@
           "type": "object"
         },
         "type": "array"
-      },
-      "source": {
-        "additionalProperties": false,
-        "properties": {
-          "path": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "sha256": {
-            "pattern": "^[a-f0-9]{64}$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "sha256"
-        ],
-        "type": "object"
       },
       "slide_layouts": {
         "type": "array",
@@ -8407,6 +8881,28 @@
             }
           }
         }
+      },
+      "document_id": {
+        "pattern": "^[^/\\\\:*?\"<>|]+(/[^/\\\\:*?\"<>|]+)*$",
+        "type": "string"
+      },
+      "source": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "type": "object"
       }
     },
     "required": [
@@ -8419,7 +8915,7 @@
       "assets"
     ],
     "type": "object",
-    "description": "documents extraction-read が書き出す抽出結果の読み出し。extraction.json はシートごとのフォント・書式の表をセルが番号で参照し、数式の計算結果を保存しない。この読み出しは各セルにフォント・書式・計算結果（cached。数式なら value と同じ）を戻した形で、JSON Pointer の位置は extraction.json と同じ。編集の入力には使わない。"
+    "description": "documents extraction-read の出力。extraction.json と同じ形で1セル1行に書き、文書ID・原本・注意事項の全文・画像を加え、フォントと書式は番号の代わりに中身を書く。シートは多くのセルが持つフォント・書式を cell_font・cell_style に1回だけ書き、セルはそれと異なるときだけ font・style を持つ（持たないセルは null）。数式の最後の計算結果は value で、別には書かない"
   },
   "formation": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

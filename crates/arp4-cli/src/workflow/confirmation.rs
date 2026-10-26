@@ -50,12 +50,15 @@ impl Workflow {
     }
 }
 
-fn mentions(value: &Value, id: &str) -> bool {
+/// The strings in `value`, at any depth; object keys are not values.
+fn texts<'a>(value: &'a Value, found: &mut BTreeSet<&'a str>) {
     match value {
-        Value::String(v) => v == id,
-        Value::Array(a) => a.iter().any(|v| mentions(v, id)),
-        Value::Object(o) => o.values().any(|v| mentions(v, id)),
-        _ => false,
+        Value::String(v) => {
+            found.insert(v);
+        }
+        Value::Array(a) => a.iter().for_each(|v| texts(v, found)),
+        Value::Object(o) => o.values().for_each(|v| texts(v, found)),
+        _ => {}
     }
 }
 
@@ -307,16 +310,21 @@ pub(super) fn delivery(packet: &Value, confirmation: &Value) -> Result<Value> {
     source_refs(&view["items"], &mut sources);
     // Keep incoming and outgoing relationships of delivered claims (including
     // deleted predecessors), not the targets of unrelated claims in the packet.
+    // The texts the delivered claims mention, gathered once for every target.
     let items = view["items"].clone();
+    let mut mentioned = BTreeSet::new();
+    texts(&items, &mut mentioned);
     if let Some(targets) = view
         .get_mut("relationship_targets")
         .and_then(Value::as_array_mut)
     {
         targets.retain(|target| {
-            ids.iter().any(|id| mentions(target, id))
+            let mut named = BTreeSet::new();
+            texts(target, &mut named);
+            named.iter().any(|text| ids.contains(*text))
                 || target["item"]["id"]
                     .as_str()
-                    .is_some_and(|id| mentions(&items, id))
+                    .is_some_and(|id| mentioned.contains(id))
         });
     }
     source_refs(&view["relationship_targets"], &mut sources);

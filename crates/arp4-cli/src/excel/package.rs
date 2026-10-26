@@ -142,6 +142,18 @@ pub(super) fn relationship_id(rels: Option<&str>) -> Result<String> {
     let Some(rels) = rels else {
         return Ok("rId1".to_owned());
     };
+    let used = relationship_ids(rels)?;
+    for number in 1..u32::MAX {
+        let candidate = format!("rId{number}");
+        if !used.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    bail!("relationship ID space exhausted")
+}
+
+/// The IDs of the relationships of a relationships part.
+pub(super) fn relationship_ids(rels: &str) -> Result<BTreeSet<String>> {
     let doc = xml(rels.as_bytes())?;
     let mut used = BTreeSet::new();
     for node in doc
@@ -152,13 +164,7 @@ pub(super) fn relationship_id(rels: Option<&str>) -> Result<String> {
         let id = node.attribute("Id").context("relationship ID missing")?;
         used.insert(id.to_owned());
     }
-    for number in 1..u32::MAX {
-        let candidate = format!("rId{number}");
-        if !used.contains(&candidate) {
-            return Ok(candidate);
-        }
-    }
-    bail!("relationship ID space exhausted")
+    Ok(used)
 }
 
 pub(super) fn append_relationship(

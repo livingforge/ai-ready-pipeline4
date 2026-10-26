@@ -95,7 +95,7 @@ impl Store {
             let mut deleted_rows = BTreeMap::new();
             let mut deleted_columns = BTreeMap::new();
             for cell in &sheet.cells {
-                let address = &*cell.address;
+                let address = cell.address();
                 cells.entry((sheet_name, address)).or_insert(cell);
                 if !has_deletions {
                     continue;
@@ -132,21 +132,21 @@ impl Store {
                 );
             }
         }
-        for e in &result.entries {
+        for (index, e) in result.entries().enumerate() {
             let e = e.json();
             let e = &*e;
             match string(&e["writeback"])? {
                 "excluded" => excluded.push(e.clone()),
                 "pending" => pending.push(e.clone()),
                 "cell" => {
-                    let new = &result.content[&key(e)?].value;
+                    let new = &result.content[index].value;
                     match mapping_target(&e["target"])?.context("cell writeback requires target")? {
                         MappingTarget::Cell { sheet, cell } => {
                             // A cell the original leaves empty is none of the extraction's.
                             let old = cells
                                 .get(&(sheet, cell))
-                                .map_or(&Value::Null, |old| &old.value);
-                            if *old != *new
+                                .map_or(CellValue::Null, |old| old.value());
+                            if old != *new
                                 && let Some(mapped) =
                                     excel::map_coordinate(sheet, cell, sheet_operations(sheet))?
                             {
@@ -195,7 +195,7 @@ impl Store {
                     }
                 }
                 "shape" => {
-                    let new = &result.content[&key(e)?].value;
+                    let new = &result.content[index].value;
                     let Some(MappingTarget::Shape { sheet, shape }) = mapping_target(&e["target"])?
                     else {
                         bail!("shape writeback requires a shape target");
@@ -211,7 +211,7 @@ impl Store {
                     bail!("operation writeback entries are not supported; use operations")
                 }
                 "formula" => {
-                    let new = &result.content[&key(e)?].value;
+                    let new = &result.content[index].value;
                     let Some(MappingTarget::Cell { sheet, cell }) = mapping_target(&e["target"])?
                     else {
                         bail!("formula writeback requires a cell target");
@@ -219,9 +219,7 @@ impl Store {
                     let old = cells.get(&(sheet, cell)).context("missing cell")?;
                     let before = format!(
                         "={}",
-                        old.formula
-                            .as_deref()
-                            .context("formula cell without formula")?
+                        old.formula().context("formula cell without formula")?
                     );
                     if *new != before {
                         let mapped = excel::map_coordinate(sheet, cell, sheet_operations(sheet))?;
@@ -232,8 +230,7 @@ impl Store {
             }
         }
         // Fonts are written to the original cells; a cell an operation deletes keeps none.
-        let mut fonts =
-            super::value_edit::font_changes(&result.extraction, &result.entries, &result.content)?;
+        let mut fonts = super::value_edit::font_changes(result)?;
         for change in &fonts {
             if let Some(cell) = change["cell"].as_str() {
                 let sheet = string(&change["sheet"])?;

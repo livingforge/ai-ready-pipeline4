@@ -496,6 +496,19 @@ impl<'a> ReviewBasis<'a> {
             .filter_map(|id| self.source_order.get(id.as_str()).copied())
             .collect();
         outside.sort_unstable();
+        // The structure of each sheet, made once for the sources on it.
+        let mut sheet_structures = BTreeMap::<(&str, &str), Value>::new();
+        for s in outside.iter().map(|&k| &input.sources[k]) {
+            if let Some(c) = &s.context
+                && let Some(structure) = input.structures.get(&s.document)
+            {
+                sheet_structures
+                    .entry((&s.document, &c.sheet))
+                    .or_insert_with(|| {
+                        crate::document_structure::sheet_context(structure, &c.sheet)
+                    });
+            }
+        }
         let mut packet = json!({"version":1,"document":document,"sources":source_data,"items":items,"exclusions":exclusions,
         "warnings":warnings,"modules":modules,"open_issues":issues,"relationship_targets":targets,"contract":hash(REVIEW_PROMPT.as_bytes()),
         "external_sources":outside.into_iter().map(|k| &input.sources[k]).map(|s| {
@@ -503,8 +516,8 @@ impl<'a> ReviewBasis<'a> {
             if let Some(c) = &s.context {
                 // The merges of the source's sheet, which the input records once for the sheet.
                 context["merges"] = json!(input.sheet_merges(&s.document, &c.sheet));
-                if let Some(structure) = input.structures.get(&s.document) {
-                    context["structure"] = crate::document_structure::sheet_context(structure, &c.sheet);
+                if let Some(structure) = sheet_structures.get(&(s.document.as_str(), c.sheet.as_str())) {
+                    context["structure"] = structure.clone();
                 }
             }
             json!({"ref":all_aliases[&s.id],"text":s.text,"document":s.document,"location":s.location,"context":context})

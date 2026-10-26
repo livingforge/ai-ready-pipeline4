@@ -1761,7 +1761,7 @@ Commands:
   search-refresh   Reconcile canonical documents with the local search index
   structure-read   Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
   elements-read    Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
-  extraction-read  Write the extraction with every cell's font, style and cached result in place (the extraction-view contract): extraction.json stores fonts and styles once per sheet and leaves out the cached results
+  extraction-read  Write the extraction for reading (the extraction-view contract): as extraction.json stores it, one cell per line, with each font and style written out where extraction.json has its index; a sheet gives the font and style most of its cells have once (cell_font, cell_style), and a cell only one of its own. A formula's cached result is its value
   structure-save   Save structure corrections; remove a managed work/structure view on success
   rows             Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
   columns          Insert or delete Excel worksheet columns, like rows
@@ -2177,7 +2177,7 @@ Options:
 ## `arp4 documents extraction-read`
 
 ```text
-Write the extraction with every cell's font, style and cached result in place (the extraction-view contract): extraction.json stores fonts and styles once per sheet and leaves out the cached results
+Write the extraction for reading (the extraction-view contract): as extraction.json stores it, one cell per line, with each font and style written out where extraction.json has its index; a sheet gives the font and style most of its cells have once (cell_font, cell_style), and a cell only one of its own. A formula's cached result is its value
 
 Usage: arp4 documents extraction-read [OPTIONS] --out <OUT> <DOCUMENT>
 

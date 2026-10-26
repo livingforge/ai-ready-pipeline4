@@ -341,8 +341,8 @@ impl Store {
                 let mut fonts = json!({});
                 let mut table = elements::Fonts::default();
                 for cell in &sheet.cells {
-                    let (_, row) = crate::excel::coordinate(&cell.address)?;
-                    rows[format!("r{row}")]["A"] = cell.value.clone();
+                    let (_, row) = crate::excel::coordinate(cell.address())?;
+                    rows[format!("r{row}")]["A"] = cell.value().to_json();
                     let font = crate::extraction::font(sheet, cell)?;
                     if !font.is_null() {
                         fonts["table-1"][format!("r{row}")]["A"] = table.add(font);

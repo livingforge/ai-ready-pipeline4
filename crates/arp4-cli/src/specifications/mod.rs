@@ -3,8 +3,9 @@ pub(crate) use render::render_table;
 mod capture;
 pub use capture::{capture, load_input, load_model, validate_structure_requirements};
 mod validation;
-pub use validation::assess;
 use validation::normalized;
+pub(crate) use validation::warning_document;
+pub use validation::{Indexed, InputIndex, assess};
 mod render;
 pub use render::{render, source_view};
 
@@ -73,6 +74,17 @@ pub struct Input {
     /// recorded once for the sheet rather than with each of its cells.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub merges: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+}
+
+impl Source {
+    /// Where the source comes in its document's extraction packet.
+    pub(crate) fn packet_order(&self) -> (&String, Option<(&String, u32, u32)>, &String) {
+        (
+            &self.document,
+            self.context.as_ref().map(|c| (&c.sheet, c.row, c.column)),
+            &self.location,
+        )
+    }
 }
 
 impl Input {
@@ -346,9 +358,14 @@ pub struct ReviewPlan {
 }
 impl ReviewPlan {
     pub fn validate(&self, input: &Input) -> Result<()> {
+        let known: BTreeSet<&str> = if self.omitted_sources.is_empty() {
+            BTreeSet::new()
+        } else {
+            input.sources.iter().map(|s| s.id.as_str()).collect()
+        };
         for (source, reason) in &self.omitted_sources {
             ensure!(
-                input.sources.iter().any(|s| &s.id == source),
+                known.contains(source.as_str()),
                 "unknown review omission source"
             );
             validation::nonempty(reason)?;

@@ -261,6 +261,59 @@ impl<'t> SheetData<'t> {
     }
 }
 
+/// The sizes of the columns and rows of `worksheet`, which place the cells
+/// on the sheet: the default width of a column (in characters of the
+/// normal font's digits, padding included, as Excel stores widths) and
+/// height of a row (in points), and the columns (`[min, max, width]`) and
+/// the rows (`[first, last, height]`, `heights` given by row) of other sizes,
+/// adjacent ones of the same size as one run.
+fn grid(worksheet: Node<'_, '_>, heights: &[(u32, f64)]) -> Value {
+    let format = child(worksheet, "sheetFormatPr");
+    let number = |name: &str| {
+        format
+            .and_then(|f| f.attribute(name))
+            .and_then(|v| v.parse::<f64>().ok())
+    };
+    // Excel's default column holds eight digits of the normal font, and its
+    // width adds the padding to them, as a column's width does.
+    let column_width = number("defaultColWidth")
+        .or_else(|| number("baseColWidth").map(|base| base + 1.140625))
+        .unwrap_or(9.140625);
+    let row_height = number("defaultRowHeight").unwrap_or(15.0);
+    // A run of each size, which `add` extends by the lines after its last.
+    let add =
+        |runs: &mut Vec<(u32, u32, f64)>, first: u32, last: u32, size: f64| match runs.last_mut() {
+            Some((_, end, run)) if *end + 1 == first && *run == size => *end = last,
+            _ => runs.push((first, last, size)),
+        };
+    let mut columns = vec![];
+    for col in worksheet
+        .children()
+        .filter(|n| n.has_tag_name((NS, "cols")))
+        .flat_map(|n| n.children())
+        .filter(|n| n.has_tag_name((NS, "col")))
+    {
+        let size = || -> Option<(u32, u32, f64)> {
+            let min = col.attribute("min")?.parse::<u32>().ok()?;
+            let max = col.attribute("max")?.parse::<u32>().ok()?.min(16_384);
+            Some((min, max, col.attribute("width")?.parse::<f64>().ok()?))
+        };
+        if let Some((min, max, width)) = size() {
+            add(&mut columns, min, max, width);
+        }
+    }
+    let mut rows = vec![];
+    for &(row, height) in heights {
+        add(&mut rows, row, row, height);
+    }
+    let runs = |runs: Vec<(u32, u32, f64)>| -> Vec<Value> {
+        runs.into_iter()
+            .map(|(first, last, size)| json!([first, last, size]))
+            .collect()
+    };
+    json!({"column_width":column_width,"row_height":row_height,"columns":runs(columns),"rows":runs(rows)})
+}
+
 /// The cells of a worksheet as its rows are read, a part of them at a time.
 struct Rows<'w> {
     sheet: &'w str,
@@ -270,12 +323,19 @@ struct Rows<'w> {
     date1904: bool,
     rich_values: &'w mut Vec<String>,
     cells: Vec<Cell>,
-    addresses: BTreeSet<String>,
+    /// The places of the cells read, by column and row: a large sheet has a
+    /// cell for each of its values, and their addresses took several times
+    /// the room.
+    places: HashSet<(u32, u32)>,
     /// Border sides by position, and the cells holding nothing.
     sides: HashMap<(u32, u32), [bool; 4]>,
     blanks: Vec<(u32, u32)>,
     filled: Vec<(u32, u32)>,
     hidden_rows: Vec<u32>,
+    /// The heights the rows give themselves (`ht`), in points, by row.
+    heights: Vec<(u32, f64)>,
+    /// The number of the last row read, which a row without one follows.
+    last_row: u32,
     /// The masters of shared formulas by group index: (column, row, formula).
     masters: BTreeMap<String, (u32, u32, String)>,
     /// The cells whose formula a shared formula's master gives, by their
@@ -316,13 +376,18 @@ impl Rows<'_> {
             {
                 self.hidden_rows.push(number.parse::<u32>()?);
             }
+            self.last_row = match row.attribute("r") {
+                Some(number) => number.parse::<u32>()?,
+                None => self.last_row + 1,
+            };
+            if let Some(height) = row.attribute("ht").and_then(|h| h.parse::<f64>().ok()) {
+                self.heights.push((self.last_row, height));
+            }
             for c in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
                 let address = c.attribute("r").context("missing cell address")?;
-                coordinate(address)?;
-                ensure!(
-                    self.addresses.insert(address.to_owned()),
-                    "duplicate Excel cell"
-                );
+                // An address names one place, which no other address names.
+                let position = coordinate(address)?;
+                ensure!(self.places.insert(position), "duplicate Excel cell");
                 let formula = child(c, "f");
                 let mut member = None;
                 let formula_text = match formula {
@@ -393,7 +458,6 @@ impl Rows<'_> {
                 };
                 let format = c.attribute("s").unwrap_or("0").parse::<usize>()?;
                 ensure!(format < self.cell_formats.len(), "invalid style index");
-                let position = coordinate(address)?;
                 if self.cell_formats[format].sides.iter().any(|side| *side) {
                     self.sides.insert(position, self.cell_formats[format].sides);
                 }
@@ -406,13 +470,17 @@ impl Rows<'_> {
                     self.members.push((self.cells.len(), group));
                 }
                 self.cells.push(Cell {
-                    address: address.to_owned(),
-                    kind: if formula.is_some() { "formula" } else { kind },
+                    address: address.into(),
+                    kind: if formula.is_some() {
+                        crate::extraction::CellKind::Formula
+                    } else {
+                        crate::extraction::CellKind::parse(kind)?
+                    },
                     value,
-                    formula: formula_text,
-                    format,
+                    formula: formula_text.map(String::into_boxed_str),
+                    format: u32::try_from(format)?,
                     bold_text,
-                    runs,
+                    runs: runs.into_boxed_slice(),
                 });
             }
         }
@@ -429,11 +497,14 @@ impl Rows<'_> {
                 .context("shared formula master missing")?;
             let cell = &mut self.cells[index];
             let (column, row) = coordinate(&cell.address)?;
-            cell.formula = Some(references::shift_relative(
-                text,
-                i64::from(row) - i64::from(*master_row),
-                i64::from(column) - i64::from(*master_column),
-            )?);
+            cell.formula = Some(
+                references::shift_relative(
+                    text,
+                    i64::from(row) - i64::from(*master_row),
+                    i64::from(column) - i64::from(*master_column),
+                )?
+                .into_boxed_str(),
+            );
         }
         Ok(())
     }
@@ -710,11 +781,13 @@ impl Workbook {
                 date1904,
                 rich_values: &mut rich_values,
                 cells: vec![],
-                addresses: BTreeSet::new(),
+                places: HashSet::new(),
                 sides: HashMap::new(),
                 blanks: vec![],
                 filled: vec![],
                 hidden_rows: vec![],
+                heights: vec![],
+                last_row: 0,
                 masters: BTreeMap::new(),
                 members: vec![],
                 computed: vec![],
@@ -757,6 +830,7 @@ impl Workbook {
                 blanks,
                 filled,
                 hidden_rows,
+                heights,
                 ..
             } = rows;
             let mut merges = child(doc.root_element(), "mergeCells")
@@ -789,12 +863,16 @@ impl Workbook {
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
             let computed = computed_ranges(&parts, &part, formulas)?;
             let mut sheet = json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed});
+            // Drawings are placed on the cells, which these sizes place on the sheet.
+            if sheet["drawings"].as_array().is_some_and(|d| !d.is_empty()) {
+                sheet["grid"] = grid(doc.root_element(), &heights);
+            }
             let boxes = bordered_blanks(&blanks, &filled, &sides, &merges)?;
             if !boxes.is_empty() {
                 sheet["bordered_blanks"] = json!(boxes);
             }
             sheets.push(sheet);
-            sheet_cells.push(cells);
+            sheet_cells.push(crate::data::exact(cells));
         }
         // Name unique images in first-use order across the workbook. Hashes remain
         // integrity metadata rather than names that readers must copy.
@@ -1023,8 +1101,10 @@ fn bordered_blanks(
             || values.contains(&p) && !covered.contains(&p) && !merged.contains_key(&p))
             && ruled(p)
     };
+    // The cells of the bands walked: every cell of a band walks to the same ends.
+    let mut walked = HashSet::new();
     for &(column, row) in filled {
-        if !along((column, row)) {
+        if walked.contains(&(column, row)) || !along((column, row)) {
             continue;
         }
         let mut left = column;
@@ -1035,6 +1115,7 @@ fn bordered_blanks(
         while !closes((right, row)) && along((right + 1, row)) {
             right += 1;
         }
+        walked.extend((left..=right).map(|c| (c, row)));
         let opened = if left == 1 {
             side((1, row), 0)
         } else {
@@ -1088,6 +1169,21 @@ fn bordered_blanks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_band_of_values_holds_the_empty_cells_between_its_lines() {
+        // Row 1 ruled above and below, closed after C1 and after F1: values in
+        // A1, B1 and E1, the other cells empty.
+        let filled = [(1, 1), (2, 1), (5, 1)];
+        let blanks = [(3, 1), (4, 1), (6, 1)];
+        let sides: HashMap<(u32, u32), [bool; 4]> = (1..=6)
+            .map(|column| ((column, 1), [false, column == 3 || column == 6, true, true]))
+            .collect();
+        assert_eq!(
+            bordered_blanks(&blanks, &filled, &sides, &[]).unwrap(),
+            ["C1:D1", "F1:F1"]
+        );
+    }
 
     /// The addresses of the cells of every row of `text`, a worksheet, read
     /// from the whole document.

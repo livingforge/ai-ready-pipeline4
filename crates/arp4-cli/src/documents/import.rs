@@ -440,7 +440,7 @@ impl Store {
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let mut extraction = json!({"schema_version":"2","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        let mut extraction = json!({"schema_version":"4","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
         if matches!(&book, Source::Excel(workbook) if workbook.date1904) {
             extraction["date1904"] = json!(true);
         }
@@ -604,11 +604,10 @@ impl Store {
             let grid = initial_grid(sheet, &page, &note, &layout)?;
             debug_assert_eq!(
                 grid,
-                elements::GridPage::from_value(identity::grid(
-                    initial_page(sheet, &page, &note)?,
-                    &layout,
-                    false
-                )?)?,
+                identity::stored_grid(
+                    elements::GridPage::from_value(initial_page(sheet, &page, &note)?)?,
+                    &layout
+                )?,
                 "the grid import makes of {page} is the one of its initial page"
             );
             let body = elements::encode_grid(grid, &mut layout, classified.remove(&page))?;
@@ -679,17 +678,14 @@ pub(super) fn initial_page(sheet: &Sheet, page: &str, note: &Value) -> Result<Va
     let mut fonts = json!({});
     let mut table = elements::Fonts::default();
     for c in &sheet.cells {
-        let address = &*c.address;
+        let address = c.address();
         let (_, row) = excel::coordinate(address)?;
         let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
-        rows[&format!("r{row}")][column] = c.value.clone();
+        rows[&format!("r{row}")][column] = c.value().to_json();
         let font = crate::extraction::font(sheet, c)?;
-        if c.kind == CellKind::Formula {
-            let f = &*c.id;
-            let formula = c
-                .formula
-                .as_deref()
-                .context("formula cell without formula")?;
+        if c.kind() == CellKind::Formula {
+            let f = c.id();
+            let formula = c.formula().context("formula cell without formula")?;
             formulas[f]["formula"] = json!(format!("={formula}"));
             if !font.is_null() {
                 fonts["formulas"][f]["formula"] = table.add(font);
@@ -743,19 +739,15 @@ pub(super) fn initial_grid(
         .values()
         .map(|target| Ok((string(&target["row"])?, string(&target["column"])?)))
         .collect::<Result<_>>()?;
-    let (body, formulas, shapes): (Arc<str>, Arc<str>, Arc<str>) =
+    let (body, formulas, shapes): (elements::Name, elements::Name, elements::Name) =
         ("table-1".into(), "formulas".into(), "shapes".into());
+    let (formula_column, text_column): (elements::Name, elements::Name) =
+        ("formula".into(), "text".into());
     let mut table = elements::Fonts::default();
-    let mut font = |font: &Value| {
-        if font.is_null() {
-            Value::Null
-        } else {
-            table.add(font)
-        }
-    };
+    let mut font = |font: &Value| (!font.is_null()).then(|| table.add_index(font));
     let (mut values, mut formula_values) = (vec![], vec![]);
     for c in &sheet.cells {
-        let address = &*c.address;
+        let address = c.address();
         let (_, row) = excel::coordinate(address)?;
         let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
         let key = format!("r{row}");
@@ -767,34 +759,31 @@ pub(super) fn initial_grid(
             .get(column)
             .context("unknown column identity")?;
         let cell_font = crate::extraction::font(sheet, c)?;
-        let mut body_font = Value::Null;
-        if c.kind == CellKind::Formula {
-            let formula = c
-                .formula
-                .as_deref()
-                .context("formula cell without formula")?;
-            let field = places.formulas.get(&*c.id).with_context(|| {
+        let mut body_font = None;
+        if c.kind() == CellKind::Formula {
+            let formula = c.formula().context("formula cell without formula")?;
+            let field = places.formulas.get(c.id()).with_context(|| {
                 format!(
                     "{name}!{} is deleted or has unknown formula identity",
-                    c.id.rsplit('-').next().unwrap_or(&c.id)
+                    c.id().rsplit('-').next().unwrap_or(c.id())
                 )
             })?;
             formula_values.push(elements::GridValue {
                 block: formulas.clone(),
                 row: field.clone(),
-                column: "formula".into(),
+                column: formula_column.clone(),
                 value: json!(format!("={formula}")),
                 font: font(cell_font),
             });
         } else {
             body_font = font(cell_font);
         }
-        if !formula_cells.contains(&(target_row.as_str(), target_column.as_str())) {
+        if !formula_cells.contains(&(&**target_row, &**target_column)) {
             values.push(elements::GridValue {
                 block: body.clone(),
                 row: target_row.clone(),
                 column: target_column.clone(),
-                value: c.value.clone(),
+                value: c.value().to_json(),
                 font: body_font,
             });
         }
@@ -803,12 +792,10 @@ pub(super) fn initial_grid(
         .into_iter()
         .map(|(key, drawing)| elements::GridValue {
             block: shapes.clone(),
-            row: key,
-            column: "text".into(),
+            row: key.into(),
+            column: text_column.clone(),
             value: drawing["text"].clone(),
-            font: drawing
-                .get("font")
-                .map_or(Value::Null, |font| table.add(font)),
+            font: drawing.get("font").map(|font| table.add_index(font)),
         })
         .collect();
     let mut titles = serde_json::Map::new();

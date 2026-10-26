@@ -403,6 +403,8 @@ impl Source {
                 doc.get_pages().len() <= 10000,
                 "PDF page count exceeds budget"
             );
+            let mapped = pdf_mapped_fonts(&doc);
+            let mut read = PdfFonts::new(&mapped);
             for (page, id) in doc.get_pages() {
                 let raw_content = doc.get_page_content_with_limit(id, MAX_PAGE)?;
                 // The lenient decoder stops quietly at the first token it cannot
@@ -414,7 +416,7 @@ impl Source {
                         Content::decode(&raw_content)?
                     }
                 };
-                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None)?
+                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
                     .into_iter()
                     .map(|(text, font)| (text, Some(font)))
                     .collect();
@@ -437,6 +439,8 @@ impl Source {
                 .then(|| word_fonts::WordStyles::new(&parts))
                 .transpose()?;
             let mut sheets = vec![];
+            let texts = slide_fonts::PresentationTexts::new(&parts);
+            let presentation = slide_fonts::PresentationParts::new(&texts);
             for (name, part) in containers {
                 let (text, _) = part_text(parts.get(&part).context("missing document part")?)?;
                 let xml = Document::parse(&text)?;
@@ -446,14 +450,29 @@ impl Source {
                         name != "document" || xml.root_element().has_tag_name((WORD, "document")),
                         "not a supported Word document"
                     );
-                    sheets.push(word::layout(&xml)?.sheet(&name, &part, styles));
+                    sheets.push(word::sheet(&xml, &name, &part, styles)?);
                 } else {
-                    let fonts = slide_fonts::SlideFonts::new(&parts, &part, &xml)?;
-                    let mut sheet = slide_text::layout(&xml)?.sheet(&name, &part, &fonts);
+                    let fonts = slide_fonts::SlideFonts::new(&parts, &part, &xml, &presentation)?;
+                    let layout = slide_text::layout(&xml)?;
+                    let mut sheet = layout.sheet(&name, &part, &fonts)?;
                     if xml.root_element().has_tag_name((PRESENTATION, "sld")) {
-                        sheet["drawings"] = json!(slide_drawings::drawings(
-                            &parts, &media, &part, &xml, &fonts
-                        )?);
+                        let mut drawings =
+                            slide_drawings::drawings(&parts, &media, &part, &xml, &fonts)?;
+                        // Each shape names the rows its paragraphs take.
+                        let rows = layout.shape_rows();
+                        for drawing in &mut drawings {
+                            let raw = drawing["id"]
+                                .as_str()
+                                .and_then(|id| id.rsplit_once('#'))
+                                .map(|(_, raw)| raw);
+                            if drawing["kind"] == "shape"
+                                && let Some(rows) = raw.and_then(|raw| rows.get(raw))
+                            {
+                                drawing["paragraphs"] =
+                                    json!(rows.iter().map(|r| format!("A{r}")).collect::<Vec<_>>());
+                            }
+                        }
+                        sheet["drawings"] = json!(drawings);
                     }
                     // A slide hidden from the show is marked like a hidden sheet.
                     if xml.root_element().attribute("show") == Some("0") {
@@ -501,7 +520,10 @@ impl Source {
                         .entry(sha)
                         .or_insert_with(|| format!("image-{next:03}.{extension}"))
                         .clone();
-                    if let Some(bytes) = media.get(&part) {
+                    // Each name stands for one picture's bytes, copied once.
+                    if !images.contains_key(&name)
+                        && let Some(bytes) = media.get(&part)
+                    {
                         images.insert(name.clone(), bytes.clone());
                     }
                     drawing["image"]["asset"] = json!(name);
@@ -675,32 +697,46 @@ impl Source {
                 } else {
                     vec![]
                 };
-                let names: BTreeSet<&str> = operations.iter().map(|o| o.sheet.as_str()).collect();
                 let origins = slides::origins(&slide_operations, &doc.extraction)?;
                 let sheets: BTreeMap<&str, &crate::extraction::Sheet> = doc
                     .extraction
                     .iter()
                     .map(|sheet| Ok((string(&sheet["name"])?, sheet)))
                     .collect::<Result<_>>()?;
-                for name in names {
-                    let own: Vec<_> = operations.iter().filter(|o| o.sheet == name).collect();
+                pages_take_rows(parts, operations, word(&doc.format), |name| {
                     // An inserted slide holds the markup of the slide it copies.
                     let sheet = sheets
                         .get(origins.get(name).map(String::as_str).unwrap_or(name))
                         .with_context(|| format!("{name} is not a page of the document"))?;
-                    let (text, _) = part_text(&parts[string(&sheet["part"])?])?;
-                    let xml = Document::parse(&text)?;
-                    let values = word::InsertedText::new();
-                    if word(&doc.format) {
-                        word::layout(&xml)?.restructure(&text, &own, &values)
-                    } else {
-                        slide_text::layout(&xml)?.restructure(&text, &own, &values)
-                    }
-                    .with_context(|| name.to_owned())?;
-                }
-                Ok(())
+                    Ok(string(&sheet["part"])?.to_owned())
+                })
             }
         }
+    }
+
+    /// [`Source::ensure_row_edits_supported`] of the Word document at `path`,
+    /// read only for the parts of its pages: opening it lays out all of its
+    /// text, which the checks do not read.
+    pub fn ensure_word_row_edits_supported(
+        path: &Path,
+        operations: &[crate::excel::StructuralOperation],
+    ) -> Result<()> {
+        if operations.is_empty() {
+            return Ok(());
+        }
+        let format = extension(path);
+        ensure!(word(&format), "not a Word document");
+        let raw = fs::read(path)?;
+        ensure!(raw.len() <= MAX_BYTES, "document exceeds size budget");
+        let parts = office_parts(&raw, false)?;
+        let pages: BTreeMap<String, String> =
+            office_containers(&parts, &format)?.into_iter().collect();
+        pages_take_rows(&parts, operations, true, |name| {
+            pages
+                .get(name)
+                .cloned()
+                .with_context(|| format!("{name} is not a page of the document"))
+        })
     }
 
     /// Rejects slide `operations` before any output is written: they apply to
@@ -1192,6 +1228,44 @@ pub fn base_note(format: &str) -> &'static str {
 
 fn word(format: &str) -> bool {
     WORD_FORMATS.contains(&format)
+}
+
+/// The format of the document at `path`: its extension, in lowercase.
+fn extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+}
+
+/// Whether the document at `path` is a Word document.
+pub fn is_word_document(path: &Path) -> bool {
+    word(&extension(path))
+}
+
+/// Rejects the row `operations` that a page cannot take: what Word, when
+/// `word_parts`, or PowerPoint cannot copy or remove. `part` names the part
+/// of the page `parts` holds.
+fn pages_take_rows(
+    parts: &BTreeMap<String, Vec<u8>>,
+    operations: &[crate::excel::StructuralOperation],
+    word_parts: bool,
+    part: impl Fn(&str) -> Result<String>,
+) -> Result<()> {
+    let names: BTreeSet<&str> = operations.iter().map(|o| o.sheet.as_str()).collect();
+    for name in names {
+        let own: Vec<_> = operations.iter().filter(|o| o.sheet == name).collect();
+        let (text, _) = part_text(&parts[&part(name)?])?;
+        let xml = Document::parse(&text)?;
+        let values = word::InsertedText::new();
+        if word_parts {
+            word::rows_layout(&xml)?.restructure(&text, &own, &values)
+        } else {
+            slide_text::layout(&xml)?.restructure(&text, &own, &values)
+        }
+        .with_context(|| name.to_owned())?;
+    }
+    Ok(())
 }
 
 /// The text elements, tabs and line breaks that display a field result, keyed
@@ -2490,6 +2564,8 @@ impl TextSource {
                 } else {
                     let mut doc = original.clone();
                     let glyphs = subset_glyphs(original)?;
+                    let mapped = pdf_mapped_fonts(original);
+                    let mut read = PdfFonts::new(&mapped);
                     for (page, id) in original.get_pages() {
                         if let Some(changes) = replacements.get(&format!("pdf:{page}")) {
                             ensure!(
@@ -2498,7 +2574,14 @@ impl TextSource {
                             );
                             let raw = original.get_page_content_with_limit(id, MAX_PAGE)?;
                             let mut content = Content::decode_strict(&raw)?;
-                            pdf_text(original, id, &mut content, changes, Some(&glyphs))?;
+                            pdf_text(
+                                original,
+                                id,
+                                &mut content,
+                                changes,
+                                Some(&glyphs),
+                                &mut read,
+                            )?;
                             // Always allocate a new stream: an original stream may be shared by pages.
                             let stream = doc.add_object(Stream::new(
                                 lopdf::Dictionary::new(),
@@ -3128,29 +3211,58 @@ fn pdf_font_name(font: &lopdf::Dictionary) -> Option<String> {
 /// `changes` replaces the strings at those indexes. `glyphs` (from
 /// [`subset_glyphs`]) limits a replacement drawn with an embedded subset font
 /// to the codes that subset is known to hold.
-fn pdf_text(
-    doc: &Pdf,
+/// The simple fonts of the pages of `doc` naming both an /Encoding and a
+/// ToUnicode map, without their /Encoding, by font dictionary: the ToUnicode
+/// map says what their codes mean, where lopdf would otherwise use the
+/// /Encoding alone (and replace it by StandardEncoding when it cannot read its
+/// glyph names). A page whose fonts cannot be read adds none; reading its text
+/// reports why.
+fn pdf_mapped_fonts(doc: &Pdf) -> BTreeMap<usize, lopdf::Dictionary> {
+    let mut mapped = BTreeMap::new();
+    for id in doc.get_pages().into_values() {
+        for font in doc
+            .get_page_fonts(id)
+            .into_iter()
+            .flat_map(BTreeMap::into_values)
+        {
+            if code_width(font) == 1 && font.has(b"ToUnicode") && font.has(b"Encoding") {
+                mapped.entry(font_key(font)).or_insert_with(|| {
+                    let mut font = font.clone();
+                    font.remove(b"Encoding");
+                    font
+                });
+            }
+        }
+    }
+    mapped
+}
+
+/// The encodings of the fonts of a document, by font dictionary, each made
+/// when a page first draws text in its font: reading one parses the font's
+/// ToUnicode map, once for all pages rather than on every page.
+struct PdfFonts<'a> {
+    mapped: &'a BTreeMap<usize, lopdf::Dictionary>,
+    encodings: BTreeMap<usize, PdfEncoding<'a>>,
+}
+
+impl<'a> PdfFonts<'a> {
+    fn new(mapped: &'a BTreeMap<usize, lopdf::Dictionary>) -> Self {
+        Self {
+            mapped,
+            encodings: BTreeMap::new(),
+        }
+    }
+}
+
+fn pdf_text<'a>(
+    doc: &'a Pdf,
     page: lopdf::ObjectId,
     content: &mut Content<Vec<lopdf::content::Operation>>,
     changes: &BTreeMap<usize, String>,
     glyphs: Option<&BTreeMap<usize, BTreeSet<Vec<u8>>>>,
+    read: &mut PdfFonts<'a>,
 ) -> Result<Vec<(String, Value)>> {
     let fonts = doc.get_page_fonts(page)?;
-    // A ToUnicode map says what a simple font's codes mean even when the font
-    // also names an /Encoding, which lopdf would otherwise use alone (and replace
-    // by StandardEncoding when it cannot read its glyph names).
-    let mapped: BTreeMap<&[u8], lopdf::Dictionary> = fonts
-        .iter()
-        .filter(|(_, font)| {
-            code_width(font) == 1 && font.has(b"ToUnicode") && font.has(b"Encoding")
-        })
-        .map(|(name, font)| {
-            let mut font = (*font).clone();
-            font.remove(b"Encoding");
-            (name.as_slice(), font)
-        })
-        .collect();
-    let mut encodings = BTreeMap::new();
     let mut font = Vec::new();
     // Text render mode (Tr): 3 draws nothing and 7 only clips, as in the OCR
     // layer of a scanned page.
@@ -3247,18 +3359,16 @@ fn pdf_text(
                     Object::String(..) => vec![operand],
                     _ => bail!("invalid PDF text operand"),
                 };
-                // Reading an encoding parses the font's ToUnicode map, so it is
-                // read once per font, not for every string drawn with it.
-                if !encodings.contains_key(&font) {
-                    let font_dictionary = *fonts.get(&font).context("PDF text font not found")?;
+                let font_dictionary = *fonts.get(&font).context("PDF text font not found")?;
+                let key = font_key(font_dictionary);
+                if !read.encodings.contains_key(&key) {
                     let encoding = PdfEncoding::for_font(
-                        mapped.get(font.as_slice()).unwrap_or(font_dictionary),
+                        read.mapped.get(&key).unwrap_or(font_dictionary),
                         doc,
                     )?;
-                    encodings.insert(font.clone(), (font_dictionary, encoding));
+                    read.encodings.insert(key, encoding);
                 }
-                let (font_dictionary, encoding) = &encodings[&font];
-                let font_dictionary = *font_dictionary;
+                let encoding = &read.encodings[&key];
                 // The size on the page: the font size scaled by the text and
                 // transformation matrices; the colour of what the render mode draws.
                 let shown = pdf_multiply(text_matrix, look.matrix);

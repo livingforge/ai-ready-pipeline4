@@ -4,13 +4,19 @@
 //! its own holding cells of its first record. Positions in the tree and keys are
 //! editing slots, not identities: moving values by hand is an ordinary value
 //! edit, and the tree's shape and keys follow from the metadata.
-use crate::data::{array, string};
+use crate::data::{YamlNode, YamlReader, array, string};
 use crate::documents::{Meta, MetaCell};
 use anyhow::{Context, Result, bail, ensure};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
+
+mod diagrams;
+use diagrams::Ordered;
+pub(crate) use diagrams::{
+    Arrow, DIAGRAM, Diagram, DiagramLine, DiagramShape, Diagrams, LineEnd, expand,
+};
 
 /// The member of a node holding the values of its record's cells that head
 /// nothing and are headed by nothing, such as the marks drawing a tree.
@@ -19,6 +25,43 @@ const MARKS: &str = "marks";
 const CHILDREN: &str = "children";
 /// The value of a blank cell under a category, which no node shows.
 static BLANK: Value = Value::Null;
+
+/// Something for each cell of a table, by the place of its record among the
+/// table's records and its place in the record: a large table has a cell for
+/// each cell of its sheet, and a map of them by cell ID took several times
+/// what they hold.
+struct PerCell<T> {
+    /// The place in `items` of the first cell of each record.
+    starts: Vec<usize>,
+    items: Vec<Option<T>>,
+}
+
+impl<T> PerCell<T> {
+    fn new(rows: &[crate::documents::MetaRow]) -> Self {
+        let mut starts = Vec::with_capacity(rows.len());
+        let mut count = 0;
+        for row in rows {
+            starts.push(count);
+            count += row.cells.len();
+        }
+        Self {
+            starts,
+            items: std::iter::repeat_with(|| None).take(count).collect(),
+        }
+    }
+
+    fn get(&self, record: usize, cell: usize) -> Option<&T> {
+        self.items[self.starts[record] + cell].as_ref()
+    }
+
+    fn set(&mut self, record: usize, cell: usize, item: T) {
+        self.items[self.starts[record] + cell] = Some(item);
+    }
+
+    fn take(&mut self, record: usize, cell: usize) -> Option<T> {
+        self.items[self.starts[record] + cell].take()
+    }
+}
 
 /// A node of the tree of a table: a record, by its place among the table's
 /// records, or a category, by its place among the table's categories.
@@ -33,8 +76,9 @@ enum Slot {
 /// under a record or a category, or at the root.
 struct Category<'a> {
     key: &'a str,
-    /// Its cells, in the order of the table's metadata.
-    cells: Vec<&'a MetaCell>,
+    /// Its cells, each with its place in its record, in the order of the
+    /// table's metadata.
+    cells: Vec<(usize, &'a MetaCell)>,
     /// The record holding its cells.
     record: usize,
     parent: Option<&'a str>,
@@ -68,13 +112,12 @@ impl<'a> Table<'a> {
             "table has fewer records than headings"
         );
         let mut index = HashMap::new();
-        let mut cells = HashMap::new();
         for (i, row) in rows.iter().enumerate() {
             if let Some(id) = row["id"].as_str() {
                 index.insert(id, i);
             }
             for cell in &row.cells {
-                cells.insert(string(&cell["id"])?, (i, cell));
+                cell.id()?;
             }
         }
         let mut categories = vec![];
@@ -82,6 +125,17 @@ impl<'a> Table<'a> {
         let mut categorized = BTreeSet::new();
         if let Some(map) = element.get("categories") {
             let map = map.as_object().context("table categories must be a map")?;
+            // The cells by ID, made only for a table with categories: a large
+            // table has a cell for each cell of its sheet, and a layout read
+            // back gives each table its categories, none or some.
+            let mut cells = HashMap::new();
+            if !map.is_empty() {
+                for (i, row) in rows.iter().enumerate() {
+                    for (j, cell) in row.cells.iter().enumerate() {
+                        cells.insert(cell.id()?, (i, j, cell));
+                    }
+                }
+            }
             for (key, entry) in map {
                 let mut ids = vec![key.as_str()];
                 for id in entry["cells"].as_array().into_iter().flatten() {
@@ -90,7 +144,7 @@ impl<'a> Table<'a> {
                 let mut held = vec![];
                 let mut record = None;
                 for id in ids {
-                    let &(i, cell) = cells
+                    let &(i, j, cell) = cells
                         .get(id)
                         .with_context(|| format!("category cell {id} is no cell of the table"))?;
                     ensure!(
@@ -98,7 +152,7 @@ impl<'a> Table<'a> {
                         "the cells of category {key} must be cells of one record"
                     );
                     ensure!(categorized.insert(id), "cell {id} is in two categories");
-                    held.push(cell);
+                    held.push((j, cell));
                 }
                 named.insert(key.as_str(), categories.len());
                 categories.push(Category {
@@ -110,13 +164,13 @@ impl<'a> Table<'a> {
                 });
             }
         }
-        for &(_, cell) in cells.values() {
+        for cell in rows.iter().flat_map(|row| &row.cells) {
             if let Some(key) = cell.get("category") {
                 let key = key.as_str().context("a cell's category must be its key")?;
                 ensure!(
                     named.contains_key(key),
                     "cell {} is under no category {key}",
-                    string(&cell["id"])?
+                    cell.id()?
                 );
             }
         }
@@ -206,30 +260,79 @@ impl<'a> Table<'a> {
     fn valued(&self, cell: &MetaCell) -> bool {
         !is_mark(cell)
             && cell.get("category").is_none()
-            && !cell["id"]
-                .as_str()
-                .is_some_and(|id| self.categorized.contains(id))
+            && !cell.id().is_ok_and(|id| self.categorized.contains(id))
     }
 
     fn cells(&self, record: usize) -> Result<&'a [MetaCell]> {
         Ok(&self.rows[record].cells)
     }
 
-    /// The key of each cell of the tree that is no mark, by cell ID: the text
+    /// The cells a node shows, each with its record and its place in it: a
+    /// record's cells that are [`Table::valued`] or marks, or a category's.
+    fn node_cells(&self, slot: Slot) -> Result<Vec<(usize, usize, &'a MetaCell)>> {
+        Ok(match slot {
+            Slot::Record(record) => self
+                .cells(record)?
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| self.valued(c) || is_mark(c))
+                .map(|(j, c)| (record, j, c))
+                .collect(),
+            Slot::Category(c) => {
+                let category = &self.categories[c];
+                category
+                    .cells
+                    .iter()
+                    .map(|&(j, cell)| (category.record, j, cell))
+                    .collect()
+            }
+        })
+    }
+
+    /// The place of each cell whose value a heading takes, by its ID: the
+    /// cells the `label` of a cell or the table's `labels` name.
+    fn label_places(&self) -> Result<HashMap<&'a str, (usize, usize)>> {
+        let mut named: std::collections::HashSet<&str> = self.element["labels"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, id)| id.as_str())
+            .collect();
+        for row in self.rows {
+            named.extend(row.cells.iter().filter_map(|cell| cell["label"].as_str()));
+        }
+        let mut places = HashMap::with_capacity(named.len());
+        for (i, row) in self.rows.iter().enumerate() {
+            for (j, cell) in row.cells.iter().enumerate() {
+                let id = cell.id()?;
+                if named.contains(id) {
+                    places.insert(id, (i, j));
+                }
+            }
+        }
+        Ok(places)
+    }
+
+    /// The key of each cell of the tree that is no mark, by its place: the text
     /// of the heading the cell's own `label` names, or else the one the
     /// table's `labels` give its column, or the column's name for a column
     /// without one or with an empty heading. A heading
     /// shared by columns two of which hold cells of one record, or naming a
     /// member of a node, is followed by the column's name, as `備考(L)`.
-    /// `value_of` gives the current value of a heading cell.
+    /// `value_at` gives the current value of a heading cell by its place.
     fn keys<'v>(
         &self,
-        value_of: impl Fn(&str) -> Option<&'v Value>,
-    ) -> Result<HashMap<&'a str, Rc<str>>> {
+        value_at: impl Fn(usize, usize) -> Option<&'v Value>,
+    ) -> Result<PerCell<Rc<str>>> {
+        let places = self.label_places()?;
+        let value_of = |id: &str| {
+            let &(i, j) = places.get(id)?;
+            value_at(i, j)
+        };
         // The heading a cell takes its key from: its own, as a physical name
         // under a logical one in a column, or its column's.
         let heading = |cell: &'a MetaCell| -> Result<Option<&'a str>> {
-            let column = string(&cell["column"])?;
+            let column = cell.column()?;
             Ok(cell["label"]
                 .as_str()
                 .or_else(|| self.element["labels"][column].as_str()))
@@ -241,7 +344,7 @@ impl<'a> Table<'a> {
         let mut qualified: BTreeSet<&str> = BTreeSet::new();
         for record in self.headings..self.rows.len() {
             for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
-                let column = string(&cell["column"])?;
+                let column = cell.column()?;
                 let head = heading(cell)?;
                 let text = texts
                     .entry(head)
@@ -258,7 +361,7 @@ impl<'a> Table<'a> {
         // all of them: a long table has many records.
         let mut made: HashMap<(Option<&'a str>, &'a str, bool), Rc<str>> = HashMap::new();
         let mut key_of = |cell: &'a MetaCell, qualified: bool| -> Result<Rc<str>> {
-            let column = string(&cell["column"])?;
+            let column = cell.column()?;
             let head = heading(cell)?;
             if let Some(key) = made.get(&(head, column, qualified)) {
                 return Ok(key.clone());
@@ -278,7 +381,7 @@ impl<'a> Table<'a> {
             for record in self.headings..self.rows.len() {
                 let mut seen: HashMap<Rc<str>, &str> = HashMap::new();
                 for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
-                    let column = string(&cell["column"])?;
+                    let column = cell.column()?;
                     let k = key_of(cell, qualified.contains(column))?;
                     if let Some(other) = seen.insert(k, column) {
                         ensure!(other != column, "two cells of a record in one column");
@@ -297,21 +400,27 @@ impl<'a> Table<'a> {
                 clashing.iter().copied().collect::<Vec<_>>().join(", ")
             );
         }
-        let mut keys = HashMap::new();
+        let mut keys = PerCell::new(self.rows);
         for record in self.headings..self.rows.len() {
-            for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
-                let column = string(&cell["column"])?;
-                keys.insert(
-                    string(&cell["id"])?,
-                    key_of(cell, qualified.contains(column))?,
-                );
+            for (j, cell) in self.cells(record)?.iter().enumerate() {
+                if keyed(cell) {
+                    let column = cell.column()?;
+                    keys.set(record, j, key_of(cell, qualified.contains(column))?);
+                }
             }
         }
         Ok(keys)
     }
 
+    /// The key of the cell at `cell` of `record`, which has one.
+    fn key(keys: &PerCell<Rc<str>>, record: usize, cell: usize) -> Result<&str> {
+        keys.get(record, cell)
+            .map(|key| &**key)
+            .context("table cell without a key")
+    }
+
     /// The keys of `keys` in the order of the table's columns.
-    fn key_order(&self, keys: &HashMap<&'a str, Rc<str>>) -> Result<Vec<String>> {
+    fn key_order(&self, keys: &PerCell<Rc<str>>) -> Result<Vec<String>> {
         let columns: HashMap<&str, usize> = array(&self.element["columns"])?
             .iter()
             .enumerate()
@@ -319,12 +428,12 @@ impl<'a> Table<'a> {
             .collect();
         let mut first: HashMap<&str, usize> = HashMap::new();
         for record in self.headings..self.rows.len() {
-            for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
-                let at = columns
-                    .get(string(&cell["column"])?)
-                    .copied()
-                    .unwrap_or(usize::MAX);
-                let key: &str = &keys[string(&cell["id"])?];
+            for (j, cell) in self.cells(record)?.iter().enumerate() {
+                if !keyed(cell) {
+                    continue;
+                }
+                let at = columns.get(cell.column()?).copied().unwrap_or(usize::MAX);
+                let key = Self::key(keys, record, j)?;
                 let slot = first.entry(key).or_insert(at);
                 *slot = (*slot).min(at);
             }
@@ -389,51 +498,156 @@ pub(crate) fn split(elements: Vec<Meta>) -> Result<(Vec<BodyElement>, Vec<Meta>)
     let mut metadata = elements;
     let mut body = Vec::with_capacity(metadata.len());
     for e in &mut metadata {
-        let kind = match string(&e["type"])? {
-            "text" => "text",
-            "formula" => "formula",
-            "table" => "table",
-            "blank" => "blank",
-            "image" => "image",
-            "chart" => "chart",
-            "drawing" => "drawing",
-            _ => bail!("unknown element type"),
-        };
+        let kind = BodyElement::kind_named(string(&e["type"])?).context("unknown element type")?;
         let value = match kind {
-            "text" | "formula" => e.remove(kind).context("element value missing")?,
             "table" => {
-                // Read in place, by the IDs the cells hold: a table of a large
-                // sheet has a value for each cell.
-                let body = {
-                    let mut values = HashMap::new();
-                    for row in e.rows()? {
-                        for cell in &row.cells {
-                            let value = if cell.contains_key("formula") {
-                                &cell["formula"]
-                            } else {
-                                cell.get("value").context("cell value missing")?
-                            };
-                            values.insert(string(&cell["id"])?, value);
-                        }
-                    }
-                    table_body(e, &values)?
-                };
-                for row in e.rows_mut()? {
-                    for cell in &mut row.cells {
-                        if cell.contains_key("formula") {
-                            cell.insert("formula", Value::Null);
-                        } else {
-                            cell.remove("value");
-                        }
-                    }
-                }
-                body
+                let values = cell_values(e)?;
+                table_body(e, values)?
             }
-            _ => Value::Null,
+            _ => element_value(e, kind)?,
         };
         body.push(BodyElement { kind, value });
     }
     Ok((body, metadata))
+}
+
+/// The value a text or formula element `e` of `kind` gives the body, taken
+/// out of it; null for an element of no value.
+fn element_value(e: &mut Meta, kind: &str) -> Result<Value> {
+    Ok(match kind {
+        "text" | "formula" => e.remove(kind).context("element value missing")?,
+        _ => Value::Null,
+    })
+}
+
+/// The values of the cells of the table `e`, moved out of the cells by their
+/// places: a table of a large sheet has a value for each cell.
+fn cell_values(e: &mut Meta) -> Result<PerCell<Value>> {
+    let mut values = PerCell::new(e.rows()?);
+    for (i, row) in e.rows_mut()?.iter_mut().enumerate() {
+        for (j, cell) in row.cells.iter_mut().enumerate() {
+            let value = if cell.contains_key("formula") {
+                cell.insert("formula", Value::Null)
+                    .expect("a cell with a formula has one")
+            } else {
+                cell.remove("value").context("cell value missing")?
+            };
+            values.set(i, j, value);
+        }
+    }
+    Ok(values)
+}
+
+/// [`split`] of the elements of a page to be written ([`Encoded`]): a table
+/// whose cells each hold a text, number, boolean or null, keyed by no member
+/// a node has of its own, keeps the values of its cells by their places.
+pub(crate) fn split_encoded(elements: Vec<Meta>) -> Result<(EncodedBody, Vec<Meta>)> {
+    let mut metadata = elements;
+    let mut body = Vec::with_capacity(metadata.len());
+    for e in &mut metadata {
+        let kind = BodyElement::kind_named(string(&e["type"])?).context("unknown element type")?;
+        body.push(match kind {
+            "table" => {
+                let values = cell_values(e)?;
+                if plain_table(e, &values)? {
+                    Encoding::Cells(values)
+                } else {
+                    Encoding::Element(BodyElement {
+                        kind,
+                        value: table_body(e, values)?,
+                    })
+                }
+            }
+            _ => Encoding::Element(BodyElement {
+                kind,
+                value: element_value(e, kind)?,
+            }),
+        });
+    }
+    Ok((EncodedBody(body), metadata))
+}
+
+/// Whether the tree of the table `e` with the cell `values` is one the
+/// content contract takes as it is made: each cell holds a text, number,
+/// boolean or null, and no key is a member a node has of its own.
+fn plain_table(e: &Meta, values: &PerCell<Value>) -> Result<bool> {
+    if values
+        .items
+        .iter()
+        .any(|value| value.as_ref().is_none_or(|value| !scalar(value)))
+    {
+        return Ok(false);
+    }
+    let keys = Table::of(e)?.keys(|i, j| values.get(i, j))?;
+    Ok(keys
+        .items
+        .iter()
+        .flatten()
+        .all(|key| !matches!(&**key, MARKS | CHILDREN)))
+}
+
+/// A page as encoding makes it, to be written: its members besides its
+/// elements, and its elements, each table whose tree is valid as it is made
+/// by the values of its cells rather than as that tree, which a table of a
+/// large sheet took several times the room of its values as.
+pub(crate) struct Encoded {
+    pub(crate) fields: serde_json::Map<String, Value>,
+    elements: Vec<Encoding>,
+}
+
+/// The elements of an [`Encoded`] page, as [`split_encoded`] gives them.
+pub(crate) struct EncodedBody(Vec<Encoding>);
+
+/// An element of an [`Encoded`] page.
+enum Encoding {
+    Element(BodyElement),
+    /// The values of the cells of a table, by their places.
+    Cells(PerCell<Value>),
+}
+
+impl Encoded {
+    pub(crate) fn new(
+        fields: serde_json::Map<String, Value>,
+        EncodedBody(elements): EncodedBody,
+    ) -> Self {
+        Self { fields, elements }
+    }
+
+    /// [`Content::check`] of the page: a table kept by its cells is valid
+    /// as it is made, and checked as a table of no rows in its place.
+    pub(crate) fn check(&mut self, check: impl Fn(&Value) -> Result<()>) -> Result<()> {
+        let empty = || BodyElement {
+            kind: "table",
+            value: json!({"rows":[]}),
+        };
+        let mut page = Content {
+            fields: std::mem::take(&mut self.fields),
+            elements: self
+                .elements
+                .iter_mut()
+                .map(|element| match element {
+                    // Moved into the page and back, its place holding a
+                    // value of no room meanwhile.
+                    Encoding::Element(element) => std::mem::replace(
+                        element,
+                        BodyElement {
+                            kind: "blank",
+                            value: Value::Null,
+                        },
+                    ),
+                    Encoding::Cells(_) => empty(),
+                })
+                .collect(),
+        };
+        let result = page.check(check);
+        self.fields = page.fields;
+        for (element, checked) in self.elements.iter_mut().zip(page.elements) {
+            if let Encoding::Element(element) = element {
+                *element = checked;
+            }
+        }
+        result
+    }
 }
 
 /// An element of a page body, `{kind: value}` in the page: held apart, as
@@ -446,12 +660,23 @@ pub(crate) struct BodyElement {
 }
 
 impl BodyElement {
-    pub(crate) fn to_value(&self) -> Value {
-        json!({ self.kind: &self.value })
+    /// The kind of body element `name` names, none for no kind.
+    pub(crate) fn kind_named(name: &str) -> Option<&'static str> {
+        [
+            "text", "formula", "table", "blank", "image", "chart", "drawing",
+        ]
+        .into_iter()
+        .find(|kind| *kind == name)
     }
 
     pub(crate) fn into_value(self) -> Value {
         json!({ self.kind: self.value })
+    }
+
+    /// The kind of element `name` names in a page as written, where the
+    /// elements of each diagram are written together as one.
+    fn written_kind(name: &str) -> Option<&'static str> {
+        Self::kind_named(name).or((name == DIAGRAM).then_some(DIAGRAM))
     }
 }
 
@@ -467,34 +692,110 @@ pub(crate) struct Content {
 const CONTENT_PART: usize = 2048;
 
 impl Content {
+    /// The content page given as JSON, each element an object of one member
+    /// of a known kind.
+    pub(crate) fn from_value(page: Value) -> Result<Self> {
+        let Value::Object(mut fields) = page else {
+            bail!("page must be an object")
+        };
+        let Some(Value::Array(elements)) = fields.remove("elements") else {
+            bail!("page elements missing")
+        };
+        let elements = elements
+            .into_iter()
+            .map(|element| {
+                let Value::Object(element) = element else {
+                    bail!("body element must be an object")
+                };
+                let mut members = element.into_iter();
+                match (members.next(), members.next()) {
+                    (Some((kind, value)), None) => Ok(BodyElement {
+                        kind: BodyElement::written_kind(&kind).context("unknown element type")?,
+                        value,
+                    }),
+                    _ => bail!("body element must have one member"),
+                }
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { fields, elements })
+    }
+
+    /// The content page `text` of the file `name`, valid against the content
+    /// contract: read typed, as [`crate::data::parse_listing`] reads it, and
+    /// checked a part at a time; a page it reads no such page of, or that
+    /// fails the contract, is read whole as JSON, as before, to say why.
+    pub(crate) fn read(text: &str) -> Result<Self> {
+        let typed = crate::data::parse_listing(text, "elements").and_then(|(fields, items)| {
+            let elements = items
+                .into_iter()
+                .map(|(kind, value)| {
+                    Some(BodyElement {
+                        kind: BodyElement::written_kind(&kind)?,
+                        value,
+                    })
+                })
+                .collect::<Option<_>>()?;
+            Some(Self { fields, elements })
+        });
+        if let Some(mut page) = typed
+            && page
+                .check(|part| crate::data::validate("content", part))
+                .is_ok()
+        {
+            return Ok(page);
+        }
+        let page = crate::data::parse(text, false)?;
+        crate::data::validate("content", &page)?;
+        Self::from_value(page)
+    }
+
     /// Checks the page with `check` a part at a time: with at most
     /// [`CONTENT_PART`] of its elements, as no part of the contract relates
-    /// the elements of a page.
-    pub(crate) fn check(&self, check: impl Fn(&Value) -> Result<()>) -> Result<()> {
-        let mut part = Value::Object(self.fields.clone());
-        let mut chunks: Vec<&[BodyElement]> = self.elements.chunks(CONTENT_PART).collect();
-        if chunks.is_empty() {
-            chunks.push(&[]);
-        }
-        for chunk in chunks {
-            part["elements"] = Value::Array(chunk.iter().map(BodyElement::to_value).collect());
-            check(&part)?;
-        }
-        Ok(())
+    /// the elements of a page. The members and values of the page are moved
+    /// into each part and back rather than copied: a table of a large sheet
+    /// is one element, as large as the page.
+    pub(crate) fn check(&mut self, check: impl Fn(&Value) -> Result<()>) -> Result<()> {
+        let mut part = Value::Object(std::mem::take(&mut self.fields));
+        let mut start = 0;
+        let result = loop {
+            let end = (start + CONTENT_PART).min(self.elements.len());
+            let chunk = &mut self.elements[start..end];
+            part["elements"] = chunk
+                .iter_mut()
+                .map(|e| json!({ e.kind: std::mem::take(&mut e.value) }))
+                .collect();
+            let result = check(&part);
+            let Value::Array(checked) = part["elements"].take() else {
+                unreachable!("the part holds the elements as a list")
+            };
+            for (element, mut checked) in chunk.iter_mut().zip(checked) {
+                element.value = checked[element.kind].take();
+            }
+            start = end;
+            if result.is_err() || start >= self.elements.len() {
+                break result;
+            }
+        };
+        let Value::Object(mut fields) = part else {
+            unreachable!("the part is an object")
+        };
+        fields.remove("elements");
+        self.fields = fields;
+        result
     }
 }
 
-/// The body of the table `element` of the metadata holding `values` by cell
-/// ID: the values of its headings as `columns`, one list for one heading
-/// record and a list of lists for more, and its tree as `rows`.
-fn table_body(element: &Meta, values: &HashMap<&str, &Value>) -> Result<Value> {
+/// The body of the table `element` of the metadata holding `values` by the
+/// places of its cells: the values of its headings as `columns`, one list for
+/// one heading record and a list of lists for more, and its tree as `rows`.
+/// The values are moved into the body.
+fn table_body(element: &Meta, mut values: PerCell<Value>) -> Result<Value> {
     let table = Table::of(element)?;
-    let value = |cell: &MetaCell| -> Result<Value> {
-        let id = string(&cell["id"])?;
+    let keys = table.keys(|i, j| values.get(i, j))?;
+    let mut value = |record: usize, j: usize, cell: &MetaCell| -> Result<Value> {
         values
-            .get(id)
-            .map(|value| (*value).clone())
-            .with_context(|| format!("value of {id} missing"))
+            .take(record, j)
+            .with_context(|| format!("value of {} missing", cell.id().unwrap_or("a cell")))
     };
     let mut body = serde_json::Map::new();
     let mut headings = vec![];
@@ -503,7 +804,8 @@ fn table_body(element: &Meta, values: &HashMap<&str, &Value>) -> Result<Value> {
             table
                 .cells(record)?
                 .iter()
-                .map(value)
+                .enumerate()
+                .map(|(j, cell)| value(record, j, cell))
                 .collect::<Result<Vec<_>>>()?,
         );
     }
@@ -516,23 +818,15 @@ fn table_body(element: &Meta, values: &HashMap<&str, &Value>) -> Result<Value> {
             body.insert("columns".into(), json!(headings));
         }
     }
-    let keys = table.keys(|id| values.get(id).copied())?;
-    let node = |slot: Slot| -> Result<serde_json::Map<String, Value>> {
+    let mut node = |slot: Slot| -> Result<serde_json::Map<String, Value>> {
         let mut node = serde_json::Map::new();
-        let cells: Vec<&MetaCell> = match slot {
-            Slot::Record(record) => table
-                .cells(record)?
-                .iter()
-                .filter(|c| table.valued(c) || is_mark(c))
-                .collect(),
-            Slot::Category(c) => table.categories[c].cells.clone(),
-        };
         let mut marks = vec![];
-        for cell in cells {
+        for (record, j, cell) in table.node_cells(slot)? {
             if is_mark(cell) {
-                marks.push(value(cell)?);
+                marks.push(value(record, j, cell)?);
             } else {
-                node.insert(keys[string(&cell["id"])?].to_string(), value(cell)?);
+                let key = Table::key(&keys, record, j)?;
+                node.insert(key.to_owned(), value(record, j, cell)?);
             }
         }
         if !marks.is_empty() {
@@ -543,7 +837,7 @@ fn table_body(element: &Meta, values: &HashMap<&str, &Value>) -> Result<Value> {
     fn tree(
         slots: &[Slot],
         table: &Table,
-        node: &dyn Fn(Slot) -> Result<serde_json::Map<String, Value>>,
+        node: &mut dyn FnMut(Slot) -> Result<serde_json::Map<String, Value>>,
     ) -> Result<Value> {
         let mut nodes = vec![];
         for &slot in slots {
@@ -556,77 +850,56 @@ fn table_body(element: &Meta, values: &HashMap<&str, &Value>) -> Result<Value> {
         }
         Ok(Value::Array(nodes))
     }
-    body.insert("rows".into(), tree(&table.roots, &table, &node)?);
+    body.insert("rows".into(), tree(&table.roots, &table, &mut node)?);
     Ok(Value::Object(body))
 }
 
-/// The value of each cell of the table body `value`, by cell ID, after
+/// The value of each cell of the table body `value`, by its place, after
 /// checking that the body has the shape the table `element` of the metadata
 /// gives it: the same headings, the same tree and in each node the keys of
 /// its record's cells.
-fn table_values<'e, 'v>(
-    element: &'e Meta,
-    value: &'v Value,
-) -> Result<HashMap<&'e str, &'v Value>> {
+fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
     let table = Table::of(element)?;
-    let body = value
+    let mut body = value;
+    let members = body
+        .value()
         .as_object()
         .context("table body must have columns and rows")?;
-    if let Some(key) = body
+    if let Some(key) = members
         .keys()
         .find(|k| !matches!(k.as_str(), "columns" | "rows"))
     {
         bail!("table body has unknown member {key}; edit values only");
     }
     ensure!(
-        body.contains_key("columns") == (table.headings > 0),
+        members.contains_key("columns") == (table.headings > 0),
         "table headings changed; use structure-save to change headings"
     );
-    let mut values: HashMap<&str, &Value> =
-        HashMap::with_capacity(table.rows.iter().map(|row| row.cells.len()).sum());
-    let changed = || "table headings changed; use structure-save to change headings";
-    let heading_rows: Vec<&[Value]> = match table.headings {
-        0 => vec![],
-        1 => vec![array(&body["columns"]).context(changed())?],
-        n => {
-            let rows = array(&body["columns"]).context(changed())?;
-            ensure!(rows.len() == n, changed());
-            rows.iter()
-                .map(|r| array(r).map(Vec::as_slice).context(changed()))
-                .collect::<Result<_>>()?
-        }
-    };
-    for (record, row) in heading_rows.into_iter().enumerate() {
-        let cells = table.cells(record)?;
-        ensure!(row.len() == cells.len(), changed());
-        for (cell, value) in cells.iter().zip(row) {
-            ensure!(!value.is_array() && !value.is_object(), changed());
-            values.insert(string(&cell["id"])?, value);
-        }
-    }
-    let keys = table.keys(|id| values.get(id).copied())?;
-    let mut pending: Vec<(&Value, &[Slot])> = vec![(&body["rows"], &table.roots)];
+    let mut values = PerCell::new(table.rows);
+    let columns = body.take("columns");
+    set_headings(&table, &mut values, columns)?;
+    let keys = table.keys(|i, j| values.get(i, j).map(Body::value))?;
+    let rows = body.take("rows");
+    let mut pending: Vec<(Option<V>, &[Slot])> = vec![(rows, &table.roots)];
     while let Some((nodes, slots)) = pending.pop() {
-        let nodes = array(nodes).context("table rows must be a list of records")?;
+        let nodes = nodes
+            .and_then(V::items)
+            .context("table rows must be a list of records")?;
         ensure!(
             nodes.len() == slots.len(),
             "table records changed; use ARP row operations or structure-save"
         );
-        for (node, &slot) in nodes.iter().zip(slots) {
-            let cells: Vec<&MetaCell> = match slot {
-                Slot::Record(record) => {
-                    let cells = table.cells(record)?;
-                    // A blank cell under a category stays blank.
-                    for cell in cells.iter().filter(|c| c.get("category").is_some()) {
-                        values.insert(string(&cell["id"])?, &BLANK);
+        // Each node is let go once read, when it is owned.
+        for (mut node, &slot) in nodes.into_iter().zip(slots) {
+            if let Slot::Record(record) = slot {
+                // A blank cell under a category stays blank.
+                for (j, cell) in table.cells(record)?.iter().enumerate() {
+                    if cell.get("category").is_some() {
+                        values.set(record, j, V::blank());
                     }
-                    cells
-                        .iter()
-                        .filter(|c| table.valued(c) || is_mark(c))
-                        .collect()
                 }
-                Slot::Category(c) => table.categories[c].cells.clone(),
-            };
+            }
+            let cells = table.node_cells(slot)?;
             // The node as messages name it, written only for one.
             let at = Named(|f: &mut std::fmt::Formatter<'_>| match slot {
                 Slot::Record(record) => {
@@ -634,68 +907,280 @@ fn table_values<'e, 'v>(
                 }
                 Slot::Category(c) => write!(f, "category {}", table.categories[c].key),
             });
-            let node = node
-                .as_object()
-                .with_context(|| format!("{at} must be a map of its values"))?;
+            ensure!(node.value().is_object(), "{at} must be a map of its values");
             let mut expected = BTreeSet::new();
             let mut marks = vec![];
-            for cell in cells {
-                let id = string(&cell["id"])?;
+            for (record, j, cell) in cells {
                 if is_mark(cell) {
-                    marks.push(id);
+                    marks.push((record, j));
                     continue;
                 }
-                let key: &str = &keys[id];
+                let key = Table::key(&keys, record, j)?;
                 expected.insert(key);
-                let value = node.get(key).with_context(|| {
+                let value = node.take(key).with_context(|| {
                     format!("{at} has no {key}; keys follow the headings, edit values only")
                 })?;
-                values.insert(id, value);
+                values.set(record, j, value);
             }
             if marks.is_empty() {
-                ensure!(!node.contains_key(MARKS), "{at} has no marks");
+                ensure!(node.value().get(MARKS).is_none(), "{at} has no marks");
             } else {
                 let given = node
-                    .get(MARKS)
-                    .and_then(Value::as_array)
+                    .take(MARKS)
+                    .and_then(V::items)
                     .with_context(|| format!("{at} lost its marks"))?;
                 ensure!(
                     given.len() == marks.len(),
                     "{at} must keep {} marks",
                     marks.len()
                 );
-                for (id, value) in marks.into_iter().zip(given) {
-                    values.insert(id, value);
+                for ((record, j), value) in marks.into_iter().zip(given) {
+                    values.set(record, j, value);
                 }
             }
             let children = table.under(slot);
             if children.is_empty() {
                 ensure!(
-                    !node.contains_key(CHILDREN),
+                    node.value().get(CHILDREN).is_none(),
                     "{at} heads no records; use structure-save to change the tree"
                 );
             } else {
                 ensure!(
-                    node.contains_key(CHILDREN),
+                    node.value().get(CHILDREN).is_some(),
                     "{at} lost its children; use structure-save to change the tree"
                 );
-                pending.push((&node[CHILDREN], children));
+                pending.push((node.take(CHILDREN), children));
             }
+            // An owned node holds only what no cell took: none of it is
+            // expected, as none of a borrowed one beyond what cells read.
             if let Some(key) = node
-                .keys()
+                .value()
+                .as_object()
+                .into_iter()
+                .flat_map(|members| members.keys())
                 .find(|k| !matches!(k.as_str(), MARKS | CHILDREN) && !expected.contains(k.as_str()))
             {
                 bail!("{at} has unknown key {key}; keys follow the headings, edit values only");
             }
         }
     }
-    for value in values.values() {
+    for value in values.items.iter().flatten() {
         ensure!(
-            !value.is_array() && !value.is_object(),
+            scalar(value.value()),
             "table values must be text, numbers, booleans or null"
         );
     }
     Ok(values)
+}
+
+/// Gives the cells of the heading records of `table` the values of the
+/// `columns` of its body: one list for one heading record, and a list of
+/// lists for more.
+fn set_headings<V: Body>(table: &Table, values: &mut PerCell<V>, columns: Option<V>) -> Result<()> {
+    let changed = || "table headings changed; use structure-save to change headings";
+    let heading_rows: Vec<Vec<V>> = match table.headings {
+        0 => vec![],
+        1 => vec![columns.and_then(V::items).context(changed())?],
+        n => {
+            let rows = columns.and_then(V::items).context(changed())?;
+            ensure!(rows.len() == n, changed());
+            rows.into_iter()
+                .map(|r| r.items().context(changed()))
+                .collect::<Result<_>>()?
+        }
+    };
+    for (record, row) in heading_rows.into_iter().enumerate() {
+        let cells = table.cells(record)?;
+        ensure!(row.len() == cells.len(), changed());
+        for (j, value) in (0..cells.len()).zip(row) {
+            ensure!(scalar(value.value()), changed());
+            values.set(record, j, value);
+        }
+    }
+    Ok(())
+}
+
+/// [`table_values`] of a table body read node by node from `reader`, the
+/// body's mapping started at `depth`: each node is read as it comes, and no
+/// value is made of it but those of its cells. Fails for a body [`table_values`]
+/// reads differently, such as one naming its rows before its columns; it
+/// then reads the body to say why.
+fn read_table(reader: &mut YamlReader<'_>, element: &Meta, depth: usize) -> Result<PerCell<Value>> {
+    let table = Table::of(element)?;
+    let mut values = PerCell::new(table.rows);
+    let (mut columns, mut rows) = (false, false);
+    while let Some(key) = reader.key()? {
+        let node = reader.node(depth + 1)?;
+        match &*key {
+            "columns" if !columns && !rows => {
+                columns = true;
+                // The headings are few, and read whole.
+                let value = reader.value(node, depth + 1)?;
+                ensure!(table.headings > 0, "table without headings has columns");
+                set_headings(&table, &mut values, Some(value))?;
+            }
+            "rows" if !rows && columns == (table.headings > 0) => {
+                rows = true;
+                ensure!(
+                    matches!(node, YamlNode::Sequence),
+                    "table rows must be a list"
+                );
+                let keys = table.keys(|i, j| values.get(i, j))?;
+                read_nodes(reader, &table, &keys, &mut values, &table.roots, depth + 1)?;
+            }
+            key => bail!("table body member {key} is not read in order"),
+        }
+    }
+    ensure!(rows, "table rows missing");
+    for value in values.items.iter().flatten() {
+        ensure!(scalar(value), "table value is a list or a map");
+    }
+    Ok(values)
+}
+
+/// Reads the nodes of the list being read from `reader`, one at `depth`, as
+/// the nodes of `slots` of `table`, into `values`.
+fn read_nodes(
+    reader: &mut YamlReader<'_>,
+    table: &Table,
+    keys: &PerCell<Rc<str>>,
+    values: &mut PerCell<Value>,
+    slots: &[Slot],
+    depth: usize,
+) -> Result<()> {
+    // Each cell is given a value once: the cells of nodes are each their own.
+    let set = |values: &mut PerCell<Value>, record: usize, j: usize, value: Value| {
+        let cell = &mut values.items[values.starts[record] + j];
+        ensure!(cell.is_none(), "table cell read twice");
+        *cell = Some(value);
+        Ok(())
+    };
+    let mut slots = slots.iter();
+    while let Some(node) = reader.item(depth + 1)? {
+        let slot = *slots.next().context("table records changed")?;
+        ensure!(
+            matches!(node, YamlNode::Mapping),
+            "table node must be a map"
+        );
+        if let Slot::Record(record) = slot {
+            for (j, cell) in table.cells(record)?.iter().enumerate() {
+                if cell.get("category").is_some() {
+                    set(values, record, j, Value::Null)?;
+                }
+            }
+        }
+        // The keys of the node's cells in order, each with its cell's place.
+        let mut expected = vec![];
+        let mut marks = vec![];
+        for (record, j, cell) in table.node_cells(slot)? {
+            if is_mark(cell) {
+                marks.push((record, j));
+            } else {
+                expected.push((Table::key(keys, record, j)?, record, j));
+            }
+        }
+        expected.sort_unstable_by_key(|&(key, ..)| key);
+        ensure!(
+            expected.windows(2).all(|pair| pair[0].0 != pair[1].0)
+                && expected.iter().all(|e| ![MARKS, CHILDREN].contains(&e.0)),
+            "table node keys repeat or name its marks or children"
+        );
+        let mut found = vec![false; expected.len()];
+        let under = table.under(slot);
+        let (mut marked, mut headed) = (false, false);
+        while let Some(key) = reader.key()? {
+            let node = reader.node(depth + 2)?;
+            match &*key {
+                MARKS if !marked && !marks.is_empty() => {
+                    marked = true;
+                    let Value::Array(given) = reader.value(node, depth + 2)? else {
+                        bail!("table marks must be a list");
+                    };
+                    ensure!(given.len() == marks.len(), "table marks changed");
+                    for (&(record, j), value) in marks.iter().zip(given) {
+                        set(values, record, j, value)?;
+                    }
+                }
+                CHILDREN if !headed && !under.is_empty() => {
+                    headed = true;
+                    ensure!(
+                        matches!(node, YamlNode::Sequence),
+                        "table children must be a list"
+                    );
+                    read_nodes(reader, table, keys, values, under, depth + 2)?;
+                }
+                key => {
+                    let at = expected
+                        .binary_search_by(|&(expected, ..)| expected.cmp(key))
+                        .ok()
+                        .context("unknown table node key")?;
+                    ensure!(!std::mem::replace(&mut found[at], true), "duplicate key");
+                    let (_, record, j) = expected[at];
+                    set(values, record, j, reader.value(node, depth + 2)?)?;
+                }
+            }
+        }
+        ensure!(
+            found.iter().all(|&found| found)
+                && marked == !marks.is_empty()
+                && headed == !under.is_empty(),
+            "table node changed"
+        );
+    }
+    ensure!(slots.next().is_none(), "table records changed");
+    Ok(())
+}
+
+/// Whether `value` is a value a table cell may hold: neither a list nor an
+/// object.
+fn scalar(value: &Value) -> bool {
+    !value.is_array() && !value.is_object()
+}
+
+/// A table body as [`table_values`] reads it: borrowed, its values read in
+/// place, or owned, each value taken out of it as it is read and each record
+/// let go once read, as a table of a large sheet is as large as its page.
+trait Body: Sized {
+    fn value(&self) -> &Value;
+    /// The member `key` of an object, taken out of an owned one.
+    fn take(&mut self, key: &str) -> Option<Self>;
+    /// The items of a list.
+    fn items(self) -> Option<Vec<Self>>;
+    /// The value of a blank cell under a category.
+    fn blank() -> Self;
+}
+
+impl Body for &Value {
+    fn value(&self) -> &Value {
+        self
+    }
+    fn take(&mut self, key: &str) -> Option<Self> {
+        self.get(key)
+    }
+    fn items(self) -> Option<Vec<Self>> {
+        self.as_array().map(|items| items.iter().collect())
+    }
+    fn blank() -> Self {
+        &BLANK
+    }
+}
+
+impl Body for Value {
+    fn value(&self) -> &Value {
+        self
+    }
+    fn take(&mut self, key: &str) -> Option<Self> {
+        self.as_object_mut()?.remove(key)
+    }
+    fn items(self) -> Option<Vec<Self>> {
+        match self {
+            Value::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+    fn blank() -> Self {
+        Value::Null
+    }
 }
 
 /// Displays what its function writes.
@@ -730,33 +1215,230 @@ pub(crate) fn each<'a>(
             fields.len() == 1 && fields.contains_key(kind),
             "element kind changed; use ARP structural operations"
         );
-        let value = &value[kind];
-        match kind {
-            "text" => visit(Item::Element(e), value)?,
-            "formula" => {
-                ensure!(value.is_string(), "formula must be a string");
-                visit(Item::Element(e), value)?;
-            }
-            "table" => {
-                let values = table_values(e, value)?;
-                for row in e.records().context("table metadata rows missing")? {
-                    for cell in &row.cells {
-                        let value = values[string(&cell["id"])?];
-                        ensure!(
-                            cell.get("formula").is_none() || value.is_string(),
-                            "formula must be a string"
-                        );
-                        visit(Item::Cell(cell), value)?;
-                    }
-                }
-            }
-            "blank" | "image" | "chart" | "drawing" => {
-                ensure!(value.is_null(), "non-text element must remain null")
-            }
-            _ => bail!("unknown element type"),
+        element(e, kind, &value[kind], &mut visit)?;
+    }
+    Ok(())
+}
+
+/// [`each`] of a body held typed, as a content page is read: the body is
+/// let go as it is read, each value given to `visit` moved out of it.
+pub(crate) fn into_each_element<'a>(
+    body: Vec<BodyElement>,
+    metadata: &'a [Meta],
+    mut visit: impl FnMut(Item<'a>, Value) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        body.len() == metadata.len(),
+        "element count changed; use ARP structural operations"
+    );
+    for (value, e) in body.into_iter().zip(metadata) {
+        let kind = string(&e["type"])?;
+        ensure!(
+            value.kind == kind,
+            "element kind changed; use ARP structural operations"
+        );
+        element(e, kind, value.value, &mut visit)?;
+    }
+    Ok(())
+}
+
+/// Calls `visit` with the value of the body element of `kind` that the
+/// metadata element `e` describes, or of each of its table cells.
+fn element<'a, V: Body>(
+    e: &'a Meta,
+    kind: &str,
+    value: V,
+    visit: &mut impl FnMut(Item<'a>, V) -> Result<()>,
+) -> Result<()> {
+    match kind {
+        "text" => visit(Item::Element(e), value)?,
+        "formula" => {
+            ensure!(value.value().is_string(), "formula must be a string");
+            visit(Item::Element(e), value)?;
+        }
+        "table" => visit_cells(e, table_values(e, value)?, visit)?,
+        "blank" | "image" | "chart" | "drawing" => {
+            ensure!(value.value().is_null(), "non-text element must remain null")
+        }
+        _ => bail!("unknown element type"),
+    }
+    Ok(())
+}
+
+/// Calls `visit` with the value of each cell of the table `e` of the
+/// metadata, by its place in `values`.
+fn visit_cells<'a, V: Body>(
+    e: &'a Meta,
+    mut values: PerCell<V>,
+    visit: &mut impl FnMut(Item<'a>, V) -> Result<()>,
+) -> Result<()> {
+    for (i, row) in e
+        .records()
+        .context("table metadata rows missing")?
+        .iter()
+        .enumerate()
+    {
+        for (j, cell) in row.cells.iter().enumerate() {
+            let value = values.take(i, j).with_context(|| {
+                format!(
+                    "table body holds no value of {}",
+                    cell.id().unwrap_or("a cell")
+                )
+            })?;
+            ensure!(
+                cell.get("formula").is_none() || value.value().is_string(),
+                "formula must be a string"
+            );
+            visit(Item::Cell(cell), value)?;
         }
     }
     Ok(())
+}
+
+/// [`visit_cells`] from the last cell to the first, the room of the values
+/// let go as they are taken: a table of a large sheet has a value for each
+/// cell, and they were held together with all the values bound.
+fn visit_cells_back<'a>(
+    e: &'a Meta,
+    values: PerCell<Value>,
+    visit: &mut impl FnMut(Item<'a>, Value) -> Result<()>,
+) -> Result<()> {
+    let records = e.records().context("table metadata rows missing")?;
+    let mut items = values.items;
+    for row in records.iter().rev() {
+        for cell in row.cells.iter().rev() {
+            let value = items.pop().flatten().with_context(|| {
+                format!(
+                    "table body holds no value of {}",
+                    cell.id().unwrap_or("a cell")
+                )
+            })?;
+            if items.len() < items.capacity() / 2 {
+                items = crate::data::exact(items);
+            }
+            ensure!(
+                cell.get("formula").is_none() || value.is_string(),
+                "formula must be a string"
+            );
+            visit(Item::Cell(cell), value)?;
+        }
+    }
+    ensure!(items.is_empty(), "table body holds values of no cell");
+    Ok(())
+}
+
+/// [`Content::read`] of the content page `text` and [`into_each_element`]
+/// of it together, the page read node by node: no value is made of a table
+/// but those of its cells, as a table of a large sheet is several times its
+/// values. The cells of a table are visited from the last to the first. Gives the members of the page besides its elements, each checked
+/// as the content contract checks it. Fails for a page these read
+/// differently, such as one whose table names its rows before its headings:
+/// they then read it to say why.
+pub(crate) fn read_each_element<'a>(
+    text: &str,
+    metadata: &'a [Meta],
+    diagrams: &Diagrams,
+    mut visit: impl FnMut(Item<'a>, Value) -> Result<()>,
+) -> Result<serde_json::Map<String, Value>> {
+    let mut reader = YamlReader::new(text)?;
+    ensure!(
+        matches!(reader.node(0)?, YamlNode::Mapping),
+        "page must be a map"
+    );
+    let mut fields = serde_json::Map::new();
+    let mut read = false;
+    while let Some(key) = reader.key()? {
+        let node = reader.node(1)?;
+        if key != "elements" {
+            let value = reader.value(node, 1)?;
+            ensure!(
+                fields.insert(key.into_owned(), value).is_none(),
+                "duplicate key"
+            );
+            continue;
+        }
+        ensure!(!std::mem::replace(&mut read, true), "duplicate key");
+        ensure!(
+            matches!(node, YamlNode::Sequence),
+            "page elements must be a list"
+        );
+        let mut place = 0;
+        // The values of the elements of diagrams read, which come in their places.
+        let mut pending: HashMap<usize, Value> = HashMap::new();
+        let placed = |place: &mut usize,
+                      pending: &mut HashMap<usize, Value>,
+                      visit: &mut dyn FnMut(Item<'a>, Value) -> Result<()>|
+         -> Result<()> {
+            while let Some(value) = pending.remove(place) {
+                let e = &metadata[*place];
+                element(e, string(&e["type"])?, value, &mut |item, value| {
+                    visit(item, value)
+                })?;
+                *place += 1;
+            }
+            Ok(())
+        };
+        while let Some(item) = reader.item(2)? {
+            placed(&mut place, &mut pending, &mut visit)?;
+            ensure!(
+                matches!(item, YamlNode::Mapping),
+                "body element must be a map"
+            );
+            let kind = reader.key()?.context("body element must have one member")?;
+            let kind = BodyElement::written_kind(&kind).context("unknown element type")?;
+            let e = metadata.get(place).context("element count changed")?;
+            let node = reader.node(3)?;
+            if kind == DIAGRAM {
+                let (diagram, first) = diagrams
+                    .of(place)
+                    .context("a diagram is written where the original's drawings make none")?;
+                ensure!(first, "element count changed");
+                pending.extend(diagram.values(reader.value(node, 3)?)?);
+                placed(&mut place, &mut pending, &mut visit)?;
+                ensure!(reader.key()?.is_none(), "body element must have one member");
+                continue;
+            }
+            ensure!(
+                diagrams.of(place).is_none(),
+                "the drawings lines join are written as one diagram; edit their texts there"
+            );
+            ensure!(string(&e["type"])? == kind, "element kind changed");
+            place += 1;
+            if kind == "table" {
+                ensure!(
+                    matches!(node, YamlNode::Mapping),
+                    "table body must be a map"
+                );
+                visit_cells_back(e, read_table(&mut reader, e, 3)?, &mut visit)?;
+            } else {
+                // Each kind of element as the content contract has it.
+                let value = reader.value(node, 3)?;
+                ensure!(
+                    match kind {
+                        "text" => scalar(&value),
+                        "formula" => value.is_string(),
+                        _ => value.is_null(),
+                    },
+                    "body element value does not match its kind"
+                );
+                element(e, kind, value, &mut visit)?;
+            }
+            ensure!(reader.key()?.is_none(), "body element must have one member");
+        }
+        placed(&mut place, &mut pending, &mut visit)?;
+        ensure!(place == metadata.len(), "element count changed");
+    }
+    reader.end()?;
+    ensure!(read, "page elements missing");
+    // The members besides the elements, as the contract checks them.
+    let mut part = Value::Object(fields);
+    part["elements"] = json!([]);
+    crate::data::validate("content", &part)?;
+    let Value::Object(mut fields) = part else {
+        unreachable!("the part is an object")
+    };
+    fields.remove("elements");
+    Ok(fields)
 }
 
 /// Reconstruct the internal writer elements using only the recorded slots:
@@ -801,11 +1483,19 @@ pub(crate) enum Item<'a> {
 }
 
 impl<'a> Item<'a> {
-    /// The member `key`, as long as the metadata it is of.
-    pub(crate) fn member(self, key: &str) -> &'a Value {
+    /// The ID of the element or the cell.
+    pub(crate) fn id(self) -> Result<&'a str> {
         match self {
-            Self::Element(element) => &element[key],
-            Self::Cell(cell) => &cell[key],
+            Self::Element(element) => string(&element["id"]),
+            Self::Cell(cell) => cell.id(),
+        }
+    }
+
+    /// The font of the element or the cell, null for none.
+    pub(crate) fn font(self) -> std::borrow::Cow<'a, Value> {
+        match self {
+            Self::Element(element) => std::borrow::Cow::Borrowed(&element["font"]),
+            Self::Cell(cell) => cell.font().unwrap_or(std::borrow::Cow::Owned(Value::Null)),
         }
     }
 }
@@ -823,9 +1513,9 @@ impl std::ops::Index<&str> for Item<'_> {
 /// The YAML of the content `page` whose elements `metadata` describes, each
 /// node of a table with its values in the order of the table's columns, then
 /// its marks and its children.
-pub(crate) fn yaml(page: &Value, metadata: &[Meta]) -> Result<Vec<u8>> {
+pub(crate) fn yaml(page: &Value, metadata: &[Meta], diagrams: &Diagrams) -> Result<Vec<u8>> {
     let mut bytes = vec![];
-    yaml_to(page, metadata, &mut bytes)?;
+    yaml_to(page, metadata, diagrams, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -849,6 +1539,7 @@ pub fn join_json(body: &Value, metadata: &Value) -> Result<Value> {
 pub(crate) fn yaml_to(
     page: &Value,
     metadata: &[Meta],
+    diagrams: &Diagrams,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
     let fields = page.as_object().context("page must be an object")?;
@@ -865,21 +1556,51 @@ pub(crate) fn yaml_to(
             }
         })
         .collect::<Result<Vec<_>>>()?;
-    page_yaml(fields, &elements, metadata, out)
+    page_yaml(fields, &elements, metadata, diagrams, out)
 }
 
-/// [`yaml_to`] of a page made typed.
-pub(crate) fn content_yaml_to(
-    page: &Content,
+/// [`yaml_to`] of a page encoding made, written to `out` as it is made.
+pub(crate) fn encoded_yaml_to(
+    page: &Encoded,
     metadata: &[Meta],
+    diagrams: &Diagrams,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
-    let elements: Vec<_> = page
-        .elements
-        .iter()
-        .map(|element| (element.kind, &element.value))
-        .collect();
-    page_yaml(&page.fields, &elements, metadata, out)
+    ensure!(
+        page.elements.len() == metadata.len(),
+        "element count changed"
+    );
+    let text = |place: usize| -> Result<&Value> {
+        match &page.elements[place] {
+            Encoding::Element(element) => Ok(&element.value),
+            Encoding::Cells(_) => bail!("a table is no text of a diagram"),
+        }
+    };
+    let mut elements = Vec::with_capacity(page.elements.len());
+    for (place, (element, e)) in page.elements.iter().zip(metadata).enumerate() {
+        if let Some((diagram, first)) = diagrams.of(place) {
+            if first {
+                elements.push(Out::Diagram(diagram.body(&text)?));
+            }
+            continue;
+        }
+        elements.push(match element {
+            Encoding::Element(element) => Out::Value(element.kind, &element.value),
+            Encoding::Cells(values) => {
+                let table = Table::of(e)?;
+                let keys = table.keys(|i, j| values.get(i, j))?;
+                let order = table.key_order(&keys)?;
+                Out::Cells(Box::new(CellsBody {
+                    table,
+                    keys,
+                    values,
+                    order: order.iter().cloned().collect(),
+                    listed: order,
+                }))
+            }
+        });
+    }
+    write_page_yaml(&page.fields, &elements, out)
 }
 
 /// The YAML of a page with the members `fields` besides its elements, each
@@ -888,38 +1609,70 @@ fn page_yaml(
     fields: &serde_json::Map<String, Value>,
     elements: &[(&str, &Value)],
     metadata: &[Meta],
+    diagrams: &Diagrams,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
     ensure!(elements.len() == metadata.len(), "element count changed");
-    let mut orders = HashMap::new();
-    for (i, ((_, value), e)) in elements.iter().zip(metadata).enumerate() {
-        if e["type"] == "table" {
+    let text = |place: usize| -> Result<&Value> { Ok(elements[place].1) };
+    let mut outs = Vec::with_capacity(elements.len());
+    for (place, (&(kind, value), e)) in elements.iter().zip(metadata).enumerate() {
+        if let Some((diagram, first)) = diagrams.of(place) {
+            if first {
+                outs.push(Out::Diagram(diagram.body(&text)?));
+            }
+            continue;
+        }
+        outs.push(if e["type"] == "table" {
             let table = Table::of(e)?;
             let values = table_values(e, value)?;
-            let keys = table.keys(|id| values.get(id).copied())?;
-            orders.insert(i, table.key_order(&keys)?);
-        }
+            let keys = table.keys(|i, j| values.get(i, j).copied())?;
+            Out::Tree(kind, value, table.key_order(&keys)?)
+        } else {
+            Out::Value(kind, value)
+        });
     }
-    serde_saphyr::to_io_writer(
-        out,
-        &Page {
-            fields,
-            elements,
-            orders: &orders,
-        },
-    )?;
+    write_page_yaml(fields, &outs, out)
+}
+
+/// Writes the page with the members `fields` besides its elements.
+fn write_page_yaml(
+    fields: &serde_json::Map<String, Value>,
+    elements: &[Out<'_>],
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    serde_saphyr::to_io_writer(out, &Page { fields, elements })?;
     Ok(())
+}
+
+/// An element of a page as it is written: its kind and value, a table's with
+/// the order of its keys, or a table by the values of its cells.
+enum Out<'a> {
+    Value(&'a str, &'a Value),
+    Tree(&'a str, &'a Value, Vec<String>),
+    Cells(Box<CellsBody<'a>>),
+    /// The elements of a diagram, written together.
+    Diagram(Ordered<'a>),
+}
+
+/// A table written from the values of its cells: as [`table_body`] makes its
+/// tree, with the keys of each node in the order [`Node`] writes them.
+struct CellsBody<'a> {
+    table: Table<'a>,
+    keys: PerCell<Rc<str>>,
+    values: &'a PerCell<Value>,
+    /// The keys in the order they are written first.
+    listed: Vec<String>,
+    order: std::collections::HashSet<String>,
 }
 
 struct Page<'a> {
     fields: &'a serde_json::Map<String, Value>,
-    elements: &'a [(&'a str, &'a Value)],
-    orders: &'a HashMap<usize, Vec<String>>,
+    elements: &'a [Out<'a>],
 }
 
 impl Serialize for Page<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        let elements = Elements(self.elements, self.orders);
+        let elements = Elements(self.elements);
         let others = self.fields.iter().filter(|(key, _)| *key != "elements");
         let mut map = s.serialize_map(Some(others.clone().count() + 1))?;
         let mut placed = false;
@@ -937,27 +1690,126 @@ impl Serialize for Page<'_> {
     }
 }
 
-struct Elements<'a>(&'a [(&'a str, &'a Value)], &'a HashMap<usize, Vec<String>>);
+struct Elements<'a>(&'a [Out<'a>]);
 
 impl Serialize for Elements<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         let mut seq = s.serialize_seq(Some(self.0.len()))?;
-        for (i, &(kind, value)) in self.0.iter().enumerate() {
-            seq.serialize_element(&Element(kind, value, self.1.get(&i)))?;
+        for element in self.0 {
+            seq.serialize_element(&Element(element))?;
         }
         seq.end()
     }
 }
 
-/// An element of a page, with the order of a table's keys.
-struct Element<'a>(&'a str, &'a Value, Option<&'a Vec<String>>);
+/// An element of a page.
+struct Element<'a>(&'a Out<'a>);
 
 impl Serialize for Element<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         let mut map = s.serialize_map(Some(1))?;
-        match self.2 {
-            Some(order) => map.serialize_entry(self.0, &TableBody(self.1, order))?,
-            None => map.serialize_entry(self.0, self.1)?,
+        match self.0 {
+            Out::Value(kind, value) => map.serialize_entry(kind, value)?,
+            Out::Tree(kind, value, order) => map.serialize_entry(kind, &TableBody(value, order))?,
+            Out::Cells(body) => map.serialize_entry("table", body)?,
+            Out::Diagram(body) => map.serialize_entry(DIAGRAM, body)?,
+        }
+        map.end()
+    }
+}
+
+impl Serialize for CellsBody<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(None)?;
+        let value = |record: usize, j: usize| {
+            self.values
+                .get(record, j)
+                .ok_or_else(|| serde::ser::Error::custom("table cell value missing"))
+        };
+        let heading = |record: usize| -> std::result::Result<Vec<&Value>, S::Error> {
+            let cells = self
+                .table
+                .cells(record)
+                .map_err(serde::ser::Error::custom)?;
+            (0..cells.len()).map(|j| value(record, j)).collect()
+        };
+        match self.table.headings {
+            0 => {}
+            1 => map.serialize_entry("columns", &heading(0)?)?,
+            n => map.serialize_entry(
+                "columns",
+                &(0..n)
+                    .map(heading)
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            )?,
+        }
+        map.serialize_entry("rows", &CellNodes(self, &self.table.roots))?;
+        map.end()
+    }
+}
+
+/// Nodes of a [`CellsBody`].
+struct CellNodes<'a>(&'a CellsBody<'a>, &'a [Slot]);
+
+impl Serialize for CellNodes<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(self.1.len()))?;
+        for &slot in self.1 {
+            seq.serialize_element(&CellNode(self.0, slot))?;
+        }
+        seq.end()
+    }
+}
+
+/// A node of a [`CellsBody`], written as [`Node`] writes the node
+/// [`table_body`] makes of it.
+struct CellNode<'a>(&'a CellsBody<'a>, Slot);
+
+impl Serialize for CellNode<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let CellNode(body, slot) = *self;
+        let error = serde::ser::Error::custom;
+        let mut entries: Vec<(&str, &Value)> = vec![];
+        let mut marks = vec![];
+        for (record, j, _) in body.table.node_cells(slot).map_err(error)? {
+            let value = body
+                .values
+                .get(record, j)
+                .ok_or_else(|| serde::ser::Error::custom("table cell value missing"))?;
+            if is_mark(&body.table.cells(record).map_err(error)?[j]) {
+                marks.push(value);
+            } else {
+                entries.push((Table::key(&body.keys, record, j).map_err(error)?, value));
+            }
+        }
+        // As a map of them holds them: in the order of their keys, the
+        // last value of a key.
+        entries.sort_by_key(|&(key, _)| key);
+        let mut unique: Vec<(&str, &Value)> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match unique.last_mut() {
+                Some(last) if last.0 == entry.0 => *last = entry,
+                _ => unique.push(entry),
+            }
+        }
+        let children = body.table.under(slot);
+        let len = unique.len() + usize::from(!marks.is_empty()) + usize::from(!children.is_empty());
+        let mut map = s.serialize_map(Some(len))?;
+        for key in &body.listed {
+            if let Ok(at) = unique.binary_search_by(|&(entry, _)| entry.cmp(key)) {
+                map.serialize_entry(key, unique[at].1)?;
+            }
+        }
+        for &(key, value) in &unique {
+            if !body.order.contains(key) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        if !marks.is_empty() {
+            map.serialize_entry(MARKS, &marks)?;
+        }
+        if !children.is_empty() {
+            map.serialize_entry(CHILDREN, &CellNodes(body, children))?;
         }
         map.end()
     }
@@ -1025,6 +1877,35 @@ impl Serialize for Node<'_> {
 mod tests {
     use super::*;
 
+    /// Checking a page moves its members and values into each part and back:
+    /// the page is as it was after a check that passes and one that fails.
+    #[test]
+    fn checking_a_page_gives_its_values_back() {
+        let mut fields = serde_json::Map::new();
+        fields.insert("page_id".into(), json!("sheet-1"));
+        let elements = (0..CONTENT_PART + 1)
+            .map(|i| BodyElement {
+                kind: "text",
+                value: json!(format!("text {i}")),
+            })
+            .collect();
+        let page = Content { fields, elements };
+        let parts = std::cell::Cell::new(0);
+        let mut checked = page.clone();
+        checked
+            .check(|part| {
+                parts.set(parts.get() + 1);
+                assert_eq!(part["page_id"], "sheet-1");
+                assert!(part["elements"][0]["text"].is_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!((parts.get(), &checked), (2, &page));
+        let mut failed = page.clone();
+        assert!(failed.check(|_| bail!("invalid")).is_err());
+        assert_eq!(failed, page);
+    }
+
     #[test]
     fn sparse_merged_table_preserves_slots_types_and_formula_identity() {
         let elements = json!([{"id":"t1","type":"table","headings":1,"labels":{"a":"h","c":"lit"},
@@ -1084,10 +1965,10 @@ mod tests {
                 {"マシン名":"Y","フォルダ構成":"/"}]})
         );
         assert_eq!(join_json(&body, &metadata).unwrap(), elements);
-        let page = json!({"elements":body,"page_id":"p","schema_version":"6","title":"t"});
+        let page = json!({"elements":body,"page_id":"p","schema_version":"7","title":"t"});
         // Values in the order of the columns, then marks, then children.
         let typed = crate::documents::metadata_from(metadata.clone()).unwrap();
-        let text = String::from_utf8(yaml(&page, &typed).unwrap()).unwrap();
+        let text = String::from_utf8(yaml(&page, &typed, &Diagrams::default()).unwrap()).unwrap();
         assert_eq!(
             text,
             r#"elements:
@@ -1113,7 +1994,7 @@ mod tests {
     - マシン名: "Y"
       フォルダ構成: /
 page_id: p
-schema_version: "6"
+schema_version: "7"
 title: t
 "#
         );

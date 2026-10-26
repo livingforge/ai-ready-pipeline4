@@ -30,11 +30,13 @@ impl Workflow {
                 || v["finding"]["action"] == "scoped_restructure"
         };
         let unresolved = self.unresolved()?;
-        let eligible = |v: &Value| {
-            !unresolved
-                .iter()
-                .any(|entry| entry["code"] == "restructure_deferred" && entry["diagnostic"] == *v)
-        };
+        // The diagnostics a restructuring deferred, looked up rather than compared with each.
+        let deferred: std::collections::HashSet<String> = unresolved
+            .iter()
+            .filter(|entry| entry["code"] == "restructure_deferred")
+            .map(|entry| crate::data::value_key(&entry["diagnostic"]))
+            .collect();
+        let eligible = |v: &Value| !deferred.contains(&crate::data::value_key(v));
         if !findings.iter().any(|v| structural(v) && eligible(v)) {
             return Ok(None);
         }

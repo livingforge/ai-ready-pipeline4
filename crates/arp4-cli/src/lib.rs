@@ -42,6 +42,42 @@ pub fn schemas() -> serde_json::Value {
     schemas
 }
 
+/// The contract `name` of [`schemas`], read alone: the other contracts are
+/// passed over without being made, as all of them as JSON took several times
+/// the memory of a small command.
+pub fn schema(name: &str) -> Option<serde_json::Value> {
+    use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
+    struct Member<'a>(&'a str);
+    impl<'de> Visitor<'de> for Member<'_> {
+        type Value = Option<serde_json::Value>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a map of contracts")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut found = None;
+            while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                if key == self.0 {
+                    found = Some(map.next_value()?);
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(found)
+        }
+    }
+    let member = |text: &str| {
+        serde_json::Deserializer::from_str(text)
+            .deserialize_map(Member(name))
+            .expect("embedded schemas must be valid JSON")
+    };
+    // The search contracts take the place of document contracts of the same
+    // name, as in `schemas`.
+    member(include_str!(
+        "../../../contracts/document-search-schemas.json"
+    ))
+    .or_else(|| member(include_str!("../../../contracts/document-schemas.json")))
+}
+
 pub fn capabilities() -> serde_json::Value {
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -114,6 +150,7 @@ pub fn capabilities() -> serde_json::Value {
             "excel_structural_writeback": true,
             "excel_element_body_version": documents::CONTENT_VERSION,
             "excel_body_model": "reading-order elements, each table the tree of its records keyed by its headings; identities, topology, formula kinds and physical bindings in layout.yml",
+            "document_diagram_bodies": "Excel and PowerPoint drawings joined by lines as one diagram element: shapes with their kind, place and editable text; lines written A → B by their arrowheads, joining the recorded connections, else what an end touches or lies on within the structure policy distance (an Excel cell holding text too), marked as inferred",
             "excel_external_reimport": "unchanged grid with at most one changed cell; ambiguous structural or multi-cell correspondence is refused",
             "excel_column_move_scope": "plain worksheets and ordinary contiguous A1 formulas; positional objects, defined names and mixed structural operations are refused",
             "excel_row_column_commands": ["rows insert", "rows delete", "columns insert", "columns delete", "columns move"],
@@ -147,4 +184,17 @@ pub fn capabilities() -> serde_json::Value {
         },
         "limitations": ["Excel supports scalar/structural writeback, renaming table columns and totals labels from their cells (structured references follow), replacing existing formulas (file notation with _xlfn. prefixes; spilling functions, LET/LAMBDA, # and @ are refused) and PNG insertion. Windows OCR runs automatically on imported Excel, Word and PowerPoint image assets; unsupported images retain an unavailable reason. Word (DOCX/DOCM/DOTX/DOTM) and PPTX lay paragraphs and table cells out as rows and edit the runs a change touches; Word field codes are extracted read-only and field results are read-only because Word recalculates them; plain text content controls bound to document data write the data and the controls sharing it. Import removes the encryption of Office originals and saves them unencrypted (passwords from --password-stdin; IRM and sensitivity labels only by desktop Office on Windows with the right to remove them); binary (.xls/.xlsb/.doc/.ppt) and Strict Open XML files are rejected with resave guidance. Excel chart, dialog and macro sheets are not extracted and are preserved unchanged; print settings and chart XML are extracted read-only, while ActiveX binary parts are inventoried by hash; row/column edits move notes, threaded comments, form controls and embedded objects, leave the cell addresses in VBA code as they are and so need --vba-unchanged on workbooks with a VBA project, and are rejected for workbooks with macro or dialog sheets or ActiveX controls, and where Excel itself refuses them (table header/totals rows, cutting through pivot tables or array formulas); PDF supports page text-show strings using original font encodings. Exports retain the source format; cross-format conversion, PDF page insertion/deletion (Word and PowerPoint paragraphs and table rows take row operations; PowerPoint slides are copied, with their notes but not their comments, added from a slide layout with empty placeholders, deleted, moved in the show order (custom shows keep their order) and hidden or shown with slide operations; deletion is refused while another slide links to a deleted slide or a custom show would be left empty), OCR for PDF images, PDF Form XObject text, annotations, slide masters are not supported, Excel shapes are edited in their text and fonts only, and PowerPoint shapes holding the slide's text are not deleted (PowerPoint shapes, PNG pictures and connectors between rectangles, rounded rectangles and ellipses are changed, added and deleted with shape operations) (slide notes are extracted and written back as notes-N). Text edits require visual layout review; Word and PowerPoint edits may add, remove or replace line breaks and tabs within a paragraph but cannot split or join paragraphs, and PDF rejects line breaks/tabs; PDF does not reflow text and rejects unavailable font characters. Structural edits move references like Excel does: formulas on every sheet, defined names, conditional formats, validations, tables, pivot sources, chart series, sparklines, merges, column widths and drawing anchors; Excel performs recalculation. Content rows and columns an operation adds are keyed <operation ID>-<n>; values a grown merge would hide are rejected. Specifications use agent-authored models and Markdown rendering; semantic completeness requires review. Empty-Windows acceptance remains unverified."]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// A contract read alone is the one all contracts read together give.
+    #[test]
+    fn a_contract_read_alone_is_the_one_read_with_the_others() {
+        let schemas = super::schemas();
+        for (name, schema) in schemas.as_object().unwrap() {
+            assert_eq!(super::schema(name).as_ref(), Some(schema), "{name}");
+        }
+        assert!(super::schema("no such contract").is_none());
+    }
 }

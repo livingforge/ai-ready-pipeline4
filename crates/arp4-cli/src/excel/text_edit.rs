@@ -1,31 +1,73 @@
 use super::*;
+use roxmltree::NodeId;
+use std::cell::OnceCell;
+
+/// The shared string table of a package, parsed when a cell first refers to it.
+pub(super) struct SharedStrings<'a> {
+    parts: &'a BTreeMap<String, Vec<u8>>,
+    table: OnceCell<StringTable<'a>>,
+}
+
+struct StringTable<'a> {
+    source: &'a str,
+    document: Document<'a>,
+    items: Vec<NodeId>,
+}
+
+impl<'a> SharedStrings<'a> {
+    pub(super) fn new(parts: &'a BTreeMap<String, Vec<u8>>) -> Self {
+        Self {
+            parts,
+            table: OnceCell::new(),
+        }
+    }
+
+    /// The `si` at `index`, if any, and the text it was parsed from.
+    fn item(&self, index: usize) -> Result<(Option<Node<'_, 'a>>, &'a str)> {
+        let table = match self.table.get() {
+            Some(table) => table,
+            None => {
+                let source = std::str::from_utf8(
+                    self.parts
+                        .get("xl/sharedStrings.xml")
+                        .context("missing shared strings")?,
+                )?;
+                let document = xml(source.as_bytes())?;
+                let items = document
+                    .root_element()
+                    .children()
+                    .filter(|node| node.has_tag_name((NS, "si")))
+                    .map(|node| node.id())
+                    .collect();
+                self.table.get_or_init(|| StringTable {
+                    source,
+                    document,
+                    items,
+                })
+            }
+        };
+        Ok((
+            table
+                .items
+                .get(index)
+                .and_then(|id| table.document.get_node(*id)),
+            table.source,
+        ))
+    }
+}
 
 /// Run properties remain invariant when shared strings become cell-local text.
 pub(super) fn run_properties(
     cell: Node<'_, '_>,
     original: &str,
-    parts: &BTreeMap<String, Vec<u8>>,
+    shared: &SharedStrings<'_>,
 ) -> Result<Vec<String>> {
-    let shared;
     let (container, source) = if cell.attribute("t") == Some("s") {
         let index: usize = child(cell, "v")
             .and_then(|node| node.text())
             .context("missing shared string index")?
             .parse()?;
-        let source = std::str::from_utf8(
-            parts
-                .get("xl/sharedStrings.xml")
-                .context("missing shared strings")?,
-        )?;
-        shared = xml(source.as_bytes())?;
-        (
-            shared
-                .root_element()
-                .children()
-                .filter(|node| node.has_tag_name((NS, "si")))
-                .nth(index),
-            source,
-        )
+        shared.item(index)?
     } else {
         (child(cell, "is"), original)
     };
@@ -45,29 +87,20 @@ pub(super) fn run_properties(
 pub(super) fn edited_body(
     cell: Node<'_, '_>,
     original: &str,
-    parts: &BTreeMap<String, Vec<u8>>,
+    shared: &SharedStrings<'_>,
     value: &Value,
     prefix: &str,
 ) -> Result<String> {
-    let shared;
     let (container, source) = if cell.attribute("t") == Some("s") {
         let index: usize = child(cell, "v")
             .and_then(|node| node.text())
             .context("missing shared string index")?
             .parse()?;
-        let source = std::str::from_utf8(
-            parts
-                .get("xl/sharedStrings.xml")
-                .context("missing shared strings")?,
-        )?;
-        shared = xml(source.as_bytes())?;
-        let container = shared
-            .root_element()
-            .children()
-            .filter(|node| node.has_tag_name((NS, "si")))
-            .nth(index)
-            .context("invalid shared string index")?;
-        (Some(container), source)
+        let (container, source) = shared.item(index)?;
+        (
+            Some(container.context("invalid shared string index")?),
+            source,
+        )
     } else {
         (child(cell, "is"), original)
     };
@@ -217,4 +250,35 @@ fn wrap_container(container: Node<'_, '_>, content: &str) -> Result<String> {
     Ok(format!(
         " t=\"inlineStr\"><is xmlns=\"{NS}\"{namespaces}>{content}</is>"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_strings_are_the_si_elements_by_position() {
+        let parts = BTreeMap::from([(
+            "xl/sharedStrings.xml".to_owned(),
+            format!(
+                r#"<sst xmlns="{NS}"><si><t>a</t></si><extLst/><si><r><rPr><b/></rPr><t>b</t></r></si></sst>"#
+            )
+            .into_bytes(),
+        )]);
+        let shared = SharedStrings::new(&parts);
+        for (index, text) in [(1, Some("b")), (0, Some("a")), (2, None), (1, Some("b"))] {
+            let (item, _) = shared.item(index).unwrap();
+            assert_eq!(item.map(texts).as_deref(), text);
+        }
+        let sheet = format!(r#"<c xmlns="{NS}" r="A1" t="s"><v>1</v></c>"#);
+        let doc = Document::parse(&sheet).unwrap();
+        assert_eq!(
+            run_properties(doc.root_element(), &sheet, &shared).unwrap(),
+            ["<rPr><b/></rPr>"]
+        );
+        let none = BTreeMap::new();
+        let error =
+            run_properties(doc.root_element(), &sheet, &SharedStrings::new(&none)).unwrap_err();
+        assert_eq!(error.to_string(), "missing shared strings");
+    }
 }

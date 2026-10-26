@@ -140,6 +140,8 @@ impl Workflow {
         }
         let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         let mut seen = BTreeSet::new();
+        // Each base is read once for the tasks that repair it.
+        let mut bases: BTreeMap<String, patch::Base> = BTreeMap::new();
         for task in tasks {
             let doc = task.document.as_deref().context("task document required")?;
             ensure!(
@@ -147,11 +149,14 @@ impl Workflow {
                 "stale repair base"
             );
             let value = self.artifact(&task.reply)?;
-            patch::apply(
-                &self.artifact(&task.base)?,
-                &self.artifact(&task.scope)?,
-                &value,
-            )?;
+            let digest = task.base.as_deref().context("task artifact required")?;
+            if !bases.contains_key(digest) {
+                bases.insert(
+                    digest.to_owned(),
+                    patch::Base::new(self.artifact(&task.base)?),
+                );
+            }
+            bases[digest].check(&self.artifact(&task.scope)?, &value)?;
             for edit in arr(&value["changes"])? {
                 ensure!(
                     seen.insert((doc.to_owned(), s(&edit["key"])?.to_owned())),
@@ -165,49 +170,14 @@ impl Workflow {
         }
         // A repair that changes nothing states, with its reason, that the
         // findings in its scope cannot be fixed faithfully. Record them so
-        // they are not reissued while the items stay as they are.
-        for task in tasks {
-            let value = self.artifact(&task.reply)?;
-            if !arr(&value["changes"])?.is_empty() {
-                continue;
-            }
-            let scope = self.artifact(&task.scope)?;
-            let doc = task.document.as_deref().context("task document required")?;
-            let reason = self
-                .state
-                .submissions
-                .iter()
-                .rev()
-                .find(|entry| entry["task"] == task.id && entry["accepted"] == true)
-                .and_then(|entry| entry["reason"].as_str())
-                .unwrap_or("")
-                .to_owned();
-            let fingerprints: Map<String, Value> = arr(&scope["items"])?
-                .iter()
-                .map(|item| {
-                    Ok((
-                        format!("{doc}/{}", s(&item["key"])?),
-                        json!(patch::fingerprint(item)),
-                    ))
-                })
-                .collect::<Result<_>>()?;
-            let mut entries = Vec::new();
-            for finding in arr(&scope["findings"])? {
-                let id = format!("{doc}/{}", s(&finding["key"])?);
-                let mut entry = json!({"code":"repair_declined","document":doc,"reason":reason,"task":task.id,
-                    "fingerprints":{&id:fingerprints[&id]},"repair":{"action":"manual_triage"}});
-                if finding["code"] == "review_finding" {
-                    entry["finding"] =
-                        json!({"message":finding["message"],"items":[id],"action":"field_repair"});
-                } else {
-                    entry["diagnostic"] = json!({"code":finding["code"],"message":finding["message"],"fields":finding["fields"]});
-                    entry["code"] = finding["code"].clone();
-                    entry["item"] = json!(id);
-                }
-                entries.push(entry);
-            }
+        // they are not reissued while the items stay as they are. The list is
+        // stored once for all such tasks, with those read before any failure.
+        let mut declined = None;
+        let read = self.declined_repairs(tasks, &mut declined);
+        if let Some(entries) = declined {
             self.note_unresolved(entries)?;
         }
+        read?;
         let mut next = self.state.replies.clone();
         let mut next_rounds = self.state.repair_rounds.clone();
         for (doc, changes) in changes {
@@ -236,6 +206,63 @@ impl Workflow {
             self.state.round += 1;
         }
         Ok(true)
+    }
+    /// The unresolved entries of the repair tasks that changed nothing, in
+    /// task order, added to `declined` as each task is read; `declined` is
+    /// set once any such task is read, even one with no findings.
+    fn declined_repairs(&self, tasks: &[Task], declined: &mut Option<Vec<Value>>) -> Result<()> {
+        // The reason of each task's last accepted submission.
+        let mut reasons: Option<BTreeMap<&str, &str>> = None;
+        for task in tasks {
+            let value = self.artifact(&task.reply)?;
+            if !arr(&value["changes"])?.is_empty() {
+                continue;
+            }
+            let scope = self.artifact(&task.scope)?;
+            let doc = task.document.as_deref().context("task document required")?;
+            let reasons = reasons.get_or_insert_with(|| {
+                let mut reasons = BTreeMap::new();
+                for entry in &self.state.submissions {
+                    if let Some(task) = entry["task"].as_str()
+                        && entry["accepted"] == true
+                    {
+                        reasons.insert(task, entry["reason"].as_str().unwrap_or(""));
+                    }
+                }
+                reasons
+            });
+            let reason = reasons
+                .get(task.id.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_owned();
+            let fingerprints: Map<String, Value> = arr(&scope["items"])?
+                .iter()
+                .map(|item| {
+                    Ok((
+                        format!("{doc}/{}", s(&item["key"])?),
+                        json!(patch::fingerprint(item)),
+                    ))
+                })
+                .collect::<Result<_>>()?;
+            let mut entries = Vec::new();
+            for finding in arr(&scope["findings"])? {
+                let id = format!("{doc}/{}", s(&finding["key"])?);
+                let mut entry = json!({"code":"repair_declined","document":doc,"reason":reason,"task":task.id,
+                    "fingerprints":{&id:fingerprints[&id]},"repair":{"action":"manual_triage"}});
+                if finding["code"] == "review_finding" {
+                    entry["finding"] =
+                        json!({"message":finding["message"],"items":[id],"action":"field_repair"});
+                } else {
+                    entry["diagnostic"] = json!({"code":finding["code"],"message":finding["message"],"fields":finding["fields"]});
+                    entry["code"] = finding["code"].clone();
+                    entry["item"] = json!(id);
+                }
+                entries.push(entry);
+            }
+            declined.get_or_insert_with(Vec::new).extend(entries);
+        }
+        Ok(())
     }
     pub(super) fn consume_reviews(&mut self, tasks: &[Task]) -> Result<bool> {
         // Escalated findings stay open until a repair or a human resolves them.

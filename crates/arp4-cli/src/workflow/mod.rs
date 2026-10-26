@@ -62,7 +62,7 @@ struct Workflow {
     store: Store,
     state: WorkflowState,
     // Process-local only: never trust a persisted validation receipt after restart.
-    validation_cache: std::cell::RefCell<BTreeMap<String, Value>>,
+    validation_cache: std::cell::RefCell<quality::ValidationCache>,
 }
 impl Workflow {
     fn clear_task_failure(&mut self, i: usize) {

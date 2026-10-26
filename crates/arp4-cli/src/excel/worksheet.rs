@@ -20,9 +20,10 @@ mod cell_rendering {
             .descendants()
             .filter(|n| n.has_tag_name((NS, "c")))
             .collect();
+        let parts = BTreeMap::new();
+        let shared = SharedStrings::new(&parts);
         for (cell, address, style) in [(cells[0], "B2", "3"), (cells[1], "C2", "4")] {
-            let rendered =
-                render_cell(&sheet, cell, address, &json!(12), &BTreeMap::new()).unwrap();
+            let rendered = render_cell(&sheet, cell, address, &json!(12), &shared).unwrap();
             assert_eq!(
                 rendered,
                 format!(r#"<c r="{address}" s="{style}" t="n"><v>12</v></c>"#)
@@ -324,7 +325,7 @@ pub(super) fn render_cell(
     cell: Node<'_, '_>,
     address: &str,
     value: &Value,
-    parts: &BTreeMap<String, Vec<u8>>,
+    shared: &SharedStrings<'_>,
 ) -> Result<String> {
     let raw = &original[cell.range()];
     let (opening, _) = xml_opening(raw)?;
@@ -342,7 +343,7 @@ pub(super) fn render_cell(
         .to_owned();
     opening = replace_xml_attribute(&format!("{opening}>"), "r", address)?;
     opening = opening.trim_end_matches('>').to_owned();
-    let body = super::text_edit::edited_body(cell, original, parts, value, prefix)?;
+    let body = super::text_edit::edited_body(cell, original, shared, value, prefix)?;
     let retained: String = cell
         .children()
         .filter(Node::is_element)
@@ -368,8 +369,8 @@ pub(super) fn render_new_cell(
     ))
 }
 
-pub(super) struct RowTransform<'a, 'b> {
-    pub(super) parts: &'a BTreeMap<String, Vec<u8>>,
+pub(super) struct RowTransform<'a, 'b, 's> {
+    pub(super) shared: &'a SharedStrings<'s>,
     pub(super) original: &'a str,
     pub(super) original_row: u32,
     pub(super) final_row: u32,
@@ -383,7 +384,7 @@ pub(super) struct RowTransform<'a, 'b> {
 pub(super) fn transform_row(
     row: Node<'_, '_>,
     raw: &str,
-    context: &RowTransform<'_, '_>,
+    context: &RowTransform<'_, '_, '_>,
 ) -> Result<RowOutput> {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = vec![];
     let row_start = row.range().start;
@@ -415,7 +416,13 @@ pub(super) fn transform_row(
         if let Some(value) = context.changes.get(&(context.final_row, final_column)) {
             edits.push((
                 local_range,
-                render_cell(context.original, cell, &final_address, value, context.parts)?,
+                render_cell(
+                    context.original,
+                    cell,
+                    &final_address,
+                    value,
+                    context.shared,
+                )?,
             ));
         } else {
             if final_address != address {

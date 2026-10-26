@@ -115,13 +115,7 @@ pub(crate) fn sources<'a>(input: &'a Input, document: Option<&str>) -> Result<Ve
         .filter(|s| document.is_none_or(|d| s.document == d))
         .collect();
     ensure!(!rows.is_empty(), "unknown document or empty input");
-    rows.sort_by_key(|s| {
-        (
-            &s.document,
-            s.context.as_ref().map(|c| (&c.sheet, c.row, c.column)),
-            &s.location,
-        )
-    });
+    rows.sort_by_key(|s| s.packet_order());
     Ok(rows)
 }
 
@@ -206,21 +200,33 @@ pub(super) fn relevant_warnings<'a>(
         .warnings
         .iter()
         .filter(|warning| {
-            input
-                .revisions
-                .keys()
-                .find(|doc| warning.starts_with(&format!("{doc}: ")))
-                .is_none_or(|doc| documents.contains(doc))
+            spec::warning_document(input, warning).is_none_or(|doc| documents.contains(doc))
         })
         .collect()
 }
 
 pub fn packet(input: &Input, document: &str) -> Result<Value> {
     let rows = sources(input, Some(document))?;
-    let mut result = json!({"version":1,"document":document,"sources":source_rows(input,&rows),
-        "warnings":relevant_warnings(input, &[document.to_owned()].into()),"contract":hash(PROMPT.as_bytes())});
+    let warnings = relevant_warnings(input, &[document.to_owned()].into());
+    Ok(packet_of(input, document, &rows, warnings))
+}
+
+/// [`packet`] with the sources and warnings of the document read from the index.
+pub(crate) fn packet_in(input: spec::Indexed, document: &str) -> Result<Value> {
+    let rows = input.rows(document)?;
+    Ok(packet_of(
+        input.input,
+        document,
+        &rows,
+        input.warnings(document),
+    ))
+}
+
+fn packet_of(input: &Input, document: &str, rows: &[&Source], warnings: Vec<&String>) -> Value {
+    let mut result = json!({"version":1,"document":document,"sources":source_rows(input,rows),
+        "warnings":warnings,"contract":hash(PROMPT.as_bytes())});
     result["packet"] = json!(packet_fingerprint(&result));
-    Ok(result)
+    result
 }
 
 pub fn changes(before: &Input, after: &Input) -> Result<Value> {
@@ -245,6 +251,14 @@ pub fn changes(before: &Input, after: &Input) -> Result<Value> {
 
 /// A string means the entire source. An object selects an exact quote; ambiguous matches fail.
 pub(crate) fn span(value: &Value, rows: &[&Source]) -> Result<Value> {
+    span_from(value, |i| rows.get(i).copied())
+}
+
+/// [`span`] with the source at each position of the rows given by `row`.
+pub(crate) fn span_from<'a>(
+    value: &Value,
+    row: impl Fn(usize) -> Option<&'a Source>,
+) -> Result<Value> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Selection {
@@ -266,7 +280,7 @@ pub(crate) fn span(value: &Value, rows: &[&Source]) -> Result<Value> {
         alias == format!("s{index}") && index > 0,
         "invalid source ref"
     );
-    let source = rows.get(index - 1).context("unknown source ref")?;
+    let source = row(index - 1).context("unknown source ref")?;
     let quote = quote.unwrap_or_else(|| source.text.clone());
     ensure!(!quote.is_empty(), "empty quote");
     // char_indices includes overlapping occurrences and gives Unicode scalar offsets below.
@@ -311,6 +325,59 @@ mod performance_tests {
         assert_eq!(output["rows"][0][1], 0);
         assert_eq!(output["rows"][1][1], 1);
         assert_eq!(output["rows"][2][1], 0);
+    }
+
+    #[test]
+    fn indexed_rows_and_warnings_match_filtering_the_input() {
+        let documents = ["a", "a: b", "b", "c"];
+        let mut listed = Vec::new();
+        for i in 0..40 {
+            let document = documents[(i * 7) % 4];
+            let mut source = json!({"id":format!("id{}", i % 37),"document":document,
+                "location":format!("/{}", (i * 13) % 5),"text":"t"});
+            if i % 3 == 0 {
+                source["context"] = json!({"sheet":(["x","y"][i % 2]),"cell":"A1","row":(i * 11) % 4,
+                    "column":(i * 5) % 3,"number_format":"General"});
+            }
+            listed.push(source);
+        }
+        let input: Input = serde_json::from_value(json!({
+            "schema_version":1,"structure_requirements":{},
+            "revisions":{"a":"r","a: b":"r","b":"r","c":"r"},
+            "warnings":["a: one","a: b: two","b: three","free","d: four","a:b","c: five","a: b"],
+            "sources":listed
+        }))
+        .unwrap();
+        let index = spec::InputIndex::new(&input).unwrap();
+        let indexed = index.of(&input);
+        for document in documents.iter().chain(&["d"]) {
+            let ids =
+                |rows: Vec<&Source>| rows.into_iter().map(std::ptr::from_ref).collect::<Vec<_>>();
+            match sources_of(&input, document) {
+                Ok(rows) => assert_eq!(ids(indexed.rows(document).unwrap()), ids(rows)),
+                Err(error) => assert_eq!(
+                    indexed.rows(document).unwrap_err().to_string(),
+                    error.to_string()
+                ),
+            }
+            assert_eq!(
+                indexed.warnings(document),
+                relevant_warnings(&input, &[document.to_string()].into())
+            );
+        }
+        // The document a warning names is the first in order it starts with.
+        for warning in &input.warnings {
+            assert_eq!(
+                spec::warning_document(&input, warning),
+                input
+                    .revisions
+                    .keys()
+                    .find(|doc| warning.starts_with(&format!("{doc}: ")))
+            );
+        }
+        fn sources_of<'a>(input: &'a Input, document: &str) -> Result<Vec<&'a Source>> {
+            sources(input, Some(document))
+        }
     }
 
     #[test]

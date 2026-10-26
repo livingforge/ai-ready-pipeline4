@@ -1,8 +1,5 @@
 //! Agent-facing contracts share the model's value/condition definitions.
-use crate::{
-    data::{encoded, hash},
-    specifications as spec,
-};
+use crate::specifications as spec;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
@@ -122,8 +119,13 @@ pub fn quantity_findings(input: &spec::Input, reply: &Value) -> Result<Vec<Value
 
 /// Machine assessment of a validated reply. Source coverage is not a semantic audit.
 pub fn reply_report(input: &spec::Input, reply: &Value) -> Result<spec::Report> {
+    reply_report_in(spec::InputIndex::new(input)?.of(input), reply)
+}
+
+/// [`reply_report`] against an input already indexed.
+pub(crate) fn reply_report_in(input: spec::Indexed, reply: &Value) -> Result<spec::Report> {
     let doc = reply["document"].as_str().context("document required")?;
-    let rows = crate::semantic::sources(input, Some(doc))?;
+    let rows = input.rows(doc)?;
     let mut items = Vec::new();
     for original in reply["items"].as_array().context("items required")? {
         let mut item = original.clone();
@@ -143,13 +145,18 @@ pub fn reply_report(input: &spec::Input, reply: &Value) -> Result<spec::Report> 
             Ok(json!({"evidence":crate::semantic::span(&entry["evidence"], &rows)?,"reason":entry["reason"]}))
         }).collect::<Result<Vec<_>>>()?;
     let model: spec::Model = serde_json::from_value(json!({"schema_version":1,
-        "input_hash":hash(&encoded(&serde_json::to_value(input)?)),"items":items,
+        "input_hash":input.hash(),"items":items,
         "exclusions":exclusions,"audits":[],"decisions":[]}))?;
-    spec::assess(input, &model)
+    input.assess(&model)
 }
 
 /// Validate each item separately so one malformed citation does not hide other errors.
 pub fn diagnostics(input: &spec::Input, reply: &Value) -> Result<Vec<Value>> {
+    diagnostics_in(spec::InputIndex::new(input)?.of(input), reply)
+}
+
+/// [`diagnostics`] against an input already indexed.
+pub(crate) fn diagnostics_in(input: spec::Indexed, reply: &Value) -> Result<Vec<Value>> {
     static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {
         jsonschema::validator_for(&reply_schema()).expect("embedded reply schema")
     });
@@ -158,14 +165,14 @@ pub fn diagnostics(input: &spec::Input, reply: &Value) -> Result<Vec<Value>> {
         return Ok(result);
     }
     let doc = reply["document"].as_str().unwrap();
-    let packet = crate::semantic::packet(input, doc)?;
+    let packet = crate::semantic::packet_in(input, doc)?;
     if reply["packet"] != packet["packet"] {
         result.push(json!({"code":"stale_packet","path":"/packet","message":"Use the current extraction packet"}));
         return Ok(result);
     }
-    let rows = crate::semantic::sources(input, Some(doc))?;
+    let rows = input.rows(doc)?;
     let items = reply["items"].as_array().unwrap();
-    let input_hash = hash(&encoded(&serde_json::to_value(input)?));
+    let input_hash = input.hash();
     let mut expanded = Vec::new();
     let mut keys = std::collections::BTreeSet::new();
     // Relationship targets by key, so each link does not scan every item.
@@ -235,8 +242,7 @@ pub fn diagnostics(input: &spec::Input, reply: &Value) -> Result<Vec<Value>> {
     let assess_items = |items: Vec<Value>| -> Result<()> {
         let model: spec::Model = serde_json::from_value(json!({"schema_version":1,
             "input_hash":input_hash,"items":items,"exclusions":[],"audits":[],"decisions":[]}))?;
-        spec::assess(input, &model)?;
-        Ok(())
+        input.check(&model)
     };
     if !expanded.is_empty()
         && assess_items(expanded.iter().map(|(_, item)| item.clone()).collect()).is_err()

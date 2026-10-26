@@ -123,33 +123,40 @@ fn semantic_changes(
         .flatten()
         .filter_map(|old| old["id"].as_str())
         .collect();
+    // The pending operations of the earlier version the later one no longer
+    // holds, found once rather than for each operation of the history.
+    let taken: Vec<&Value> = bm["operations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|old| {
+            source_changed
+                && !am["operations"]
+                    .as_array()
+                    .is_some_and(|remaining| remaining.iter().any(|entry| entry["id"] == old["id"]))
+        })
+        .collect();
     let history: Vec<_> = b["history"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|o| {
             !o["id"].as_str().is_some_and(|id| earlier.contains(id))
-                || (source_changed
-                    && bm["operations"].as_array().is_some_and(|pending| {
-                        pending.iter().any(|old| {
-                            [
-                                "id",
-                                "kind",
-                                "sheet",
-                                "at",
-                                "count",
-                                "to",
-                                "style_from",
-                                "style_rows",
-                                "merges",
-                            ]
-                            .iter()
-                            .all(|key| old[*key] == o[*key])
-                                && !am["operations"].as_array().is_some_and(|remaining| {
-                                    remaining.iter().any(|entry| entry["id"] == old["id"])
-                                })
-                        })
-                    }))
+                || taken.iter().any(|old| {
+                    [
+                        "id",
+                        "kind",
+                        "sheet",
+                        "at",
+                        "count",
+                        "to",
+                        "style_from",
+                        "style_rows",
+                        "merges",
+                    ]
+                    .iter()
+                    .all(|key| old[*key] == o[*key])
+                })
         })
         .cloned()
         .collect();
@@ -198,6 +205,14 @@ fn semantic_changes(
     };
     let a = identity::placed(a, &extraction(before)?, &bm["operations"])?;
     let b = identity::placed(b, &extraction(after)?, &am["operations"])?;
+    let names: BTreeSet<&String> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|n| n.starts_with("content/"))
+        .collect();
+    // The content files of each page on both sides, by page: the first page
+    // compared reads every file, the others only theirs.
+    let mut contents: Option<HashMap<String, Vec<&String>>> = None;
     for (page, sheet) in &b.sheets {
         let Some(previous) = a.sheets.get(page) else {
             out.push(json!({"kind":"ambiguous_correspondence","page":page,"reason":"sheet identities differ"}));
@@ -207,24 +222,29 @@ fn semantic_changes(
             ("columns", "column_added", "column_removed"),
             ("rows", "row_added", "row_removed"),
         ] {
-            let ac = previous[axis].as_object().context("layout axis missing")?;
-            let bc = sheet[axis].as_object().context("layout axis missing")?;
+            let (ac, bc) = (previous.axis(axis), sheet.axis(axis));
             for id in ac.keys().chain(bc.keys()).collect::<BTreeSet<_>>() {
                 match (ac.get(id),bc.get(id)) {
-                    (None,Some(target)) => out.push(json!({"kind":added,"page":page,"identity":id,"position":target["position"]})),
-                    (Some(target),None) => out.push(json!({"kind":removed,"page":page,"identity":id,"position":target["position"]})),
-                    (Some(x),Some(y)) if x["position"] != y["position"] => out.push(json!({"kind":"reference_position_changed","page":page,"axis":axis,"identity":id,"before":x["position"],"after":y["position"]})),
+                    (None,Some(target)) => out.push(json!({"kind":added,"page":page,"identity":id,"position":target.position})),
+                    (Some(target),None) => out.push(json!({"kind":removed,"page":page,"identity":id,"position":target.position})),
+                    (Some(x),Some(y)) if x.position != y.position => out.push(json!({"kind":"reference_position_changed","page":page,"axis":axis,"identity":id,"before":x.position,"after":y.position})),
                     _=>{}
                 }
             }
         }
-        for name in before
-            .keys()
-            .chain(after.keys())
-            .filter(|n| n.starts_with("content/"))
-            .collect::<BTreeSet<_>>()
-        {
+        let on_page: Vec<&String> = match &contents {
+            Some(contents) => contents.get(page.as_str()).cloned().unwrap_or_default(),
+            None => names.iter().copied().collect(),
+        };
+        let mut by_page: HashMap<String, Vec<&String>> = HashMap::new();
+        for name in on_page {
             let (x, y) = (value(before, name)?, value(after, name)?);
+            if contents.is_none()
+                && let Some(id) = x["page_id"].as_str()
+                && x["page_id"] == y["page_id"]
+            {
+                by_page.entry(id.to_owned()).or_default().push(name);
+            }
             if x["page_id"] != *page || y["page_id"] != *page {
                 continue;
             }
@@ -268,6 +288,9 @@ fn semantic_changes(
                 change["page"] = json!(page);
                 out.push(change);
             }
+        }
+        if contents.is_none() {
+            contents = Some(by_page);
         }
     }
     Ok(out)
@@ -456,7 +479,7 @@ mod performance_tests {
             (
                 "extraction.json".into(),
                 DiffFile::Text(
-                    json!({"parser":"arp4-rust/1.0.0-alpha.1;cells/1","schema_version":"2",
+                    json!({"parser":"arp4-rust/1.0.0-alpha.1;cells/1","schema_version":"4",
                         "sheets":[{"name":"Sheet","part":"xl/worksheets/sheet1.xml","state":"visible","merges":[],"cells":[],"fonts":[],"styles":[]}]})
                     .to_string(),
                 ),

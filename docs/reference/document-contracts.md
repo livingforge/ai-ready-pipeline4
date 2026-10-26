@@ -22,7 +22,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 6). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 7). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
 | <code>/properties/elements</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items</code> | <code>{}</code> |
 | <code>/properties/elements/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["text"],"type":"object"}</code> |
@@ -47,8 +47,30 @@
 | <code>/properties/elements/items/oneOf/5/properties/chart</code> | <code>{"type":"null"}</code> |
 | <code>/properties/elements/items/oneOf/6</code> | <code>{"additionalProperties":false,"required":["drawing"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/6/properties/drawing</code> | <code>{"type":"null"}</code> |
+| <code>/properties/elements/items/oneOf/7</code> | <code>{"additionalProperties":false,"required":["diagram"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram</code> | <code>{"additionalProperties":false,"description":"線でつながった図形のまとまり。図形・位置・線の両端は原本の図形から決まり、編集できるのは text だけ。線の両端は原本に記録された接続先、記録がなければ端が接する・載る図形（構造ポリシーの距離以内）、Excelでは文字のあるセルとし、推定した端は注記する","required":["lines"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/at</code> | <code>{"description":"Excel: まとまりが占めるセル範囲","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines</code> | <code>{"description":"線。「始点 → 終点」（矢印の向き）、「A ↔ B」（両端に矢印）、「A — B」（矢印なし）。端は図形の文字（文字がないか重なる図形はキー）、セル、画像、未接続で表し、破線と近接で推定した端を括弧で注記する。文字を持つ線は line と text の組","minItems":1,"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items</code> | <code>{}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/0</code> | <code>{"type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/1</code> | <code>{"additionalProperties":false,"required":["line","text"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/1/properties/line</code> | <code>{"type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/1/properties/text</code> | <code>{"description":"図形・線の文字。段落ごとに要素を持つ図形（PowerPoint）は段落のリスト。編集できるのはこの値だけ"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/1/properties/text/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/1/properties/text/anyOf/1</code> | <code>{"minItems":2,"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/lines/items/anyOf/1/properties/text/anyOf/1/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes</code> | <code>{"description":"図形。ページの上から、左から順","minItems":1,"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items</code> | <code>{"additionalProperties":false,"required":["id","shape"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/at</code> | <code>{"description":"Excelはセル範囲、PowerPointはスライド上の位置と大きさ（ポイント）","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/id</code> | <code>{"description":"図形のキー（s と原本の図形番号）","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/in</code> | <code>{"description":"この図形を囲む最も内側の図形のキー","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/shape</code> | <code>{"description":"図形の種類。一覧は contracts/diagram-shapes.json。一覧にない種類は原本の名前","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text</code> | <code>{"description":"図形・線の文字。段落ごとに要素を持つ図形（PowerPoint）は段落のリスト。編集できるのはこの値だけ"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text/anyOf/1</code> | <code>{"minItems":2,"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text/anyOf/1/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/page_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"6"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"7"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/node</code> | <code>{"description":"表の1記録、または区分。記録のキーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。区分は、縦に結合するか先頭の記録の行だけに書いて複数の記録の見出しとなるセルで、記録と同じ規則のキーでその値を持ち、範囲の記録を children に持つ。区分のセルは先頭の記録のノードに置かず、区分の下の空のセルはどのノードにも置かない。値はセルの値で、キーと木の形は編集しない","type":"object"}</code> |
 | <code>/$defs/node/properties/children</code> | <code>{"description":"この記録の名前が見出しとなる記録。区分では、範囲の記録と内側の区分","minItems":1,"type":"array"}</code> |
@@ -1180,24 +1202,26 @@
 | <code>/properties/opaque_parts/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/opaque_parts/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/parser</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/print_settings</code> | <code>{"description":"印刷設定のOpen XML要素。同じ要素は1回だけ置き、それを持つ部品を parts に最初に現れた順で並べる。読み込み時に部品ごとの一覧へ戻す","type":"array"}</code> |
-| <code>/properties/print_settings/items</code> | <code>{"additionalProperties":false,"required":["parts","component","xml"],"type":"object"}</code> |
-| <code>/properties/print_settings/items/properties/component</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/print_settings</code> | <code>{"description":"印刷設定のOpen XML要素。同じ要素を同じ順に持つ部品をまとめ、部品名の一覧（parts）と要素のXML（xml）を1回だけ置く。読み込み時に部品名の順に部品ごとの一覧へ戻し、要素名を component として補う","type":"array"}</code> |
+| <code>/properties/print_settings/items</code> | <code>{"additionalProperties":false,"required":["parts","xml"],"type":"object"}</code> |
 | <code>/properties/print_settings/items/properties/parts</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/properties/print_settings/items/properties/parts/items</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/print_settings/items/properties/xml</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"2"}</code> |
+| <code>/properties/print_settings/items/properties/xml</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/print_settings/items/properties/xml/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells","fonts","styles"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font</code> | <code>{"description":"fonts での番号。fonts の番号を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cell_style</code> | <code>{"description":"styles での番号。styles の番号を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない","minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","type","value"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","value"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"description":"このシートの fonts での番号","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"description":"このシートの fonts での番号。シートの cell_font と同じなら持たず、cell_font のあるシートでフォントを持たないセルは null","minimum":0,"type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/formula</code> | <code>{"description":"数式のないセルでは保存しない","type":["string","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"Excelのセルでシート番号とアドレスから決まるID（c-&lt;シート番号&gt;-&lt;アドレス&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"description":"General は保存しない","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"原本の形式から決まるID（Excelはシート番号とアドレスの c-&lt;シート番号&gt;-&lt;アドレス&gt;、ほかの形式はページの n 番目のセルの text-&lt;n&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"description":"原本の形式の既定（Excelは General、ほかの形式は空文字）は保存しない","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
@@ -1210,15 +1234,15 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_end</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_start</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"description":"このシートの styles での番号","minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"description":"このシートの styles での番号。シートの cell_style と同じなら持たず、cell_style のあるシートで書式を持たないセルは null","minimum":0,"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"description":"数式があれば formula、なければ値の型（string・number・boolean・null）という、値と数式から決まる型は保存しない。error などそれ以外の型だけを持つ","enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/1</code> | <code>{"if":{"properties":{"type":{"const":"error"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/2</code> | <code>{"if":{"properties":{"type":{"const":"number"}}},"then":{"properties":{"value":{"type":"number"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}}},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}}},"then":{"properties":{"value":{"type":"null"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/5</code> | <code>{"else":{"properties":{"formula":{"type":"null"}}},"if":{"properties":{"type":{"const":"formula"}}},"then":{"properties":{"formula":{"type":"string"}},"required":["formula"]}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}},"required":["type"]},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/1</code> | <code>{"if":{"properties":{"type":{"const":"error"}},"required":["type"]},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/2</code> | <code>{"if":{"properties":{"type":{"const":"number"}},"required":["type"]},"then":{"properties":{"value":{"type":"number"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}},"required":["type"]},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}},"required":["type"]},"then":{"properties":{"value":{"type":"null"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/5</code> | <code>{"else":{"if":{"required":["type"]},"then":{"properties":{"formula":{"type":"null"}}}},"if":{"properties":{"type":{"const":"formula"}},"required":["type"]},"then":{"properties":{"formula":{"type":"string"}},"required":["formula"]}}</code> |
 | <code>/properties/sheets/items/properties/comments</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/comments/items</code> | <code>{"additionalProperties":false,"required":["address","kind","author","text"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/comments/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
@@ -1237,9 +1261,9 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/col</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/colOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/row</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/rowOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/height</code> | <code>{"description":"高さ（ポイント）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/kind</code> | <code>{"enum":["twoCellAnchor","oneCellAnchor","absoluteAnchor","slide"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/left</code> | <code>{"description":"スライド左端からの位置（ポイント）","type":["number","null"]}</code> |
@@ -1248,9 +1272,9 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/rotation</code> | <code>{"description":"回転（度）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/col</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/colOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/rowOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/top</code> | <code>{"description":"スライド上端からの位置（ポイント）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/width</code> | <code>{"description":"幅（ポイント）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/chart_part</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1267,6 +1291,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/kind</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/linked_cell</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/list_range</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/dash</code> | <code>{"description":"The dash of the drawing's line (a:prstDash), such as dash or sysDot. Absent for a solid line.","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/description</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill</code> | <code>{"description":"図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
@@ -1284,6 +1309,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/geometry</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/group</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/head_end</code> | <code>{"description":"The mark at the start of the drawing's line (a:headEnd), such as triangle for an arrowhead. Absent for none.","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/id</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/0</code> | <code>{"type":"null"}</code> |
@@ -1300,6 +1326,8 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/linked_image</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/macro</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/paragraphs</code> | <code>{"description":"PowerPoint: the cells (column A) of the paragraphs of the shape's text, in order.","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/paragraphs/items</code> | <code>{"pattern":"^A[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/part</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
@@ -1309,6 +1337,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/italic</code> | <code>{"const":true,"description":"Every run of the text is italic, as styles and themes resolve it."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/strike</code> | <code>{"const":true,"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/underline</code> | <code>{"const":true,"description":"Every run of the text is underlined, by a line of any kind."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/tail_end</code> | <code>{"description":"The mark at the end of the drawing's line (a:tailEnd), such as triangle for an arrowhead. Absent for none.","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/0</code> | <code>{"type":"null"}</code> |
@@ -1329,11 +1358,18 @@
 | <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/grid</code> | <code>{"additionalProperties":false,"description":"Excel sheets with drawings: the sizes of the columns and rows, which place the cells and the drawings anchored on them on the sheet.","required":["column_width","row_height","columns","rows"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/column_width</code> | <code>{"description":"The default width of a column, in characters of the normal font's digits with padding, as Excel stores widths.","minimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/columns</code> | <code>{"description":"Columns of their own width: [first, last, width], numbered from 1. Adjacent columns of the same width are one run.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/columns/items</code> | <code>{"maxItems":3,"minItems":3,"prefixItems":[{"minimum":1,"type":"integer"},{"minimum":1,"type":"integer"},{"minimum":0,"type":"number"}],"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/row_height</code> | <code>{"description":"The default height of a row, in points.","minimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/rows</code> | <code>{"description":"Rows of their own height in points: [first, last, height], numbered from 1. Adjacent rows of the same height are one run.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/rows/items</code> | <code>{"maxItems":3,"minItems":3,"prefixItems":[{"minimum":1,"type":"integer"},{"minimum":1,"type":"integer"},{"minimum":0,"type":"number"}],"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_columns</code> | <code>{"description":"Excel columns hidden on the sheet, by letter. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/merges</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/merges</code> | <code>{"description":"結合範囲。保存時は1行に並べる","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1415,7 +1451,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"documents extraction-read が書き出す抽出結果の読み出し。extraction.json はシートごとのフォント・書式の表をセルが番号で参照し、数式の計算結果を保存しない。この読み出しは各セルにフォント・書式・計算結果（cached。数式なら value と同じ）を戻した形で、JSON Pointer の位置は extraction.json と同じ。編集の入力には使わない。","required":["schema_version","document_id","source","parser","sheets","findings","assets"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"documents extraction-read の出力。extraction.json と同じ形で1セル1行に書き、文書ID・原本・注意事項の全文・画像を加え、フォントと書式は番号の代わりに中身を書く。シートは多くのセルが持つフォント・書式を cell_font・cell_style に1回だけ書き、セルはそれと異なるときだけ font・style を持つ（持たないセルは null）。数式の最後の計算結果は value で、別には書かない","required":["schema_version","document_id","source","parser","sheets","findings","assets"],"type":"object"}</code> |
 | <code>/properties/assets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/assets/items</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
 | <code>/properties/assets/items/properties/ocr</code> | <code>{"additionalProperties":false,"required":["status","text","reason"],"type":"object"}</code> |
@@ -1447,34 +1483,56 @@
 | <code>/properties/opaque_parts/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/opaque_parts/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/parser</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/print_settings</code> | <code>{"type":"array"}</code> |
-| <code>/properties/print_settings/items</code> | <code>{"additionalProperties":false,"required":["part","component","xml"],"type":"object"}</code> |
-| <code>/properties/print_settings/items/properties/component</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/print_settings/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/print_settings/items/properties/xml</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"2"}</code> |
+| <code>/properties/print_settings</code> | <code>{"description":"印刷設定のOpen XML要素。同じ要素を同じ順に持つ部品をまとめ、部品名の一覧（parts）と要素のXML（xml）を1回だけ置く。読み込み時に部品名の順に部品ごとの一覧へ戻し、要素名を component として補う","type":"array"}</code> |
+| <code>/properties/print_settings/items</code> | <code>{"additionalProperties":false,"required":["parts","xml"],"type":"object"}</code> |
+| <code>/properties/print_settings/items/properties/parts</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/print_settings/items/properties/parts/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/print_settings/items/properties/xml</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/print_settings/items/properties/xml/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font</code> | <code>{"additionalProperties":false,"description":"font を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/cell_style</code> | <code>{"additionalProperties":false,"description":"style を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない","required":["bold","fill","border"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/fill</code> | <code>{"description":"Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","address","type","value","formula","cached","number_format"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","value"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/cached</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/formula</code> | <code>{"type":["string","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"description":"シートの cell_font と異なるときだけ持つ。cell_font のあるシートでフォントを持たないセルは null"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/formula</code> | <code>{"description":"数式のないセルでは保存しない","type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"原本の形式から決まるID（Excelはシート番号とアドレスの c-&lt;シート番号&gt;-&lt;アドレス&gt;、ほかの形式はページの n 番目のセルの text-&lt;n&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"description":"原本の形式の既定（Excelは General、ほかの形式は空文字）は保存しない","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
@@ -1487,23 +1545,25 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_end</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_start</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/bold</code> | <code>{"type":"boolean"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"description":"Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.","minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"description":"シートの cell_style と異なるときだけ持つ。cell_style のあるシートで書式を持たないセルは null"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0</code> | <code>{"additionalProperties":false,"required":["bold","fill","border"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/border</code> | <code>{"description":"Excel border number; 0 when the border draws no side. Equal numbers are the same border.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/fill</code> | <code>{"description":"Fill behind the text: an Excel fill number, 0 when the fill paints nothing (equal numbers are the same fill); for a Word table cell 1 when shaded, otherwise 0.","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"description":"数式があれば formula、なければ値の型（string・number・boolean・null）という、値と数式から決まる型は保存しない。error などそれ以外の型だけを持つ","enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/1</code> | <code>{"if":{"properties":{"type":{"const":"error"}}},"then":{"properties":{"value":{"type":"string"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/2</code> | <code>{"if":{"properties":{"type":{"const":"number"}}},"then":{"properties":{"value":{"type":"number"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}}},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}}},"then":{"properties":{"value":{"type":"null"}}}}</code> |
-| <code>/properties/sheets/items/properties/cells/items/allOf/5</code> | <code>{"else":{"properties":{"cached":{"type":"null"},"formula":{"type":"null"}}},"if":{"properties":{"type":{"const":"formula"}}},"then":{"properties":{"formula":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/0</code> | <code>{"if":{"properties":{"type":{"const":"string"}},"required":["type"]},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/1</code> | <code>{"if":{"properties":{"type":{"const":"error"}},"required":["type"]},"then":{"properties":{"value":{"type":"string"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/2</code> | <code>{"if":{"properties":{"type":{"const":"number"}},"required":["type"]},"then":{"properties":{"value":{"type":"number"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/3</code> | <code>{"if":{"properties":{"type":{"const":"boolean"}},"required":["type"]},"then":{"properties":{"value":{"type":"boolean"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/4</code> | <code>{"if":{"properties":{"type":{"const":"null"}},"required":["type"]},"then":{"properties":{"value":{"type":"null"}}}}</code> |
+| <code>/properties/sheets/items/properties/cells/items/allOf/5</code> | <code>{"else":{"if":{"required":["type"]},"then":{"properties":{"formula":{"type":"null"}}}},"if":{"properties":{"type":{"const":"formula"}},"required":["type"]},"then":{"properties":{"formula":{"type":"string"}},"required":["formula"]}}</code> |
 | <code>/properties/sheets/items/properties/comments</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/comments/items</code> | <code>{"additionalProperties":false,"required":["address","kind","author","text"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/comments/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
@@ -1515,16 +1575,16 @@
 | <code>/properties/sheets/items/properties/computed/items/properties/kind</code> | <code>{"enum":["array","data_table","pivot"]}</code> |
 | <code>/properties/sheets/items/properties/computed/items/properties/range</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","part","kind","name","description","text","anchor","group","transform","geometry","connections","image","linked_image","macro","control"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","kind","anchor"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/edit_as</code> | <code>{"enum":["absolute","oneCell","twoCell"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/ext/additionalProperties</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/col</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/colOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/row</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/from/properties/rowOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/height</code> | <code>{"description":"高さ（ポイント）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/kind</code> | <code>{"enum":["twoCellAnchor","oneCellAnchor","absoluteAnchor","slide"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/left</code> | <code>{"description":"スライド左端からの位置（ポイント）","type":["number","null"]}</code> |
@@ -1533,9 +1593,9 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/rotation</code> | <code>{"description":"回転（度）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to</code> | <code>{"additionalProperties":false,"required":[],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/col</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/colOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/colOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/row</code> | <code>{"type":["integer","null"]}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/rowOff</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/to/properties/rowOff</code> | <code>{"description":"EMU。0 のときは持たない","type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/top</code> | <code>{"description":"スライド上端からの位置（ポイント）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor/properties/width</code> | <code>{"description":"幅（ポイント）","type":["number","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/chart_part</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1552,6 +1612,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/kind</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/linked_cell</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/control/anyOf/1/properties/list_range</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/dash</code> | <code>{"description":"The dash of the drawing's line (a:prstDash), such as dash or sysDot. Absent for a solid line.","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/description</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill</code> | <code>{"description":"図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
@@ -1569,6 +1630,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/geometry</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/group</code> | <code>{"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/head_end</code> | <code>{"description":"The mark at the start of the drawing's line (a:headEnd), such as triangle for an arrowhead. Absent for none.","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/id</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/image/anyOf/0</code> | <code>{"type":"null"}</code> |
@@ -1585,6 +1647,8 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/linked_image</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/macro</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/paragraphs</code> | <code>{"description":"PowerPoint: the cells (column A) of the paragraphs of the shape's text, in order.","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/paragraphs/items</code> | <code>{"pattern":"^A[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/part</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
@@ -1594,6 +1658,7 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/italic</code> | <code>{"const":true,"description":"Every run of the text is italic, as styles and themes resolve it."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/strike</code> | <code>{"const":true,"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/underline</code> | <code>{"const":true,"description":"Every run of the text is underlined, by a line of any kind."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/tail_end</code> | <code>{"description":"The mark at the end of the drawing's line (a:tailEnd), such as triangle for an arrowhead. Absent for none.","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform</code> | <code>{}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/0</code> | <code>{"type":"null"}</code> |
@@ -1602,11 +1667,18 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/0</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1/additionalProperties</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/grid</code> | <code>{"additionalProperties":false,"description":"Excel sheets with drawings: the sizes of the columns and rows, which place the cells and the drawings anchored on them on the sheet.","required":["column_width","row_height","columns","rows"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/column_width</code> | <code>{"description":"The default width of a column, in characters of the normal font's digits with padding, as Excel stores widths.","minimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/columns</code> | <code>{"description":"Columns of their own width: [first, last, width], numbered from 1. Adjacent columns of the same width are one run.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/columns/items</code> | <code>{"maxItems":3,"minItems":3,"prefixItems":[{"minimum":1,"type":"integer"},{"minimum":1,"type":"integer"},{"minimum":0,"type":"number"}],"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/row_height</code> | <code>{"description":"The default height of a row, in points.","minimum":0,"type":"number"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/rows</code> | <code>{"description":"Rows of their own height in points: [first, last, height], numbered from 1. Adjacent rows of the same height are one run.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/grid/properties/rows/items</code> | <code>{"maxItems":3,"minItems":3,"prefixItems":[{"minimum":1,"type":"integer"},{"minimum":1,"type":"integer"},{"minimum":0,"type":"number"}],"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_columns</code> | <code>{"description":"Excel columns hidden on the sheet, by letter. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/merges</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/merges</code> | <code>{"description":"結合範囲。保存時は1行に並べる","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |

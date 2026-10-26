@@ -13,6 +13,7 @@
       "json"
     ],
     "csv_import": true,
+    "document_diagram_bodies": "Excel and PowerPoint drawings joined by lines as one diagram element: shapes with their kind, place and editable text; lines written A → B by their arrowheads, joining the recorded connections, else what an end touches or lies on within the structure policy distance (an Excel cell holding text too), marked as inferred",
     "document_fonts": "effective latin and East Asian font names, size in points and RRGGBB color per cell, paragraph and shape text, resolved through styles and themes; mixed when runs differ; PDF strings read-only (font name without subset prefix, size on the page, device colors)",
     "document_ids": "source path below the sources folder",
     "document_input_formats": [
@@ -67,6 +68,7 @@
         "xltx",
         "xltm"
       ],
+      "diagram_attach_distance_pt": 6,
       "diagram_min_shapes": 3
     },
     "document_structure_table_descriptions": true,
@@ -101,7 +103,7 @@
     "excel_chart_xml_extraction": true,
     "excel_column_move_scope": "plain worksheets and ordinary contiguous A1 formulas; positional objects, defined names and mixed structural operations are refused",
     "excel_drawing_extraction": true,
-    "excel_element_body_version": "6",
+    "excel_element_body_version": "7",
     "excel_embedded_image_extraction": true,
     "excel_external_reimport": "unchanged grid with at most one changed cell; ambiguous structural or multi-cell correspondence is refused",
     "excel_image_commands": [

@@ -5,6 +5,7 @@
 use super::slide_fonts::SlideFonts;
 use super::*;
 use crate::fonts::{Color, ColorContext};
+use std::cell::OnceCell;
 
 const EMU_PER_POINT: f64 = 12_700.0;
 const CHART: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
@@ -153,6 +154,34 @@ pub(super) fn drawings(
 ) -> Result<Vec<Value>> {
     let context = fonts.color_context();
     let mut objects = vec![];
+    // The slide's relationships, read when a picture or chart first names one.
+    let rels_text = OnceCell::new();
+    let rels_xml = OnceCell::new();
+    let relationships = OnceCell::new();
+    let relation_target = |id: &str| -> Result<String> {
+        let by_id = match relationships.get() {
+            Some(by_id) => by_id,
+            None => {
+                let text = match rels_text.get() {
+                    Some(text) => text,
+                    None => {
+                        let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+                        let text = xml_part(parts, &format!("{directory}/_rels/{filename}.rels"))?;
+                        rels_text.get_or_init(|| text)
+                    }
+                };
+                let xml = match rels_xml.get() {
+                    Some(xml) => xml,
+                    None => {
+                        let xml = Document::parse(text)?;
+                        rels_xml.get_or_init(|| xml)
+                    }
+                };
+                relationships.get_or_init(|| relationships_by_id(xml))
+            }
+        };
+        relation_target_with(parts, images, part, by_id, id)
+    };
     let Some(tree) = xml
         .descendants()
         .find(|n| n.has_tag_name((PRESENTATION, "spTree")))
@@ -247,7 +276,7 @@ pub(super) fn drawings(
                 .find(|n| n.has_tag_name((DRAWING, "blip")))
         {
             if let Some(id) = blip.attribute((REL, "embed")) {
-                let media = relation_target_with(parts, images, part, id)?;
+                let media = relation_target(id)?;
                 if let Some(bytes) = images.get(&media).or_else(|| parts.get(&media)) {
                     image = json!({"part":media,"sha256":hash(bytes)});
                 }
@@ -258,7 +287,7 @@ pub(super) fn drawings(
             .descendants()
             .find(|n| n.has_tag_name((CHART, "chart")))
             .and_then(|n| n.attribute((REL, "id")))
-            .map(|id| relation_target_with(parts, images, part, id))
+            .map(&relation_target)
             .transpose()?;
         let placeholder = node
             .children()
@@ -293,6 +322,11 @@ pub(super) fn drawings(
                     .and_then(|w| w.parse::<f64>().ok())
                     .map_or(Value::Null, points),
             });
+            if let Some(line) = line {
+                for (key, mark) in crate::excel::line_marks(line) {
+                    object[key] = mark;
+                }
+            }
         }
         if kind == "shape" && !text.is_empty() {
             let runs: Vec<Node<'_, '_>> = body
@@ -317,21 +351,33 @@ pub(super) fn drawings(
     Ok(objects)
 }
 
-/// The part an internal relationship of `part` names, which may be a media
-/// part read apart from the XML parts (`images`).
+/// The relationships of a relationships part by ID, the first of each.
+fn relationships_by_id<'a, 'input>(
+    xml: &'a Document<'input>,
+) -> BTreeMap<&'a str, Node<'a, 'input>> {
+    let mut by_id = BTreeMap::new();
+    for rel in xml
+        .descendants()
+        .filter(|n| n.has_tag_name((PACKAGE_REL, "Relationship")))
+    {
+        if let Some(id) = rel.attribute("Id") {
+            by_id.entry(id).or_insert(rel);
+        }
+    }
+    by_id
+}
+
+/// The part the internal relationship `id` of `part` (`relationships`) names,
+/// which may be a media part read apart from the XML parts (`images`).
 fn relation_target_with(
     parts: &BTreeMap<String, Vec<u8>>,
     images: &BTreeMap<String, Vec<u8>>,
     part: &str,
+    relationships: &BTreeMap<&str, Node<'_, '_>>,
     id: &str,
 ) -> Result<String> {
-    let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
-    let rels = format!("{directory}/_rels/{filename}.rels");
-    let text = xml_part(parts, &rels)?;
-    let xml = Document::parse(&text)?;
-    let rel = xml
-        .descendants()
-        .find(|n| n.has_tag_name((PACKAGE_REL, "Relationship")) && n.attribute("Id") == Some(id))
+    let rel = *relationships
+        .get(id)
         .context("missing Office relationship")?;
     ensure!(
         rel.attribute("TargetMode") != Some("External"),

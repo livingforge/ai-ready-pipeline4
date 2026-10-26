@@ -128,8 +128,13 @@ fn new_table_row(
 
 /// Whether row operations can change `node`: text box paragraphs have a copy
 /// for older readers, a section break ends a section, and a table holding
-/// tables in its cells spreads a row over several grid rows.
-fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
+/// tables in its cells spreads a row over several grid rows. `nested` holds,
+/// by start, the tables already looked into and whether they hold tables.
+fn ensure_row_editable(
+    node: Node<'_, '_>,
+    row: usize,
+    nested: &mut BTreeMap<usize, bool>,
+) -> Result<()> {
     ensure!(
         !node
             .ancestors()
@@ -139,9 +144,11 @@ fn ensure_row_editable(node: Node<'_, '_>, row: usize) -> Result<()> {
     ensure!(
         !word_element(node, "tr")
             || !nearest(node, "tbl").is_some_and(|table| {
-                table
-                    .descendants()
-                    .any(|n| word_element(n, "tbl") && n != table)
+                *nested.entry(table.range().start).or_insert_with(|| {
+                    table
+                        .descendants()
+                        .any(|n| word_element(n, "tbl") && n != table)
+                })
             }),
         "row {row} is in a table that holds other tables in its cells; insert or delete its rows in Word"
     );
@@ -245,6 +252,7 @@ impl Layout<'_, '_> {
         let placed = placed_rows(&self.rows, operations, "Word")?;
         let (before_rows, after_rows) = original_neighbors(&placed);
         let mut insertions: BTreeMap<usize, String> = BTreeMap::new();
+        let mut nested = BTreeMap::new();
         for (index, entry) in placed.iter().enumerate() {
             let Placed::Inserted {
                 operation,
@@ -255,7 +263,7 @@ impl Layout<'_, '_> {
                 continue;
             };
             let node = self.rows[template];
-            ensure_row_editable(node, *template)?;
+            ensure_row_editable(node, *template, &mut nested)?;
             let table_row = word_element(node, "tr");
             let text = |column: &str| {
                 values
@@ -326,7 +334,7 @@ impl Layout<'_, '_> {
             if kept.contains(row) {
                 continue;
             }
-            ensure_row_editable(*node, *row)?;
+            ensure_row_editable(*node, *row, &mut nested)?;
             if word_element(*node, "tr") {
                 ensure!(
                     node.descendants()
@@ -433,8 +441,7 @@ impl<'a, 'input> Block<'a, 'input> {
 }
 
 /// The extraction sheet of text laid out as `blocks`, each with its font
-/// and the emphasis its style marks from `font`. Built typed: a cell as JSON,
-/// with its font and style in place, took eight times the memory.
+/// and the emphasis its style marks from `font`.
 pub(super) fn blocks_sheet(
     name: &str,
     part: &str,
@@ -442,56 +449,107 @@ pub(super) fn blocks_sheet(
     merges: &[String],
     tables: &[Value],
     font: &dyn Fn(&Block<'_, '_>) -> (Value, crate::fonts::Emphasis),
-) -> crate::extraction::Sheet {
-    let mut sheet = crate::extraction::Sheet::build(
-        json!({"name":name,"part":part,"state":"visible","merges":merges,"tables":tables}),
-    );
-    let number_format = sheet.number_format("");
-    for (i, b) in blocks.iter().enumerate() {
-        let mut style =
-            json!({"bold":b.bold,"fill":u8::from(b.fill),"border":u8::from(b.in_table)});
-        let (font, emphasis) = font(b);
+) -> Result<crate::extraction::Sheet> {
+    let mut cells = BlockCells::new();
+    for block in blocks {
+        cells.push(block, block.text.clone(), font(block));
+    }
+    cells.finish(name, part, merges, tables)
+}
+
+/// The cells of an extraction sheet of text, one per block, made as the
+/// blocks are laid out. Built typed: a cell as JSON, with its font and style
+/// in place, took eight times the memory.
+struct BlockCells {
+    sheet: crate::extraction::SheetBuilder,
+    count: usize,
+    /// The first cell that could not be added, which [`BlockCells::finish`] gives.
+    error: Option<anyhow::Error>,
+}
+
+impl BlockCells {
+    fn new() -> Self {
+        Self {
+            sheet: crate::extraction::Sheet::build(json!({})),
+            count: 0,
+            error: None,
+        }
+    }
+
+    /// Adds the cell of `block`, showing its `text`, with its font and the
+    /// emphasis its style marks.
+    fn push(
+        &mut self,
+        block: &Block<'_, '_>,
+        text: String,
+        (font, emphasis): (Value, crate::fonts::Emphasis),
+    ) {
+        self.count += 1;
+        let mut style = json!({"bold":block.bold,"fill":u8::from(block.fill),
+            "border":u8::from(block.in_table)});
         emphasis.mark(&mut style);
-        let cell = crate::extraction::Cell {
-            id: format!("text-{}", i + 1).into(),
-            address: b.address.as_str().into(),
+        let cell = crate::extraction::NewCell {
+            id: &format!("text-{}", self.count),
+            address: &block.address,
             kind: crate::extraction::CellKind::String,
-            value: Value::String(b.text.clone()),
+            value: &Value::String(text),
             formula: None,
-            number_format: number_format.clone(),
+            number_format: "",
             font: None,
             style: None,
             position: None,
         };
-        sheet.push(cell, Some(font), Some(style));
+        if let Err(error) = self.sheet.push(cell, Some(font), Some(style))
+            && self.error.is_none()
+        {
+            self.error = Some(error);
+        }
     }
-    sheet.finish()
+
+    fn finish(
+        self,
+        name: &str,
+        part: &str,
+        merges: &[String],
+        tables: &[Value],
+    ) -> Result<crate::extraction::Sheet> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        let mut sheet = self.sheet.finish();
+        sheet.fields =
+            json!({"name":name,"part":part,"state":"visible","merges":merges,"tables":tables});
+        Ok(sheet)
+    }
 }
 
 pub(super) struct Layout<'a, 'input> {
     pub blocks: Vec<Block<'a, 'input>>,
     merges: Vec<String>,
     tables: Vec<Value>,
+    /// The names of the tables `tables` defines so far.
+    table_names: BTreeSet<String>,
     /// The element of each row: a paragraph or a table row.
     rows: BTreeMap<usize, Node<'a, 'input>>,
 }
 
-impl Layout<'_, '_> {
-    pub fn sheet(
-        &self,
-        name: &str,
-        part: &str,
-        styles: &super::word_fonts::WordStyles,
-    ) -> crate::extraction::Sheet {
-        blocks_sheet(
-            name,
-            part,
-            &self.blocks,
-            &self.merges,
-            &self.tables,
-            &|block| styles.block_font(block),
-        )
-    }
+/// The extraction sheet `name` of the Word part `part`, whose document is
+/// `xml`: the sheet of its [`layout`], each block made a cell as it is laid
+/// out. A long document's blocks, held until the sheet was made, took more
+/// memory than its cells.
+pub(super) fn sheet(
+    xml: &Document<'_>,
+    name: &str,
+    part: &str,
+    styles: &super::word_fonts::WordStyles,
+) -> Result<crate::extraction::Sheet> {
+    let mut cells = BlockCells::new();
+    let layout = laid_out(xml, &mut |mut block| {
+        let font = styles.block_font(&block);
+        let text = std::mem::take(&mut block.text);
+        cells.push(&block, text, font);
+    })?;
+    cells.finish(name, part, &layout.merges, &layout.tables)
 }
 
 fn word_element(node: Node<'_, '_>, name: &str) -> bool {
@@ -1087,12 +1145,12 @@ fn borderless(table: Node<'_, '_>) -> bool {
 /// table are rows of the document; a nested table's rows are in its parent's.
 fn place<'a, 'input>(
     table: Measured<'a, 'input>,
-    top: usize,
-    left: usize,
+    (top, left): (usize, usize),
     width: usize,
     parent: Option<&str>,
     nested: bool,
     output: &mut Layout<'a, 'input>,
+    laid: &mut dyn FnMut(Block<'a, 'input>),
 ) -> Result<()> {
     let mut columns = table.columns.clone();
     let total = table.width();
@@ -1128,7 +1186,7 @@ fn place<'a, 'input>(
         });
     let caption = property(table.node, "tblPr", "tblCaption")
         .and_then(value)
-        .filter(|caption| !output.tables.iter().any(|t| t["name"] == *caption));
+        .filter(|caption| !output.table_names.contains(*caption));
     let name = caption.map_or_else(
         || format!("table-{}", output.tables.len() + 1),
         str::to_owned,
@@ -1175,19 +1233,19 @@ fn place<'a, 'input>(
                     if right > left || last > row {
                         output.merges.push(range((row, left), (last, right))?);
                     }
-                    output.blocks.push(block);
+                    laid(block);
                     row = last + 1;
                 }
                 Content::Table(nested) => {
                     let height = nested.height();
                     place(
                         nested,
-                        row,
-                        left,
+                        (row, left),
                         right - left + 1,
                         inner.as_deref(),
                         true,
                         output,
+                        laid,
                     )?;
                     row += height;
                 }
@@ -1204,15 +1262,35 @@ fn place<'a, 'input>(
     if let Some(parent) = parent {
         definition["parent"] = json!(parent);
     }
+    output.table_names.insert(name);
     output.tables[index] = definition;
     Ok(())
 }
 
 pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a, 'input>> {
+    let mut blocks = vec![];
+    let mut layout = laid_out(xml, &mut |block| blocks.push(block))?;
+    layout.blocks = blocks;
+    Ok(layout)
+}
+
+/// The [`layout`] of `xml` without its blocks: what [`Layout::restructure`]
+/// reads of it. A long document's blocks took twice the memory of its rows.
+pub(super) fn rows_layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a, 'input>> {
+    laid_out(xml, &mut |_| {})
+}
+
+/// The [`layout`] of `xml`, whose blocks are handed to `laid` in their order
+/// rather than kept.
+fn laid_out<'a, 'input>(
+    xml: &'a Document<'input>,
+    laid: &mut dyn FnMut(Block<'a, 'input>),
+) -> Result<Layout<'a, 'input>> {
     let mut output = Layout {
         blocks: vec![],
         merges: vec![],
         tables: vec![],
+        table_names: BTreeSet::new(),
         rows: BTreeMap::new(),
     };
     let hidden = HiddenBranches::new(xml, "docx");
@@ -1223,16 +1301,14 @@ pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a,
             let table = measure(node, &instructions, &hidden)?;
             if !table.rows.is_empty() {
                 let height = table.height();
-                place(table, row, 0, 0, None, false, &mut output)?;
+                place(table, (row, 0), 0, None, false, &mut output, laid)?;
                 row += height;
             }
         } else if word_element(node, "p") && nearest(node, "tc").is_none() {
             let mut text = Text::new(&instructions, &hidden);
             text.paragraph(node);
             if !text.text.is_empty() {
-                output
-                    .blocks
-                    .push(text.block(format!("A{row}"), false, None));
+                laid(text.block(format!("A{row}"), false, None));
                 output.rows.insert(row, node);
                 row += 1;
             }
@@ -1602,12 +1678,27 @@ mod tests {
                 json!({"name":"table-2","range":"C3:D3","header_rows":0,"totals_rows":0,"parent":"table-1"})
             ]
         );
-        let sheet = crate::extraction::sheet_view(&layout.sheet(
-            "document",
-            "word/document.xml",
-            &super::super::word_fonts::WordStyles::new(&BTreeMap::new()).unwrap(),
-        ))
+        let styles = super::super::word_fonts::WordStyles::new(&BTreeMap::new()).unwrap();
+        let sheet = crate::extraction::sheet_view(
+            &sheet(&xml, "document", "word/document.xml", &styles).unwrap(),
+        )
         .unwrap();
+        // Made as the blocks are laid out, it is the sheet of the layout.
+        assert_eq!(
+            sheet,
+            crate::extraction::sheet_view(
+                &blocks_sheet(
+                    "document",
+                    "word/document.xml",
+                    &layout.blocks,
+                    &layout.merges,
+                    &layout.tables,
+                    &|block| styles.block_font(block),
+                )
+                .unwrap()
+            )
+            .unwrap()
+        );
         assert_eq!(
             sheet["cells"][4]["style"],
             json!({"bold":false,"fill":0,"border":1})
@@ -1911,6 +2002,40 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.to_string().contains("holds other tables"), "{error}");
+    }
+
+    #[test]
+    fn a_caption_names_its_table_unless_a_table_defined_before_has_the_name() {
+        let table = |caption: &str, cells: &str| {
+            format!(
+                r#"<w:tbl><w:tblPr><w:tblCaption w:val="{caption}"/></w:tblPr><w:tr>{cells}</w:tr></w:tbl>{}"#,
+                p("")
+            )
+        };
+        let cell = |text: &str| tc("", &p(text));
+        let body = document(&format!(
+            "{}{}{}{}",
+            table("表A", &cell("a")),
+            table("表A", &cell("b")),
+            table("table-2", &cell("c")),
+            table(
+                "外",
+                &format!(
+                    "{}{}",
+                    cell("d"),
+                    tc("", &format!("{}{}", p("e"), table("外", &cell("f"))))
+                )
+            ),
+        ));
+        let xml = Document::parse(&body).unwrap();
+        let names: Vec<_> = layout(&xml)
+            .unwrap()
+            .tables
+            .iter()
+            .map(|t| t["name"].clone())
+            .collect();
+        // A table holding a table is defined after it, so both take the caption.
+        assert_eq!(names, ["表A", "table-2", "table-3", "外", "外"]);
     }
 
     #[test]

@@ -905,9 +905,11 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         proposal: bool,
     },
-    /// Write the extraction with every cell's font, style and cached result in
-    /// place (the extraction-view contract): extraction.json stores fonts and
-    /// styles once per sheet and leaves out the cached results.
+    /// Write the extraction for reading (the extraction-view contract): as
+    /// extraction.json stores it, one cell per line, with each font and style
+    /// written out where extraction.json has its index; a sheet gives the font
+    /// and style most of its cells have once (cell_font, cell_style), and a
+    /// cell only one of its own. A formula's cached result is its value.
     ExtractionRead {
         document: String,
         #[arg(long)]

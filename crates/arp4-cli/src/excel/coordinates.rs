@@ -301,7 +301,9 @@ impl MergeState {
             }
             // The copies lie in the inserted rows, so only a merge reaching
             // them, or a copy made before, can be under one: they are checked
-            // against those, in the order of the areas, rather than all.
+            // against those, in the order of the areas, rather than all. Each
+            // group of copies keeps to its own style-row-high band, so a copy
+            // meets no copy of an earlier group.
             let inserted = Area {
                 columns: None,
                 rows: Some((
@@ -311,19 +313,25 @@ impl MergeState {
                         .saturating_add(operation.count.saturating_sub(1)),
                 )),
             };
-            let mut nearby: Vec<Area> = areas
+            let nearby: Vec<Area> = areas
                 .iter()
                 .copied()
                 .filter(|&other| !single(other) && overlap(inserted, other))
                 .collect();
+            let mut group_copies = vec![];
             for group in 0..operation.count / height {
+                group_copies.clear();
                 for &(columns, top, bottom) in &template {
                     let first = operation.at + group * height + (top - from);
                     let area = Area {
                         columns,
                         rows: Some((first, first + (bottom - top))),
                     };
-                    if let Some(&other) = nearby.iter().find(|&&other| overlap(area, other)) {
+                    if let Some(&other) = nearby
+                        .iter()
+                        .chain(&group_copies)
+                        .find(|&&other| overlap(area, other))
+                    {
                         bail!(
                             "operation {} would merge {} over the merged range {}; insert the rows outside that merge",
                             operation.id,
@@ -332,7 +340,7 @@ impl MergeState {
                         );
                     }
                     if !single(area) {
-                        nearby.push(area);
+                        group_copies.push(area);
                     }
                     areas.push(area);
                     copied.push(true);
@@ -776,6 +784,16 @@ mod tests {
         let error = merges_after(&sheet, &[inside]).unwrap_err().to_string();
         assert!(
             error.contains("A4:B4 over the merged range A3:A5"),
+            "{error}"
+        );
+        // Copies of overlapping merges overlap each other in the first group.
+        let sheet = json!({"name":"S","merges":["A1:B1","B1:C1"]});
+        let overlapping = operation("overlapping", 2, 3, Some(1), 1, true);
+        let error = merges_after(&sheet, &[overlapping])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("B2:C2 over the merged range A2:B2"),
             "{error}"
         );
     }

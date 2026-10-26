@@ -165,3 +165,301 @@ fn partitions_show_only_their_cells_headers_and_merges() {
         json!([["s1", 0, "A3", "value", "x"]])
     );
 }
+
+/// A small deterministic generator for the comparisons below.
+struct Draws(u64);
+impl Draws {
+    fn next(&mut self, below: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % below as u64) as usize
+    }
+}
+
+/// Cells on two sheets with headers, nested-table contexts, descriptions and
+/// merges, some overlapping and some inverted.
+fn structured_packet(draws: &mut Draws, rows: usize) -> Value {
+    let address =
+        |column: usize, row: usize| format!("{}{}", (b'A' + column as u8) as char, row + 1);
+    let mut tables = Vec::new();
+    for sheet in ["A", "B"] {
+        let mut elements = Vec::new();
+        let mut id = 0;
+        for e in 0..4 {
+            let cells: Vec<_> = (0..1 + draws.next(6))
+                .map(|_| {
+                    id += 1;
+                    let headers: Vec<_> = (0..draws.next(3))
+                        .map(|_| json!(format!("{sheet}c{}", 1 + draws.next(20))))
+                        .collect();
+                    json!({"id":format!("{sheet}c{id}"),"address":address(draws.next(4), draws.next(rows)),
+                        "role":"data","headers":headers})
+                })
+                .collect();
+            let mut element = json!({"id":format!("{sheet}e{e}"),"kind":"table","sheet":sheet,"cells":cells,
+                "descriptions":[format!("{sheet}e{}", draws.next(5))]});
+            if draws.next(2) == 0 {
+                element["parent"] = json!({"element":format!("{sheet}e{}", draws.next(5)),
+                    "context":[format!("{sheet}c{}", 1 + draws.next(20))]});
+            }
+            elements.push(element);
+        }
+        let merges: Vec<_> = (0..draws.next(8))
+            .map(|_| {
+                let (top, left) = (draws.next(rows), draws.next(4));
+                let (bottom, right) = (draws.next(rows), draws.next(4));
+                json!(format!("{}:{}", address(left, top), address(right, bottom)))
+            })
+            .collect();
+        tables.push(json!({"document":"doc","sheet":sheet,"merges":merges,
+            "structure":{"document":"doc","regions":[],"elements":elements}}));
+    }
+    tables.push(json!({"document":"doc"}));
+    let rows: Vec<_> = (0..rows)
+        .map(|i| {
+            let table = draws.next(3);
+            json!([
+                format!("s{}", i + 1),
+                table,
+                address(draws.next(4), i),
+                "value",
+                "text"
+            ])
+        })
+        .collect();
+    json!({"packet":"fixture","document":"doc","warnings":[],"sources":{"columns":["ref","table","cell_or_location","field","text"],
+        "tables":tables,"rows":rows}})
+}
+
+#[test]
+fn indexed_scopes_match_scanning_every_row_and_cell() {
+    let mut draws = Draws(0x9e37_79b9_7f4a_7c15);
+    // Regions showing some merges and leaving out some cells, so both are compared.
+    let (mut merged, mut trimmed) = (0, 0);
+    for _ in 0..40 {
+        let rows = 4 + draws.next(30);
+        let packet = structured_packet(&mut draws, rows);
+        let modules = json!({"app":"Application"});
+        let scoper = Scoper::new(&packet, &modules);
+        for _ in 0..12 {
+            let pick = |draws: &mut Draws| {
+                (0..draws.next(6))
+                    .map(|_| json!(format!("s{}", 1 + draws.next(rows + 2))))
+                    .collect::<Vec<_>>()
+            };
+            let region = json!({"sources":pick(&mut draws),"context":pick(&mut draws)});
+            let expected = scanned_packet(&packet, &region, &modules).unwrap();
+            assert_eq!(scoper.scoped(&region).unwrap(), expected, "{region}");
+            for table in arr(&expected["sources"]["tables"]).unwrap() {
+                merged += table["merges"].as_array().is_some_and(|m| !m.is_empty()) as usize;
+                trimmed += table["structure"]["elements"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|e| e.get("omitted_cells").is_some())
+                    .count();
+            }
+        }
+    }
+    assert!(merged > 0 && trimmed > 0, "{merged} {trimmed}");
+}
+
+// The scoped packet as it was made before the packet was indexed: every row,
+// structure cell and merge read for each region. Kept as the reference.
+fn scanned_packet(packet: &Value, region: &Value, modules: &Value) -> Result<Value> {
+    let wanted: BTreeSet<_> = arr(&region["sources"])?
+        .iter()
+        .chain(arr(&region["context"])?)
+        .map(|r| s(r))
+        .collect::<Result<_>>()?;
+    // Copied without its rows, of which only the region's are kept.
+    let mut result = Value::Object(
+        packet
+            .as_object()
+            .context("packet must be an object")?
+            .iter()
+            .filter(|(key, _)| *key != "sources")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    );
+    let mut sources: Map<String, Value> = packet["sources"]
+        .as_object()
+        .context("packet sources must be an object")?
+        .iter()
+        .filter(|(key, _)| *key != "rows" && *key != "tables")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let rows: Vec<&Value> = arr(&packet["sources"]["rows"])?
+        .iter()
+        .filter(|r| wanted.contains(r[0].as_str().unwrap_or("")))
+        .collect();
+    sources.insert(
+        "tables".into(),
+        json!(scanned_tables(arr(&packet["sources"]["tables"])?, &rows)?),
+    );
+    sources.insert("rows".into(), json!(rows));
+    result["sources"] = Value::Object(sources);
+    result["parent_packet"] = packet["packet"].clone();
+    result["scope"] = region.clone();
+    result["modules"] = modules.clone();
+    result.as_object_mut().unwrap().remove("packet");
+    result["packet"] = json!(hash(&encode(&result)));
+    Ok(result)
+}
+
+/// The packet's tables as a partition shows them. A table's merges and structure
+/// describe the whole sheet; a partition keeps the structure cells for its rows
+/// and the headers they name, headers of headers included, and the merges
+/// covering any of those cells, so a partition of a large sheet stays small.
+/// `omitted_cells` counts the element cells left out. Table indexes are kept for
+/// `request_tables`.
+fn scanned_tables(tables: &[Value], rows: &[&Value]) -> Result<Vec<Value>> {
+    let mut shown = SheetCells::new();
+    for row in rows {
+        let table = &tables[row[1].as_u64().context("table index required")? as usize];
+        if let Some(sheet) = table["sheet"].as_str() {
+            shown
+                .entry(sheet.to_owned())
+                .or_default()
+                .insert(s(&row[2])?.to_owned());
+        }
+    }
+    let mut result = Vec::with_capacity(tables.len());
+    let mut covered = shown.clone();
+    for table in tables {
+        let mut trimmed: Map<String, Value> = obj(table)?
+            .iter()
+            .filter(|(key, _)| *key != "merges" && *key != "structure")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if let Some(structure) = table.get("structure") {
+            trimmed.insert(
+                "structure".into(),
+                scanned_structure(structure, &shown, &mut covered)?,
+            );
+        }
+        result.push(trimmed);
+    }
+    for (table, trimmed) in tables.iter().zip(&mut result) {
+        let Some(merges) = table.get("merges") else {
+            continue;
+        };
+        // The covered cells by row, so that each merge looks up its own rows
+        // rather than going through every covered cell.
+        let cells = table["sheet"]
+            .as_str()
+            .and_then(|sheet| covered.get(sheet))
+            .into_iter()
+            .flatten()
+            .map(|address| crate::excel::coordinate(address).map(|(column, row)| (row, column)))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let mut kept = Vec::new();
+        for merge in arr(merges)? {
+            let (from, to) = s(merge)?.split_once(':').context("merge range required")?;
+            let (from, to) = (
+                crate::excel::coordinate(from)?,
+                crate::excel::coordinate(to)?,
+            );
+            if from.0 <= to.0
+                && (from.1..=to.1)
+                    .any(|row| cells.range((row, from.0)..=(row, to.0)).next().is_some())
+            {
+                kept.push(merge.clone());
+            }
+        }
+        trimmed.insert("merges".into(), Value::Array(kept));
+    }
+    Ok(result.into_iter().map(Value::Object).collect())
+}
+
+/// `structure` reduced to the cells at `shown`, the headers they name and the
+/// context cells of the tables they are nested in; the kept cells are added to `covered`.
+fn scanned_structure(
+    structure: &Value,
+    shown: &SheetCells,
+    covered: &mut SheetCells,
+) -> Result<Value> {
+    let elements = arr(&structure["elements"])?;
+    let mut headers: BTreeMap<&str, &Value> = BTreeMap::new();
+    // The cells a nested table's context names in its parent, by cell.
+    let mut contexts: BTreeMap<&str, &Value> = BTreeMap::new();
+    let mut kept: BTreeSet<&str> = BTreeSet::new();
+    for element in elements {
+        let cells = shown.get(s(&element["sheet"])?);
+        for cell in arr(&element["cells"])? {
+            let id = s(&cell["id"])?;
+            headers.insert(id, &cell["headers"]);
+            if let Some(context) = element.get("parent").map(|p| &p["context"]) {
+                contexts.insert(id, context);
+            }
+            let address = s(&cell["address"])?;
+            if cells.is_some_and(|cells| cells.contains(address)) {
+                kept.insert(id);
+            }
+        }
+    }
+    let mut pending: Vec<&str> = kept.iter().copied().collect();
+    while let Some(id) = pending.pop() {
+        for header in [headers.get(id), contexts.get(id)]
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h.as_array())
+            .flatten()
+        {
+            let header = s(header)?;
+            if headers.contains_key(header) && kept.insert(header) {
+                pending.push(header);
+            }
+        }
+    }
+    let mut shown_elements = Vec::new();
+    for element in elements {
+        let cells = arr(&element["cells"])?;
+        let cells: Vec<&Value> = cells
+            .iter()
+            .filter(|cell| cell["id"].as_str().is_some_and(|id| kept.contains(id)))
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        let sheet = covered.entry(s(&element["sheet"])?.to_owned()).or_default();
+        for cell in &cells {
+            sheet.insert(s(&cell["address"])?.to_owned());
+        }
+        let mut shown_element: Map<String, Value> = obj(element)?
+            .iter()
+            .filter(|(key, _)| *key != "cells")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let omitted = arr(&element["cells"])?.len() - cells.len();
+        shown_element.insert("cells".into(), json!(cells));
+        if omitted > 0 {
+            shown_element.insert("omitted_cells".into(), json!(omitted));
+        }
+        shown_elements.push(Value::Object(shown_element));
+    }
+    let retained: BTreeSet<String> = shown_elements
+        .iter()
+        .filter_map(|e| e["id"].as_str().map(str::to_owned))
+        .collect();
+    for element in &mut shown_elements {
+        if let Some(descriptions) = element["descriptions"].as_array_mut() {
+            descriptions.retain(|id| id.as_str().is_some_and(|id| retained.contains(id)));
+        }
+        // A context naming no shown cell leaves its parent out of the scope.
+        if element["parent"]["element"]
+            .as_str()
+            .is_some_and(|parent| !retained.contains(parent))
+        {
+            element.as_object_mut().unwrap().remove("parent");
+        }
+    }
+    let mut result: Map<String, Value> = obj(structure)?
+        .iter()
+        .filter(|(key, _)| *key != "elements")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    result.insert("elements".into(), Value::Array(shown_elements));
+    Ok(Value::Object(result))
+}

@@ -4,7 +4,7 @@ use crate::{
     extraction::Extraction,
     registry::Registry,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,11 +20,11 @@ fn units(extraction: &Extraction) -> Result<Vec<Unit>> {
     let mut units = vec![];
     for (si, sheet) in extraction.sheets.iter().enumerate() {
         for (ci, cell) in sheet.cells.iter().enumerate() {
-            let text = string(&cell.value)?;
+            let text = cell.value().as_str().context("expected string")?;
             if text.trim().is_empty() {
                 continue;
             }
-            let position = cell.position.as_deref().unwrap_or(&Value::Null);
+            let position = cell.position().unwrap_or(&Value::Null);
             let kind = string(&position["kind"])?;
             units.push(Unit {
                 id: hash(&encoded(&json!([
@@ -37,7 +37,8 @@ fn units(extraction: &Extraction) -> Result<Vec<Unit>> {
                     kind,
                     position["headings"],
                     position["columns"],
-                    cell.address.trim_end_matches(|c: char| c.is_ascii_digit())
+                    cell.address()
+                        .trim_end_matches(|c: char| c.is_ascii_digit())
                 ]))?,
                 position: position.clone(),
             });

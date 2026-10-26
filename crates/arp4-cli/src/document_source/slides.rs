@@ -8,7 +8,7 @@
 use super::*;
 use crate::excel::xml_attr;
 use crate::extraction::Fields;
-use std::ops::Range;
+use std::{collections::HashMap, ops::Range};
 
 const SLIDE_KINDS: &[&str] = &[
     "insert_slide",
@@ -429,6 +429,7 @@ pub fn restructure(
         taken: parts.keys().map(|name| name.to_lowercase()).collect(),
         override_types: None,
         override_updates: BTreeMap::new(),
+        reached: None,
     };
     let presentation = package.main_part()?;
     let mut deck = Deck::new(sheets)?;
@@ -442,6 +443,11 @@ pub fn restructure(
     }
     let mut inserted = BTreeMap::new();
     for operation in operations {
+        // Deleting slides keeps the parts reached as it goes; other
+        // operations add parts and relationships.
+        if !matches!(operation, SlideOperation::Delete { .. }) {
+            package.reached = None;
+        }
         match operation {
             SlideOperation::Insert { id, from, position } => {
                 let (anchor, after) = match position {
@@ -605,6 +611,8 @@ pub(super) fn slide_from_layout(layout: &str) -> Result<String> {
 /// from it (`cells`, with their fonts), in part order.
 pub(super) fn layouts(parts: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
     let mut layouts = vec![];
+    let texts = super::slide_fonts::PresentationTexts::new(parts);
+    let presentation = super::slide_fonts::PresentationParts::new(&texts);
     for (part, bytes) in parts {
         if !(part.starts_with("ppt/slideLayouts/")
             && part.ends_with(".xml")
@@ -637,9 +645,10 @@ pub(super) fn layouts(parts: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
             .collect();
         let slide = slide_from_layout(&text)?;
         let slide_xml = Document::parse(&slide)?;
-        let fonts = super::slide_fonts::SlideFonts::for_layout(parts, part, &slide_xml)?;
+        let fonts =
+            super::slide_fonts::SlideFonts::for_layout(parts, part, &slide_xml, &presentation)?;
         let sheet = crate::extraction::sheet_view(
-            &super::slide_text::layout(&slide_xml)?.sheet("layout", part, &fonts),
+            &super::slide_text::layout(&slide_xml)?.sheet("layout", part, &fonts)?,
         )?;
         layouts.push(
             json!({"name":name,"part":part,"placeholders":placeholders,"cells":sheet["cells"]}),
@@ -743,6 +752,112 @@ struct Package<'a> {
     override_types: Option<BTreeMap<String, String>>,
     /// Part names to add or remove from [Content_Types].xml after all operations.
     override_updates: BTreeMap<String, Option<(String, String)>>,
+    /// The parts reached, kept while slides are deleted one after another.
+    reached: Option<Reached>,
+}
+
+/// The parts a package reaches through internal relationships, with the
+/// relationships between them both ways. Deleting a slide removes the
+/// relationships to it; a part then reached no longer is one the slide
+/// reaches, so only those are looked at again.
+struct Reached {
+    parts: BTreeSet<String>,
+    /// The parts each part (the package itself as "") relates to.
+    targets: HashMap<String, BTreeSet<String>>,
+    /// The parts relating to each part.
+    sources: HashMap<String, BTreeSet<String>>,
+}
+
+impl Reached {
+    /// The parts `package` reaches, read as [`Package::reachable_except`] reads them.
+    fn of(package: &Package<'_>) -> Result<Self> {
+        let mut reached = Self {
+            parts: BTreeSet::new(),
+            targets: HashMap::new(),
+            sources: HashMap::new(),
+        };
+        let mut queue = vec![String::new()];
+        while let Some(part) = queue.pop() {
+            for relationship in package.relationships(&part)? {
+                if let Some(target) = package.target(&part, &relationship) {
+                    reached.link(&part, &target);
+                    if reached.parts.insert(target.clone()) {
+                        queue.push(target);
+                    }
+                }
+            }
+        }
+        Ok(reached)
+    }
+
+    fn link(&mut self, source: &str, target: &str) {
+        self.targets
+            .entry(source.to_owned())
+            .or_default()
+            .insert(target.to_owned());
+        self.sources
+            .entry(target.to_owned())
+            .or_default()
+            .insert(source.to_owned());
+    }
+
+    fn unlink(&mut self, source: &str, target: &str) {
+        if let Some(targets) = self.targets.get_mut(source) {
+            targets.remove(target);
+        }
+        if let Some(sources) = self.sources.get_mut(target) {
+            sources.remove(source);
+        }
+    }
+
+    /// The parts no longer reached once the relationships to `part` are
+    /// removed, and leaves them out. A part `part` does not reach is reached
+    /// as it was; one it reaches still is when a part outside those relates
+    /// to it, or to one that does.
+    fn lose(&mut self, part: &str) -> BTreeSet<String> {
+        let mut candidates = BTreeSet::new();
+        if self.parts.contains(part) {
+            let mut queue = vec![part.to_owned()];
+            candidates.insert(part.to_owned());
+            while let Some(next) = queue.pop() {
+                for target in self.targets.get(&next).into_iter().flatten() {
+                    if candidates.insert(target.clone()) {
+                        queue.push(target.clone());
+                    }
+                }
+            }
+        }
+        let mut kept: BTreeSet<String> = candidates
+            .iter()
+            .filter(|candidate| {
+                self.sources
+                    .get(*candidate)
+                    .into_iter()
+                    .flatten()
+                    .any(|source| !candidates.contains(source))
+            })
+            .cloned()
+            .collect();
+        let mut queue: Vec<String> = kept.iter().cloned().collect();
+        while let Some(next) = queue.pop() {
+            for target in self.targets.get(&next).into_iter().flatten() {
+                if candidates.contains(target) && kept.insert(target.clone()) {
+                    queue.push(target.clone());
+                }
+            }
+        }
+        let lost: BTreeSet<String> = candidates.difference(&kept).cloned().collect();
+        for part in &lost {
+            self.parts.remove(part);
+            for target in self.targets.remove(part).into_iter().flatten() {
+                if let Some(sources) = self.sources.get_mut(&target) {
+                    sources.remove(part);
+                }
+            }
+            self.sources.remove(part);
+        }
+        lost
+    }
 }
 
 impl Package<'_> {
@@ -809,12 +924,8 @@ impl Package<'_> {
         self.target("", &root).context("presentation part missing")
     }
 
-    /// Every part the package reaches through internal relationships.
-    fn reachable(&self) -> Result<BTreeSet<String>> {
-        self.reachable_except(None)
-    }
-
-    /// Like [`Self::reachable`], without following the relationships of `except`.
+    /// Every part the package reaches through internal relationships, without
+    /// following the relationships of `except`.
     fn reachable_except(&self, except: Option<&str>) -> Result<BTreeSet<String>> {
         let mut reached = BTreeSet::new();
         let mut queue = vec![String::new()];
@@ -1245,7 +1356,10 @@ impl Package<'_> {
         part: &str,
         names: &BTreeMap<&str, &str>,
     ) -> Result<()> {
-        let before = self.reachable()?;
+        let mut reached = match self.reached.take() {
+            Some(reached) => reached,
+            None => Reached::of(self)?,
+        };
         let relationships = self.relationships(presentation)?;
         let ids: BTreeSet<String> = relationships
             .iter()
@@ -1297,6 +1411,7 @@ impl Package<'_> {
             .map(|r| (r.range.clone(), String::new()))
             .collect();
         self.edit(&relationships_part(presentation), edits)?;
+        reached.unlink(presentation, part);
         // The outline view lists slides through its own relationships.
         if let Some(view) = relationships
             .iter()
@@ -1324,10 +1439,12 @@ impl Package<'_> {
                     .map(|r| (r.range.clone(), String::new()))
                     .collect();
                 self.edit(&relationships_part(&view), edits)?;
+                reached.unlink(&view, part);
             }
         }
-        let after = self.reachable()?;
-        if after.contains(part) {
+        let reached_before = reached.parts.contains(part);
+        let gone = reached.lose(part);
+        if reached_before && !gone.contains(part) {
             // Parts reached only through the slide (its notes page) do not count.
             let mut linking = vec![];
             for source in &self.reachable_except(Some(part))? {
@@ -1351,7 +1468,7 @@ impl Package<'_> {
                 linking.join(", ")
             );
         }
-        let gone: BTreeSet<String> = before.difference(&after).cloned().collect();
+        self.reached = Some(reached);
         for part in &gone {
             self.remove(part);
             let rels = relationships_part(part);
@@ -1397,5 +1514,124 @@ impl Package<'_> {
             }
         }
         self.edit(&properties, edits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(parts: &BTreeMap<String, Vec<u8>>) -> Package<'_> {
+        Package {
+            base: parts,
+            changed: BTreeMap::new(),
+            taken: BTreeSet::new(),
+            override_types: None,
+            override_updates: BTreeMap::new(),
+            reached: None,
+        }
+    }
+
+    fn rels(targets: &[String]) -> Vec<u8> {
+        let items: String = targets
+            .iter()
+            .enumerate()
+            .map(|(i, target)| {
+                format!(
+                    r#"<Relationship Id="rId{}" Type="t" Target="/{target}"/>"#,
+                    i + 1
+                )
+            })
+            .collect();
+        format!(r#"<Relationships xmlns="{PACKAGE_REL}">{items}</Relationships>"#).into_bytes()
+    }
+
+    /// Slides deleted one after another lose the parts a package read anew
+    /// no longer reaches, whether other slides, notes pages, layouts or
+    /// pictures relate to them, and keep the relationships it reads.
+    #[test]
+    fn parts_lost_with_a_slide_are_those_read_anew_no_longer_reached() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut draw = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let presentation = "ppt/presentation.xml".to_owned();
+        let slide = |k: usize| format!("ppt/slides/slide{k}.xml");
+        let (mut kept, mut lost_some) = (0, 0);
+        for _ in 0..300 {
+            let slides = 2 + draw(8);
+            let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            graph.insert(String::new(), vec![presentation.clone()]);
+            let master = "ppt/slideMasters/slideMaster1.xml".to_owned();
+            let mut listed: Vec<String> = (1..=slides).map(slide).collect();
+            listed.push(master.clone());
+            graph.insert(presentation.clone(), listed);
+            let layouts: Vec<String> = (1..=2)
+                .map(|l| format!("ppt/slideLayouts/slideLayout{l}.xml"))
+                .collect();
+            graph.insert(master.clone(), layouts.clone());
+            for layout in &layouts {
+                graph.insert(layout.clone(), vec![master.clone()]);
+            }
+            for k in 1..=slides {
+                let notes = format!("ppt/notesSlides/notesSlide{k}.xml");
+                let mut targets = vec![layouts[draw(2)].clone(), notes.clone()];
+                if draw(2) == 0 {
+                    targets.push(format!("ppt/media/image{}.png", 1 + draw(3)));
+                }
+                if draw(3) == 0 {
+                    targets.push(slide(1 + draw(slides)));
+                }
+                graph.insert(slide(k), targets);
+                graph.insert(notes, vec![slide(k)]);
+            }
+            let mut parts = BTreeMap::new();
+            for (part, targets) in &graph {
+                if !part.is_empty() {
+                    parts.insert(part.clone(), b"<x/>".to_vec());
+                }
+                parts.insert(relationships_part(part), rels(targets));
+            }
+            for i in 1..=3 {
+                parts.insert(format!("ppt/media/image{i}.png"), vec![]);
+            }
+            let mut reached = Reached::of(&package(&parts)).unwrap();
+            let mut left: Vec<usize> = (1..=slides).collect();
+            for _ in 0..1 + draw(slides) {
+                let k = left.remove(draw(left.len()));
+                let before = reached.parts.clone();
+                let listed: Vec<String> = graph[&presentation]
+                    .iter()
+                    .filter(|target| **target != slide(k))
+                    .cloned()
+                    .collect();
+                parts.insert(relationships_part(&presentation), rels(&listed));
+                graph.insert(presentation.clone(), listed);
+                reached.unlink(&presentation, &slide(k));
+                let lost = reached.lose(&slide(k));
+                let fresh = Reached::of(&package(&parts)).unwrap();
+                assert_eq!(reached.parts, fresh.parts);
+                let expected: BTreeSet<String> = before.difference(&fresh.parts).cloned().collect();
+                assert_eq!(lost, expected);
+                for part in fresh.parts.iter().chain([&String::new()]) {
+                    assert_eq!(reached.targets.get(part), fresh.targets.get(part), "{part}");
+                    assert_eq!(reached.sources.get(part), fresh.sources.get(part), "{part}");
+                }
+                if lost.contains(&slide(k)) {
+                    lost_some += 1;
+                } else {
+                    kept += 1;
+                }
+                for part in &lost {
+                    parts.remove(part);
+                    parts.remove(&relationships_part(part));
+                }
+            }
+        }
+        // Both a slide another one links to and one none does were deleted.
+        assert!(kept > 0 && lost_some > 0, "{kept} {lost_some}");
     }
 }

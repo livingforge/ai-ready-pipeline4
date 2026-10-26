@@ -17,7 +17,7 @@ fn numbering(c: &Cell<'_>) -> Option<Numbering> {
     if !c.string() {
         return c
             .source
-            .value
+            .value()
             .as_f64()
             .is_some_and(|v| v >= 0.0 && v.fract() == 0.0)
             .then_some(Numbering::Parts(1));
@@ -345,7 +345,10 @@ fn labels<'c, 'a>(
     let mut others = vec![];
     for x in columns {
         let column: Vec<&Cell<'_>> = cells.iter().copied().filter(|c| c.left == x).collect();
-        let texts: HashSet<String> = column.iter().map(|c| c.source.value.to_string()).collect();
+        let texts: HashSet<String> = column
+            .iter()
+            .map(|c| c.source.value().to_string())
+            .collect();
         let numbers = column
             .iter()
             .all(|c| c.bottom == c.top && numbering(c) == Some(Numbering::Parts(1)))
@@ -835,7 +838,7 @@ pub(super) fn outline(
             })
         })
         .collect();
-    let id_for = |c: &Cell<'_>| format!("s{}-{}", sheet_index + 1, &*c.source.address);
+    let id_for = |c: &Cell<'_>| format!("s{}-{}", sheet_index + 1, c.source.address());
     let assemble = |reading: &Reading<'_, '_>| -> Vec<ElementCell> {
         let Reading {
             names,
@@ -948,7 +951,7 @@ pub(super) fn outline(
                     (Role::Data, headed.into_iter().collect())
                 };
                 ElementCell {
-                    address: Box::from(&*c.source.address),
+                    address: Box::from(c.source.address()),
                     headers: headers.into_iter().map(String::into_boxed_str).collect(),
                     id: id_for(c).into(),
                     role,

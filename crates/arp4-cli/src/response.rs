@@ -1,6 +1,6 @@
 //! Agent-facing presentation only. Persisted evidence never passes through here.
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 const ITEM_BYTES: usize = 2048;
@@ -34,6 +34,143 @@ fn bytes(value: &Value) -> usize {
     let mut count = Count(0);
     serde_json::to_writer(&mut count, value).expect("JSON value");
     count.0
+}
+
+/// The lengths of a query's hits and their sum.
+type Hits = (Vec<usize>, usize);
+
+/// The length of the JSON of a search batch by part, kept up to date as its
+/// hits are dropped. An array or object is 2 bytes of brackets, its members
+/// and a comma between each two.
+struct BatchSizes {
+    /// The batch with its queries, and any tables it lists, emptied.
+    rest: usize,
+    /// The length of each query, and of each of its hits with their sum
+    /// when it has a list.
+    queries: Vec<(usize, Option<Hits>)>,
+    query_total: usize,
+    /// The queries with hits by the length of their hit list, then position.
+    by_hits: std::collections::BTreeSet<(usize, usize)>,
+    /// The total length and number of the listed tables' entries.
+    tables: Option<(usize, usize)>,
+    /// How many hits refer to each table.
+    refers: HashMap<String, usize>,
+}
+
+fn joined(total: usize, count: usize) -> usize {
+    2 + total + count.saturating_sub(1)
+}
+
+fn entry(key: &str, value: &Value) -> usize {
+    bytes(&Value::String(key.to_owned())) + 1 + bytes(value)
+}
+
+impl BatchSizes {
+    fn new(value: &mut Value) -> Self {
+        // A batch without tables gets them as null once a hit is dropped, as
+        // looking them up inserts them; a batch that cannot fit is not kept.
+        if value.get("tables").is_none() {
+            value["tables"] = Value::Null;
+        }
+        let queries = std::mem::replace(&mut value["queries"], json!([]));
+        let listed = value
+            .get("tables")
+            .is_some_and(Value::is_object)
+            .then(|| std::mem::replace(&mut value["tables"], json!({})));
+        let rest = bytes(value);
+        value["queries"] = queries;
+        let tables = listed.map(|listed| {
+            let entries = listed.as_object().unwrap();
+            let total = entries.iter().map(|(key, value)| entry(key, value)).sum();
+            let count = entries.len();
+            value["tables"] = listed;
+            (total, count)
+        });
+        let mut sizes = Self {
+            rest,
+            queries: Vec::new(),
+            query_total: 0,
+            by_hits: Default::default(),
+            tables,
+            refers: HashMap::new(),
+        };
+        for (index, query) in value["queries"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            let hits = query["items"].as_array().map(|items| {
+                for item in items {
+                    if let Some(table) = item["table_ref"].as_str() {
+                        *sizes.refers.entry(table.to_owned()).or_default() += 1;
+                    }
+                }
+                let hits: Vec<usize> = items.iter().map(bytes).collect();
+                let sum = hits.iter().sum();
+                (hits, sum)
+            });
+            let length = match &hits {
+                Some((hits, sum)) => Self::without_hits(query) + joined(*sum, hits.len()),
+                None => bytes(query),
+            };
+            if let Some((hits, sum)) = &hits
+                && !hits.is_empty()
+            {
+                sizes.by_hits.insert((joined(*sum, hits.len()), index));
+            }
+            sizes.query_total += length;
+            sizes.queries.push((length, hits));
+        }
+        sizes
+    }
+    /// The length of a query with a hit list, less that of the list.
+    fn without_hits(query: &mut Value) -> usize {
+        let items = std::mem::replace(&mut query["items"], json!([]));
+        let length = bytes(query) - 2;
+        query["items"] = items;
+        length
+    }
+    /// The query whose hits are longest, the last of those as long.
+    fn largest(&self) -> Option<usize> {
+        self.by_hits.last().map(|&(_, index)| index)
+    }
+    /// `query`, at `index`, without its last hit and with its page updated.
+    fn shortened(&mut self, query: &mut Value, index: usize) {
+        let without = Self::without_hits(query);
+        let (length, hits) = &mut self.queries[index];
+        let (hits, sum) = hits.as_mut().unwrap();
+        self.by_hits.remove(&(joined(*sum, hits.len()), index));
+        *sum -= hits.pop().unwrap();
+        let listed = joined(*sum, hits.len());
+        if !hits.is_empty() {
+            self.by_hits.insert((listed, index));
+        }
+        self.query_total = self.query_total - *length + without + listed;
+        *length = without + listed;
+    }
+    /// Count one hit fewer referring to `table`; true when none is left.
+    fn unrefer(&mut self, table: &str) -> bool {
+        let count = self.refers.get_mut(table).unwrap();
+        *count -= 1;
+        *count == 0
+    }
+    fn referenced(&self, table: &str) -> bool {
+        self.refers.get(table).is_some_and(|count| *count > 0)
+    }
+    /// The listed table `key` taken out.
+    fn unlist(&mut self, key: &str, value: &Value) {
+        let (total, count) = self.tables.as_mut().unwrap();
+        *total -= entry(key, value);
+        *count -= 1;
+    }
+    fn total(&self) -> usize {
+        let queries = joined(self.query_total, self.queries.len()) - 2;
+        let tables = self
+            .tables
+            .map_or(0, |(total, count)| joined(total, count) - 2);
+        self.rest + queries + tables
+    }
 }
 
 // Never shorten a value in place: missing data must be visibly distinguishable
@@ -186,31 +323,27 @@ impl Output {
     /// Keep every query visible when a search batch exceeds the response budget.
     /// Drop trailing hits from the largest pages, preserving their pagination.
     pub fn fit_search_batch(&self, mut value: Value) -> Result<Value, Value> {
-        if self.full {
+        if self.full || bytes(&value) + 16 <= MAX_RESPONSE_BYTES {
             return Ok(value);
         }
-        let mut shortened = false;
-        while bytes(&value) + 16 > MAX_RESPONSE_BYTES {
-            if !shortened {
-                value["detail"] = json!(
-                    "Some hits were omitted to fit the response. Read affected queries separately when items are omitted."
-                );
-            }
-            let Some(queries) = value["queries"].as_array_mut() else {
-                break;
-            };
-            let candidate = queries
-                .iter()
-                .enumerate()
-                .filter(|(_, q)| q["items"].as_array().is_some_and(|items| !items.is_empty()))
-                .max_by_key(|(_, q)| bytes(&q["items"]))
-                .map(|(index, _)| index);
-            let Some(index) = candidate else {
+        value["detail"] = json!(
+            "Some hits were omitted to fit the response. Read affected queries separately when items are omitted."
+        );
+        if !value["queries"].is_array() {
+            return Ok(value);
+        }
+        // The length of the JSON is kept as hits are dropped, rather than
+        // written out again for each: only the shortened query and the
+        // tables it no longer refers to are measured again.
+        let mut sizes = BatchSizes::new(&mut value);
+        let mut first = true;
+        loop {
+            let Some(index) = sizes.largest() else {
                 return Err(json!({"error":{"code":"search_response_too_large",
                     "message":"Use fewer or shorter queries to fit the search response."}}));
             };
-            let query = &mut queries[index];
-            query["items"].as_array_mut().unwrap().pop();
+            let query = &mut value["queries"][index];
+            let dropped = query["items"].as_array_mut().unwrap().pop().unwrap();
             let returned = query["items"].as_array().unwrap().len();
             query["page"]["returned"] = json!(returned);
             let offset = query["page"]["offset"].as_u64().unwrap();
@@ -223,19 +356,34 @@ impl Output {
             } else {
                 json!(offset + returned as u64)
             };
-            shortened = true;
-            let referenced: HashSet<String> = value["queries"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .flat_map(|q| q["items"].as_array().into_iter().flatten())
-                .filter_map(|item| item["table_ref"].as_str().map(str::to_owned))
-                .collect();
+            sizes.shortened(query, index);
+            // The tables no hit refers to any more: at first every unreferenced one.
+            let unreferenced = dropped["table_ref"]
+                .as_str()
+                .filter(|table| sizes.unrefer(table))
+                .map(str::to_owned);
             if let Some(listed) = value["tables"].as_object_mut() {
-                listed.retain(|id, _| referenced.contains(id));
+                if first {
+                    let gone: Vec<String> = listed
+                        .keys()
+                        .filter(|id| !sizes.referenced(id))
+                        .cloned()
+                        .collect();
+                    for id in gone {
+                        let removed = listed.remove(&id).unwrap();
+                        sizes.unlist(&id, &removed);
+                    }
+                } else if let Some(id) = unreferenced
+                    && let Some(removed) = listed.remove(&id)
+                {
+                    sizes.unlist(&id, &removed);
+                }
+            }
+            first = false;
+            if sizes.total() + 16 <= MAX_RESPONSE_BYTES {
+                return Ok(value);
             }
         }
-        Ok(value)
     }
 
     pub fn page(&self, items: Vec<Value>) -> Value {
@@ -635,5 +783,108 @@ mod tests {
         assert!(kept.iter().all(|q| {
             q["page"]["returned"].as_u64().unwrap() == q["items"].as_array().unwrap().len() as u64
         }));
+    }
+
+    #[test]
+    fn fitted_batches_match_serializing_after_each_dropped_hit() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |below: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % below as u64) as usize
+        };
+        let output = Output::default();
+        for _ in 0..60 {
+            let queries: Vec<_> = (0..2 + next(24))
+                .map(|q| {
+                    let count = next(14);
+                    let items: Vec<_> = (0..count)
+                        .map(|_| {
+                            let mut item = json!({"text":"語\"".repeat(1 + next(160))});
+                            if next(3) > 0 {
+                                item["table_ref"] = json!(format!("t{}", next(9)));
+                            }
+                            item
+                        })
+                        .collect();
+                    let total = count + next(3);
+                    let mut query = json!({"query":format!("q{q}"),"ok":true,"items":items,
+                        "page":{"offset":next(3),"total":total,"returned":count,"next_offset":null}});
+                    if next(10) == 0 {
+                        query = json!({"query":format!("q{q}"),"ok":false,"error":"failed"});
+                    }
+                    query
+                })
+                .collect();
+            let tables: Map<String, Value> = (0..12)
+                .map(|t| (format!("t{t}"), json!({"sheet":"x".repeat(next(400))})))
+                .collect();
+            let mut batch = json!({"queries":queries,"revision":"r"});
+            if next(4) > 0 {
+                batch["tables"] = Value::Object(tables);
+            }
+            assert_eq!(
+                output.fit_search_batch(batch.clone()),
+                scanned_fit(&output, batch)
+            );
+        }
+    }
+
+    // The fitting as it was done before the lengths were kept: the whole batch
+    // written out again after each dropped hit. Kept as the reference.
+    fn scanned_fit(output: &Output, mut value: Value) -> Result<Value, Value> {
+        use std::collections::HashSet;
+        let this = output;
+        if this.full {
+            return Ok(value);
+        }
+        let mut shortened = false;
+        while bytes(&value) + 16 > MAX_RESPONSE_BYTES {
+            if !shortened {
+                value["detail"] = json!(
+                    "Some hits were omitted to fit the response. Read affected queries separately when items are omitted."
+                );
+            }
+            let Some(queries) = value["queries"].as_array_mut() else {
+                break;
+            };
+            let candidate = queries
+                .iter()
+                .enumerate()
+                .filter(|(_, q)| q["items"].as_array().is_some_and(|items| !items.is_empty()))
+                .max_by_key(|(_, q)| bytes(&q["items"]))
+                .map(|(index, _)| index);
+            let Some(index) = candidate else {
+                return Err(json!({"error":{"code":"search_response_too_large",
+                    "message":"Use fewer or shorter queries to fit the search response."}}));
+            };
+            let query = &mut queries[index];
+            query["items"].as_array_mut().unwrap().pop();
+            let returned = query["items"].as_array().unwrap().len();
+            query["page"]["returned"] = json!(returned);
+            let offset = query["page"]["offset"].as_u64().unwrap();
+            let total = query["page"]["total"].as_u64().unwrap();
+            query["page"]["next_offset"] = if returned == 0 {
+                query["omitted_fields"] = json!(["items"]);
+                Value::Null
+            } else if offset + returned as u64 >= total {
+                Value::Null
+            } else {
+                json!(offset + returned as u64)
+            };
+            shortened = true;
+            let referenced: HashSet<String> = value["queries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|q| q["items"].as_array().into_iter().flatten())
+                .filter_map(|item| item["table_ref"].as_str().map(str::to_owned))
+                .collect();
+            if let Some(listed) = value["tables"].as_object_mut() {
+                listed.retain(|id, _| referenced.contains(id));
+            }
+        }
+        Ok(value)
     }
 }

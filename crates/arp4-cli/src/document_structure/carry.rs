@@ -118,7 +118,7 @@ mod visual_performance_tests {
         let indexed_cells: BTreeMap<_, _> = sheet
             .cells
             .iter()
-            .map(|cell| (("S".to_owned(), cell.address.to_string()), (sheet, cell)))
+            .map(|cell| (("S".to_owned(), cell.address().to_string()), (sheet, cell)))
             .collect();
         let started = Instant::now();
         let coordinate_cells = coordinate_cells(&indexed_cells).unwrap();
@@ -281,7 +281,7 @@ fn sheet_cells(extraction: &Extraction) -> Result<BTreeMap<(String, String), Sou
     for sheet in &extraction.sheets {
         let name = string(&sheet["name"])?;
         for cell in &sheet.cells {
-            cells.insert((name.to_owned(), cell.address.to_string()), (sheet, cell));
+            cells.insert((name.to_owned(), cell.address().to_string()), (sheet, cell));
         }
     }
     Ok(cells)
@@ -337,7 +337,7 @@ pub(super) fn carry(
     let mut moved = 0usize;
     let mut changed = 0usize;
     // What happened to each element's cells, by element ID and kind of change.
-    let mut effects: BTreeMap<String, BTreeMap<&'static str, BTreeSet<String>>> = BTreeMap::new();
+    let mut effects: Effects = BTreeMap::new();
     let mut affected: Vec<Value> = vec![];
 
     let mut elements: Vec<Element> = array(&structure["elements"])?
@@ -358,176 +358,14 @@ pub(super) fn carry(
         })
         .collect();
 
-    let mut merge_states = before
-        .sheets
-        .iter()
-        .map(|sheet| MergeState::new(&sheet.fields))
-        .collect::<Result<Vec<_>>>()?;
-
-    for (index, operation) in operations.iter().enumerate() {
-        let rows = operation.row_operation();
-        let insert = operation.insertion();
-        let (at, count) = (operation.at, operation.count);
-        let sheet_index = names
-            .iter()
-            .position(|name| *name == operation.sheet)
-            .context("operation sheet missing")?;
-        let prefix = format!("s{}-", sheet_index + 1);
-        merge_states[sheet_index].apply(operation)?;
-        let merges = merge_states[sheet_index].visible()?;
-        let merges = Merges::new(&merges)?;
-        // The style row where the operation's own coordinates, those after the
-        // operations before it, place it.
-        let style_line = match operation.style_from {
-            Some(row) => crate::excel::map_coordinate(
-                &operation.sheet,
-                &format!("A{row}"),
-                &operations[..index],
-            )?
-            .map(|address| crate::excel::coordinate(&address).map(|(_, row)| row))
-            .transpose()?,
-            None => None,
-        };
-        // A table nested in another takes the new cells of its own columns
-        // when it extends; its parent leaves those columns to it.
-        let mut reserved: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
-        for element in elements.iter().filter(|element| {
-            insert
-                && element.value["sheet"] == operation.sheet.as_str()
-                && element.value["kind"] == "table"
-        }) {
-            let Some(parent) = element.value["parent"]["element"].as_str() else {
-                continue;
-            };
-            let positions: Vec<(u32, u32)> = element
-                .cells
-                .iter()
-                .map(|cell| point(&cell.value))
-                .collect::<Result<_>>()?;
-            let lines: BTreeSet<u32> = positions.iter().map(|p| line(*p, rows)).collect();
-            let (Some(&first), Some(&last)) = (lines.first(), lines.last()) else {
-                continue;
-            };
-            let style_in = style_line.is_some_and(|line| lines.contains(&line));
-            if (at > first && at <= last) || (rows && at == last + 1 && style_in) {
-                reserved
-                    .entry(parent.to_owned())
-                    .or_default()
-                    .extend(positions.iter().map(|p| across(*p, rows)));
-            }
-        }
-        for element in elements
-            .iter_mut()
-            .filter(|element| element.value["sheet"] == operation.sheet.as_str())
-        {
-            let element_id = string(&element.value["id"])?.to_owned();
-            let lines: BTreeSet<u32> = element
-                .cells
-                .iter()
-                .map(|cell| point(&cell.value).map(|p| line(p, rows)))
-                .collect::<Result<_>>()?;
-            let (Some(&first), Some(&last)) = (lines.first(), lines.last()) else {
-                continue;
-            };
-            let mut renamed = BTreeMap::new();
-            let mut gone = BTreeSet::new();
-            let mut kept = Vec::with_capacity(element.cells.len());
-            for mut cell in std::mem::take(&mut element.cells) {
-                let position = point(&cell.value)?;
-                let old = line(position, rows);
-                let new = if insert {
-                    if old >= at { old + count } else { old }
-                } else if (at..at + count).contains(&old) {
-                    let id = string(&cell.value["id"])?.to_owned();
-                    if cell.origin.is_some() {
-                        effect(&mut effects, &element_id, "removed", &id);
-                    }
-                    gone.insert(id);
-                    continue;
-                } else if old >= at + count {
-                    old - count
-                } else {
-                    old
-                };
-                if new != old {
-                    let old_address = string(&cell.value["address"])?.to_owned();
-                    let new_address = address(new, across(position, rows), rows)?;
-                    if cell.value["id"] == format!("{prefix}{old_address}").as_str() {
-                        let id = format!("{prefix}{new_address}");
-                        renamed.insert(format!("{prefix}{old_address}"), id.clone());
-                        cell.value["id"] = json!(id);
-                    }
-                    cell.value["address"] = json!(new_address);
-                    moved += 1;
-                    effects
-                        .entry(element_id.clone())
-                        .or_default()
-                        .entry("moved")
-                        .or_default();
-                }
-                kept.push(cell);
-            }
-            for cell in &mut kept {
-                relink(&mut cell.value, &renamed, &gone)?;
-            }
-            element.cells = kept;
-            if !insert || element.value["kind"] != "table" {
-                continue;
-            }
-            let style_in = style_line.is_some_and(|line| lines.contains(&line));
-            let inside = at > first && at <= last;
-            let below = rows && at == last + 1 && style_in;
-            if !(inside || below) {
-                continue;
-            }
-            // The line the new ones copy, where it stands after the insertion.
-            let template = if rows && style_in {
-                style_line.unwrap()
-            } else if lines.contains(&(at - 1)) {
-                at - 1
-            } else {
-                at
-            };
-            let template = if template >= at {
-                template + count
-            } else {
-                template
-            };
-            let existing = element.cells.len();
-            // Style rows a group of new rows takes in turn stand together.
-            let height = if rows && style_in {
-                operation.style_rows.max(1)
-            } else {
-                1
-            };
-            extend(
-                element,
-                &prefix,
-                rows,
-                (template, height),
-                at,
-                count,
-                &merges,
-            )?;
-            if let Some(skip) = reserved.get(element.value["id"].as_str().unwrap_or("")) {
-                let mut index = 0;
-                let mut kept = Ok(());
-                element.cells.retain(|cell| {
-                    index += 1;
-                    index <= existing
-                        || match point(&cell.value) {
-                            Ok(position) => !skip.contains(&across(position, rows)),
-                            Err(error) => {
-                                kept = Err(error);
-                                true
-                            }
-                        }
-                });
-                kept?;
-            }
-        }
-    }
-
+    move_cells(
+        &mut elements,
+        &names,
+        before,
+        operations,
+        &mut effects,
+        &mut moved,
+    )?;
     // Settle every carried cell against the new extraction. A cell whose value
     // changed keeps its place in the element; whether it holds text is read
     // from the new value, as the parser reads any cell, unless a reader had
@@ -602,7 +440,10 @@ pub(super) fn carry(
 
     // New cells join the element around them, so a correction also holds
     // for what the new version adds inside it.
-    let inferred: Vec<Value> = inference::elements(after)?
+    // Inferred as replay infers it, and kept for the replay below.
+    let after_hash = crate::extraction::hash(after)?;
+    let inferred: Vec<Value> = super::inferred(root, after, &after_hash)?
+        .elements
         .iter()
         .map(super::Element::to_value)
         .collect();
@@ -806,7 +647,6 @@ pub(super) fn carry(
             .copied()
             .unwrap_or(usize::MAX)
     });
-    let after_hash = crate::extraction::hash(after)?;
     let mut result = json!({"schema_version":1,"document":after["document_id"],
         "source":{"path":after["source"]["path"],"sha256":after["source"]["sha256"]},
         "extraction_hash":after_hash,"regions":regions,"visuals":visuals,
@@ -849,12 +689,259 @@ pub(super) fn carry(
     Ok((journal, record))
 }
 
-fn effect(
-    effects: &mut BTreeMap<String, BTreeMap<&'static str, BTreeSet<String>>>,
-    element: &str,
-    kind: &'static str,
-    cell: &str,
-) {
+/// What happened to each element's cells, by element ID and kind of change.
+type Effects = BTreeMap<String, BTreeMap<&'static str, BTreeSet<String>>>;
+
+/// The first and last (column, row) its cells cover, none for no cells.
+fn extent(element: &Element) -> Result<Option<Corners>> {
+    let mut found: Option<Corners> = None;
+    for cell in &element.cells {
+        let (column, row) = point(&cell.value)?;
+        found = Some(match found {
+            None => ((column, row), (column, row)),
+            Some((low, high)) => (
+                (low.0.min(column), low.1.min(row)),
+                (high.0.max(column), high.1.max(row)),
+            ),
+        });
+    }
+    Ok(found)
+}
+
+/// The first and last line of `element` on the axis of `rows`, from its
+/// range when `known`, read and kept otherwise.
+fn lines_of(
+    known: &mut Option<Option<Corners>>,
+    element: &Element,
+    rows: bool,
+) -> Result<Option<(u32, u32)>> {
+    let found = match *known {
+        Some(found) => found,
+        None => *known.insert(extent(element)?),
+    };
+    Ok(found.map(|(low, high)| (line(low, rows), line(high, rows))))
+}
+
+/// Moves the cells of `elements`, the interpretation of `before`, as
+/// `operations` move their rows and columns, renaming the cells their
+/// positions name and dropping those deleted, and extends tables with the
+/// lines inserted into them.
+fn move_cells(
+    elements: &mut [Element],
+    names: &[&str],
+    before: &Extraction,
+    operations: &[StructuralOperation],
+    effects: &mut Effects,
+    moved: &mut usize,
+) -> Result<()> {
+    let mut merge_states = before
+        .sheets
+        .iter()
+        .map(|sheet| MergeState::new(&sheet.fields))
+        .collect::<Result<Vec<_>>>()?;
+    // The range each element covers, kept until an operation changes its
+    // cells: most operations leave most elements where they are, and an
+    // element ending before the lines an operation inserts or deletes is
+    // passed over without reading its cells.
+    let mut extents: Vec<Option<Option<Corners>>> = vec![None; elements.len()];
+    for (index, operation) in operations.iter().enumerate() {
+        let rows = operation.row_operation();
+        let insert = operation.insertion();
+        let (at, count) = (operation.at, operation.count);
+        let sheet_index = names
+            .iter()
+            .position(|name| *name == operation.sheet)
+            .context("operation sheet missing")?;
+        let prefix = format!("s{}-", sheet_index + 1);
+        merge_states[sheet_index].apply(operation)?;
+        let merges = merge_states[sheet_index].visible()?;
+        let merges = Merges::new(&merges)?;
+        // The style row where the operation's own coordinates, those after the
+        // operations before it, place it.
+        let style_line = match operation.style_from {
+            Some(row) => crate::excel::map_coordinate(
+                &operation.sheet,
+                &format!("A{row}"),
+                &operations[..index],
+            )?
+            .map(|address| crate::excel::coordinate(&address).map(|(_, row)| row))
+            .transpose()?,
+            None => None,
+        };
+        // A table nested in another takes the new cells of its own columns
+        // when it extends; its parent leaves those columns to it.
+        let mut reserved: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+        for (number, element) in elements.iter().enumerate() {
+            if !(insert
+                && element.value["sheet"] == operation.sheet.as_str()
+                && element.value["kind"] == "table")
+            {
+                continue;
+            }
+            let Some(parent) = element.value["parent"]["element"].as_str() else {
+                continue;
+            };
+            // Only a table the insertion reaches can extend.
+            let Some((first, last)) = lines_of(&mut extents[number], element, rows)? else {
+                continue;
+            };
+            if !((at > first && at <= last) || (rows && at == last + 1)) {
+                continue;
+            }
+            let positions: Vec<(u32, u32)> = element
+                .cells
+                .iter()
+                .map(|cell| point(&cell.value))
+                .collect::<Result<_>>()?;
+            let style_in = style_line
+                .is_some_and(|line_at| positions.iter().any(|p| line(*p, rows) == line_at));
+            if (at > first && at <= last) || (rows && at == last + 1 && style_in) {
+                reserved
+                    .entry(parent.to_owned())
+                    .or_default()
+                    .extend(positions.iter().map(|p| across(*p, rows)));
+            }
+        }
+        for (number, element) in elements.iter_mut().enumerate() {
+            if element.value["sheet"] != operation.sheet.as_str() {
+                continue;
+            }
+            let Some((first, last)) = lines_of(&mut extents[number], element, rows)? else {
+                continue;
+            };
+            let table = element.value["kind"] == "table";
+            // Before the lines, an element neither moves nor loses a cell,
+            // and only a table the insertion follows takes new ones.
+            if last < at && !(insert && table && rows && at == last + 1) {
+                continue;
+            }
+            extents[number] = None;
+            let element_id = string(&element.value["id"])?.to_owned();
+            // The lines it held before the operation, for the line the new
+            // ones copy.
+            let lines: BTreeSet<u32> = if insert && table {
+                element
+                    .cells
+                    .iter()
+                    .map(|cell| point(&cell.value).map(|p| line(p, rows)))
+                    .collect::<Result<_>>()?
+            } else {
+                BTreeSet::new()
+            };
+            let mut renamed = BTreeMap::new();
+            let mut gone = BTreeSet::new();
+            let mut kept = Vec::with_capacity(element.cells.len());
+            for mut cell in std::mem::take(&mut element.cells) {
+                let position = point(&cell.value)?;
+                let old = line(position, rows);
+                let new = if insert {
+                    if old >= at { old + count } else { old }
+                } else if (at..at + count).contains(&old) {
+                    let id = string(&cell.value["id"])?.to_owned();
+                    if cell.origin.is_some() {
+                        effect(effects, &element_id, "removed", &id);
+                    }
+                    gone.insert(id);
+                    continue;
+                } else if old >= at + count {
+                    old - count
+                } else {
+                    old
+                };
+                if new != old {
+                    let old_address = string(&cell.value["address"])?.to_owned();
+                    let new_address = address(new, across(position, rows), rows)?;
+                    if cell.value["id"] == format!("{prefix}{old_address}").as_str() {
+                        let id = format!("{prefix}{new_address}");
+                        renamed.insert(format!("{prefix}{old_address}"), id.clone());
+                        cell.value["id"] = json!(id);
+                    }
+                    cell.value["address"] = json!(new_address);
+                    *moved += 1;
+                    effects
+                        .entry(element_id.clone())
+                        .or_default()
+                        .entry("moved")
+                        .or_default();
+                }
+                kept.push(cell);
+            }
+            // Links to no renamed or removed cell stay; the settling below
+            // drops their repeats as it does every cell's.
+            if !renamed.is_empty() || !gone.is_empty() {
+                for cell in &mut kept {
+                    let untouched = cell.value["headers"].as_array().is_some_and(|links| {
+                        links.iter().all(|link| {
+                            link.as_str()
+                                .is_some_and(|id| !renamed.contains_key(id) && !gone.contains(id))
+                        })
+                    });
+                    if !untouched {
+                        relink(&mut cell.value, &renamed, &gone)?;
+                    }
+                }
+            }
+            element.cells = kept;
+            if !insert || !table {
+                continue;
+            }
+            let style_in = style_line.is_some_and(|line| lines.contains(&line));
+            let inside = at > first && at <= last;
+            let below = rows && at == last + 1 && style_in;
+            if !(inside || below) {
+                continue;
+            }
+            // The line the new ones copy, where it stands after the insertion.
+            let template = if rows && style_in {
+                style_line.unwrap()
+            } else if lines.contains(&(at - 1)) {
+                at - 1
+            } else {
+                at
+            };
+            let template = if template >= at {
+                template + count
+            } else {
+                template
+            };
+            let existing = element.cells.len();
+            // Style rows a group of new rows takes in turn stand together.
+            let height = if rows && style_in {
+                operation.style_rows.max(1)
+            } else {
+                1
+            };
+            extend(
+                element,
+                &prefix,
+                rows,
+                (template, height),
+                at,
+                count,
+                &merges,
+            )?;
+            if let Some(skip) = reserved.get(element.value["id"].as_str().unwrap_or("")) {
+                let mut index = 0;
+                let mut kept = Ok(());
+                element.cells.retain(|cell| {
+                    index += 1;
+                    index <= existing
+                        || match point(&cell.value) {
+                            Ok(position) => !skip.contains(&across(position, rows)),
+                            Err(error) => {
+                                kept = Err(error);
+                                true
+                            }
+                        }
+                });
+                kept?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn effect(effects: &mut Effects, element: &str, kind: &'static str, cell: &str) {
     effects
         .entry(element.to_owned())
         .or_default()
@@ -991,6 +1078,7 @@ fn join_new_cells(
             by_row.entry(row).or_default().insert(column, index);
         }
         cells.sort_by_key(|cell| point(cell).map(|(c, r)| (r, c)).unwrap_or_default());
+        let first_at = first_cells(&points);
         // The nearest cell above in the column, else left in the row, else any.
         let template = |(column, row): (u32, u32)| -> usize {
             by_column
@@ -1001,13 +1089,7 @@ fn join_new_cells(
                         columns.range(..column).next_back().map(|(_, &index)| index)
                     })
                 })
-                .or_else(|| {
-                    points
-                        .iter()
-                        .enumerate()
-                        .min_by_key(|(_, p)| p.0.abs_diff(column) + p.1.abs_diff(row))
-                        .map(|(index, _)| index)
-                })
+                .or_else(|| nearest(&first_at, (column, row)))
                 .unwrap_or(0)
         };
         let mut added: Vec<(Value, usize)> = vec![];
@@ -1064,6 +1146,62 @@ fn join_new_cells(
         }
     }
     Ok(joined)
+}
+
+/// The first of some points at each place they hold, by the lines of the
+/// axis with fewer lines and then by their place along those lines.
+struct Places {
+    /// Whether the lines are columns.
+    columns: bool,
+    lines: BTreeMap<u32, BTreeMap<u32, usize>>,
+}
+
+fn first_cells(points: &[(u32, u32)]) -> Places {
+    let columns: BTreeSet<u32> = points.iter().map(|p| p.0).collect();
+    let rows: BTreeSet<u32> = points.iter().map(|p| p.1).collect();
+    let columns = columns.len() <= rows.len();
+    let mut lines: BTreeMap<u32, BTreeMap<u32, usize>> = BTreeMap::new();
+    for (index, &(column, row)) in points.iter().enumerate() {
+        let (line, along) = if columns {
+            (column, row)
+        } else {
+            (row, column)
+        };
+        lines.entry(line).or_default().entry(along).or_insert(index);
+    }
+    Places { columns, lines }
+}
+
+/// The first of the points of `places` nearest `(column, row)`, by the
+/// columns and rows between them, as a scan of all of them finds it: on each
+/// line only the places on either side of it can be nearest.
+fn nearest(places: &Places, (column, row): (u32, u32)) -> Option<usize> {
+    let (target, along) = if places.columns {
+        (column, row)
+    } else {
+        (row, column)
+    };
+    let mut best: Option<(u32, usize)> = None;
+    for (&line, on_line) in &places.lines {
+        let apart = line.abs_diff(target);
+        if best.is_some_and(|(distance, _)| apart > distance) {
+            if line > target {
+                break;
+            }
+            continue;
+        }
+        let before = on_line.range(..=along).next_back();
+        let after = on_line.range(along..).next();
+        for (&at, &index) in before.into_iter().chain(after) {
+            let distance = apart + at.abs_diff(along);
+            if best.is_none_or(|(least, first)| {
+                distance < least || (distance == least && index < first)
+            }) {
+                best = Some((distance, index));
+            }
+        }
+    }
+    best.map(|(_, index)| index)
 }
 
 /// A drawing or an image asset as a reading of it depends on it: what it
@@ -1294,7 +1432,7 @@ fn relink(
     for header in headers.iter() {
         let id = string(header)?;
         let id = renamed.get(id).map_or(id, String::as_str);
-        if !gone.contains(id) && !links.contains(&json!(id)) {
+        if !gone.contains(id) && !links.iter().any(|link: &Value| link == id) {
             links.push(json!(id));
         }
     }
@@ -1504,6 +1642,92 @@ mod tests {
             assert!(!owned.contains(&("S".to_owned(), address.to_owned())));
         }
         assert!(owned.contains(&("S".to_owned(), "G8".to_owned())));
+    }
+
+    #[test]
+    fn rows_inserted_between_tables_move_only_the_lower_one() {
+        let mut elements = vec![
+            element(
+                "upper",
+                "table",
+                vec![
+                    cell("A1", "column_header", &[]),
+                    cell("A2", "data", &["A1"]),
+                ],
+            ),
+            element(
+                "lower",
+                "table",
+                vec![
+                    cell("A5", "column_header", &[]),
+                    cell("B5", "column_header", &[]),
+                    cell("A6", "row_header", &["A5"]),
+                    cell("B6", "data", &["B5", "A6"]),
+                ],
+            ),
+        ];
+        let before =
+            crate::extraction::sample(json!({"sheets":[{"name":"S","cells":[],"merges":[]}]}));
+        let operations = [StructuralOperation {
+            id: "op".into(),
+            sheet: "S".into(),
+            kind: crate::excel::OperationKind::InsertRows,
+            at: 4,
+            count: 2,
+            style_from: None,
+            style_rows: 1,
+            merges: false,
+            vba_unchanged: false,
+        }];
+        let (mut effects, mut moved) = (Effects::new(), 0);
+        move_cells(
+            &mut elements,
+            &["S"],
+            &before,
+            &operations,
+            &mut effects,
+            &mut moved,
+        )
+        .unwrap();
+        assert_eq!(moved, 4);
+        assert_eq!(effects.keys().collect::<Vec<_>>(), ["lower"]);
+        assert_eq!(
+            held(&elements[0], "A2").unwrap()["headers"],
+            json!(["s1-A1"])
+        );
+        let b8 = held(&elements[1], "B8").unwrap();
+        assert_eq!(b8["id"], "s1-B8");
+        assert_eq!(b8["headers"], json!(["s1-B7", "s1-A8"]));
+        assert!(held(&elements[1], "B6").is_none());
+    }
+
+    #[test]
+    fn the_nearest_cell_is_the_first_a_scan_finds() {
+        // Points with repeats and ties, on grids wider and taller than long.
+        let mut seed = 7u64;
+        let mut next = |bound: u32| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) % u64::from(bound)) as u32 + 1
+        };
+        for (width, height) in [(3, 40), (40, 3), (12, 12)] {
+            for size in [1, 2, 7, 30] {
+                let points: Vec<_> = (0..size).map(|_| (next(width), next(height))).collect();
+                let places = first_cells(&points);
+                for column in 1..=width + 2 {
+                    for row in 1..=height + 2 {
+                        let scan = points
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, p)| p.0.abs_diff(column) + p.1.abs_diff(row))
+                            .map(|(index, _)| index);
+                        assert_eq!(nearest(&places, (column, row)), scan, "{points:?}");
+                    }
+                }
+            }
+        }
+        assert_eq!(nearest(&first_cells(&[]), (1, 1)), None);
     }
 
     #[test]

@@ -343,7 +343,7 @@ fn extraction(path: &Path) -> Result<Extraction> {
 pub fn initialize(root: &Path, extraction: &Extraction) -> Result<Structure> {
     let extraction_hash = crate::extraction::hash(extraction)?;
     let value = inferred(root, extraction, &extraction_hash)?;
-    validate_hashed(root, extraction, &extraction_hash, &value, true)?;
+    ready_hashed(root, extraction, &extraction_hash, &value, true)?;
     Ok(value)
 }
 
@@ -371,8 +371,10 @@ fn inferred(root: &Path, extraction: &Extraction, extraction_hash: &str) -> Resu
     }
     let value = infer(extraction, extraction_hash)?;
     // An interpretation that cannot be saved is inferred again next time.
-    if let Ok(bytes) = serde_json::to_vec(&value)
-        && crate::data::replace_cache(&path, &bytes).is_ok()
+    // Written as it is encoded: a large sheet's took as much as the
+    // interpretation itself.
+    if crate::data::replace_cache_streamed(&path, |out| Ok(serde_json::to_writer(out, &value)?))
+        .is_ok()
     {
         crate::data::keep_newest(&directory, 16);
     }
@@ -416,6 +418,74 @@ fn validate_hashed(
     value: &Structure,
     current: bool,
 ) -> Result<Value> {
+    let mut unresolved = Unresolved {
+        listed: true,
+        ..Unresolved::default()
+    };
+    let (reviewed, fingerprint) = verify(
+        root,
+        extraction,
+        extraction_hash,
+        value,
+        current,
+        &mut unresolved,
+    )?;
+    Ok(
+        json!({"valid":true,"ready":reviewed && unresolved.count == 0,"review_current":value["review"]["content_hash"] == fingerprint,
+        "content_hash":fingerprint,"unresolved":unresolved.entries}),
+    )
+}
+
+/// Whether `value` is ready, validated as [`validate_hashed`] validates it
+/// but without listing what is unresolved: replay reads only this, and a new
+/// interpretation of a large document lists each of its cells.
+fn ready_hashed(
+    root: &Path,
+    extraction: &Extraction,
+    extraction_hash: &str,
+    value: &Structure,
+    current: bool,
+) -> Result<bool> {
+    let mut unresolved = Unresolved::default();
+    let (reviewed, _) = verify(
+        root,
+        extraction,
+        extraction_hash,
+        value,
+        current,
+        &mut unresolved,
+    )?;
+    Ok(reviewed && unresolved.count == 0)
+}
+
+/// What validation finds unresolved: counted, and listed when `listed`.
+#[derive(Default)]
+struct Unresolved {
+    listed: bool,
+    count: usize,
+    entries: Vec<Value>,
+}
+
+impl Unresolved {
+    fn push(&mut self, entry: impl FnOnce() -> Value) {
+        self.count += 1;
+        if self.listed {
+            self.entries.push(entry());
+        }
+    }
+}
+
+/// The checks of [`validate_hashed`], noting in `unresolved` what is left to
+/// resolve. Returns whether the review is accepted for the content, and the
+/// content's hash.
+fn verify(
+    root: &Path,
+    extraction: &Extraction,
+    extraction_hash: &str,
+    value: &Structure,
+    current: bool,
+    unresolved: &mut Unresolved,
+) -> Result<(bool, String)> {
     value.check(validate_schema)?;
     relations::validate_elements(&value.elements, &value.fields)?;
     ensure!(
@@ -464,16 +534,17 @@ fn validate_hashed(
             "image bbox outside image"
         );
     }
-    // Every cell is looked up in these a few times; hashed, as their order is
-    // never read, and made as large as they become, they take a fraction of
-    // the time ordered ones took.
+    // Every ID is looked up in this once; hashed, as its order is never read,
+    // and made as large as it becomes, it takes a fraction of the time an
+    // ordered one took.
     let elements = &value.elements;
     let cell_count: usize = elements.iter().map(|e| e.cells.len()).sum();
     let mut ids = HashSet::with_capacity(elements.len() + cell_count);
-    let mut owned = HashSet::with_capacity(cell_count);
-    let mut unresolved = policy::validate_visuals(extraction, &value.fields)?;
+    for entry in policy::validate_visuals(extraction, &value.fields)? {
+        unresolved.push(|| entry);
+    }
     // Built once per sheet: a sheet holds many elements, each looking up its cells.
-    let mut sheet_cells: HashMap<&str, HashMap<&str, &Cell>> = HashMap::new();
+    let mut sheet_cells: HashMap<&str, SheetCells<'_>> = HashMap::new();
     for element in elements {
         ensure!(
             ids.insert(string(&element["id"])?),
@@ -481,14 +552,27 @@ fn validate_hashed(
         );
         let sheet_name = string(&element["sheet"])?;
         let sheet = sheets.get(sheet_name).context("unknown element sheet")?;
-        let original_cells = match sheet_cells.entry(sheet_name) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(sheet.cells.iter().map(|c| (&*c.address, c)).collect())
-            }
-        };
+        let original_cells = sheet_cells
+            .entry(sheet_name)
+            .or_insert_with(|| SheetCells::new(sheet));
         let cells = &element.cells;
-        let local: HashMap<&str, &ElementCell> = cells.iter().map(|c| (&*c.id, c)).collect();
+        // The cells by ID, the last of an ID: their places in the order of
+        // their IDs, as an element of a large table has a cell for each of its
+        // values.
+        let mut by_id: Vec<u32> = (0..cells.len() as u32).collect();
+        by_id.sort_unstable_by(|&a, &b| {
+            cells[a as usize]
+                .id
+                .cmp(&cells[b as usize].id)
+                .then(b.cmp(&a))
+        });
+        by_id.dedup_by(|a, b| cells[*a as usize].id == cells[*b as usize].id);
+        let local = |id: &str| {
+            by_id
+                .binary_search_by(|&at| (*cells[at as usize].id).cmp(id))
+                .ok()
+                .map(|at| by_id[at] as usize)
+        };
         let evidence: Vec<_> = array(&element["evidence"])?
             .iter()
             .map(|id| {
@@ -509,8 +593,9 @@ fn validate_hashed(
             ensure!(ids.insert(id), "duplicate element/cell ID");
             let address = &*cell.address;
             let point = crate::excel::coordinate(address)?;
+            let found = original_cells.find(address, point);
             ensure!(
-                owned.insert((sheet_name, address)),
+                original_cells.own(address, found),
                 "cell belongs to multiple elements"
             );
             if vision {
@@ -519,31 +604,30 @@ fn validate_hashed(
                     "vision cell outside supplied image regions"
                 );
             }
-            let original = original_cells.get(address);
-            let text = original.map(|c| &c.value);
+            let original = found.map(|at| original_cells.cell(at));
+            let text = original.map(|c| c.value());
             match cell.text_state {
                 TextState::Read => ensure!(
                     text.is_some_and(|t| !t.is_null() && t.as_str().is_none_or(|s| !s.is_empty()))
-                        || original.is_some_and(|c| c.formula.is_some()),
+                        || original.is_some_and(|c| c.formula().is_some()),
                     "read cell has no captured text; OCR cannot become an exact source quote"
                 ),
                 TextState::Empty => ensure!(
                     text.is_none_or(|t| t.is_null() || t == "")
-                        && original.is_none_or(|c| c.formula.is_none()),
+                        && original.is_none_or(|c| c.formula().is_none()),
                     "empty cell contains original content"
                 ),
                 _ => unresolved.push(
-                    json!({"element":element["id"],"cell":id,"state":cell.text_state.as_str()}),
+                    || json!({"element":element["id"],"cell":id,"state":cell.text_state.as_str()}),
                 ),
             }
             if cell.role == Role::Unassigned {
-                unresolved.push(json!({"cell":id,"state":"unassigned_role"}));
+                unresolved.push(|| json!({"cell":id,"state":"unassigned_role"}));
             }
             for header in &cell.headers {
-                let h = local
-                    .get(&**header)
-                    .context("header must reference a cell in the same element")?;
-                ensure!(h.role.heads(), "header target is not a header");
+                let h =
+                    local(header).context("header must reference a cell in the same element")?;
+                ensure!(cells[h].role.heads(), "header target is not a header");
             }
         }
         // Iterative traversal avoids recursive overflow for deeply nested
@@ -553,53 +637,158 @@ fn validate_hashed(
         // Whether there is a cycle does not depend on the order cells are visited.
         // Cells are visited in their order, which reads them where they lie in
         // memory, and the path keeps the headers of each cell on it.
-        let mut finished: HashMap<&str, bool> = HashMap::with_capacity(local.len());
-        let mut path: Vec<(&str, &[Box<str>], usize)> = vec![];
-        for cell in cells {
-            let id = &*cell.id;
-            if finished.contains_key(id) {
+        // Each cell by its place: not yet visited, on the path, or finished.
+        let (on_path, finished) = (1u8, 2u8);
+        let mut visited = vec![0u8; cells.len()];
+        let mut path: Vec<(usize, usize)> = vec![];
+        for start in 0..cells.len() {
+            if visited[start] != 0 {
                 continue;
             }
-            finished.insert(id, false);
-            path.push((id, &cell.headers, 0));
+            visited[start] = on_path;
+            path.push((start, 0));
             while let Some(top) = path.last_mut() {
-                let (current, headers, next) = *top;
-                let Some(h) = headers.get(next) else {
-                    finished.insert(current, true);
+                let (current, next) = *top;
+                let Some(h) = cells[current].headers.get(next) else {
+                    visited[current] = finished;
                     path.pop();
                     continue;
                 };
-                top.2 += 1;
-                let h = &**h;
-                ensure!(
-                    finished.get(h) != Some(&false),
-                    "cyclic header relationship"
-                );
-                if !finished.contains_key(h) {
-                    finished.insert(h, false);
-                    path.push((h, &local[h].headers, 0));
+                top.1 += 1;
+                let h = local(h).expect("the headers of the cells are checked above");
+                ensure!(visited[h] != on_path, "cyclic header relationship");
+                if visited[h] == 0 {
+                    visited[h] = on_path;
+                    path.push((h, 0));
                 }
             }
         }
     }
     // A structure edit cannot silently drop captured cells, including formulas/notes.
     for (name, sheet) in &sheets {
-        for cell in &sheet.cells {
+        for (at, cell) in sheet.cells.iter().enumerate() {
             ensure!(
-                owned.contains(&(*name, &*cell.address)),
+                sheet_cells
+                    .get(name)
+                    .is_some_and(|cells| cells.owns(at as u32)),
                 "structure omits original cell {}!{}",
                 name,
-                json!(&*cell.address)
+                json!(cell.address())
             );
         }
     }
     let fingerprint = content_hash(value);
     let reviewed =
         value["review"]["status"] == "accepted" && value["review"]["content_hash"] == fingerprint;
-    Ok(
-        json!({"valid":true,"ready":reviewed && unresolved.is_empty(),"review_current":value["review"]["content_hash"] == fingerprint,
-        "content_hash":fingerprint,"unresolved":unresolved}),
-    )
+    Ok((reviewed, fingerprint))
+}
+
+/// The cells of a sheet by address, the last of an address, with whether an
+/// element owns each: found by halves among them in order, as a large sheet
+/// has a cell for each of its values, and a map of them took several times
+/// the room.
+struct SheetCells<'a> {
+    sheet: &'a Sheet,
+    /// The cells by the row and column their addresses name, when each names
+    /// one no other cell's does: compared as numbers rather than as text.
+    places: Option<Vec<(u64, u32)>>,
+    /// The cells in the order of their addresses otherwise.
+    addresses: Vec<u32>,
+    /// Whether an element owns each cell, by its number.
+    owned: Vec<bool>,
+    /// The addresses owned that no cell of the sheet has.
+    others: HashSet<&'a str>,
+}
+
+/// The row and column of a cell, as one number in their order.
+fn place_key((column, row): (u32, u32)) -> u64 {
+    (u64::from(row) << 32) | u64::from(column)
+}
+
+impl<'a> SheetCells<'a> {
+    fn new(sheet: &'a Sheet) -> Self {
+        let cells = &sheet.cells;
+        let places = cells
+            .iter()
+            .enumerate()
+            .map(|(at, cell)| {
+                Some((
+                    place_key(crate::excel::coordinate(cell.address()).ok()?),
+                    at as u32,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|mut places| {
+                if !places.is_sorted() {
+                    places.sort_unstable();
+                }
+                places
+            })
+            .filter(|places| places.windows(2).all(|pair| pair[0].0 != pair[1].0));
+        let addresses = if places.is_some() {
+            vec![]
+        } else {
+            let address = |at: u32| cells.get(at as usize).expect("a cell").address();
+            let mut order: Vec<u32> = (0..cells.len() as u32).collect();
+            order.sort_unstable_by(|&a, &b| address(a).cmp(address(b)).then(b.cmp(&a)));
+            order.dedup_by(|a, b| address(*a) == address(*b));
+            order
+        };
+        Self {
+            sheet,
+            places,
+            addresses,
+            owned: vec![false; cells.len()],
+            others: HashSet::new(),
+        }
+    }
+
+    fn cell(&self, at: u32) -> Cell<'a> {
+        self.sheet
+            .cells
+            .get(at as usize)
+            .expect("a cell of the sheet")
+    }
+
+    /// The number of the cell at `address`, the row and column `point`.
+    fn find(&self, address: &str, point: (u32, u32)) -> Option<u32> {
+        match &self.places {
+            Some(places) => {
+                let at = places
+                    .binary_search_by_key(&place_key(point), |&(key, _)| key)
+                    .ok()?;
+                let at = places[at].1;
+                (self.cell(at).address() == address).then_some(at)
+            }
+            None => self.find_address(address),
+        }
+    }
+
+    fn find_address(&self, address: &str) -> Option<u32> {
+        let at = self
+            .addresses
+            .binary_search_by(|&at| self.cell(at).address().cmp(address))
+            .ok()?;
+        Some(self.addresses[at])
+    }
+
+    /// Notes that an element owns `address`, the cell `found` if any: whether
+    /// none did.
+    fn own(&mut self, address: &'a str, found: Option<u32>) -> bool {
+        match found {
+            Some(at) => !std::mem::replace(&mut self.owned[at as usize], true),
+            None => self.others.insert(address),
+        }
+    }
+
+    /// Whether an element owns the address of the cell numbered `at`.
+    fn owns(&self, at: u32) -> bool {
+        let found = match self.places {
+            Some(_) => Some(at),
+            None => self.find_address(self.cell(at).address()),
+        };
+        found.is_some_and(|at| self.owned[at as usize])
+    }
 }
 
 pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
@@ -821,6 +1010,11 @@ pub fn apply(
     input: &mut crate::specifications::Input,
 ) -> Result<()> {
     let mut seen = BTreeSet::new();
+    // The extractions read so far, by the first of each document: each is
+    // read in order once while looking for one, rather than again for each
+    // structure, and only the one found is kept.
+    let mut documents: HashMap<String, usize> = HashMap::new();
+    let mut read_up_to = 0;
     for path in paths {
         let value = read(path, None)?;
         validate_schema(&value)?;
@@ -830,15 +1024,22 @@ pub fn apply(
             "duplicate document structure"
         );
         let mut found = None;
-        for path in extractions {
-            let ext = crate::extraction::read(path)?;
+        if let Some(&at) = documents.get(document) {
+            found = Some((at, crate::extraction::read(&extractions[at])?));
+        }
+        while found.is_none() && read_up_to < extractions.len() {
+            let at = read_up_to;
+            let ext = crate::extraction::read(&extractions[at])?;
+            read_up_to += 1;
+            if let Some(id) = ext["document_id"].as_str() {
+                documents.entry(id.to_owned()).or_insert(at);
+            }
             if ext["document_id"] == document {
-                context::assets(path, &ext)?;
-                found = Some(ext);
-                break;
+                found = Some((at, ext));
             }
         }
-        let ext = found.context("structure document missing from capture")?;
+        let (at, ext) = found.context("structure document missing from capture")?;
+        context::assets(&extractions[at], &ext)?;
         attach(root, &ext, &value, input)?;
     }
     Ok(())

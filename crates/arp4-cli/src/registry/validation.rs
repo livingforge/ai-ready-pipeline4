@@ -108,12 +108,13 @@ pub(super) fn validate_with(r: &Registry, snapshots: &mut Snapshots) -> Result<(
 fn check(r: &Registry, snapshots: &Snapshots) -> Result<()> {
     let m = &r.manifest;
     let inputs = &snapshots.inputs;
-    let source_index: BTreeMap<&str, BTreeMap<&str, &spec::Source>> = inputs
+    // Every source with each ID, in snapshot order; evidence reads the first.
+    let source_index: BTreeMap<&str, BTreeMap<&str, Vec<&spec::Source>>> = inputs
         .iter()
         .map(|(snapshot, input)| {
-            let mut sources = BTreeMap::new();
+            let mut sources = BTreeMap::<_, Vec<_>>::new();
             for source in &input.sources {
-                sources.entry(source.id.as_str()).or_insert(source);
+                sources.entry(source.id.as_str()).or_default().push(source);
             }
             (snapshot.as_str(), sources)
         })
@@ -283,6 +284,7 @@ fn check(r: &Registry, snapshots: &Snapshots) -> Result<()> {
                 .context("unknown evidence snapshot")?;
             let src = sources
                 .get(ev.span.source.as_str())
+                .and_then(|all| all.first())
                 .context("unknown evidence source")?;
             let chars = source_chars
                 .entry((ev.snapshot.as_str(), ev.span.source.as_str()))
@@ -307,12 +309,11 @@ fn check(r: &Registry, snapshots: &Snapshots) -> Result<()> {
                 .map(|ev| &ev.snapshot)
                 .collect::<BTreeSet<_>>()
             {
-                let input = &inputs[snapshot];
-                for s in input
-                    .sources
-                    .iter()
-                    .filter(|s| needed.contains(s.id.as_str()))
-                {
+                // The cited sources by ID, not every source of the snapshot.
+                // Sources of one ID keep their order; those of different IDs
+                // are compared only with their own.
+                let index = &source_index[snapshot.as_str()];
+                for s in needed.iter().filter_map(|id| index.get(id)).flatten() {
                     if let Some(existing) = sources.get(&s.id) {
                         ensure!(
                             bytes(existing)? == bytes(s)?,

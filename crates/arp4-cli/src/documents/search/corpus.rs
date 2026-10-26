@@ -377,14 +377,14 @@ pub(super) fn build(
         let mut texts = Vec::with_capacity(sheet.cells.len());
         let by_address = by_sheet.entry(name).or_default();
         for (ci, cell) in sheet.cells.iter().enumerate() {
-            let value = &cell.value;
-            texts.push(if cell.kind == CellKind::Error {
+            let value = &cell.value().to_json();
+            texts.push(if cell.kind() == CellKind::Error {
                 text(value)
             } else {
-                excel::number_format::display(value, &cell.number_format, date1904)
+                excel::number_format::display(value, cell.number_format(), date1904)
             });
-            let address = &*cell.address;
-            if cell.formula.is_some() && value.is_null() {
+            let address = cell.address();
+            if cell.formula().is_some() && value.is_null() {
                 uncalculated.insert((name.to_owned(), address.to_owned()));
             }
             by_address.insert(address, (si, ci));
@@ -394,17 +394,18 @@ pub(super) fn build(
     // The source of the `ci`th cell of the `si`th sheet, as a passage holds it.
     let source_of = |(si, ci): (usize, usize)| -> Result<Value> {
         let sheet = &sheets[si];
-        let cell = &sheet.cells[ci];
+        let cell = sheet.cells.get(ci).context("passage cell missing")?;
         let shown = &shown[si][ci];
         let mut entry = source(
             format!("/sheets/{si}/cells/{ci}/value"),
             string(&sheet["name"])?,
-            &cell.address,
-            cell.position.as_deref().unwrap_or(&Value::Null),
+            cell.address(),
+            cell.position().unwrap_or(&Value::Null),
             &json!(shown),
         );
-        if text(&cell.value) != *shown {
-            entry["value"] = cell.value.clone();
+        let value = cell.value().to_json();
+        if text(&value) != *shown {
+            entry["value"] = value;
         }
         // The index takes the format out into its own tables.
         if let Some(format) = super::format::of(
@@ -413,7 +414,7 @@ pub(super) fn build(
         ) {
             entry["format"] = format;
         }
-        if let Some(formula) = cell.formula.as_deref() {
+        if let Some(formula) = cell.formula() {
             entry["formula"] = json!(formula);
         }
         Ok(entry)
@@ -625,7 +626,7 @@ pub(super) fn build(
         let name = string(&sheet["name"])?;
         let mut rows: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
         for cell in &sheet.cells {
-            let address = &*cell.address;
+            let address = cell.address();
             if used.contains(&(name.to_owned(), address.to_owned())) {
                 continue;
             }

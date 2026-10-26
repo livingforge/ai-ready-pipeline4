@@ -5,16 +5,18 @@
 //! cell keeps no cached formula result, which is its value. A cell's font and
 //! style are read through [`font`] and [`style`]; a cell is hashed or compared
 //! as [`cell`] gives it, with its font, style and cache in place, so that cell
-//! hashes do not depend on how the extraction stores them. [`view`] gives the
-//! whole extraction in that expanded form.
+//! hashes do not depend on how the extraction stores them. [`write_reading`]
+//! writes the extraction for reading, as `documents extraction-read` does: as
+//! it is stored, with each font and style written out in place of its index.
 //!
 //! A sheet an extraction is built from, such as one of the sheets of an
 //! original or a slide a slide operation adds, holds its fonts and styles in
 //! its cells: [`Sheet::from_value`] puts them in tables.
 //!
-//! The stored encoding keeps each cell and each drawing on one line
-//! ([`LINES`]), so that a changed cell or a moved shape is one changed line of
-//! a Git diff.
+//! The stored encoding keeps each cell, drawing, font, style, print setting,
+//! table and grid run on one line ([`LINES`]), and the merges of a sheet
+//! together on one, so that a changed cell or a moved shape is one changed
+//! line of a Git diff.
 //!
 //! The document an extraction belongs to (`document_id`) and the original it
 //! was made from (`source`, its path and hash) are recorded once, in the
@@ -23,21 +25,37 @@
 //! stored extraction also leaves out what follows from the rest
 //! ([`stored_form`]): no assets, and the empty lists of an Excel sheet; the
 //! text its note (finding R001) begins with, which the format of the original
-//! fixes, and the note itself when nothing is added to that text; each print
-//! setting once with the parts that have it; in a drawing, the part its ID
-//! names and the members without a value; in a cell, no formula, the General
-//! number format and the ID an Excel cell takes from its sheet and address.
-//! Reading a stored extraction puts all of it back in place.
+//! fixes, and the note itself when nothing is added to that text; the print
+//! settings once for the parts that have the same ones, without the element
+//! name each begins with; in a drawing, the part its ID names and the members
+//! without a value; in a cell, no formula, the type its value and formula
+//! give, the number format and ID its original gives a cell by default, and
+//! the font and style most cells of its sheet have, which the sheet names
+//! once ([`Defaults`]). Reading a stored extraction puts all of it back in
+//! place.
 use crate::data::{self, array};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 use std::path::Path;
-use std::sync::Arc;
 
-/// The members whose items the stored encoding writes one per line.
-const LINES: &[&str] = &["cells", "drawings"];
+mod cells;
+use cells::CellsBuilder;
+pub use cells::{Cell, CellNumber, CellValue, Cells, NewCell};
+
+/// The members whose items the stored encoding writes one per line: of a
+/// sheet, and the runs of its grid (`columns`, `rows`).
+const LINES: &[&str] = &[
+    "cells",
+    "drawings",
+    "fonts",
+    "styles",
+    "tables",
+    "columns",
+    "rows",
+    "print_settings",
+];
 
 /// The type of a cell's value, its `type`: `null` is a cell holding only a
 /// format.
@@ -74,52 +92,37 @@ impl CellKind {
             _ => bail!("unknown cell type {name}"),
         })
     }
+
+    /// The type a cell with `formula` and `value` has unless it names
+    /// another, as an error does: a formula's, or that of the value.
+    fn of(formula: Option<&str>, value: &Value) -> Result<Self> {
+        Ok(match (formula, value) {
+            (Some(_), _) => Self::Formula,
+            (None, Value::String(_)) => Self::String,
+            (None, Value::Number(_)) => Self::Number,
+            (None, Value::Bool(_)) => Self::Boolean,
+            (None, Value::Null) => Self::Null,
+            (None, _) => bail!("cell value must be a scalar"),
+        })
+    }
 }
 
-/// A cell of an extraction sheet: its value, for a formula its cached
-/// result, and its font and style as indexes into the tables of its sheet.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Cell {
-    /// Shared with what refers to the cell, such as its default mapping entry.
-    pub id: Arc<str>,
-    pub address: Arc<str>,
-    pub kind: CellKind,
-    pub value: Value,
-    pub formula: Option<Box<str>>,
-    /// Shared by the cells of a sheet with the same format.
-    pub number_format: Arc<str>,
-    pub font: Option<usize>,
-    pub style: Option<usize>,
-    /// Where the text of a text original lies.
-    pub position: Option<Box<Value>>,
-}
-
-impl Cell {
+impl Cell<'_> {
     /// The cell as JSON, with its font and style as indexes.
     pub fn to_value(&self) -> Value {
-        let mut value = json!({"id":&*self.id,"address":&*self.address,"type":self.kind.as_str(),
-            "formula":self.formula.as_deref(),"number_format":&*self.number_format});
-        value["value"] = self.value.clone();
-        if let Some(font) = self.font {
+        let mut value = json!({"id":self.id(),"address":self.address(),"type":self.kind().as_str(),
+            "formula":self.formula(),"number_format":self.number_format()});
+        value["value"] = self.value().to_json();
+        if let Some(font) = self.font() {
             value["font"] = json!(font);
         }
-        if let Some(style) = self.style {
+        if let Some(style) = self.style() {
             value["style"] = json!(style);
         }
-        if let Some(position) = &self.position {
-            value["position"] = (**position).clone();
+        if let Some(position) = self.position() {
+            value["position"] = position.clone();
         }
         value
-    }
-
-    /// The cached result a cell carries in its expanded form: its value for a
-    /// formula, null otherwise.
-    pub fn cached(&self) -> &Value {
-        if self.kind == CellKind::Formula {
-            &self.value
-        } else {
-            &Value::Null
-        }
     }
 }
 
@@ -128,7 +131,7 @@ impl Cell {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sheet {
     pub fields: Value,
-    pub cells: Vec<Cell>,
+    pub cells: Cells,
     pub fonts: Vec<Value>,
     pub styles: Vec<Value>,
 }
@@ -235,12 +238,10 @@ impl Table {
 }
 
 /// The string member `key` of a cell given as JSON.
-fn text(cell: &Map<String, Value>, key: &str) -> Result<Arc<str>> {
-    Ok(cell
-        .get(key)
+fn text<'a>(cell: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
+    cell.get(key)
         .and_then(Value::as_str)
-        .with_context(|| format!("cell {key} must be a string"))?
-        .into())
+        .with_context(|| format!("cell {key} must be a string"))
 }
 
 /// The index into a font or style table that a cell given as JSON holds.
@@ -251,13 +252,83 @@ fn table_index(value: &Value) -> Result<usize> {
         .context("table index must be a number")
 }
 
+/// The number format and ID a cell of the `sheet`th sheet takes when it names
+/// none, as the format of its original gives them: in an Excel workbook
+/// (`excel`) the General format and the ID [`excel_cell_id`] gives, in other
+/// originals no format and the ID `text-<n>` of the `n`th cell of the page.
+/// A stored cell naming no font or style takes the `font` and `style` of its
+/// sheet's table that the sheet names ([`CELL_FONT`], [`CELL_STYLE`]).
+#[derive(Clone, Copy)]
+struct Defaults {
+    sheet: usize,
+    excel: bool,
+    font: Option<usize>,
+    style: Option<usize>,
+}
+
+/// The members of a stored sheet naming the font and the style of its tables
+/// that its cells naming none have: the ones most of its cells have.
+const CELL_FONT: &str = "cell_font";
+const CELL_STYLE: &str = "cell_style";
+
+impl Defaults {
+    /// The defaults of the `sheet`th sheet of the extraction whose members
+    /// besides its sheets are `fields`, with no font or style.
+    fn of(fields: &Value, sheet: usize) -> Self {
+        Self {
+            sheet,
+            excel: excel(fields),
+            font: None,
+            style: None,
+        }
+    }
+
+    /// These defaults with the font and style that the members `fields` of a
+    /// stored sheet name.
+    fn with_formats(self, fields: &Map<String, Value>) -> Result<Self> {
+        let index = |key: &str| fields.get(key).map(table_index).transpose();
+        Ok(Self {
+            font: index(CELL_FONT)?,
+            style: index(CELL_STYLE)?,
+            ..self
+        })
+    }
+
+    /// The ID of the cell at `address`, the `position`th of its sheet.
+    fn id(self, address: &str, position: usize) -> String {
+        if self.excel {
+            excel_cell_id(self.sheet, address)
+        } else {
+            format!("text-{}", position + 1)
+        }
+    }
+
+    fn number_format(self) -> &'static str {
+        if self.excel { GENERAL } else { "" }
+    }
+}
+
 impl Sheet {
     /// The `index`th sheet of an extraction given as JSON: with its fonts and
     /// styles in tables or, as a sheet an extraction is built from, in its
-    /// cells with their cached results. A cell without a formula, number
-    /// format or ID has none, the General format and the ID an Excel cell
-    /// takes from its sheet and address.
+    /// cells with their cached results. A cell without a formula, type,
+    /// number format or ID has none, the type of its value, the General
+    /// format and the ID an Excel cell takes from its sheet and address.
     pub fn from_value(sheet: Value, index: usize) -> Result<Self> {
+        Self::with_defaults(
+            sheet,
+            Defaults {
+                sheet: index,
+                excel: true,
+                font: None,
+                style: None,
+            },
+        )
+    }
+
+    /// [`Sheet::from_value`] with the number format and ID of a cell naming
+    /// none from `defaults`.
+    fn with_defaults(sheet: Value, defaults: Defaults) -> Result<Self> {
         let Value::Object(mut fields) = sheet else {
             bail!("sheet must be an object")
         };
@@ -267,6 +338,7 @@ impl Sheet {
         let tabled = fields.contains_key("fonts");
         let mut fonts = Table::default();
         let mut styles = Table::default();
+        let mut defaults = defaults;
         if tabled {
             for (key, table) in [("fonts", &mut fonts), ("styles", &mut styles)] {
                 match fields.remove(key) {
@@ -274,15 +346,17 @@ impl Sheet {
                     _ => bail!("sheet {key} must be a list"),
                 }
             }
+            defaults = defaults.with_formats(&fields)?;
+            fields.remove(CELL_FONT);
+            fields.remove(CELL_STYLE);
         }
-        let mut formats: HashMap<String, Arc<str>> = HashMap::new();
-        let cells = cells
-            .into_iter()
-            .map(|cell| typed_cell(cell, index, tabled, &mut formats, &mut fonts, &mut styles))
-            .collect::<Result<_>>()?;
+        let mut built = CellsBuilder::default();
+        for cell in cells {
+            typed_cell(cell, defaults, tabled, &mut built, &mut fonts, &mut styles)?;
+        }
         Ok(Self {
             fields: Value::Object(fields),
-            cells,
+            cells: built.finish(),
             fonts: fonts.list,
             styles: styles.list,
         })
@@ -292,132 +366,144 @@ impl Sheet {
     /// on.
     pub fn build(fields: Value) -> SheetBuilder {
         SheetBuilder {
-            sheet: Self {
-                fields,
-                cells: vec![],
-                fonts: vec![],
-                styles: vec![],
-            },
+            fields,
+            cells: CellsBuilder::default(),
             fonts: Table::default(),
             styles: Table::default(),
-            formats: HashMap::new(),
         }
     }
 
     /// The sheet as JSON, with its fonts and styles in tables.
     pub fn to_value(&self) -> Value {
         let mut sheet = self.fields.clone();
-        sheet["cells"] = Value::Array(self.cells.iter().map(Cell::to_value).collect());
+        sheet["cells"] = Value::Array(self.cells.iter().map(|c| c.to_value()).collect());
         sheet["fonts"] = Value::Array(self.fonts.clone());
         sheet["styles"] = Value::Array(self.styles.clone());
         sheet
     }
 }
 
-/// The cell `cell` of the `index`th sheet, given as JSON as
-/// [`Sheet::from_value`] reads it: with indexes into its sheet's font and
-/// style tables when `tabled`, and otherwise with its font and style, which
-/// go into `fonts` and `styles`. Its number format is shared through
-/// `formats` with the other cells of its sheet.
+/// Adds to `built` the cell `cell`, given as JSON as [`Sheet::from_value`]
+/// reads it, with what it leaves out from `defaults`: with indexes into its
+/// sheet's font and style tables when `tabled`, and otherwise with its font
+/// and style, which go into `fonts` and `styles`.
 fn typed_cell(
-    cell: Value,
-    index: usize,
+    mut cell: Value,
+    defaults: Defaults,
     tabled: bool,
-    formats: &mut HashMap<String, Arc<str>>,
+    built: &mut CellsBuilder,
     fonts: &mut Table,
     styles: &mut Table,
-) -> Result<Cell> {
-    let Value::Object(mut cell) = cell else {
+) -> Result<()> {
+    let Value::Object(cell) = &mut cell else {
         bail!("cell must be an object")
     };
-    let address = text(&cell, "address")?;
-    let kind = CellKind::parse(&text(&cell, "type")?)?;
+    let position = cell.remove("position");
+    let address = text(cell, "address")?;
+    let derived;
     let id = match cell.get("id") {
-        None => excel_cell_id(index, &address).into(),
-        Some(_) => text(&cell, "id")?,
+        None => {
+            derived = defaults.id(address, built.count());
+            derived.as_str()
+        }
+        Some(_) => text(cell, "id")?,
     };
-    for key in ["id", "address", "type"] {
-        cell.remove(key);
-    }
-    let value = cell.remove("value").context("cell value missing")?;
-    let formula = match cell.remove("formula") {
+    let value = cell.get("value").context("cell value missing")?;
+    let formula = match cell.get("formula") {
         None | Some(Value::Null) => None,
-        Some(Value::String(formula)) => Some(formula.into_boxed_str()),
+        Some(Value::String(formula)) => Some(formula.as_str()),
         Some(_) => bail!("cell formula must be a string"),
     };
-    let number_format = match cell.remove("number_format") {
-        None => GENERAL.to_owned(),
-        Some(Value::String(format)) => format,
+    let kind = match cell.get("type") {
+        None => CellKind::of(formula, value)?,
+        Some(_) => CellKind::parse(text(cell, "type")?)?,
+    };
+    let number_format = match cell.get("number_format") {
+        None => defaults.number_format(),
+        Some(Value::String(format)) => format.as_str(),
         Some(_) => bail!("cell number format must be a string"),
     };
-    let number_format = formats
-        .entry(number_format)
-        .or_insert_with_key(|format| format.as_str().into())
-        .clone();
-    let mut typed = Cell {
+    let (font, style) = (cell.get("font"), cell.get("style"));
+    let (font, style) = if tabled {
+        // A cell naming none has its sheet's, and one naming null has none.
+        let index = |member: Option<&Value>, default: Option<usize>| match member {
+            None => Ok(default),
+            Some(Value::Null) => Ok(None),
+            Some(index) => table_index(index).map(Some),
+        };
+        (index(font, defaults.font)?, index(style, defaults.style)?)
+    } else {
+        // Dropped only when expanding gives it back exactly.
+        let cached = cell.get("cached").unwrap_or(&Value::Null);
+        let expected = if kind == CellKind::Formula {
+            value
+        } else {
+            &Value::Null
+        };
+        ensure!(
+            cached == expected,
+            "cached result of {address} is not its value"
+        );
+        (
+            font.map(|font| fonts.add(font.clone())),
+            style.map(|style| styles.add(style.clone())),
+        )
+    };
+    let known = |key: &str| {
+        matches!(
+            key,
+            "id" | "address" | "type" | "value" | "formula" | "number_format" | "font" | "style"
+        ) || (!tabled && key == "cached")
+    };
+    if let Some(key) = cell.keys().find(|key| !known(key)) {
+        bail!("unknown member {key} of cell {address}");
+    }
+    built.push(NewCell {
         id,
         address,
         kind,
         value,
         formula,
         number_format,
-        font: None,
-        style: None,
-        position: cell.remove("position").map(Box::new),
-    };
-    let (font, style) = (cell.remove("font"), cell.remove("style"));
-    if tabled {
-        typed.font = font.as_ref().map(table_index).transpose()?;
-        typed.style = style.as_ref().map(table_index).transpose()?;
-    } else {
-        // Dropped only when expanding gives it back exactly.
-        let stored = cell.remove("cached").unwrap_or(Value::Null);
-        ensure!(
-            stored == *typed.cached(),
-            "cached result of {} is not its value",
-            typed.address
-        );
-        typed.font = font.map(|font| fonts.add(font));
-        typed.style = style.map(|style| styles.add(style));
-    }
-    if let Some(key) = cell.keys().next() {
-        bail!("unknown member {key} of cell {}", typed.address);
-    }
-    Ok(typed)
+        font,
+        style,
+        position,
+    })
 }
 
 /// A sheet being built cell by cell from what an original holds, with its
 /// fonts and styles put in tables in order of first use, as
 /// [`Sheet::from_value`] puts those of a sheet given as JSON.
 pub struct SheetBuilder {
-    sheet: Sheet,
+    fields: Value,
+    cells: CellsBuilder,
     fonts: Table,
     styles: Table,
-    formats: HashMap<Box<str>, Arc<str>>,
 }
 
 impl SheetBuilder {
-    /// The number format `format`, shared by the cells that have it.
-    pub fn number_format(&mut self, format: &str) -> Arc<str> {
-        if let Some(shared) = self.formats.get(format) {
-            return shared.clone();
+    /// Adds `cell` with its font and style, which go into the tables of the
+    /// sheet in place of the indexes `cell` gives.
+    pub fn push(
+        &mut self,
+        cell: NewCell<'_>,
+        font: Option<Value>,
+        style: Option<Value>,
+    ) -> Result<()> {
+        self.cells.push(NewCell {
+            font: font.map(|font| self.fonts.add(font)),
+            style: style.map(|style| self.styles.add(style)),
+            ..cell
+        })
+    }
+
+    pub fn finish(self) -> Sheet {
+        Sheet {
+            fields: self.fields,
+            cells: self.cells.finish(),
+            fonts: self.fonts.list,
+            styles: self.styles.list,
         }
-        let shared: Arc<str> = format.into();
-        self.formats.insert(format.into(), shared.clone());
-        shared
-    }
-
-    /// Adds `cell` with its font and style.
-    pub fn push(&mut self, mut cell: Cell, font: Option<Value>, style: Option<Value>) {
-        cell.font = font.map(|font| self.fonts.add(font));
-        cell.style = style.map(|style| self.styles.add(style));
-        self.sheet.cells.push(cell);
-    }
-
-    pub fn finish(mut self) -> Sheet {
-        self.sheet.fonts = self.fonts.list;
-        self.sheet.styles = self.styles.list;
-        self.sheet
     }
 }
 
@@ -425,21 +511,38 @@ impl Extraction {
     /// The extraction given as JSON, each sheet as [`Sheet::from_value`]
     /// reads it.
     pub fn from_value(extraction: Value) -> Result<Self> {
+        Self::with_defaults(extraction, |_, sheet| Defaults {
+            sheet,
+            excel: true,
+            font: None,
+            style: None,
+        })
+    }
+
+    /// The extraction stored as JSON, whose cells take what they leave out
+    /// from the format of its original ([`Defaults::of`]).
+    fn from_stored(extraction: Value) -> Result<Self> {
+        Self::with_defaults(extraction, Defaults::of)
+    }
+
+    fn with_defaults(
+        extraction: Value,
+        defaults: impl Fn(&Value, usize) -> Defaults,
+    ) -> Result<Self> {
         let Value::Object(mut fields) = extraction else {
             bail!("extraction must be an object")
         };
-        let sheets = match fields.remove("sheets") {
+        let sheets = fields.remove("sheets");
+        let fields = Value::Object(fields);
+        let sheets = match sheets {
             Some(Value::Array(sheets)) => sheets
                 .into_iter()
                 .enumerate()
-                .map(|(index, sheet)| Sheet::from_value(sheet, index))
+                .map(|(index, sheet)| Sheet::with_defaults(sheet, defaults(&fields, index)))
                 .collect::<Result<_>>()?,
             _ => bail!("extraction sheets missing"),
         };
-        Ok(Self {
-            fields: Value::Object(fields),
-            sheets,
-        })
+        Ok(Self { fields, sheets })
     }
 
     /// The member at the JSON `pointer`, as [`Value::pointer`] finds it in
@@ -511,93 +614,35 @@ fn lookup<'a>(table: &'a [Value], index: Option<usize>, key: &str) -> Result<&'a
 }
 
 /// The font of a cell of `sheet`, null for none.
-pub fn font<'a>(sheet: &'a Sheet, cell: &Cell) -> Result<&'a Value> {
-    lookup(&sheet.fonts, cell.font, "font")
+pub fn font<'a>(sheet: &'a Sheet, cell: Cell<'_>) -> Result<&'a Value> {
+    lookup(&sheet.fonts, cell.font(), "font")
 }
 
 /// The style of a cell of `sheet`, null for none.
-pub fn style<'a>(sheet: &'a Sheet, cell: &Cell) -> Result<&'a Value> {
-    lookup(&sheet.styles, cell.style, "style")
+pub fn style<'a>(sheet: &'a Sheet, cell: Cell<'_>) -> Result<&'a Value> {
+    lookup(&sheet.styles, cell.style(), "style")
 }
 
 /// A cell of `sheet` as JSON with its font, style and cached result in place.
-pub fn cell(sheet: &Sheet, cell: &Cell) -> Result<Value> {
+pub fn cell(sheet: &Sheet, cell: Cell<'_>) -> Result<Value> {
     let mut expanded = cell.to_value();
-    if cell.font.is_some() {
+    if cell.font().is_some() {
         expanded["font"] = font(sheet, cell)?.clone();
     }
-    if cell.style.is_some() {
+    if cell.style().is_some() {
         expanded["style"] = style(sheet, cell)?.clone();
     }
-    expanded["cached"] = cell.cached().clone();
+    expanded["cached"] = cell.cached().to_json();
     Ok(expanded)
 }
 
-/// The extraction as JSON with every cell as [`cell`] gives it.
-pub fn view(extraction: &Extraction) -> Result<Value> {
-    let mut view = extraction.fields.clone();
-    view["sheets"] = Value::Array(
-        extraction
-            .sheets
-            .iter()
-            .map(sheet_view)
-            .collect::<Result<_>>()?,
-    );
-    Ok(view)
-}
-
-/// [`view`] of `extraction`, each cell made as it is written: the cells of a
-/// large sheet with their fonts and styles in place took several times the
-/// memory of the extraction.
-pub fn view_lazy(extraction: &Extraction) -> data::Lazy<'_> {
-    use data::Lazy;
-    let mut members = Lazy::members(&extraction.fields, &[]);
-    members.push((
-        "sheets",
-        Lazy::Items(Box::new(extraction.sheets.iter().map(|sheet| {
-            let mut members = Lazy::members(&sheet.fields, &[]);
-            members.push((
-                "cells",
-                Lazy::Items(Box::new(
-                    sheet.cells.iter().map(|c| Ok(Lazy::Value(cell(sheet, c)?))),
-                )),
-            ));
-            Ok(Lazy::Object(members))
-        }))),
-    ));
-    Lazy::Object(members)
-}
-
-/// The cells of a sheet [`check_view`] checks together.
+/// The cells of a sheet [`StoredForm::check`] checks together.
 const VIEW_PART: usize = 4096;
 
-/// Checks [`view`] of `extraction` with `check` a part at a time: the
-/// extraction without sheets, then with one sheet holding at most
-/// [`VIEW_PART`] of its cells, as no part of the contract relates the items
-/// of a list.
-pub fn check_view(extraction: &Extraction, check: impl Fn(&Value) -> Result<()>) -> Result<()> {
-    let mut part = extraction.fields.clone();
-    part["sheets"] = json!([]);
-    check(&part)?;
-    for sheet in &extraction.sheets {
-        let mut chunks: Vec<&[Cell]> = sheet.cells.chunks(VIEW_PART).collect();
-        if chunks.is_empty() {
-            chunks.push(&[]);
-        }
-        let mut copy = sheet.fields.clone();
-        for chunk in chunks {
-            copy["cells"] = Value::Array(
-                chunk
-                    .iter()
-                    .map(|c| cell(sheet, c))
-                    .collect::<Result<_>>()?,
-            );
-            part["sheets"] = Value::Array(vec![copy]);
-            check(&part)?;
-            copy = part["sheets"][0].take();
-        }
-    }
-    Ok(())
+/// The cells in parts of at most [`VIEW_PART`], one empty part for none.
+fn parts(cells: &Cells) -> impl Iterator<Item = cells::Iter<'_>> {
+    (0..cells.len().div_ceil(VIEW_PART).max(1))
+        .map(move |part| cells.range(part * VIEW_PART, (part + 1) * VIEW_PART))
 }
 
 /// `sheet` as JSON with every cell as [`cell`] gives it.
@@ -693,64 +738,70 @@ fn expand_findings(extraction: &mut Value) -> Result<()> {
     Ok(())
 }
 
-/// The print settings of an extraction, each Open XML element with its part.
+/// The print settings of an extraction, each Open XML element with its part
+/// and its name (`component`), the parts in order of their names.
 const PRINT_SETTINGS: &str = "print_settings";
 
-/// The print `settings` as stored: each element once with the parts that
-/// have it, in order of first use (`merge`), or, when that cannot give the
-/// order back, each element of each part on its own.
-fn stored_print_settings(settings: &Value) -> Result<Value> {
-    let settings = array(settings)?;
-    let grouped = |merge: bool| -> Result<Vec<Value>> {
-        let mut groups: Vec<Value> = vec![];
-        let mut index: HashMap<(&str, &str), usize> = HashMap::new();
-        for setting in settings {
-            let key = (
-                data::string(&setting["component"])?,
-                data::string(&setting["xml"])?,
-            );
-            let part = &setting["part"];
-            match index.get(&key) {
-                Some(&at) if merge => groups[at]["parts"]
-                    .as_array_mut()
-                    .context("print setting parts missing")?
-                    .push(part.clone()),
-                _ => {
-                    index.insert(key, groups.len());
-                    groups.push(json!({"component":setting["component"],"xml":setting["xml"],"parts":[part]}));
-                }
-            }
-        }
-        Ok(groups)
-    };
-    for merge in [true, false] {
-        let groups = Value::Array(grouped(merge)?);
-        if expanded_print_settings(&groups)? == *settings {
-            return Ok(groups);
-        }
-    }
-    bail!("print settings of a part are not together")
+/// The name of the element the Open XML fragment `xml` begins with, without
+/// its prefix: the `component` of a print setting.
+fn element_name(xml: &str) -> Option<&str> {
+    let name = xml.strip_prefix('<')?;
+    let name = &name[..name.find([' ', '/', '>']).unwrap_or(name.len())];
+    let name = name.rsplit_once(':').map_or(name, |(_, local)| local);
+    (!name.is_empty()).then_some(name)
 }
 
-/// The print settings [`stored_print_settings`] gives back: the parts in
-/// order of first use, each with its elements in the order stored.
-fn expanded_print_settings(groups: &Value) -> Result<Vec<Value>> {
-    let groups = array(groups)?;
-    let mut parts: Vec<&Value> = vec![];
-    for group in groups {
-        for part in array(&group["parts"])? {
-            if !parts.contains(&part) {
-                parts.push(part);
-            }
+/// The print `settings` as stored: the parts that have the same elements in
+/// the same order as one group of their names (`parts`) and the XML of those
+/// elements (`xml`), the groups in order of their first part.
+fn stored_print_settings(settings: &Value) -> Result<Value> {
+    let settings = array(settings)?;
+    // Each part, in order, with the XML of its elements.
+    let mut parts: Vec<(&Value, Vec<&Value>)> = vec![];
+    for setting in settings {
+        let (part, xml) = (&setting["part"], &setting["xml"]);
+        match parts.last_mut() {
+            Some((last, elements)) if *last == part => elements.push(xml),
+            _ => parts.push((part, vec![xml])),
         }
     }
+    let mut groups: Vec<(Vec<&Value>, Vec<&Value>)> = vec![];
+    for (part, elements) in parts {
+        match groups.iter_mut().find(|(_, other)| *other == elements) {
+            Some((names, _)) => names.push(part),
+            None => groups.push((vec![part], elements)),
+        }
+    }
+    let stored = Value::Array(
+        groups
+            .into_iter()
+            .map(|(parts, xml)| json!({"parts":parts,"xml":xml}))
+            .collect(),
+    );
+    ensure!(
+        expanded_print_settings(&stored)? == *settings,
+        "print settings are not each part's elements together, the parts in order of their names, each setting named by its element"
+    );
+    Ok(stored)
+}
+
+/// The print settings [`stored_print_settings`] gives back: each part in
+/// order of its name with its elements in the order stored.
+fn expanded_print_settings(groups: &Value) -> Result<Vec<Value>> {
+    let mut parts: Vec<(&str, &Value)> = vec![];
+    for group in array(groups)? {
+        for part in array(&group["parts"])? {
+            parts.push((data::string(part)?, &group["xml"]));
+        }
+    }
+    parts.sort_by_key(|(part, _)| *part);
     let mut settings = vec![];
-    for part in parts {
-        for group in groups {
-            if array(&group["parts"])?.contains(part) {
-                settings
-                    .push(json!({"part":part,"component":group["component"],"xml":group["xml"]}));
-            }
+    for (part, elements) in parts {
+        for xml in array(elements)? {
+            let xml = data::string(xml)?;
+            let component = element_name(xml)
+                .with_context(|| format!("a print setting of {part} is not an element"))?;
+            settings.push(json!({"part":part,"component":component,"xml":xml}));
         }
     }
     Ok(settings)
@@ -832,42 +883,92 @@ fn excel(fields: &Value) -> bool {
         .is_some_and(|parser| parser.contains(";cells/"))
 }
 
-/// A cell of the `index`th sheet as it is stored: without a null formula, the
-/// General number format or an ID [`excel_cell_id`] gives.
-fn stored_cell(cell: &Cell, index: usize) -> Value {
-    let mut stored = json!({"address":&*cell.address,"type":cell.kind.as_str()});
-    stored["value"] = cell.value.clone();
-    if let Some(formula) = &cell.formula {
-        stored["formula"] = json!(&**formula);
+/// A cell as it is stored: without a null formula, the type its value and
+/// formula give ([`CellKind::of`]), or the number format, ID, font and style
+/// `defaults` give; with a null font or style when it has none of the one
+/// `defaults` give.
+fn stored_cell(cell: Cell<'_>, defaults: Defaults) -> Value {
+    let value = cell.value().to_json();
+    let mut stored = json!({"address":cell.address()});
+    if CellKind::of(cell.formula(), &value).ok() != Some(cell.kind()) {
+        stored["type"] = json!(cell.kind().as_str());
     }
-    if &*cell.number_format != GENERAL {
-        stored["number_format"] = json!(&*cell.number_format);
+    stored["value"] = value;
+    if let Some(formula) = cell.formula() {
+        stored["formula"] = json!(formula);
     }
-    if *cell.id != *excel_cell_id(index, &cell.address) {
-        stored["id"] = json!(&*cell.id);
+    if cell.number_format() != defaults.number_format() {
+        stored["number_format"] = json!(cell.number_format());
     }
-    if let Some(font) = cell.font {
-        stored["font"] = json!(font);
+    if cell.id() != defaults.id(cell.address(), cell.index()) {
+        stored["id"] = json!(cell.id());
     }
-    if let Some(style) = cell.style {
-        stored["style"] = json!(style);
+    for (key, index, default) in [
+        ("font", cell.font(), defaults.font),
+        ("style", cell.style(), defaults.style),
+    ] {
+        if index != default {
+            stored[key] = json!(index);
+        }
     }
-    if let Some(position) = &cell.position {
-        stored["position"] = (**position).clone();
+    if let Some(position) = cell.position() {
+        stored["position"] = position.clone();
     }
     stored
+}
+
+/// A cell as [`write_reading`] writes it: as [`stored_cell`] gives it, with
+/// the font and style it names written out in place of their indexes.
+fn reading_cell(sheet: &Sheet, cell: Cell<'_>, defaults: Defaults) -> Result<Value> {
+    let mut reading = stored_cell(cell, defaults);
+    for (key, table) in [("font", &sheet.fonts), ("style", &sheet.styles)] {
+        if let Some(index) = reading.get(key).and_then(Value::as_u64) {
+            reading[key] = lookup(table, Some(index as usize), key)?.clone();
+        }
+    }
+    Ok(reading)
+}
+
+/// The font and style most of the cells of `sheet` have, none when most
+/// have none: when as many have one as another, the earlier in its table.
+fn most_used(sheet: &Sheet) -> (Option<usize>, Option<usize>) {
+    let most = |of: &dyn Fn(Cell<'_>) -> Option<usize>| {
+        let mut counts: HashMap<Option<usize>, usize> = HashMap::new();
+        for c in sheet.cells.iter() {
+            *counts.entry(of(c)).or_default() += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|&(index, count)| (count, std::cmp::Reverse(index)))
+            .and_then(|(index, _)| index)
+    };
+    (most(&|c| c.font()), most(&|c| c.style()))
+}
+
+/// The merges of a sheet, which the line encodings write on one line.
+const MERGES: &str = "merges";
+
+/// The members of the sheet `fields`, its merges on one line.
+fn sheet_members(fields: &Value) -> Vec<(&str, data::Lazy<'_>)> {
+    let mut members = data::Lazy::members(fields, &[MERGES]);
+    if let Some(merges) = fields.get(MERGES) {
+        members.push((MERGES, data::Lazy::Line(merges.clone())));
+    }
+    members
 }
 
 /// The extraction as it is stored: without its `document_id` and `source`,
 /// empty assets or empty lists of an Excel sheet; with its findings as
 /// [`stored_findings`] and its print settings as [`stored_print_settings`]
 /// give them; each drawing as [`stored_drawing`] gives it, and each cell as
-/// [`stored_cell`] gives it.
+/// [`stored_cell`] gives it, with what its sheet's cells take when they name
+/// none ([`Defaults`]).
 struct StoredForm {
     /// The members of the extraction besides its sheets.
     top: Map<String, Value>,
     /// The members of each sheet besides its cells, fonts and styles.
     sheets: Vec<Value>,
+    defaults: Vec<Defaults>,
 }
 
 impl StoredForm {
@@ -884,14 +985,15 @@ impl StoredForm {
             Lazy::Items(Box::new(
                 extraction.sheets.iter().zip(&self.sheets).enumerate().map(
                     |(index, (sheet, fields))| {
-                        let mut members = Lazy::members(fields, &[]);
+                        let defaults = self.defaults[index];
+                        let mut members = sheet_members(fields);
                         members.push((
                             "cells",
                             Lazy::Items(Box::new(
                                 sheet
                                     .cells
                                     .iter()
-                                    .map(move |c| Ok(Lazy::Value(stored_cell(c, index)))),
+                                    .map(move |c| Ok(Lazy::Value(stored_cell(c, defaults)))),
                             )),
                         ));
                         members.push(("fonts", Lazy::Value(Value::Array(sheet.fonts.clone()))));
@@ -913,15 +1015,12 @@ impl StoredForm {
         part["sheets"] = json!([]);
         data::validate("extraction", &part)?;
         for (index, (sheet, fields)) in extraction.sheets.iter().zip(&self.sheets).enumerate() {
-            let mut chunks: Vec<&[Cell]> = sheet.cells.chunks(VIEW_PART).collect();
-            if chunks.is_empty() {
-                chunks.push(&[]);
-            }
+            let defaults = self.defaults[index];
             let mut copy = fields.clone();
             copy["fonts"] = Value::Array(sheet.fonts.clone());
             copy["styles"] = Value::Array(sheet.styles.clone());
-            for chunk in chunks {
-                copy["cells"] = chunk.iter().map(|c| stored_cell(c, index)).collect();
+            for chunk in parts(&sheet.cells) {
+                copy["cells"] = chunk.map(|c| stored_cell(c, defaults)).collect();
                 part["sheets"] = Value::Array(vec![copy]);
                 data::validate("extraction", &part)?;
                 copy = part["sheets"][0].take();
@@ -929,6 +1028,162 @@ impl StoredForm {
         }
         Ok(())
     }
+
+    /// The members of the reading form of `extraction` besides its sheets:
+    /// those stored, with its document, its original, its findings in full
+    /// and its assets.
+    fn reading_top(&self, extraction: &Extraction) -> Value {
+        let mut top = self.top.clone();
+        for key in [DOCUMENT, SOURCE, FINDINGS, ASSETS] {
+            if let Some(value) = extraction.fields.get(key) {
+                top.insert(key.into(), value.clone());
+            }
+        }
+        Value::Object(top)
+    }
+
+    /// The members of the `index`th sheet of the reading form besides its
+    /// cells: those stored, with the font and style its cells naming none
+    /// have written out in place of their indexes.
+    fn reading_sheet(&self, extraction: &Extraction, index: usize) -> Result<Value> {
+        let (sheet, defaults) = (&extraction.sheets[index], self.defaults[index]);
+        let mut fields = self.sheets[index].clone();
+        for (key, table, default) in [
+            (CELL_FONT, &sheet.fonts, defaults.font),
+            (CELL_STYLE, &sheet.styles, defaults.style),
+        ] {
+            if default.is_some() {
+                fields[key] = lookup(table, default, key)?.clone();
+            }
+        }
+        Ok(fields)
+    }
+
+    /// The reading form of `extraction` from its members `top` and its
+    /// sheets' `sheets`, made a cell at a time.
+    fn reading<'a>(
+        &'a self,
+        extraction: &'a Extraction,
+        top: &'a Value,
+        sheets: &'a [Value],
+    ) -> data::Lazy<'a> {
+        use data::Lazy;
+        let mut members = Lazy::members(top, &[]);
+        members.push((
+            "sheets",
+            Lazy::Items(Box::new(
+                extraction.sheets.iter().zip(sheets).enumerate().map(
+                    move |(index, (sheet, fields))| {
+                        let defaults = self.defaults[index];
+                        let mut members = sheet_members(fields);
+                        members.push((
+                            "cells",
+                            Lazy::Items(Box::new(
+                                sheet.cells.iter().map(move |c| {
+                                    Ok(Lazy::Value(reading_cell(sheet, c, defaults)?))
+                                }),
+                            )),
+                        ));
+                        Ok(Lazy::Object(members))
+                    },
+                ),
+            )),
+        ));
+        Lazy::Object(members)
+    }
+
+    /// Checks the reading form of `extraction`, of `top` and `sheets`, against
+    /// the extraction-view contract a part at a time, as [`StoredForm::check`]
+    /// checks the stored form.
+    fn check_reading(&self, extraction: &Extraction, top: &Value, sheets: &[Value]) -> Result<()> {
+        let mut part = top.clone();
+        part["sheets"] = json!([]);
+        data::validate("extraction-view", &part)?;
+        for (index, (sheet, fields)) in extraction.sheets.iter().zip(sheets).enumerate() {
+            let defaults = self.defaults[index];
+            let mut copy = fields.clone();
+            for chunk in parts(&sheet.cells) {
+                copy["cells"] = chunk
+                    .map(|c| reading_cell(sheet, c, defaults))
+                    .collect::<Result<_>>()?;
+                part["sheets"] = Value::Array(vec![copy]);
+                data::validate("extraction-view", &part)?;
+                copy = part["sheets"][0].take();
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The members of the reading form of `extraction` besides the cells of its
+/// sheets, and its stored form, which gives them.
+fn reading_form(extraction: &Extraction) -> Result<(StoredForm, Value, Vec<Value>)> {
+    let form = stored_form(extraction)?;
+    let top = form.reading_top(extraction);
+    let sheets = (0..extraction.sheets.len())
+        .map(|index| form.reading_sheet(extraction, index))
+        .collect::<Result<_>>()?;
+    Ok((form, top, sheets))
+}
+
+/// Writes `extraction` to `out` for reading, as `documents extraction-read`
+/// writes it (the extraction-view contract): as it is stored, with its
+/// document, original, findings and assets, and each font and style written
+/// out in place of its index, the ones most cells of a sheet have once for
+/// the sheet (`cell_font`, `cell_style`). Checked a part at a time and made
+/// as it is written.
+pub fn write_reading(extraction: &Extraction, out: &Path) -> Result<()> {
+    let (form, top, sheets) = reading_form(extraction)?;
+    form.check_reading(extraction, &top, &sheets)?;
+    data::write_lazy_lines(out, form.reading(extraction, &top, &sheets), LINES)
+}
+
+/// The reading form [`write_reading`] writes of `extraction`, as JSON.
+pub fn reading(extraction: &Extraction) -> Result<Value> {
+    let (form, top, sheets) = reading_form(extraction)?;
+    form.reading(extraction, &top, &sheets).into_value()
+}
+
+/// The extraction its reading form `reading` gives back: each cell's font
+/// and style in place, from its sheet when the cell names none, and each
+/// formula's cached result, its value.
+pub fn from_reading(mut reading: Value) -> Result<Extraction> {
+    expand_members(&mut reading)?;
+    let sheets = reading["sheets"]
+        .as_array_mut()
+        .context("extraction sheets missing")?;
+    for sheet in sheets {
+        let sheet = sheet.as_object_mut().context("sheet must be an object")?;
+        let defaults = [
+            ("font", sheet.remove(CELL_FONT)),
+            ("style", sheet.remove(CELL_STYLE)),
+        ];
+        let cells = sheet
+            .get_mut("cells")
+            .and_then(Value::as_array_mut)
+            .context("extraction cells missing")?;
+        for cell in cells {
+            let cell = cell.as_object_mut().context("cell must be an object")?;
+            for (key, default) in &defaults {
+                match cell.get(*key) {
+                    Some(Value::Null) => {
+                        cell.remove(*key);
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(default) = default {
+                            cell.insert((*key).into(), default.clone());
+                        }
+                    }
+                }
+            }
+            if cell.get("formula").is_some_and(Value::is_string) {
+                let value = cell.get("value").cloned().unwrap_or(Value::Null);
+                cell.insert("cached".into(), value);
+            }
+        }
+    }
+    Extraction::from_stored(reading)
 }
 
 /// The members [`StoredForm`] keeps of `extraction`.
@@ -954,9 +1209,21 @@ fn stored_form(extraction: &Extraction) -> Result<StoredForm> {
         }
     }
     let mut sheets = vec![];
-    for sheet in &extraction.sheets {
+    let mut defaults = vec![];
+    for (index, sheet) in extraction.sheets.iter().enumerate() {
         let mut stored = sheet.fields.clone();
         let members = stored.as_object_mut().context("sheet must be an object")?;
+        let (font, style) = most_used(sheet);
+        for (key, default) in [(CELL_FONT, font), (CELL_STYLE, style)] {
+            if let Some(default) = default {
+                members.insert(key.into(), json!(default));
+            }
+        }
+        defaults.push(Defaults {
+            font,
+            style,
+            ..Defaults::of(fields, index)
+        });
         if excel {
             members.retain(|key, value| {
                 !(SHEET_LISTS.contains(&key.as_str())
@@ -974,19 +1241,29 @@ fn stored_form(extraction: &Extraction) -> Result<StoredForm> {
         }
         sheets.push(stored);
     }
-    Ok(StoredForm { top: form, sheets })
+    Ok(StoredForm {
+        top: form,
+        sheets,
+        defaults,
+    })
 }
 
 /// Puts back in place what [`stored_form`] leaves out but the document, the
-/// original and what it leaves out of each cell, which [`Sheet::from_value`]
-/// gives back: the empty assets and lists, the findings and print settings,
+/// original and what it leaves out of each cell, which [`Defaults`] and
+/// [`CellKind::of`] give back: the empty assets and lists, the findings and print settings,
 /// and what it leaves out of each drawing. The original, which the note of
 /// the findings depends on, is in place already.
 fn expand(extraction: &mut Value) -> Result<()> {
+    expand_findings(extraction)?;
+    expand_members(extraction)
+}
+
+/// Puts back what [`expand`] puts back but the findings, which the reading
+/// form keeps in full.
+fn expand_members(extraction: &mut Value) -> Result<()> {
     if extraction.get(ASSETS).is_none() {
         extraction[ASSETS] = json!([]);
     }
-    expand_findings(extraction)?;
     if let Some(settings) = extraction.get(PRINT_SETTINGS) {
         extraction[PRINT_SETTINGS] = Value::Array(expanded_print_settings(settings)?);
     }
@@ -1038,7 +1315,7 @@ pub fn hash(extraction: &Extraction) -> Result<String> {
 /// original in place.
 fn expanded(mut extraction: Value) -> Result<Extraction> {
     expand(&mut extraction)?;
-    Extraction::from_value(extraction)
+    Extraction::from_stored(extraction)
 }
 
 /// Reads and validates a stored extraction, with the original it was made
@@ -1141,7 +1418,11 @@ mod known {
             let mut sheets = None;
             while let Some(key) = access.next_key::<String>()? {
                 if key == "sheets" {
-                    sheets = Some(access.next_value_seed(Sheets)?);
+                    // Stored in order of their names, the members read by
+                    // now name the parser, which the cells take what they
+                    // leave out from.
+                    let fields = Value::Object(fields.clone());
+                    sheets = Some(access.next_value_seed(Sheets(&fields))?);
                 } else {
                     fields.insert(key, access.next_value()?);
                 }
@@ -1151,31 +1432,34 @@ mod known {
         }
     }
 
-    struct Sheets;
+    /// The sheets of the extraction whose members besides them are `.0`.
+    struct Sheets<'a>(&'a Value);
 
-    impl<'de> DeserializeSeed<'de> for Sheets {
+    impl<'de> DeserializeSeed<'de> for Sheets<'_> {
         type Value = Vec<Sheet>;
         fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
             d.deserialize_seq(self)
         }
     }
 
-    impl<'de> Visitor<'de> for Sheets {
+    impl<'de> Visitor<'de> for Sheets<'_> {
         type Value = Vec<Sheet>;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("the sheets of a stored extraction")
         }
         fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
             let mut sheets = vec![];
-            while let Some(sheet) = access.next_element_seed(SheetSeed(sheets.len()))? {
+            while let Some(sheet) =
+                access.next_element_seed(SheetSeed(Defaults::of(self.0, sheets.len())))?
+            {
                 sheets.push(sheet);
             }
             Ok(sheets)
         }
     }
 
-    /// The sheet numbered `.0` from 0.
-    struct SheetSeed(usize);
+    /// A sheet whose cells take what they leave out from `.0`.
+    struct SheetSeed(Defaults);
 
     impl<'de> DeserializeSeed<'de> for SheetSeed {
         type Value = Sheet;
@@ -1194,7 +1478,10 @@ mod known {
             let mut cells = None;
             while let Some(key) = access.next_key::<String>()? {
                 if key == "cells" {
-                    cells = Some(access.next_value_seed(Cells(self.0))?);
+                    // Stored in order of their names, the members naming the
+                    // font and style its cells take are read by now.
+                    let defaults = self.0.with_formats(&fields).map_err(de::Error::custom)?;
+                    cells = Some(access.next_value_seed(Cells(defaults))?);
                 } else {
                     fields.insert(key, access.next_value()?);
                 }
@@ -1208,6 +1495,8 @@ mod known {
                 _ => Err(de::Error::custom(format!("sheet {key} must be a list"))),
             };
             let (fonts, styles) = (list("fonts")?, list("styles")?);
+            fields.remove(CELL_FONT);
+            fields.remove(CELL_STYLE);
             Ok(Sheet {
                 fields: Value::Object(fields),
                 cells,
@@ -1217,33 +1506,30 @@ mod known {
         }
     }
 
-    /// The cells of the sheet numbered `.0` from 0.
-    struct Cells(usize);
+    /// The cells of a sheet, which take what they leave out from `.0`.
+    struct Cells(Defaults);
 
     impl<'de> DeserializeSeed<'de> for Cells {
-        type Value = Vec<Cell>;
+        type Value = super::Cells;
         fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
             d.deserialize_seq(self)
         }
     }
 
     impl<'de> Visitor<'de> for Cells {
-        type Value = Vec<Cell>;
+        type Value = super::Cells;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("the cells of a sheet")
         }
         fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
-            let mut formats = HashMap::new();
             // A stored sheet keeps its fonts and styles in its tables.
             let (mut fonts, mut styles) = (Table::default(), Table::default());
-            let mut cells = Vec::with_capacity(access.size_hint().unwrap_or(0));
+            let mut built = CellsBuilder::default();
             while let Some(cell) = access.next_element::<Value>()? {
-                cells.push(
-                    typed_cell(cell, self.0, true, &mut formats, &mut fonts, &mut styles)
-                        .map_err(|error| de::Error::custom(format!("{error:#}")))?,
-                );
+                typed_cell(cell, self.0, true, &mut built, &mut fonts, &mut styles)
+                    .map_err(|error| de::Error::custom(format!("{error:#}")))?;
             }
-            Ok(cells)
+            Ok(built.finish())
         }
     }
 }
@@ -1299,34 +1585,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn print_settings_are_stored_once_for_the_parts_that_have_the_same() {
+        let setting = |part: &str, xml: &str| json!({"part":part,"component":element_name(xml).unwrap(),"xml":xml});
+        let (margins, setup) = (
+            r#"<pageMargins left="0.7"/>"#,
+            r#"<pageSetup orientation="landscape"/>"#,
+        );
+        let settings = json!([
+            setting(
+                "word/document.xml",
+                r#"<w:sectPr><w:pgSz w:w="11906"/></w:sectPr>"#
+            ),
+            setting("xl/worksheets/sheet1.xml", margins),
+            setting("xl/worksheets/sheet1.xml", setup),
+            setting("xl/worksheets/sheet10.xml", margins),
+            setting("xl/worksheets/sheet2.xml", margins),
+            setting("xl/worksheets/sheet2.xml", setup),
+        ]);
+        let stored = stored_print_settings(&settings).unwrap();
+        assert_eq!(
+            stored,
+            json!([
+                {"parts":["word/document.xml"],"xml":[r#"<w:sectPr><w:pgSz w:w="11906"/></w:sectPr>"#]},
+                {"parts":["xl/worksheets/sheet1.xml","xl/worksheets/sheet2.xml"],"xml":[margins,setup]},
+                {"parts":["xl/worksheets/sheet10.xml"],"xml":[margins]},
+            ])
+        );
+        assert_eq!(
+            expanded_print_settings(&stored).unwrap(),
+            array(&settings).unwrap()[..]
+        );
+        assert_eq!(settings[0]["component"], "sectPr");
+        // Settings that the parts in order of their names cannot give back,
+        // or named otherwise than by their element, are refused.
+        let unordered = json!([setting("b.xml", margins), setting("a.xml", margins)]);
+        assert!(stored_print_settings(&unordered).is_err());
+        let renamed = json!([{"part":"a.xml","component":"margins","xml":margins}]);
+        assert!(stored_print_settings(&renamed).is_err());
+    }
+
+    /// The stored bytes of `extraction`, after checking that every way of
+    /// reading them back gives it.
+    fn stored_and_read_back(extraction: &Extraction) -> String {
+        let bytes = stored(extraction).unwrap();
+        assert_eq!(hash(extraction).unwrap(), data::hash(&bytes));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extraction.json");
+        std::fs::write(&path, &bytes).unwrap();
+        data::write(
+            &dir.path().join("document.yml"),
+            &json!({"schema_version":"1","document_id":extraction["document_id"],"source":extraction["source"],"extraction":data::hash(&bytes)}),
+        )
+        .unwrap();
+        assert_eq!(&read_record(&path).unwrap(), extraction);
+        assert_eq!(&read_known_record(&path).unwrap(), extraction);
+        assert_eq!(&read(&path).unwrap(), extraction);
+        // The reading form is checked as it is written, and gives the
+        // extraction back.
+        let out = dir.path().join("reading.json");
+        write_reading(extraction, &out).unwrap();
+        let written = data::read(&out, Some("extraction-view")).unwrap();
+        assert_eq!(written, reading(extraction).unwrap());
+        assert_eq!(&from_reading(written).unwrap(), extraction);
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// A cell given as JSON with its cached result, as an original gives it.
+    fn cell(
+        id: &str,
+        address: &str,
+        kind: &str,
+        value: Value,
+        formula: Value,
+        format: &str,
+    ) -> Value {
+        json!({"id":id,"address":address,"type":kind,"value":value,"cached":if formula.is_null(){Value::Null}else{value.clone()},"formula":formula,"number_format":format})
+    }
+
+    #[test]
     fn stored_cells_leave_out_what_reading_puts_back() {
         let source = json!({"path":"book.xlsx","sha256":"a".repeat(64)});
-        let cell = |id: &str,
-                    address: &str,
-                    kind: &str,
-                    value: Value,
-                    formula: Value,
-                    format: &str| {
-            json!({"id":id,"address":address,"type":kind,"value":value,"cached":if formula.is_null(){Value::Null}else{value.clone()},"formula":formula,"number_format":format})
-        };
         let note = format!("{}added", crate::document_source::base_note("xlsx"));
-        let setting =
-            |part: &str, xml: &str| json!({"part":part,"component":"pageMargins","xml":xml});
+        let setting = |part: &str, xml: &str| json!({"part":part,"component":element_name(xml).unwrap(),"xml":xml});
         let drawing = json!({"id":"xl/drawings/drawing1.xml#2","part":"xl/drawings/drawing1.xml","kind":"shape",
             "macro":null,"control":null,"name":"","description":"","text":"","anchor":{"kind":"twoCellAnchor"},
             "group":null,"transform":null,"geometry":"rect","connections":[],"image":null,"linked_image":null});
-        let extraction = json!({"schema_version":"2","document_id":"book.xlsx","source":source,"parser":"test",
+        let extraction = json!({"schema_version":"4","document_id":"book.xlsx","source":source,"parser":"arp4-rust/test;cells/1",
             "findings":[{"level":"warning","code":"R001","message":note}],"assets":[],
-            "print_settings":[setting("xl/worksheets/sheet1.xml","<a/>"),setting("xl/worksheets/sheet2.xml","<a/>"),setting("xl/worksheets/sheet2.xml","<b/>")],
+            "print_settings":[setting("xl/worksheets/sheet1.xml","<a/>"),setting("xl/worksheets/sheet1.xml","<b/>"),
+                setting("xl/worksheets/sheet2.xml","<a/>"),setting("xl/worksheets/sheet2.xml","<b/>")],
             "sheets":[
                 {"name":"A","part":"xl/worksheets/sheet1.xml","state":"visible","merges":[],"drawings":[drawing],"cells":[cell("c-1-A1","A1","string",json!("x"),Value::Null,"General")]},
                 {"name":"B","part":"xl/worksheets/sheet2.xml","state":"visible","merges":[],"cells":[
                     cell("c-2-B2","B2","formula",json!(3),json!("1+2"),"0.00"),
-                    cell("text-1","A1","string",json!("y"),Value::Null,""),
-                    cell("c-1-C3","C3","string",json!("z"),Value::Null,"General")]}]});
+                    cell("text-2","A1","string",json!("y"),Value::Null,""),
+                    cell("c-1-C3","C3","string",json!("z"),Value::Null,"General"),
+                    cell("c-2-D4","D4","error",json!("#DIV/0!"),Value::Null,"General")]}]});
         let mut extraction = extraction;
         // A cell with a font, a style and a place in a text original.
-        let mut placed = cell("text-2", "A2", "number", json!(4.5), Value::Null, "0.0");
+        let mut placed = cell("text-5", "A2", "number", json!(4.5), Value::Null, "0.0");
         placed["font"] = json!({"latin":"Calibri","east_asian":"Calibri","size":11,"color":"auto"});
         placed["style"] = json!({"bold":true,"fill":0,"border":1,"strike":false});
         placed["position"] = json!({"kind":"paragraph","headings":["1. 概要"],"line_start":3,
@@ -1335,41 +1692,122 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(placed);
+        for sheet in extraction["sheets"].as_array_mut().unwrap() {
+            for list in SHEET_LISTS {
+                if sheet.get(list).is_none() {
+                    sheet[list] = json!([]);
+                }
+            }
+        }
         let extraction = Extraction::from_value(extraction).unwrap();
-        let bytes = stored(&extraction).unwrap();
-        let text = String::from_utf8(bytes.clone()).unwrap();
+        let text = stored_and_read_back(&extraction);
         assert!(!text.contains("\"source\"") && !text.contains("General"));
+        // An Excel cell keeps no ID its sheet and address give, and no type
+        // its value or formula gives: an error keeps its type.
         assert!(!text.contains("c-1-A1") && !text.contains("c-2-B2"));
-        assert!(text.contains("text-1") && text.contains("c-1-C3") && text.contains("1+2"));
+        assert!(text.contains("text-2") && text.contains("c-1-C3") && text.contains("1+2"));
+        assert_eq!(text.matches("\"type\"").count(), 1);
+        assert!(text.contains(r##""type": "error", "value": "#DIV/0!""##));
         // The note keeps only what the original adds to the text of its
-        // format, a print setting is stored once and a drawing keeps no part
-        // or empty member.
+        // format, the print settings of both sheets are stored once and a
+        // drawing keeps no part or empty member.
         assert!(
             !text.contains(crate::document_source::base_note("xlsx")) && text.contains("added")
         );
         assert_eq!(text.matches("<a/>").count(), 1);
+        assert!(!text.contains("\"component\""));
         assert!(!text.contains("\"xl/drawings/drawing1.xml\"") && !text.contains("linked_image"));
-        assert_eq!(hash(&extraction).unwrap(), data::hash(&bytes));
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("extraction.json");
-        std::fs::write(&path, &bytes).unwrap();
-        data::write(
-            &dir.path().join("document.yml"),
-            &json!({"schema_version":"1","document_id":"book.xlsx","source":extraction["source"],"extraction":data::hash(&bytes)}),
-        )
+        // A font, a style and a print setting are each one line.
+        assert!(text.contains(
+            r#"{"color": "auto", "east_asian": "Calibri", "latin": "Calibri", "size": 11}"#
+        ));
+        assert!(text.contains(r#"{"parts": ["xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"], "xml": ["<a/>", "<b/>"]}"#));
+    }
+
+    #[test]
+    fn stored_cells_of_other_originals_leave_out_the_ids_of_their_places() {
+        let source = json!({"path":"spec.docx","sha256":"b".repeat(64)});
+        let note = crate::document_source::base_note("docx");
+        let extraction = json!({"schema_version":"4","document_id":"spec.docx","source":source,
+            "parser":"arp4-rust/test;word-blocks/1","findings":[{"level":"warning","code":"R001","message":note}],"assets":[],
+            "sheets":[
+                {"name":"document","part":"word/document.xml","state":"visible","merges":[],"cells":[
+                    cell("text-1","A1","string",json!("概要"),Value::Null,""),
+                    cell("text-2","A2","string",json!("本文"),Value::Null,""),
+                    cell("text-9","A3","string",json!("移した段落"),Value::Null,""),
+                    cell("text-4","A4","number",json!(4),Value::Null,"General")]},
+                {"name":"header-1","part":"word/header1.xml","state":"visible","merges":[],"cells":[
+                    cell("text-1","A1","string",json!("見出し"),Value::Null,"")]}]});
+        let extraction = Extraction::from_value(extraction).unwrap();
+        let text = stored_and_read_back(&extraction);
+        // The nth cell of a page keeps no ID text-<n> and no empty number
+        // format: a cell whose ID its place does not give keeps it, and
+        // General is a number format of its own.
+        assert_eq!(text.matches("\"id\"").count(), 1);
+        assert!(text.contains(r#""id": "text-9""#));
+        assert_eq!(text.matches("\"number_format\"").count(), 1);
+        assert!(text.contains(r#""number_format": "General""#));
+        assert!(!text.contains("\"type\""));
+    }
+
+    #[test]
+    fn stored_cells_leave_out_the_font_and_style_most_of_their_sheet_have() {
+        let source = json!({"path":"book.xlsx","sha256":"c".repeat(64)});
+        let note = crate::document_source::base_note("xlsx");
+        let (small, large) = (
+            json!({"latin":"Meiryo","east_asian":"Meiryo","size":9,"color":"auto"}),
+            json!({"latin":"Meiryo","east_asian":"Meiryo","size":14,"color":"auto"}),
+        );
+        let (plain, bold) = (
+            json!({"bold":false,"fill":0,"border":1,"strike":false}),
+            json!({"bold":true,"fill":2,"border":1,"strike":false}),
+        );
+        let formatted = |address: &str, value: &str, font: &Value, style: &Value| {
+            let mut c = cell(
+                &format!("c-1-{address}"),
+                address,
+                "string",
+                json!(value),
+                Value::Null,
+                "General",
+            );
+            c["font"] = font.clone();
+            c["style"] = style.clone();
+            c
+        };
+        let mut sheet = json!({"name":"S","part":"xl/worksheets/sheet1.xml","state":"visible",
+            "merges":["A1:C1","B4:C4"],"cells":[
+                formatted("A1", "見出し", &large, &bold),
+                formatted("A2", "1", &small, &plain),
+                formatted("B2", "2", &small, &plain),
+                formatted("A3", "3", &small, &plain),
+                cell("c-1-B3", "B3", "string", json!("書式なし"), Value::Null, "General")]});
+        for list in SHEET_LISTS {
+            sheet[list] = json!([]);
+        }
+        let extraction = Extraction::from_value(json!({"schema_version":"4","document_id":"book.xlsx",
+            "source":source,"parser":"arp4-rust/test;cells/1",
+            "findings":[{"level":"warning","code":"R001","message":note}],"assets":[],"sheets":[sheet]}))
         .unwrap();
-        assert_eq!(read_record(&path).unwrap(), extraction);
-        assert_eq!(read_known_record(&path).unwrap(), extraction);
-        let stored_back = read_record(&path).unwrap();
-        assert_eq!(
-            view_lazy(&stored_back).into_value().unwrap(),
-            view(&stored_back).unwrap()
+        let text = stored_and_read_back(&extraction);
+        // The sheet names the font and style most of its cells have, which
+        // those cells leave out; a cell without any has null.
+        assert!(text.contains(r#""cell_font": 1,"#) && text.contains(r#""cell_style": 1,"#));
+        assert!(text.contains(r#"{"address": "A2", "value": "1"}"#));
+        assert!(text.contains(r#"{"address": "A1", "font": 0, "style": 0, "value": "見出し"}"#));
+        assert!(
+            text.contains(r#"{"address": "B3", "font": null, "style": null, "value": "書式なし"}"#)
         );
-        check_view(&stored_back, |part| data::validate("extraction-view", part)).unwrap();
-        data::validate("extraction-view", &view(&stored_back).unwrap()).unwrap();
-        assert_eq!(
-            view(&read(&path).unwrap()).unwrap(),
-            view(&extraction).unwrap()
-        );
+        // The merges of a sheet are one line.
+        assert!(text.contains(r#""merges": ["A1:C1", "B4:C4"]"#));
+        // The reading form writes them out in place of their indexes.
+        let reading = reading(&extraction).unwrap();
+        let sheet = &reading["sheets"][0];
+        assert_eq!(sheet["cell_font"], small);
+        assert_eq!(sheet["cell_style"], plain);
+        assert_eq!(sheet["cells"][0]["font"], large);
+        assert!(sheet["cells"][1].get("font").is_none() && sheet["cells"][1].get("id").is_none());
+        assert!(sheet["cells"][4]["style"].is_null());
+        assert!(sheet.get("fonts").is_none() && reading["findings"][0]["message"] == note);
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn span_in(input: &Input, value: &Value, rows: &[&Source]) -> Result<Value> {
+pub(super) fn span_in(input: spec::Indexed, value: &Value, rows: &[&Source]) -> Result<Value> {
     let alias = value
         .as_str()
         .or_else(|| value["source"].as_str())
@@ -12,13 +12,13 @@ pub(super) fn span_in(input: &Input, value: &Value, rows: &[&Source]) -> Result<
         );
         let mut value = value.clone();
         value["source"] = json!(reference);
-        span(&value, &sources(input, Some(document))?)
+        packet::span_from(&value, input.row_at(document)?)
     } else {
         span(value, rows)
     }
 }
 
-pub(crate) fn expand_item(input: &Input, item: &mut Value, rows: &[&Source]) -> Result<()> {
+pub(crate) fn expand_item(input: spec::Indexed, item: &mut Value, rows: &[&Source]) -> Result<()> {
     let mut selectors = item["evidence"]
         .as_array()
         .context("item evidence array required")?
@@ -47,12 +47,14 @@ pub(crate) fn expand_item(input: &Input, item: &mut Value, rows: &[&Source]) -> 
         }
     }
     let mut evidence = Vec::new();
+    // The spans kept so far, so that a table's cells are not compared with each other.
+    let mut kept = HashSet::new();
     for span in selectors
         .iter()
         .map(|e| span_in(input, e, rows))
         .collect::<Result<Vec<_>>>()?
     {
-        if !evidence.contains(&span) {
+        if kept.insert(span.to_string()) {
             evidence.push(span);
         }
     }
@@ -111,8 +113,18 @@ pub fn assemble(
     actor: &str,
 ) -> Result<(Model, Catalog, Value)> {
     ensure!(!actor.trim().is_empty(), "actor required");
+    assemble_in(spec::InputIndex::new(input)?.of(input), replies, actor)
+}
+
+/// [`assemble`] against an input already indexed.
+pub(crate) fn assemble_in(
+    input: spec::Indexed,
+    replies: Vec<Reply>,
+    actor: &str,
+) -> Result<(Model, Catalog, Value)> {
+    ensure!(!actor.trim().is_empty(), "actor required");
     let mut documents = BTreeSet::new();
-    let mut model = json!({"schema_version":1,"input_hash":hash(&encoded(&serde_json::to_value(input)?)),"items":[],"exclusions":[],"audits":[],"decisions":[]});
+    let mut model = json!({"schema_version":1,"input_hash":input.hash(),"items":[],"exclusions":[],"audits":[],"decisions":[]});
     let mut catalog = Catalog {
         actor: actor.into(),
         reason: "Classification supplied with semantic extraction".into(),
@@ -130,10 +142,10 @@ pub fn assemble(
             "duplicate document reply"
         );
         ensure!(
-            packet(input, &reply.document)?["packet"] == reply.packet,
+            packet_in(input, &reply.document)?["packet"] == reply.packet,
             "stale or mismatched semantic packet"
         );
-        let rows = sources(input, Some(&reply.document))?;
+        let rows = input.rows(&reply.document)?;
         for (module, name) in reply.modules {
             ensure!(
                 !module.is_empty()
@@ -148,13 +160,15 @@ pub fn assemble(
             }
         }
         for issue in reply.open_issues {
-            catalog
-                .open_issue_documents
-                .entry(issue.clone())
-                .or_default()
-                .insert(reply.document.clone());
-            if !catalog.open_issues.contains(&issue) {
-                catalog.open_issues.push(issue);
+            // An issue is listed once, when its documents are first recorded.
+            match catalog.open_issue_documents.entry(issue.clone()) {
+                std::collections::btree_map::Entry::Occupied(mut documents) => {
+                    documents.get_mut().insert(reply.document.clone());
+                }
+                std::collections::btree_map::Entry::Vacant(documents) => {
+                    documents.insert(BTreeSet::from([reply.document.clone()]));
+                    catalog.open_issues.push(issue);
+                }
             }
         }
         for mut item in reply.items {
@@ -219,7 +233,13 @@ pub fn assemble(
         }
     }
     ensure!(
-        documents == input.sources.iter().map(|s| s.document.clone()).collect(),
+        documents
+            == input
+                .input
+                .sources
+                .iter()
+                .map(|s| s.document.clone())
+                .collect(),
         "one reply per input document required; missing replies are not exclusions"
     );
     for classification in catalog.entries.values() {
@@ -241,6 +261,6 @@ pub fn assemble(
         }
     }
     let model: Model = serde_json::from_value(model)?;
-    spec::assess(input, &model)?; // Structural validity only; missing review/coverage stay blocked.
+    input.check(&model)?; // Structural validity only; missing review/coverage stay blocked.
     Ok((model, catalog, plan))
 }

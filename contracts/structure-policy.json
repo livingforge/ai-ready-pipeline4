@@ -1,5 +1,6 @@
 {
   "always_required_extensions": ["docx", "docm", "dotx", "dotm", "pptx", "pdf"],
   "conditional_extensions": ["xlsx", "xlsm", "xltx", "xltm"],
-  "diagram_min_shapes": 3
+  "diagram_min_shapes": 3,
+  "diagram_attach_distance_pt": 6
 }

@@ -38,6 +38,10 @@ pub struct Store {
     /// The names in `archive.zip`, read once in this process instead of for
     /// every artifact put; compaction replaces them.
     archived: std::cell::RefCell<Option<std::collections::BTreeSet<String>>>,
+    /// `archive.zip` opened once in this process for the objects read from
+    /// it, rather than reading its directory again for each; compaction
+    /// closes it before replacing the file.
+    archive: std::cell::RefCell<Option<zip::ZipArchive<File>>>,
 }
 
 impl Store {
@@ -85,6 +89,7 @@ impl Store {
             preview: None,
             parsed: Default::default(),
             archived: Default::default(),
+            archive: Default::default(),
         })
     }
     pub fn preview(&mut self) {
@@ -115,9 +120,18 @@ impl Store {
         let data = if path.exists() {
             fs::read(path)?
         } else {
-            let mut zip = zip::ZipArchive::new(File::open(self.managed("archive.zip")?)?)?;
+            let mut archive = self.archive.borrow_mut();
+            if archive.is_none() {
+                *archive = Some(zip::ZipArchive::new(File::open(
+                    self.managed("archive.zip")?,
+                )?)?);
+            }
             let mut data = Vec::new();
-            zip.by_name(digest)?.read_to_end(&mut data)?;
+            archive
+                .as_mut()
+                .unwrap()
+                .by_name(digest)?
+                .read_to_end(&mut data)?;
             data
         };
         ensure!(hash(&data) == digest, "corrupted artifact: {digest}");
@@ -207,6 +221,8 @@ impl Store {
             return Ok(json!({"archived_objects":0}));
         }
         let path = self.managed("archive.zip")?;
+        // The archive is replaced below; a later read opens the new one.
+        *self.archive.borrow_mut() = None;
         let temp = tempfile::NamedTempFile::new_in(&self.root)?;
         let mut writer = zip::ZipWriter::new(temp.reopen()?);
         let options = zip::write::SimpleFileOptions::default()

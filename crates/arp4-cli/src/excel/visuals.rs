@@ -235,6 +235,35 @@ fn attributes(node: Node<'_, '_>) -> Value {
     )
 }
 
+/// What the line properties `line` (`a:ln`) draw at the ends of a line and
+/// along it, as members of its drawing: the marks at its start (`head_end`,
+/// from `a:headEnd`) and at its end (`tail_end`), such as `triangle` for an
+/// arrowhead, and its dash (`a:prstDash`) when not solid. None for a plain
+/// solid line. Members of the drawing rather than an object of their own,
+/// which took several times their room for each line of a large diagram.
+pub(crate) fn line_marks(line: Node<'_, '_>) -> Vec<(&'static str, Value)> {
+    let mut marks = vec![];
+    for (name, key) in [("headEnd", "head_end"), ("tailEnd", "tail_end")] {
+        if let Some(kind) = line
+            .children()
+            .find(|n| n.has_tag_name((DRAWING, name)))
+            .and_then(|n| n.attribute("type"))
+            .filter(|kind| *kind != "none")
+        {
+            marks.push((key, json!(kind)));
+        }
+    }
+    if let Some(dash) = line
+        .children()
+        .find(|n| n.has_tag_name((DRAWING, "prstDash")))
+        .and_then(|n| n.attribute("val"))
+        .filter(|dash| *dash != "solid")
+    {
+        marks.push(("dash", json!(dash)));
+    }
+    marks
+}
+
 fn placement(node: Node<'_, '_>) -> Value {
     let mut result = json!({"kind":node.tag_name().name()});
     if let Some(placement) = node.attribute("editAs") {
@@ -243,10 +272,14 @@ fn placement(node: Node<'_, '_>) -> Value {
     for c in node.children().filter(Node::is_element) {
         match c.tag_name().name() {
             "from" | "to" => {
+                // An offset of 0 is left out, as readers take a missing one.
                 let mut point = json!({});
                 for v in c.children().filter(Node::is_element) {
-                    point[v.tag_name().name()] =
-                        json!(v.text().and_then(|v| v.parse::<i64>().ok()));
+                    let name = v.tag_name().name();
+                    let number = v.text().and_then(|v| v.parse::<i64>().ok());
+                    if !(name.ends_with("Off") && number == Some(0)) {
+                        point[name] = json!(number);
+                    }
                 }
                 result[c.tag_name().name()] = point;
             }
@@ -487,6 +520,13 @@ pub(super) fn extract_visuals(
                     "connections":connections,"image":image,"linked_image":linked_image}));
                 if let Some(chart_part) = chart_part {
                     objects.last_mut().unwrap()["chart_part"] = json!(chart_part);
+                }
+                let marks = shape
+                    .and_then(|n| n.children().find(|n| n.has_tag_name((DRAWING, "ln"))))
+                    .map(line_marks)
+                    .unwrap_or_default();
+                for (key, mark) in marks {
+                    objects.last_mut().unwrap()[key] = mark;
                 }
                 // Shape text is edited with its font; SmartArt text is not edited.
                 let object = objects.last_mut().unwrap();

@@ -115,6 +115,12 @@ pub(super) fn read(
             if drawing["control"].is_object() {
                 compact["control"] = drawing["control"].clone();
             }
+            // The arrowheads and the dash, which give a line its direction.
+            for key in ["head_end", "tail_end", "dash"] {
+                if let Some(mark) = drawing.get(key) {
+                    compact[key] = mark.clone();
+                }
+            }
             let position = position(drawing);
             if !position.as_object().unwrap().is_empty() {
                 compact["position"] = position;
@@ -209,7 +215,7 @@ mod tests {
         let path = dir.path().join("extraction.json");
         let value = json!({"assets":[],"sheets":[{"name":"S","cells":[],"drawings":[
             {"id":"drawing#1","kind":"group","anchor":{"kind":"absoluteAnchor","pos":{"x":"10","y":"20"},"ext":{"cx":"100","cy":"200"}},"transform":{"chOff":{"x":"1","y":"2"}}},
-            {"id":"drawing#2","kind":"connector","group":"drawing#1","anchor":{"kind":"twoCellAnchor","from":{"col":2,"row":4,"colOff":200},"to":{"col":6,"row":8}},"connections":[{"end":"stCxn","target":"drawing#3","site":"0","basis":"explicit"},{"end":"endCxn","target":"drawing#4","site":"1","basis":"explicit"}]}
+            {"id":"drawing#2","kind":"connector","group":"drawing#1","anchor":{"kind":"twoCellAnchor","from":{"col":2,"row":4,"colOff":200},"to":{"col":6,"row":8}},"connections":[{"end":"stCxn","target":"drawing#3","site":"0","basis":"explicit"},{"end":"endCxn","target":"drawing#4","site":"1","basis":"explicit"}],"tail_end":"triangle","dash":"dash"}
         ]}]});
         write(&path, &value).unwrap();
         let ext = crate::extraction::sample(value);
@@ -223,6 +229,9 @@ mod tests {
         assert_eq!(group["position"]["pos"], json!({"x":"10","y":"20"}));
         let connector = &report["drawings"][1];
         assert_eq!(connector["group"], "drawing#1");
+        assert_eq!(connector["tail_end"], "triangle");
+        assert_eq!(connector["dash"], "dash");
+        assert!(group.get("tail_end").is_none());
         assert_eq!(
             connector["connections"],
             json!([{"end":"stCxn","target":"drawing#3"},{"end":"endCxn","target":"drawing#4"}])

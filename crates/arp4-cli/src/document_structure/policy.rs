@@ -13,7 +13,10 @@ pub fn extension(extraction: &Extraction) -> String {
         .to_ascii_lowercase()
 }
 
-pub fn requirements(extraction: &Extraction) -> Result<Vec<String>> {
+/// What `extraction` requires of a structure. With `cached`, the project
+/// root and the extraction's hash, an inferred interpretation is read from
+/// the project's cache, as replay keeps it.
+pub fn requirements(extraction: &Extraction, cached: Option<(&Path, &str)>) -> Result<Vec<String>> {
     let policy = policy();
     let ext = json!(extension(extraction));
     if array(&policy["always_required_extensions"])?.contains(&ext) {
@@ -27,9 +30,12 @@ pub fn requirements(extraction: &Extraction) -> Result<Vec<String>> {
         .sheets
         .iter()
         .any(|s| s["tables"].as_array().is_some_and(|t| !t.is_empty()))
-        || inference::elements(extraction)?
-            .iter()
-            .any(|e| e["kind"] == "table")
+        || match cached {
+            Some((root, hash)) => inferred(root, extraction, hash)?.elements,
+            None => inference::elements(extraction)?,
+        }
+        .iter()
+        .any(|e| e["kind"] == "table")
     {
         reasons.push("table".into());
     }
@@ -85,6 +91,13 @@ pub fn visuals(extraction: &Extraction) -> Result<Vec<Value>> {
             output.push(json!({"id":format!("asset-{i}"),"kind":"image","sources":[format!("/assets/{i}")]}));
         }
     }
+    // The first asset of each path, for the OCR of each image.
+    let mut assets_by_path: HashMap<&str, &Value> = HashMap::new();
+    for asset in extraction["assets"].as_array().into_iter().flatten() {
+        if let Some(path) = asset["path"].as_str() {
+            assets_by_path.entry(path).or_insert(asset);
+        }
+    }
     for v in &mut output {
         v["state"] = json!("not_examined");
         v["description"] = json!("");
@@ -102,13 +115,10 @@ pub fn visuals(extraction: &Extraction) -> Result<Vec<Value>> {
                         .as_str()
                         .or_else(|| source["path"].as_str())
                 });
-            if let Some(ocr) = asset_name.and_then(|name| {
-                extraction["assets"]
-                    .as_array()?
-                    .iter()
-                    .find(|asset| asset["path"] == name)
-                    .and_then(|asset| asset.get("ocr"))
-            }) {
+            if let Some(ocr) = asset_name
+                .and_then(|name| assets_by_path.get(name))
+                .and_then(|asset| asset.get("ocr"))
+            {
                 v["ocr"] = ocr.clone();
             }
         }
@@ -142,18 +152,37 @@ pub fn validate_visuals(extraction: &Extraction, value: &Value) -> Result<Vec<Va
         "structure omits or adds visual objects"
     );
     let mut unresolved = vec![];
+    // The visuals and the first region of each ID, looked up rather than
+    // scanned for each visual and its evidence. The visuals the extraction
+    // shows have IDs that are strings.
+    let mut by_id: HashMap<&str, Vec<&Value>> = HashMap::new();
+    for v in actual {
+        if let Some(id) = v["id"].as_str() {
+            by_id.entry(id).or_default().push(v);
+        }
+    }
+    let mut regions: HashMap<&str, &Value> = HashMap::new();
+    for r in value["regions"].as_array().into_iter().flatten() {
+        if let Some(id) = r["id"].as_str() {
+            regions.entry(id).or_insert(r);
+        }
+    }
     for original in expected {
-        let matches: Vec<_> = actual
-            .iter()
-            .filter(|v| v["id"] == original["id"])
-            .collect();
+        let matches: &[&Value] = original["id"]
+            .as_str()
+            .and_then(|id| by_id.get(id))
+            .map_or(&[], Vec::as_slice);
         ensure!(matches.len() == 1, "missing or duplicate visual object");
         let v = matches[0];
         for key in ["kind", "sheet", "sources"] {
             ensure!(v[key] == original[key], "visual source identity mismatch");
         }
         for id in array(&v["evidence"])? {
-            let region = array(&value["regions"])?.iter().find(|r| r["id"] == *id);
+            let all = array(&value["regions"])?;
+            let region = match id.as_str() {
+                Some(id) => regions.get(id).copied(),
+                None => all.iter().find(|r| r["id"] == *id),
+            };
             if let Some(region) = region {
                 ensure!(
                     v["sheet"].is_null() || region["sheet"] == v["sheet"],
@@ -202,26 +231,26 @@ mod tests {
     fn office_formats_and_conditional_excel() {
         let mut ext = extraction();
         assert!(
-            requirements(&crate::extraction::sample(ext.clone()))
+            requirements(&crate::extraction::sample(ext.clone()), None)
                 .unwrap()
                 .is_empty()
         );
         for format in ["docx", "pptx", "pdf"] {
             ext["source"]["path"] = json!(format!("input.{format}"));
             assert_eq!(
-                requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+                requirements(&crate::extraction::sample(ext.clone()), None).unwrap(),
                 vec!["office_document"]
             );
         }
         ext["source"]["path"] = json!("input.XLSX");
         ext["sheets"][0]["tables"] = json!([{"range":"A1:B2","header_rows":1}]);
         assert_eq!(
-            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            requirements(&crate::extraction::sample(ext.clone()), None).unwrap(),
             vec!["table"]
         );
         ext["source"]["path"] = json!("input.csv");
         assert!(
-            requirements(&crate::extraction::sample(ext.clone()))
+            requirements(&crate::extraction::sample(ext.clone()), None)
                 .unwrap()
                 .is_empty()
         );
@@ -242,7 +271,7 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(
-            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            requirements(&crate::extraction::sample(ext.clone()), None).unwrap(),
             vec!["table"]
         );
     }
@@ -252,19 +281,19 @@ mod tests {
         let mut ext = extraction();
         ext["sheets"][0]["drawings"] = json!([{"kind":"shape"},{"kind":"shape"},{"kind":"group"}]);
         assert!(
-            requirements(&crate::extraction::sample(ext.clone()))
+            requirements(&crate::extraction::sample(ext.clone()), None)
                 .unwrap()
                 .is_empty()
         );
         ext["sheets"][0]["drawings"][2]["kind"] = json!("connector");
         assert_eq!(
-            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            requirements(&crate::extraction::sample(ext.clone()), None).unwrap(),
             vec!["diagram"]
         );
         ext["sheets"][0]["drawings"] = json!([{"kind":"picture","image":{"asset":"a.png"}}]);
         ext["assets"] = json!([{"path":"a.png"}]);
         assert_eq!(
-            requirements(&crate::extraction::sample(ext.clone())).unwrap(),
+            requirements(&crate::extraction::sample(ext.clone()), None).unwrap(),
             vec!["image"]
         );
         assert_eq!(

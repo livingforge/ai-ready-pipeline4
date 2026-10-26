@@ -63,9 +63,22 @@ pub(super) fn rebase(
 ) -> Result<(Structure, Value)> {
     corrections::validate_journal(journal)?;
     let same_source = journal["source_sha256"] == current["source"]["sha256"];
-    let sheets = corrections::sheets(current)?;
     // Validated once below, after the corrections are applied.
     let mut result = inferred(root, current, extraction_hash)?;
+    // The cells of each sheet by address, which only corrections of
+    // elements, readings and cell states read: a large sheet has many.
+    let corrected = ["elements", "readings", "cell_states"]
+        .into_iter()
+        .any(|list| {
+            journal[list]
+                .as_array()
+                .is_some_and(|list| !list.is_empty())
+        });
+    let sheets = if corrected {
+        corrections::sheets(current)?
+    } else {
+        HashMap::new()
+    };
     // What the parser gives each cell, read only to replay corrections of
     // elements: a large sheet has a default per cell.
     let defaults = if array(&journal["elements"])?.is_empty() {
@@ -338,9 +351,9 @@ pub(super) fn rebase(
             result["review"] = journal["review"].clone();
         }
     }
-    let validation = validate_hashed(root, current, extraction_hash, &result, original)?;
-    let mut report = json!({"state":if validation["ready"] == true {"reviewed"} else {"needs_review"},
-        "ready":validation["ready"],"carried_elements":carried_elements,
+    let ready = ready_hashed(root, current, extraction_hash, &result, original)?;
+    let mut report = json!({"state":if ready {"reviewed"} else {"needs_review"},
+        "ready":ready,"carried_elements":carried_elements,
         "carried_visuals":carried_visuals,"conflicts":conflicts});
     // How apply carried this version, while it is the version replayed.
     if same_source

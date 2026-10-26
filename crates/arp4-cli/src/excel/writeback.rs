@@ -1,4 +1,5 @@
 use super::*;
+use crate::extraction::CellKind;
 
 impl Workbook {
     /// Row/column edits move cells and every reference ARP can rewrite
@@ -130,7 +131,7 @@ impl Workbook {
         self.cells
             .iter()
             .flatten()
-            .any(|cell| cell.kind == "formula")
+            .any(|cell| cell.kind == CellKind::Formula)
     }
 
     pub fn patch(&self, destination: &Path, changes: &[Value]) -> Result<Value> {
@@ -152,7 +153,7 @@ impl Workbook {
                 .get(&(sheet, cell))
                 .with_context(|| format!("formula edit target {sheet}!{cell} is missing"))?;
             ensure!(
-                found.kind == "formula",
+                found.kind == CellKind::Formula,
                 "{sheet}!{cell} holds no formula; only existing formulas can be replaced"
             );
             let text = string(&edit["after"])?
@@ -199,7 +200,7 @@ impl Workbook {
             let cell = string(&change["cell"])?;
             let found = cells.get(&(name, cell)).context("missing writeback cell")?;
             ensure!(
-                found.kind != "formula" && found.kind != "error",
+                found.kind != CellKind::Formula && found.kind != CellKind::Error,
                 "formula/error cells cannot be overwritten"
             );
             ensure!(
@@ -207,7 +208,7 @@ impl Workbook {
                 "scalar writeback required"
             );
             ensure!(
-                change["after"].is_null() || found.kind == kind(&change["after"]),
+                change["after"].is_null() || found.kind.as_str() == kind(&change["after"]),
                 "Excel target type mismatch"
             );
             checks.merges[name].ensure_not_hidden(name, cell)?;
@@ -223,6 +224,7 @@ impl Workbook {
         }
         let recalc = (!changes.is_empty() || !formulas.is_empty()) && self.has_formulas();
         let mut patched = BTreeMap::new();
+        let shared = SharedStrings::new(&self.parts);
         for s in &self.sheets {
             let part = string(&s["part"])?;
             let name = string(&s["name"])?;
@@ -246,7 +248,7 @@ impl Workbook {
                     seen.insert(address.to_owned());
                     edits.push((
                         cell.range(),
-                        render_cell(original, cell, address, value, &self.parts)?,
+                        render_cell(original, cell, address, value, &shared)?,
                     ));
                 } else if recalc
                     && child(cell, "f").is_some()
@@ -305,7 +307,7 @@ impl Workbook {
                     )?,
                     "non-edited worksheet content changed: {part}"
                 );
-                self.ensure_runs_kept(part, after, &values)?;
+                self.ensure_runs_kept(part, after, &values, &shared)?;
             }
         }
         write_archive(&self.raw, destination, &patched)?;
@@ -441,6 +443,7 @@ impl Workbook {
         let mut patched = BTreeMap::new();
         let mut removed = BTreeSet::new();
         let mut table_formulas = BTreeMap::new();
+        let shared = SharedStrings::new(&self.parts);
         let moves = Moves::new(
             &operations,
             if structural {
@@ -541,7 +544,7 @@ impl Workbook {
                     row,
                     raw,
                     &RowTransform {
-                        parts: &self.parts,
+                        shared: &shared,
                         original,
                         original_row,
                         final_row,
@@ -757,6 +760,7 @@ impl Workbook {
         recalc: bool,
     ) -> Result<()> {
         let cells = cells_by_address(self);
+        let shared = SharedStrings::new(&self.parts);
         for sheet in &self.sheets {
             let name = string(&sheet["name"])?;
             let part = string(&sheet["part"])?;
@@ -790,13 +794,19 @@ impl Workbook {
                 edits.preserved(before)? == edits.preserved(std::str::from_utf8(after)?)?,
                 "non-edited worksheet content changed: {part}"
             );
-            self.ensure_runs_kept(part, after, &values)?;
+            self.ensure_runs_kept(part, after, &values, &shared)?;
         }
         Ok(())
     }
 
     /// The run formats of each edited cell in `values` are those of the original.
-    fn ensure_runs_kept(&self, part: &str, after: &[u8], values: &BTreeSet<&str>) -> Result<()> {
+    fn ensure_runs_kept(
+        &self,
+        part: &str,
+        after: &[u8],
+        values: &BTreeSet<&str>,
+        shared: &SharedStrings<'_>,
+    ) -> Result<()> {
         let before_text = std::str::from_utf8(&self.parts[part])?;
         let after_text = std::str::from_utf8(after)?;
         let before_doc = xml(before_text.as_bytes())?;
@@ -814,8 +824,8 @@ impl Workbook {
                 .get(address)
                 .context("edited cell disappeared")?;
             ensure!(
-                super::text_edit::run_properties(cell, before_text, &self.parts)?
-                    == super::text_edit::run_properties(written, after_text, &self.parts)?,
+                super::text_edit::run_properties(cell, before_text, shared)?
+                    == super::text_edit::run_properties(written, after_text, shared)?,
                 "rich text run properties changed: {part}!{address}"
             );
         }
@@ -992,7 +1002,7 @@ fn cells_by_address(book: &Workbook) -> BTreeMap<(&str, &str), &Cell> {
             continue;
         };
         for cell in list {
-            cells.entry((name, cell.address.as_str())).or_insert(cell);
+            cells.entry((name, &*cell.address)).or_insert(cell);
         }
     }
     cells

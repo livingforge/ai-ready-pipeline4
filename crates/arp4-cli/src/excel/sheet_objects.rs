@@ -118,8 +118,15 @@ fn rewrite_vml(
     static FLAG: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"<x:(MoveWithCells|SizeWithCells)\s*(?:/>|>\s*([^<]*)</x:(?:MoveWithCells|SizeWithCells)>)").unwrap()
     });
-    let mut edits = vec![];
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = vec![];
+    // The edits before `settled` all end at or before `settled_end`.
+    let (mut settled, mut settled_end) = (0, 0);
     for block in CLIENT_DATA.find_iter(original) {
+        settled_end = edits[settled..]
+            .iter()
+            .map(|(range, _)| range.end)
+            .fold(settled_end, usize::max);
+        settled = edits.len();
         let text = block.as_str();
         let base = block.start();
         let note = OBJECT_TYPE.captures(text).is_some_and(|c| &c[1] == "Note");
@@ -167,7 +174,19 @@ fn rewrite_vml(
                         .find("</v:shape>")
                         .context("VML note shape not closed")?
                     + "</v:shape>".len();
-                edits.retain(|(range, _)| range.end <= start || range.start >= end);
+                let outside = |(range, _): &(std::ops::Range<usize>, String)| {
+                    range.end <= start || range.start >= end
+                };
+                // Only the edits of this block can lie in a shape that starts
+                // after the edits before it end.
+                if settled_end <= start {
+                    let mut own = edits.split_off(settled);
+                    own.retain(outside);
+                    edits.append(&mut own);
+                } else {
+                    edits.retain(outside);
+                    (settled, settled_end) = (0, 0);
+                }
                 edits.push((start..end, String::new()));
                 continue;
             };
@@ -289,4 +308,56 @@ pub(super) fn relocate_sheet_objects(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_note_on_a_deleted_row_goes_with_its_shape_and_the_edits_in_it() {
+        let operations = [StructuralOperation {
+            id: "op".into(),
+            sheet: "S".into(),
+            kind: OperationKind::DeleteRows,
+            at: 2,
+            count: 1,
+            style_from: None,
+            style_rows: 1,
+            merges: false,
+            vba_unchanged: false,
+        }];
+        let moves = Moves::new(&operations, BTreeMap::new());
+        let shape = |id: &str, data: &str| format!(r#"<v:shape id="{id}">{data}</v:shape>"#);
+        let note = |row: u32, fields: &str| {
+            format!(
+                r#"<x:ClientData ObjectType="Note">{fields}<x:Row>{row}</x:Row><x:Column>0</x:Column></x:ClientData>"#
+            )
+        };
+        let link = "<x:FmlaLink>$A$5</x:FmlaLink>";
+        let rewrite = |vml: &str| rewrite_vml(vml, "S", &operations, &moves).unwrap();
+        assert_eq!(
+            rewrite(&format!(
+                "<xml>{}{}{}</xml>",
+                shape("a", &note(0, "")),
+                shape("b", &note(1, link)),
+                shape("c", &note(3, link))
+            )),
+            format!(
+                "<xml>{}{}</xml>",
+                shape("a", &note(0, "")),
+                shape("c", &note(2, "<x:FmlaLink>$A$4</x:FmlaLink>"))
+            )
+        );
+        // A shape holding an edited control before the note goes as a whole.
+        let control = format!(r#"<x:ClientData ObjectType="Drop">{link}</x:ClientData>"#);
+        assert_eq!(
+            rewrite(&format!(
+                "<xml>{}{}</xml>",
+                shape("m", &format!("{control}{}", note(1, ""))),
+                shape("c", &note(3, ""))
+            )),
+            format!("<xml>{}</xml>", shape("c", &note(2, "")))
+        );
+    }
 }

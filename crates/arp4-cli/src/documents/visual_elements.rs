@@ -1,12 +1,17 @@
 //! Body references to captured visual objects. Facts, assets and interpretation
 //! remain outside the body; no picture or chart data is duplicated into text.
 use super::*;
+use std::collections::HashSet;
 
 pub(super) fn refresh(
     layout: &mut Layout,
     extraction: &Extraction,
     operations: &[excel::StructuralOperation],
 ) -> Result<()> {
+    // The extraction's assets by path and its chart parts, gathered once a
+    // drawing refers to one.
+    let mut assets: Option<HashMap<&str, &Value>> = None;
+    let mut chart_parts: Option<HashSet<&str>> = None;
     for (si, sheet) in extraction.sheets.iter().enumerate() {
         let mut visuals = json!({});
         let operations: Vec<_> = operations
@@ -43,9 +48,19 @@ pub(super) fn refresh(
             };
             let mut reference = json!({"kind":kind,"source":format!("/sheets/{si}/drawings/{di}"),"drawing_id":drawing_id,"anchor":anchor,"order_basis":order_basis});
             if let Some(asset) = drawing["image"]["asset"].as_str() {
-                let metadata = array(&extraction["assets"])?
-                    .iter()
-                    .find(|a| a["path"] == asset)
+                if assets.is_none() {
+                    let mut by_path = HashMap::new();
+                    for metadata in array(&extraction["assets"])? {
+                        if let Some(path) = metadata["path"].as_str() {
+                            // The first of a path, as a search finds it.
+                            by_path.entry(path).or_insert(metadata);
+                        }
+                    }
+                    assets = Some(by_path);
+                }
+                let metadata = *assets
+                    .as_ref()
+                    .and_then(|assets| assets.get(asset))
                     .context("visual asset missing")?;
                 ensure!(
                     metadata["sha256"] == drawing["image"]["sha256"],
@@ -54,12 +69,15 @@ pub(super) fn refresh(
                 reference["asset"] = json!(format!("assets/{asset}"));
             }
             if let Some(part) = drawing["chart_part"].as_str() {
-                ensure!(
+                let parts = chart_parts.get_or_insert_with(|| {
                     extraction["chart_parts"]
                         .as_array()
-                        .is_some_and(|parts| parts.iter().any(|p| p["part"] == part)),
-                    "visual chart part missing"
-                );
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p["part"].as_str())
+                        .collect()
+                });
+                ensure!(parts.contains(part), "visual chart part missing");
                 reference["chart_part"] = json!(part);
             }
             // Slide text is laid out with the slide's paragraphs, not as shape text.
@@ -80,13 +98,18 @@ pub(super) fn refresh(
                 ensure!(visuals.get(parent).is_some(), "visual parent missing");
             }
         }
-        layout
+        let typed = layout
             .sheets
             .entry(identity::page_id(&sheet.fields, si))
-            .or_insert_with(|| LayoutSheet {
-                fields: json!({}),
-                metadata: vec![],
-            })["visuals"] = visuals;
+            .or_insert_with(|| LayoutSheet::new(json!({})));
+        // The drawings the lines join, which the body writes together.
+        typed.diagrams = std::sync::Arc::new(super::diagrams::derive(
+            sheet,
+            &visuals,
+            typed,
+            &operations,
+        )?);
+        typed["visuals"] = visuals;
     }
     Ok(())
 }

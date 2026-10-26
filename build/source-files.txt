@@ -7,6 +7,7 @@ LICENSE
 README.md
 build/source-files.txt
 contracts/agent-reference-schema.json
+contracts/diagram-shapes.json
 contracts/document-schemas.json
 contracts/document-search-schemas.json
 contracts/document-search.sql
@@ -23,6 +24,7 @@ crates/arp4-cli/src/cli.rs
 crates/arp4-cli/src/data.rs
 crates/arp4-cli/src/data/yaml.rs
 crates/arp4-cli/src/document_body.rs
+crates/arp4-cli/src/document_body/diagrams.rs
 crates/arp4-cli/src/document_source.rs
 crates/arp4-cli/src/document_source/encryption.rs
 crates/arp4-cli/src/document_source/package.rs
@@ -47,8 +49,10 @@ crates/arp4-cli/src/document_structure/policy.rs
 crates/arp4-cli/src/document_structure/rebase.rs
 crates/arp4-cli/src/document_structure/relations.rs
 crates/arp4-cli/src/documents/adoption.rs
+crates/arp4-cli/src/documents/diagrams.rs
 crates/arp4-cli/src/documents/diff.rs
 crates/arp4-cli/src/documents/elements.rs
+crates/arp4-cli/src/documents/elements/groups.rs
 crates/arp4-cli/src/documents/export.rs
 crates/arp4-cli/src/documents/export_confirmation.rs
 crates/arp4-cli/src/documents/identity.rs
@@ -96,6 +100,7 @@ crates/arp4-cli/src/excel/visuals.rs
 crates/arp4-cli/src/excel/worksheet.rs
 crates/arp4-cli/src/excel/writeback.rs
 crates/arp4-cli/src/extraction.rs
+crates/arp4-cli/src/extraction/cells.rs
 crates/arp4-cli/src/fonts.rs
 crates/arp4-cli/src/lib.rs
 crates/arp4-cli/src/main.rs

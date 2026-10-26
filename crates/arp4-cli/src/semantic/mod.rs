@@ -1,11 +1,12 @@
 //! Small, source-bound semantic replies; deterministic expansion into the full model.
 pub(crate) use assembly::expand_item;
-pub(crate) use packet::{sources, span};
+pub(crate) use packet::{packet_in, sources, span};
 mod packet;
 use packet::relevant_warnings;
 use packet::source_rows;
 pub use packet::{changes, compact_review, packet, packet_fingerprint};
 mod assembly;
+pub(crate) use assembly::assemble_in;
 pub use assembly::{Reply, assemble};
 mod review_packet;
 pub use review_packet::{
@@ -22,7 +23,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const PROMPT: &str = include_str!("../../../../surface/prompts/semantic.md");
 pub const REVIEW_PROMPT: &str = include_str!("../../../../surface/prompts/semantic-review.md");

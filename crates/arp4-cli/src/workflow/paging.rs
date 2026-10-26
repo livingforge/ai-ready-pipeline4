@@ -59,6 +59,44 @@ fn delivery_len(value: &impl Serialize, format: AgentFormat) -> Result<usize> {
     Ok(json.max(text.len() + 6 * (text.lines().count() + 1) + 32))
 }
 
+/// [`delivery_len`] when it is at most `limit`. Writing the JSON stops once
+/// past the limit, so a value too large to fit costs the limit, not its size.
+fn bounded_len(value: &impl Serialize, format: AgentFormat, limit: usize) -> Result<Option<usize>> {
+    struct Bounded {
+        count: usize,
+        limit: usize,
+    }
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.count += bytes.len();
+            if self.count > self.limit {
+                return Err(io::Error::other("past the limit"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Bounded { count: 0, limit };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => {}
+        Err(error) if error.is_io() && writer.count > limit => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    // Match the store's newline-terminated JSON encoding.
+    let json = writer.count + 1;
+    if json > limit {
+        return Ok(None);
+    }
+    if format == AgentFormat::Json {
+        return Ok(Some(json));
+    }
+    let text = format.encode(value)?;
+    let length = json.max(text.len() + 6 * (text.lines().count() + 1) + 32);
+    Ok((length <= limit).then_some(length))
+}
+
 fn pointer_child(parent: &str, key: &str) -> String {
     format!("{parent}/{}", key.replace('~', "~0").replace('/', "~1"))
 }
@@ -78,7 +116,7 @@ fn visit(
         array_offset: None,
         array_total: None,
     };
-    if delivery_len(&entry, format)? <= fragment_bytes {
+    if bounded_len(&entry, format, fragment_bytes)?.is_some() {
         return emit(&entry);
     }
     match value {
@@ -107,10 +145,10 @@ fn visit(
                 let mut bytes = delivery_len(&chunk, format)?;
                 let mut end = start;
                 while end < values.len() {
-                    let size = delivery_len(&values[end], format)?;
-                    if bytes + size > fragment_bytes {
+                    let room = fragment_bytes.saturating_sub(bytes);
+                    let Some(size) = bounded_len(&values[end], format, room)? else {
                         break;
-                    }
+                    };
                     bytes += size;
                     end += 1;
                 }
@@ -365,6 +403,32 @@ pub(super) fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_lengths_are_delivery_lengths_within_the_limit() {
+        let values = [
+            json!(null),
+            json!("x".repeat(300)),
+            json!({"a":[1, 2, {"b":"引用\"\n".repeat(40)}],"c":{"d":[[], {}]}}),
+            json!(
+                (0..60)
+                    .map(|i| json!({"i":i,"t":"t".repeat(i)}))
+                    .collect::<Vec<_>>()
+            ),
+        ];
+        for format in [AgentFormat::Json, AgentFormat::Toon] {
+            for value in &values {
+                let length = delivery_len(value, format).unwrap();
+                for limit in [0, 1, length - 1, length, length + 1, 40, 400, 4000] {
+                    assert_eq!(
+                        bounded_len(value, format, limit).unwrap(),
+                        (length <= limit).then_some(length),
+                        "{limit}"
+                    );
+                }
+            }
+        }
+    }
 
     /// A page laid out and selected in one step, as a read without a cache.
     fn page(

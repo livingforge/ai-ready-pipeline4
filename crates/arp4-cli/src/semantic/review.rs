@@ -59,6 +59,11 @@ pub fn apply_reviews(
     let basis = ReviewBasis::new(input, &model, catalog);
     let mut combined = Vec::new();
     if let Some(previous) = previous {
+        // The new reviews of each packet, in the order given.
+        let mut by_packet = BTreeMap::<&str, Vec<&Review>>::new();
+        for review in &reviews {
+            by_packet.entry(&review.packet).or_default().push(review);
+        }
         for saved in previous.replies {
             let mut review: Review = serde_json::from_value(saved["reply"].clone())?;
             if let Ok(basis) = &basis
@@ -69,20 +74,20 @@ pub fn apply_reviews(
                 )
                 && packet["packet"] == review.packet
             {
-                let incoming: Vec<_> = reviews
-                    .iter()
-                    .filter(|r| r.packet == review.packet)
-                    .collect();
+                let incoming = by_packet
+                    .get(review.packet.as_str())
+                    .map_or(&[][..], Vec::as_slice);
                 if !incoming.is_empty() {
                     if review.document.is_none() {
                         continue;
                     }
-                    let replaced: BTreeSet<_> = incoming
+                    let replaced: BTreeSet<&str> = incoming
                         .iter()
                         .flat_map(|r| r.audits.iter().flat_map(|g| g.sources.iter()))
+                        .map(String::as_str)
                         .collect();
                     for group in &mut review.audits {
-                        group.sources.retain(|s| !replaced.contains(s));
+                        group.sources.retain(|s| !replaced.contains(s.as_str()));
                     }
                     review.audits.retain(|g| !g.sources.is_empty());
                     // Only a complete new review of this packet can resolve its saved findings.
@@ -90,7 +95,7 @@ pub fn apply_reviews(
                         .as_array()
                         .unwrap()
                         .iter()
-                        .all(|r| replaced.iter().any(|s| r[0] == **s))
+                        .all(|r| r[0].as_str().is_some_and(|s| replaced.contains(s)))
                     {
                         review.findings.clear();
                     }
@@ -114,6 +119,10 @@ pub fn apply_reviews(
     let mut global = false;
     let mut findings = Vec::new();
     let mut replies = Vec::new();
+    // The sources of each reviewed document, and the IDs of those on each
+    // sheet, made once for all the reviews of that document or sheet.
+    let mut documents = HashMap::<String, Vec<&Source>>::new();
+    let mut sheets = HashMap::<(String, String), HashSet<&str>>::new();
     for (review, reviewer) in combined {
         let basis = match &basis {
             Ok(basis) => basis,
@@ -143,7 +152,27 @@ pub fn apply_reviews(
             global = true;
             continue;
         }
-        let rows = sources(input, review.document.as_deref())?;
+        let document = review.document.clone().unwrap();
+        let rows = match documents.entry(document.clone()) {
+            std::collections::hash_map::Entry::Occupied(rows) => rows.into_mut(),
+            std::collections::hash_map::Entry::Vacant(rows) => {
+                rows.insert(sources(input, Some(&document))?)
+            }
+        };
+        let on_sheet = review.sheet.as_ref().map(|sheet| {
+            &*sheets
+                .entry((document.clone(), sheet.clone()))
+                .or_insert_with(|| {
+                    rows.iter()
+                        .filter(|s| s.context.as_ref().is_some_and(|c| &c.sheet == sheet))
+                        .map(|s| s.id.as_str())
+                        .collect()
+                })
+        });
+        let scope: Option<HashSet<&str>> = review
+            .scope
+            .as_ref()
+            .map(|scope| scope.sources.iter().map(String::as_str).collect());
         for group in review.audits {
             ensure!(
                 !group.sources.is_empty() && !group.rationale.trim().is_empty(),
@@ -151,20 +180,15 @@ pub fn apply_reviews(
             );
             for alias in group.sources {
                 ensure!(
-                    review
-                        .scope
+                    scope
                         .as_ref()
-                        .is_none_or(|scope| scope.sources.contains(&alias)),
+                        .is_none_or(|scope| scope.contains(alias.as_str())),
                     "audit source outside review scope"
                 );
-                let evidence = span(&json!(alias), &rows)?;
+                let evidence = span(&json!(alias), rows)?;
                 let source = evidence["source"].as_str().unwrap().to_owned();
                 ensure!(
-                    review
-                        .sheet
-                        .as_ref()
-                        .is_none_or(|sheet| rows.iter().any(|s| s.id == source
-                            && s.context.as_ref().is_some_and(|c| &c.sheet == sheet))),
+                    on_sheet.is_none_or(|ids| ids.contains(source.as_str())),
                     "audit source outside review sheet"
                 );
                 ensure!(seen.insert(source.clone()), "source reviewed twice");

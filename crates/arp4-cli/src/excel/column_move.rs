@@ -90,6 +90,14 @@ impl Workbook {
         ensure!(shapes.is_empty(), "column move with shapes is unsupported");
         let edits = self.formula_edits(formulas)?;
         let mut patched = BTreeMap::new();
+        let shared = SharedStrings::new(&self.parts);
+        // The first change listed for a cell is the one written.
+        let mut by_cell = BTreeMap::new();
+        for change in changes {
+            if let (Some(sheet), Some(cell)) = (change["sheet"].as_str(), change["cell"].as_str()) {
+                by_cell.entry((sheet, cell)).or_insert(change);
+            }
+        }
         for sheet in &self.sheets {
             let name = string(&sheet["name"])?;
             let part = string(&sheet["part"])?;
@@ -108,12 +116,9 @@ impl Workbook {
                     let address =
                         map_coordinate(name, old, operations)?.context("move deleted a cell")?;
                     row_changed |= address != old;
-                    let mut raw = if let Some(change) = changes
-                        .iter()
-                        .find(|v| v["sheet"] == name && v["cell"] == address)
-                    {
+                    let mut raw = if let Some(change) = by_cell.get(&(name, address.as_str())) {
                         row_changed = true;
-                        render_cell(source, cell, &address, &change["after"], &self.parts)?
+                        render_cell(source, cell, &address, &change["after"], &shared)?
                     } else if address == old {
                         source[cell.range()].to_owned()
                     } else {
@@ -303,13 +308,13 @@ impl Workbook {
                     .context("move deleted cell")?;
                 let written = reread.cells[sheet_index]
                     .iter()
-                    .find(|c| c.address == address)
+                    .find(|c| *c.address == *address)
                     .context("moved cell missing")?;
                 if let Some(formula) = &cell.formula {
                     let original = edits
                         .get(name)
-                        .and_then(|v| v.get(&cell.address))
-                        .unwrap_or(formula);
+                        .and_then(|v| v.get(&*cell.address))
+                        .map_or(&**formula, String::as_str);
                     ensure!(
                         written.formula.as_deref()
                             == Some(rewrite_references(original, Some(name), operations)?.as_str()),

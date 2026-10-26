@@ -479,8 +479,29 @@ struct StyleFormats<'a> {
     formats: Vec<String>,
     font_count: usize,
     format_count: usize,
+    /// The first index of each font and format.
+    font_index: BTreeMap<String, usize>,
+    format_index: BTreeMap<String, usize>,
     /// (font index, edit) to the index of the edited font.
     edited_fonts: BTreeMap<(usize, String), usize>,
+}
+
+/// The index of the first `item` in `items`, added at the end if there is none.
+fn index_of(items: &mut Vec<String>, index: &mut BTreeMap<String, usize>, item: String) -> usize {
+    if let Some(found) = index.get(&item) {
+        return *found;
+    }
+    index.insert(item.clone(), items.len());
+    items.push(item);
+    items.len() - 1
+}
+
+fn first_indices(items: &[String]) -> BTreeMap<String, usize> {
+    let mut index = BTreeMap::new();
+    for (position, item) in items.iter().enumerate() {
+        index.entry(item.clone()).or_insert(position);
+    }
+    index
 }
 
 impl<'a> StyleFormats<'a> {
@@ -501,6 +522,8 @@ impl<'a> StyleFormats<'a> {
             source,
             font_count: fonts.len(),
             format_count: formats.len(),
+            font_index: first_indices(&fonts),
+            format_index: first_indices(&formats),
             fonts,
             formats,
             edited_fonts: BTreeMap::new(),
@@ -533,13 +556,7 @@ impl<'a> StyleFormats<'a> {
                     .first_element_child()
                     .context("font element")?;
                 let edited = crate::fonts::edited_excel_font(&wrapped, element, "name", edit)?;
-                let index = match self.fonts.iter().position(|f| *f == edited) {
-                    Some(index) => index,
-                    None => {
-                        self.fonts.push(edited);
-                        self.fonts.len() - 1
-                    }
-                };
+                let index = index_of(&mut self.fonts, &mut self.font_index, edited);
                 self.edited_fonts.insert(key, index);
                 index
             }
@@ -547,14 +564,7 @@ impl<'a> StyleFormats<'a> {
         let mut opening = set_xml_attribute(opening, "fontId", &new_font.to_string())?;
         opening = set_xml_attribute(&opening, "applyFont", "1")?;
         let edited = format!("{opening}{rest}");
-        Ok(match self.formats.iter().position(|f| *f == edited) {
-            Some(index) => index,
-            None => {
-                self.formats.push(edited);
-                self.formats.len() - 1
-            }
-        }
-        .to_string())
+        Ok(index_of(&mut self.formats, &mut self.format_index, edited).to_string())
     }
 
     /// The styles part with the added fonts and formats.
@@ -690,4 +700,39 @@ fn edited_runs(source: &str, container: Node<'_, '_>, edit: &FontEdit) -> Result
         }
     }
     splice(&source[container.range()], edits, "rich text font")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edited_formats_and_fonts_take_the_first_identical_one() {
+        let styles = |fonts: &[&str], formats: &[&str]| {
+            format!(
+                r#"<styleSheet xmlns="{NS}"><fonts count="{}">{}</fonts><cellXfs count="{}">{}</cellXfs></styleSheet>"#,
+                fonts.len(),
+                fonts.concat(),
+                formats.len(),
+                formats.concat()
+            )
+        };
+        let edit = FontEdit::parse(&json!({"size": 12})).unwrap();
+        let font = r#"<font><sz val="11"/></font>"#;
+        let plain = styles(&[font], &[r#"<xf fontId="0"/>"#, r#"<xf fontId="0"/>"#]);
+        let mut formats = StyleFormats::new(&plain).unwrap();
+        assert_eq!(formats.with_font(0, &edit).unwrap(), "2");
+        assert_eq!(formats.with_font(1, &edit).unwrap(), "2");
+        assert_eq!((formats.fonts.len(), formats.formats.len()), (2, 3));
+        let (edited_font, edited_format) = (formats.fonts[1].clone(), formats.formats[2].clone());
+        // Existing copies of the edited font and format are taken, the first of each.
+        let listed = styles(
+            &[font, &edited_font, &edited_font],
+            &[r#"<xf fontId="0"/>"#, &edited_format, &edited_format],
+        );
+        let mut formats = StyleFormats::new(&listed).unwrap();
+        assert_eq!(formats.with_font(0, &edit).unwrap(), "1");
+        assert_eq!((formats.fonts.len(), formats.formats.len()), (3, 3));
+        assert_eq!(formats.finish().unwrap(), listed);
+    }
 }

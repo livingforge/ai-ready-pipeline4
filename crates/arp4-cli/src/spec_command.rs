@@ -368,7 +368,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
             root,
             out,
         } => {
-            let mut input = spec::capture(&extraction)?;
+            let mut input = spec::capture(&extraction, root.as_deref())?;
             if !document.is_empty() {
                 let root = dunce::canonicalize(root.context("--root required with --document")?)?;
                 let store = arp4_cli::documents::Store::open(&root)?;

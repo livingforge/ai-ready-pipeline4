@@ -1,41 +1,156 @@
 use super::*;
-use std::{borrow::Cow, collections::HashSet, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashSet, hash_map},
+    fmt::Write as _,
+};
 
-/// A mapping entry. The default entries of an extraction, one or two for
-/// every cell, are kept as what they are made from rather than as JSON, which
-/// would take a dozen allocated strings per cell; they are read through the
-/// accessors, or as JSON with [`Entry::json`]. Entries stored in mappings.yml
-/// or generated for new content are JSON.
-pub(crate) enum Entry {
-    Json(Value),
+/// The complete mapping entries of an inspection, in order. The default
+/// entries of an extraction, one or two for every cell, are kept as places in
+/// it rather than as JSON, which would take a dozen allocated strings per
+/// cell: an [`EntryRef`] reads their texts from the extraction they are of,
+/// from [`Entries::names`] those it holds none of, and the rest from
+/// [`DEFAULT_TEXTS`]. Entries stored in mappings.yml or generated for new
+/// content are JSON.
+#[derive(Default)]
+pub(crate) struct Entries {
+    order: Vec<Slot>,
+    /// The JSON entries the order names by number: those stored in
+    /// mappings.yml, whether or not they are kept, and those generated.
+    json: Vec<Value>,
+    /// The sheets of the extraction, by number.
+    sheets: Vec<SheetNames>,
+    /// The names of default entries the extraction holds none of, each
+    /// written once: the rows of cells (`r<number>`), and the fields of
+    /// formulas (`<cell ID>-formula`) and of shape texts
+    /// (`shape-<drawing ID>-text`), whose rows they begin with.
+    names: String,
+}
+
+/// The page and name of a sheet of the extraction.
+struct SheetNames {
+    page: Box<str>,
+    name: Box<str>,
+    /// Whether the page, block and field of each default entry of the sheet
+    /// are no other default entry's: its page is no other sheet's, and the
+    /// IDs of its cells and the keys of its shapes are each their own.
+    unique: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
     Default(DefaultEntry),
+    /// A JSON entry, by its number in [`Entries::json`].
+    Json(u32),
 }
 
-/// A default entry of an extraction cell, formula, shape text or block. A
-/// large workbook has one per cell: the entry of a cell shares its ID and
-/// address with the extraction cell, and its row and column names with the
-/// other cells of its row and column, rather than holding strings of its own.
-pub(crate) struct DefaultEntry {
-    page: Arc<str>,
-    sheet: Arc<str>,
-    block: &'static str,
-    field: Option<Arc<str>>,
-    reason: &'static str,
-    writeback: &'static str,
-    target: DefaultTarget,
-    position: Option<DefaultPosition>,
+/// A default entry of an extraction cell, formula, shape text or block, by
+/// the sheet and the cell or drawing it is of. Its block, reason and
+/// writeback are numbers of [`DEFAULT_TEXTS`].
+#[derive(Clone, Copy)]
+struct DefaultEntry {
+    sheet: u32,
+    /// The cell of a cell or formula entry, the drawing of a shape entry.
+    item: u32,
+    /// Where its name is in [`Entries::names`]: the row of a cell entry, the
+    /// field of a formula or shape entry.
+    name: (u32, u32),
+    kind: DefaultKind,
+    block: Text,
+    reason: Text,
+    writeback: Text,
 }
 
-enum DefaultTarget {
-    None,
-    Cell(Arc<str>),
-    Shape(Box<str>),
+#[derive(Clone, Copy, PartialEq)]
+enum DefaultKind {
+    Cell,
+    Formula,
+    Shape,
+    Block,
 }
 
-struct DefaultPosition {
-    row: Arc<str>,
-    column: Arc<str>,
-    kind: &'static str,
+/// The texts of default entries: their blocks, writebacks and reasons. An
+/// entry holds each of its texts by its number in this list.
+const DEFAULT_TEXTS: [&str; 18] = [
+    "table-1",
+    "formulas",
+    "shapes",
+    "extraction-notes",
+    "cell",
+    "excluded",
+    "formula",
+    "shape",
+    "配列数式・スピルの計算結果のため書き戻し対象外",
+    "データテーブルの計算結果のため書き戻し対象外",
+    "ピボットテーブルの集計結果のため書き戻し対象外",
+    "結合セルの左上以外のため書き戻し対象外",
+    "原本から転記",
+    "数式原文。配列数式・スピル・データテーブル・結合で隠れたセルのため書き戻し対象外",
+    "数式原文。変更すると書き戻しで数式を置き換え、Excelで再計算",
+    "図形の文字",
+    "抽出範囲の申告",
+    "表の構造",
+];
+
+/// A text of [`DEFAULT_TEXTS`], by its number.
+#[derive(Clone, Copy)]
+struct Text(u8);
+
+impl Text {
+    fn of(text: &str) -> Self {
+        let number = DEFAULT_TEXTS
+            .iter()
+            .position(|listed| *listed == text)
+            .unwrap_or_else(|| panic!("{text:?} is no text of default entries"));
+        Self(number as u8)
+    }
+
+    fn get(self) -> &'static str {
+        DEFAULT_TEXTS[usize::from(self.0)]
+    }
+}
+
+impl Entries {
+    pub(super) fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// The entry numbered `index`, its defaults read from `extraction`, the
+    /// one they were made from.
+    pub(super) fn get<'a>(&'a self, index: usize, extraction: &'a Extraction) -> EntryRef<'a> {
+        EntryRef {
+            entries: self,
+            extraction,
+            slot: self.order[index],
+        }
+    }
+
+    /// The entries in order, as [`Entries::get`] gives them.
+    pub(super) fn iter<'a>(
+        &'a self,
+        extraction: &'a Extraction,
+    ) -> impl ExactSizeIterator<Item = EntryRef<'a>> + 'a {
+        self.order.iter().map(move |&slot| EntryRef {
+            entries: self,
+            extraction,
+            slot,
+        })
+    }
+
+    fn push_json(&mut self, entry: Value) -> Result<()> {
+        self.order.push(Slot::Json(u32::try_from(self.json.len())?));
+        self.json.push(entry);
+        Ok(())
+    }
+}
+
+/// A mapping entry of [`Entries`], read with the extraction its default
+/// entries are of.
+#[derive(Clone, Copy)]
+pub(crate) struct EntryRef<'a> {
+    entries: &'a Entries,
+    extraction: &'a Extraction,
+    slot: Slot,
 }
 
 /// The position of a table entry: its row and column keys and the type of
@@ -46,124 +161,184 @@ pub(super) struct EntryPosition<'a> {
     pub kind: &'a str,
 }
 
-impl Entry {
-    pub(super) fn page(&self) -> Result<&str> {
-        match self {
-            Self::Json(e) => string(&e["page"]),
-            Self::Default(d) => Ok(&d.page),
+impl<'a> EntryRef<'a> {
+    fn sheet(self, d: DefaultEntry) -> &'a SheetNames {
+        &self.entries.sheets[d.sheet as usize]
+    }
+
+    fn cell(self, d: DefaultEntry) -> Cell<'a> {
+        self.extraction.sheets[d.sheet as usize]
+            .cells
+            .get(d.item as usize)
+            .expect("the cell of a default entry is one of its sheet")
+    }
+
+    fn drawing(self, d: DefaultEntry) -> &'a Value {
+        &self.extraction.sheets[d.sheet as usize]["drawings"][d.item as usize]
+    }
+
+    fn name(self, d: DefaultEntry) -> &'a str {
+        let (start, end) = d.name;
+        &self.entries.names[start as usize..end as usize]
+    }
+
+    fn json_entry(self) -> Option<&'a Value> {
+        match self.slot {
+            Slot::Json(index) => Some(&self.entries.json[index as usize]),
+            Slot::Default(_) => None,
         }
     }
 
-    pub(super) fn block(&self) -> Result<&str> {
-        match self {
-            Self::Json(e) => string(&e["block"]),
-            Self::Default(d) => Ok(d.block),
+    pub(super) fn page(self) -> Result<&'a str> {
+        match self.slot {
+            Slot::Json(_) => string(&self.json_entry().expect("a JSON entry")["page"]),
+            Slot::Default(d) => Ok(&self.sheet(d).page),
+        }
+    }
+
+    pub(super) fn block(self) -> Result<&'a str> {
+        match self.slot {
+            Slot::Json(_) => string(&self.json_entry().expect("a JSON entry")["block"]),
+            Slot::Default(d) => Ok(d.block.get()),
         }
     }
 
     /// The field, `None` when it is null (the entry of a whole block).
-    pub(super) fn field(&self) -> Option<&str> {
-        match self {
-            Self::Json(e) => e["field"].as_str(),
-            Self::Default(d) => d.field.as_deref(),
+    pub(super) fn field(self) -> Option<&'a str> {
+        match self.slot {
+            Slot::Json(_) => self.json_entry().expect("a JSON entry")["field"].as_str(),
+            Slot::Default(d) => match d.kind {
+                DefaultKind::Cell => Some(self.cell(d).id()),
+                DefaultKind::Formula | DefaultKind::Shape => Some(self.name(d)),
+                DefaultKind::Block => None,
+            },
         }
     }
 
-    pub(super) fn field_is_null(&self) -> bool {
-        match self {
-            Self::Json(e) => e["field"].is_null(),
-            Self::Default(d) => d.field.is_none(),
+    pub(super) fn field_is_null(self) -> bool {
+        match self.slot {
+            Slot::Json(_) => self.json_entry().expect("a JSON entry")["field"].is_null(),
+            Slot::Default(d) => d.kind == DefaultKind::Block,
         }
     }
 
-    pub(super) fn reason(&self) -> Result<&str> {
-        match self {
-            Self::Json(e) => string(&e["reason"]),
-            Self::Default(d) => Ok(d.reason),
+    pub(super) fn reason(self) -> Result<&'a str> {
+        match self.slot {
+            Slot::Json(_) => string(&self.json_entry().expect("a JSON entry")["reason"]),
+            Slot::Default(d) => Ok(d.reason.get()),
         }
     }
 
-    pub(super) fn writeback(&self) -> Result<&str> {
-        match self {
-            Self::Json(e) => string(&e["writeback"]),
-            Self::Default(d) => Ok(d.writeback),
+    pub(super) fn writeback(self) -> Result<&'a str> {
+        match self.slot {
+            Slot::Json(_) => string(&self.json_entry().expect("a JSON entry")["writeback"]),
+            Slot::Default(d) => Ok(d.writeback.get()),
         }
     }
 
-    pub(super) fn target(&self) -> Result<Option<MappingTarget<'_>>> {
-        match self {
-            Self::Json(e) => mapping_target(&e["target"]),
-            Self::Default(d) => Ok(match &d.target {
-                DefaultTarget::None => None,
-                DefaultTarget::Cell(cell) => Some(MappingTarget::Cell {
-                    sheet: &d.sheet,
-                    cell,
-                }),
-                DefaultTarget::Shape(shape) => Some(MappingTarget::Shape {
-                    sheet: &d.sheet,
-                    shape,
-                }),
+    pub(super) fn target(self) -> Result<Option<MappingTarget<'a>>> {
+        let d = match self.slot {
+            Slot::Json(_) => {
+                return mapping_target(&self.json_entry().expect("a JSON entry")["target"]);
+            }
+            Slot::Default(d) => d,
+        };
+        let sheet = &self.sheet(d).name;
+        Ok(match d.kind {
+            DefaultKind::Cell | DefaultKind::Formula => Some(MappingTarget::Cell {
+                sheet,
+                cell: self.cell(d).address(),
             }),
-        }
+            DefaultKind::Shape => Some(MappingTarget::Shape {
+                sheet,
+                shape: string(&self.drawing(d)["id"])?,
+            }),
+            DefaultKind::Block => None,
+        })
     }
 
     /// The position of a table entry, `None` for an entry without one.
-    pub(super) fn position(&self) -> Result<Option<EntryPosition<'_>>> {
-        match self {
-            Self::Json(e) => {
-                let Some(position) = e["position"].as_object() else {
+    pub(super) fn position(self) -> Result<Option<EntryPosition<'a>>> {
+        let d = match self.slot {
+            Slot::Json(_) => {
+                let Some(position) =
+                    self.json_entry().expect("a JSON entry")["position"].as_object()
+                else {
                     return Ok(None);
                 };
-                Ok(Some(EntryPosition {
+                return Ok(Some(EntryPosition {
                     row: string(&position["row"])?,
                     column: string(&position["column"])?,
                     kind: string(&position["type"])?,
-                }))
+                }));
             }
-            Self::Default(d) => Ok(d.position.as_ref().map(|p| EntryPosition {
-                row: &p.row,
-                column: &p.column,
-                kind: p.kind,
-            })),
+            Slot::Default(d) => d,
+        };
+        Ok(match d.kind {
+            DefaultKind::Cell => {
+                let cell = self.cell(d);
+                Some(EntryPosition {
+                    row: self.name(d),
+                    column: cell
+                        .address()
+                        .trim_end_matches(|c: char| c.is_ascii_digit()),
+                    kind: cell.value().kind(),
+                })
+            }
+            DefaultKind::Formula => Some(EntryPosition {
+                row: self.cell(d).id(),
+                column: "formula",
+                kind: "string",
+            }),
+            DefaultKind::Shape => {
+                let field = self.name(d);
+                Some(EntryPosition {
+                    row: &field[..field.len() - SHAPE_FIELD.len()],
+                    column: "text",
+                    kind: "string",
+                })
+            }
+            DefaultKind::Block => None,
+        })
+    }
+
+    /// Whether the page, block and field of the entry are no other entry's:
+    /// those of a default entry whose sheet makes them its own. A stored or
+    /// generated entry may repeat another's, which is checked by them.
+    pub(super) fn unique(self) -> bool {
+        match self.slot {
+            Slot::Json(_) => false,
+            Slot::Default(d) => self.sheet(d).unique,
         }
     }
 
-    /// The page, block and field that key the entry's value.
-    pub(super) fn key(&self) -> Result<(String, String, String)> {
-        Ok((
-            self.page()?.into(),
-            self.block()?.into(),
-            self.field().unwrap_or("").into(),
-        ))
-    }
-
     /// The entry as mappings.yml writes it.
-    pub(super) fn json(&self) -> Cow<'_, Value> {
-        let d = match self {
-            Self::Json(e) => return Cow::Borrowed(e),
-            Self::Default(d) => d,
+    pub(super) fn json(self) -> Cow<'a, Value> {
+        let d = match self.slot {
+            Slot::Json(_) => return Cow::Borrowed(self.json_entry().expect("a JSON entry")),
+            Slot::Default(d) => d,
         };
-        let target = match &d.target {
-            DefaultTarget::None => Value::Null,
-            DefaultTarget::Cell(cell) => json!({"sheet":&*d.sheet,"cell":&**cell}),
-            DefaultTarget::Shape(shape) => json!({"sheet":&*d.sheet,"shape":&**shape}),
+        let sheet = &*self.sheet(d).name;
+        let target = match d.kind {
+            DefaultKind::Cell | DefaultKind::Formula => {
+                json!({"sheet":sheet,"cell":self.cell(d).address()})
+            }
+            DefaultKind::Shape => json!({"sheet":sheet,"shape":self.drawing(d)["id"]}),
+            DefaultKind::Block => Value::Null,
         };
-        let mut entry = json!({"page":&*d.page,"block":d.block,"field":d.field.as_deref(),
-            "reason":d.reason,"target":target,"writeback":d.writeback});
-        if let Some(p) = &d.position {
-            entry["position"] = json!({"row":&*p.row,"column":&*p.column,"type":p.kind});
+        let mut entry = json!({"page":&*self.sheet(d).page,"block":d.block.get(),
+            "field":self.field(),"reason":d.reason.get(),"target":target,
+            "writeback":d.writeback.get()});
+        if let Ok(Some(p)) = self.position() {
+            entry["position"] = json!({"row":p.row,"column":p.column,"type":p.kind});
         }
         Cow::Owned(entry)
     }
 }
 
-pub(super) fn key(entry: &Value) -> Result<(String, String, String)> {
-    Ok((
-        string(&entry["page"])?.into(),
-        string(&entry["block"])?.into(),
-        entry["field"].as_str().unwrap_or("").into(),
-    ))
-}
+/// What the field of a shape text entry adds to its row, the shape's key.
+const SHAPE_FIELD: &str = "-text";
+
 pub(super) fn target(value: &Value) -> Result<(&str, &str)> {
     Ok((string(&value["sheet"])?, string(&value["cell"])?))
 }
@@ -298,50 +473,56 @@ fn inserted_position(
 }
 /// The mapping entries import derives from `extraction`: one per cell and formula,
 /// and one per page block. mappings.yml stores only entries that differ from these.
-pub(super) fn default_entries(extraction: &Extraction) -> Result<Vec<Entry>> {
+/// The list has room for `more` entries after them.
+pub(super) fn default_entries(extraction: &Extraction, more: usize) -> Result<Entries> {
     let native_text = extraction["parser"]
         .as_str()
         .and_then(|parser| parser.split(';').nth(1))
         == Some("native-text/1");
-    // An entry per cell, made as large as that at once: grown by doubling,
-    // the list of a large workbook held up to twice its entries.
-    let mut entries = Vec::with_capacity(
+    // An entry per cell and formula, made as large as that at once: grown by
+    // doubling, the list of a large workbook held up to twice its entries.
+    let mut order = Vec::with_capacity(
         extraction
             .sheets
             .iter()
-            .map(|sheet| sheet.cells.len() + 4)
-            .sum(),
+            .map(|sheet| {
+                let formulas = sheet.cells.iter().filter(|c| c.kind() == CellKind::Formula);
+                let drawings = sheet["drawings"].as_array().map_or(0, Vec::len);
+                sheet.cells.len() + formulas.count() + drawings + 4
+            })
+            .sum::<usize>()
+            + more,
     );
+    let mut names = String::new();
+    let mut sheets: Vec<SheetNames> = Vec::with_capacity(extraction.sheets.len());
     for (i, sheet) in extraction.sheets.iter().enumerate() {
-        let page: Arc<str> = match sheet["page"].as_str() {
+        let page: Box<str> = match sheet["page"].as_str() {
             Some(page) => page.into(),
             None => format!("sheet-{}", i + 1).into(),
         };
-        let name: Arc<str> = string(&sheet["name"])?.into();
-        let entry = |block, field: Option<Arc<str>>, reason, writeback, target, position| {
-            Entry::Default(DefaultEntry {
-                page: page.clone(),
-                sheet: name.clone(),
-                block,
-                field,
-                reason,
-                writeback,
-                target,
-                position,
+        let name: Box<str> = string(&sheet["name"])?.into();
+        let number = u32::try_from(i)?;
+        let entry = |item, name, kind, block, reason, writeback| {
+            Slot::Default(DefaultEntry {
+                sheet: number,
+                item,
+                name,
+                kind,
+                block: Text::of(block),
+                reason: Text::of(reason),
+                writeback: Text::of(writeback),
             })
         };
-        // The names of the rows and columns of the cells, each made once.
-        let mut rows: HashMap<u32, Arc<str>> = HashMap::new();
-        let mut columns: HashMap<&str, Arc<str>> = HashMap::new();
-        let (formula, text): (Arc<str>, Arc<str>) = ("formula".into(), "text".into());
+        // The names of the rows of the cells, each written once.
+        let mut rows: HashMap<u32, (u32, u32)> = HashMap::new();
         let computed_ranges = excel::ComputedRanges::new(&sheet.fields)?;
         let merges = excel::Merges::new(&sheet["merges"])?;
         let cells = &sheet.cells;
         let mut has_formulas = false;
-        for c in cells {
-            let address = &*c.address;
+        for (item, c) in cells.iter().enumerate() {
+            let item = u32::try_from(item)?;
+            let address = c.address();
             let (_, row) = excel::coordinate(address)?;
-            let column = address.trim_end_matches(|c: char| c.is_ascii_digit());
             let computed = computed_ranges.find(address)?.map(|(kind, _)| kind);
             let hidden = merges.hiding(address)?.is_some();
             let reason = match computed {
@@ -354,28 +535,23 @@ pub(super) fn default_entries(extraction: &Extraction) -> Result<Vec<Entry>> {
             let excluded = hidden
                 || computed.is_some()
                 || native_text
-                || c.kind == CellKind::Formula
-                || c.kind == CellKind::Error;
-            let id = &*c.id;
-            entries.push(entry(
+                || c.kind() == CellKind::Formula
+                || c.kind() == CellKind::Error;
+            let row = match rows.entry(row) {
+                hash_map::Entry::Occupied(name) => *name.get(),
+                hash_map::Entry::Vacant(name) => {
+                    *name.insert(written(&mut names, format_args!("r{row}"))?)
+                }
+            };
+            order.push(entry(
+                item,
+                row,
+                DefaultKind::Cell,
                 "table-1",
-                Some(c.id.clone()),
                 reason,
                 if excluded { "excluded" } else { "cell" },
-                DefaultTarget::Cell(c.address.clone()),
-                Some(DefaultPosition {
-                    row: rows
-                        .entry(row)
-                        .or_insert_with(|| format!("r{row}").into())
-                        .clone(),
-                    column: columns
-                        .entry(column)
-                        .or_insert_with(|| column.into())
-                        .clone(),
-                    kind: kind(&c.value),
-                }),
             ));
-            if c.kind == CellKind::Formula {
+            if c.kind() == CellKind::Formula {
                 has_formulas = true;
                 // The formula of an array, spill or data table spans its range, and
                 // one hidden by a merge is not shown; those stay as they are.
@@ -390,62 +566,89 @@ pub(super) fn default_entries(extraction: &Extraction) -> Result<Vec<Entry>> {
                         "formula",
                     )
                 };
-                entries.push(entry(
+                let field = written(&mut names, format_args!("{}-formula", c.id()))?;
+                order.push(entry(
+                    item,
+                    field,
+                    DefaultKind::Formula,
                     "formulas",
-                    Some(format!("{id}-formula").into()),
                     reason,
                     writeback,
-                    DefaultTarget::Cell(c.address.clone()),
-                    Some(DefaultPosition {
-                        row: c.id.clone(),
-                        column: formula.clone(),
-                        kind: "string",
-                    }),
                 ));
             }
         }
-        let mut has_shapes = false;
-        for (key, drawing) in shape_texts(&sheet.fields)? {
-            has_shapes = true;
-            entries.push(entry(
+        let mut shapes = HashSet::new();
+        let mut unique_shapes = true;
+        for (item, drawing) in sheet["drawings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let Some(key) = shape_key(drawing)? else {
+                continue;
+            };
+            let field = written(&mut names, format_args!("{key}{SHAPE_FIELD}"))?;
+            unique_shapes &= shapes.insert(key);
+            order.push(entry(
+                u32::try_from(item)?,
+                field,
+                DefaultKind::Shape,
                 "shapes",
-                Some(format!("{key}-text").into()),
                 "図形の文字",
                 if native_text { "excluded" } else { "shape" },
-                DefaultTarget::Shape(string(&drawing["id"])?.into()),
-                Some(DefaultPosition {
-                    row: key.into(),
-                    column: text.clone(),
-                    kind: "string",
-                }),
             ));
         }
-        entries.push(entry(
+        order.push(entry(
+            0,
+            (0, 0),
+            DefaultKind::Block,
             "extraction-notes",
-            None,
             "抽出範囲の申告",
             "excluded",
-            DefaultTarget::None,
-            None,
         ));
         for (block, present) in [
             ("table-1", !cells.is_empty()),
             ("formulas", has_formulas),
-            ("shapes", has_shapes),
+            ("shapes", !shapes.is_empty()),
         ] {
             if present {
-                entries.push(entry(
+                order.push(entry(
+                    0,
+                    (0, 0),
+                    DefaultKind::Block,
                     block,
-                    None,
                     "表の構造",
                     "excluded",
-                    DefaultTarget::None,
-                    None,
                 ));
             }
         }
+        // The IDs of the cells in order, each once, and none the empty field
+        // of a block.
+        let mut ids: Vec<&str> = cells.iter().map(|c| c.id()).collect();
+        ids.sort_unstable();
+        let mut unique = unique_shapes
+            && ids.first() != Some(&"")
+            && ids.windows(2).all(|pair| pair[0] != pair[1]);
+        for other in sheets.iter_mut().filter(|other| other.page == page) {
+            other.unique = false;
+            unique = false;
+        }
+        sheets.push(SheetNames { page, name, unique });
     }
-    Ok(entries)
+    Ok(Entries {
+        order,
+        json: vec![],
+        sheets,
+        names: crate::data::exact_text(names),
+    })
+}
+
+/// Writes `text` at the end of `names`, giving where it is.
+fn written(names: &mut String, text: std::fmt::Arguments<'_>) -> Result<(u32, u32)> {
+    let start = u32::try_from(names.len())?;
+    names.write_fmt(text)?;
+    Ok((start, u32::try_from(names.len())?))
 }
 
 /// The shapes of an Excel sheet that hold text, by their content key
@@ -454,19 +657,27 @@ pub(super) fn default_entries(extraction: &Extraction) -> Result<Vec<Entry>> {
 pub(super) fn shape_texts(sheet: &Value) -> Result<Vec<(String, &Value)>> {
     let mut shapes = vec![];
     for drawing in sheet["drawings"].as_array().into_iter().flatten() {
-        if drawing["anchor"]["kind"] != "slide"
-            && drawing["text"]
-                .as_str()
-                .is_some_and(|text| !text.is_empty())
-        {
-            let id = string(&drawing["id"])?;
-            let (_, raw) = id
-                .rsplit_once('#')
-                .context("shape ID without drawing part")?;
-            shapes.push((format!("shape-{raw}"), drawing));
+        if let Some(key) = shape_key(drawing)? {
+            shapes.push((key, drawing));
         }
     }
     Ok(shapes)
+}
+
+/// The content key of a drawing of [`shape_texts`], none for one it leaves out.
+fn shape_key(drawing: &Value) -> Result<Option<String>> {
+    if drawing["anchor"]["kind"] == "slide"
+        || !drawing["text"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    {
+        return Ok(None);
+    }
+    let id = string(&drawing["id"])?;
+    let (_, raw) = id
+        .rsplit_once('#')
+        .context("shape ID without drawing part")?;
+    Ok(Some(format!("shape-{raw}")))
 }
 
 /// The complete entries of stored `mappings`: the defaults of `extraction`, each
@@ -477,7 +688,7 @@ pub(super) fn shape_texts(sheet: &Value) -> Result<Vec<(String, &Value)>> {
 pub(super) fn with_default_entries(
     mut mappings: Value,
     extraction: &Extraction,
-) -> Result<(Value, Vec<Entry>)> {
+) -> Result<(Value, Entries)> {
     let Value::Array(stored) = mappings["entries"].take() else {
         bail!("mappings entries must be an array");
     };
@@ -487,28 +698,23 @@ pub(super) fn with_default_entries(
         replacements.entry(entry_key(entry)?).or_insert(index);
     }
     let mut used = vec![false; stored.len()];
-    let defaults = default_entries(extraction)?;
-    let mut entries = Vec::with_capacity(defaults.len() + stored.len());
-    for default in defaults {
-        let key = (
-            default.page()?,
-            default.block()?,
-            default.field().unwrap_or(""),
-        );
-        match replacements.get(&key).copied() {
-            Some(index) => {
+    let mut entries = default_entries(extraction, stored.len())?;
+    if !replacements.is_empty() {
+        for at in 0..entries.len() {
+            let entry = entries.get(at, extraction);
+            let key = (entry.page()?, entry.block()?, entry.field().unwrap_or(""));
+            if let Some(index) = replacements.get(&key).copied() {
                 used[index] = true;
-                entries.push(Entry::Json(stored[index].clone()));
+                entries.order[at] = Slot::Json(u32::try_from(index)?);
             }
-            None => entries.push(default),
         }
     }
-    entries.extend(
-        stored
-            .into_iter()
-            .zip(used)
-            .filter_map(|(entry, used)| (!used).then_some(Entry::Json(entry))),
-    );
+    entries.json = stored;
+    for (index, used) in used.into_iter().enumerate() {
+        if !used {
+            entries.order.push(Slot::Json(u32::try_from(index)?));
+        }
+    }
     Ok((mappings, entries))
 }
 
@@ -528,47 +734,65 @@ type Pair<'a> = (&'a str, &'a str);
 /// them, or keying them by owned strings, cost more than the checks themselves.
 pub(super) fn regenerate_mappings(
     regenerated: Value,
-    entries: Vec<Entry>,
+    mut entries: Entries,
     extraction: &Extraction,
     pages: &[super::elements::GridPage],
     operations: &[excel::StructuralOperation],
-) -> Result<(Value, Vec<Entry>)> {
-    let mut positions: BTreeMap<Pair, BTreeMap<Pair, &Value>> = BTreeMap::new();
+) -> Result<(Value, Entries)> {
+    // The pages by ID, each with whether each of its values is an entry's:
+    // its values are in order, which a value is found in by halves, as a
+    // large sheet has a value for each cell.
+    let mut by_id: BTreeMap<&str, (&super::elements::GridPage, Vec<bool>)> = BTreeMap::new();
     // A page has its notes and blocks of rows, and no fields.
     let fields: BTreeMap<Pair, BTreeSet<&str>> = BTreeMap::new();
     let mut blocks = BTreeSet::new();
     for page in pages {
         let page_id = string(&page.fields["page_id"])?;
+        debug_assert!(
+            page.values.is_sorted_by(|a, b| {
+                (&*a.block, &*a.row, &*a.column) <= (&*b.block, &*b.row, &*b.column)
+            }),
+            "the values of a page are in order"
+        );
+        ensure!(
+            by_id
+                .insert(page_id, (page, vec![false; page.values.len()]))
+                .is_none(),
+            "duplicate page ID"
+        );
         blocks.insert((page_id, "extraction-notes"));
         for block in page.titles.keys() {
             blocks.insert((page_id, block.as_str()));
-            positions.entry((page_id, block.as_str())).or_default();
         }
         for value in &page.values {
-            let block_key = (page_id, &*value.block);
-            blocks.insert(block_key);
-            positions
-                .entry(block_key)
-                .or_default()
-                .insert((value.row.as_str(), value.column.as_str()), &value.value);
+            blocks.insert((page_id, &*value.block));
         }
     }
     let mut keep = vec![];
-    let mut used_fields = BTreeSet::new();
-    // Looked up for every cell of the pages, and only looked up.
-    let mut mapped_positions = HashSet::new();
-    for entry in &entries {
+    for entry in entries.iter(extraction) {
         let page = entry.page()?;
         let block = entry.block()?;
         let kept = if let Some(position) = entry.position()? {
-            let cell = (position.row, position.column);
-            let exists = positions
-                .get(&(page, block))
-                .is_some_and(|values| values.contains_key(&cell));
-            if exists {
-                mapped_positions.insert((page, block, cell.0, cell.1));
+            let found = by_id.get_mut(page).and_then(|(grid, mapped)| {
+                let at = grid
+                    .values
+                    .binary_search_by(|v| {
+                        (&*v.block, &*v.row, &*v.column).cmp(&(
+                            block,
+                            position.row,
+                            position.column,
+                        ))
+                    })
+                    .ok()?;
+                Some(&mut mapped[at])
+            });
+            match found {
+                Some(mapped) => {
+                    *mapped = true;
+                    true
+                }
+                None => false,
             }
-            exists
         } else if entry.field_is_null() {
             blocks.contains(&(page, block))
         } else {
@@ -577,20 +801,25 @@ pub(super) fn regenerate_mappings(
                 .get(&(page, block))
                 .is_some_and(|values| values.contains(field))
         };
-        if kept && !entry.field_is_null() {
-            used_fields.insert(entry.field().context("expected string")?);
-        }
         keep.push(kept);
     }
+    // The fields of the entries kept, which a generated entry's must not be:
+    // made only for one, as a large sheet has an entry for each cell.
+    let mut used_fields: Option<BTreeSet<&str>> = None;
     let mut generated = vec![];
     let mut generated_fields = BTreeSet::new();
     let workbook = identity::is_excel(extraction);
-    for ((page, block), values) in positions {
+    for (page, (grid, mapped)) in &by_id {
+        let page = *page;
         let sheet = page_sheet(extraction, page)?;
-        for ((row, column), value) in values {
-            if mapped_positions.contains(&(page, block, row, column)) {
-                continue;
-            }
+        for (value, _) in grid
+            .values
+            .iter()
+            .zip(mapped)
+            .filter(|(_, mapped)| !**mapped)
+        {
+            let (block, row, column) = (&*value.block, &*value.row, &*value.column);
+            let value = &value.value;
             ensure!(
                 value.is_null() || kind(value) != "object",
                 "new table references require explicit mapping"
@@ -634,6 +863,17 @@ pub(super) fn regenerate_mappings(
                     "{row}/{column} is not a cell of the original: edit only cells that hold a value, and name new rows and columns <operation ID>-<n> after the insert_rows or insert_columns operation that adds them"
                 ),
             };
+            let used_fields = match &mut used_fields {
+                Some(used) => used,
+                None => used_fields.insert(
+                    entries
+                        .iter(extraction)
+                        .zip(&keep)
+                        .filter(|(entry, kept)| **kept && !entry.field_is_null())
+                        .map(|(entry, _)| entry.field().context("expected string"))
+                        .collect::<Result<_>>()?,
+                ),
+            };
             let field_prefix = format!("generated-{row}-{column}");
             let mut field = field_prefix.clone();
             let mut suffix = 2;
@@ -647,7 +887,7 @@ pub(super) fn regenerate_mappings(
             } else {
                 "structural content generated mapping"
             };
-            generated.push(Entry::Json(json!({
+            generated.push(json!({
                 "page":page,
                 "block":block,
                 "field":field,
@@ -655,16 +895,17 @@ pub(super) fn regenerate_mappings(
                 "target":target,
                 "writeback":"cell",
                 "position":{"row":row,"column":column,"type":kind(value)}
-            })));
+            }));
         }
     }
-    let mut kept: Vec<Entry> = entries
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(entry, keep)| keep.then_some(entry))
-        .collect();
-    kept.extend(generated);
-    Ok((regenerated, kept))
+    let mut keep = keep.into_iter();
+    entries
+        .order
+        .retain(|_| keep.next().expect("whether each entry is kept"));
+    for entry in generated {
+        entries.push_json(entry)?;
+    }
+    Ok((regenerated, entries))
 }
 
 /// The lists of mappings.yml, left out when empty.

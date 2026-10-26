@@ -34,9 +34,11 @@ pub(super) fn validate_journal(journal: &Value) -> Result<()> {
 
 /// The text_state the parser reads from a cell's value: `read` when it holds
 /// text or a formula, `empty` otherwise, also for a cell the extraction lacks.
-pub(super) fn text_state(cell: Option<&Cell>) -> &'static str {
+pub(super) fn text_state(cell: Option<Cell<'_>>) -> &'static str {
     match cell {
-        Some(cell) if (!cell.value.is_null() && cell.value != "") || cell.formula.is_some() => {
+        Some(cell)
+            if (!cell.value().is_null() && cell.value() != "") || cell.formula().is_some() =>
+        {
             "read"
         }
         _ => "empty",
@@ -45,7 +47,7 @@ pub(super) fn text_state(cell: Option<&Cell>) -> &'static str {
 
 /// A cell of an extraction with the sheet it is on, which holds its font and
 /// style.
-pub(super) type SourceCell<'a> = (&'a crate::extraction::Sheet, &'a Cell);
+pub(super) type SourceCell<'a> = (&'a crate::extraction::Sheet, Cell<'a>);
 
 /// A cell as a correction binds it: with its font, style and cached result in
 /// place, and without its address and ID, which follow from where it is, so a
@@ -73,7 +75,7 @@ pub(super) fn cell_hash(cell: Option<SourceCell<'_>>) -> Result<String> {
 pub(super) struct Sheet<'a> {
     pub(super) number: usize,
     value: &'a crate::extraction::Sheet,
-    by_address: HashMap<&'a str, &'a Cell>,
+    by_address: HashMap<&'a str, Cell<'a>>,
     pub(super) cells: Cells,
 }
 
@@ -93,7 +95,7 @@ pub(super) fn sheets(extraction: &Extraction) -> Result<HashMap<&str, Sheet<'_>>
             let by_address: HashMap<_, _> = sheet
                 .cells
                 .iter()
-                .map(|cell| (&*cell.address, cell))
+                .map(|cell| (cell.address(), cell))
                 .collect();
             ensure!(
                 by_address.len() == sheet.cells.len(),
@@ -105,7 +107,7 @@ pub(super) fn sheets(extraction: &Extraction) -> Result<HashMap<&str, Sheet<'_>>
                     number: index + 1,
                     value: sheet,
                     by_address,
-                    cells: Cells::of(sheet.cells.iter().map(|cell| &*cell.address))?,
+                    cells: Cells::of(sheet.cells.iter().map(|cell| cell.address()))?,
                 },
             ))
         })
@@ -403,8 +405,13 @@ pub(super) fn record(
     structure: &Value,
     axes: &Axes,
 ) -> Result<Value> {
-    validate(root, extraction, structure)?;
-    let typed = inference::elements(extraction)?;
+    // Validated as `validate` does, with the extraction hashed once for the
+    // check and for the inferred interpretation, which replay saves.
+    validate_schema(structure)?;
+    let checked = Structure::from_value(structure.clone())?;
+    let extraction_hash = crate::extraction::hash(extraction)?;
+    validate_hashed(root, extraction, &extraction_hash, &checked, true)?;
+    let typed = inferred(root, extraction, &extraction_hash)?.elements;
     let defaults = Defaults::of(&typed);
     let inferred: Vec<Value> = typed.iter().map(Element::to_value).collect();
     // The first inferred element of each structure, by its canonical text: an
@@ -454,8 +461,19 @@ pub(super) fn record(
         )?);
     }
     let mut visuals = Vec::new();
+    // The visuals the extraction shows, by ID: one equal to a visual has its ID.
+    let mut originals: HashMap<&str, Vec<&Value>> = HashMap::new();
+    for original in &original_visuals {
+        if let Some(id) = original["id"].as_str() {
+            originals.entry(id).or_default().push(original);
+        }
+    }
     for visual in array(&structure["visuals"])? {
-        if original_visuals.contains(visual) {
+        if visual["id"]
+            .as_str()
+            .and_then(|id| originals.get(id))
+            .is_some_and(|found| found.contains(&visual))
+        {
             continue;
         }
         let sources: Vec<_> = array(&visual["sources"])?

@@ -303,12 +303,12 @@ impl Store {
                         excel::CoordinateMap::new(&without),
                     );
                     let identities = ["rows", "columns"]
-                        .map(|axis| identity::key_identities(&layout_sheet.fields, axis));
+                        .map(|axis| identity::key_identities(layout_sheet, axis));
                     let identity = |axis: usize, key: &str| identities[axis].get(key).cloned();
                     let mut cells = vec![];
                     let mut slots = BTreeSet::new();
                     for cell in &source.cells {
-                        let address = &*cell.address;
+                        let address = cell.address();
                         if with_map.map(sheet, address)?.is_some()
                             || without_map.map(sheet, address)?.is_none()
                         {
@@ -317,12 +317,9 @@ impl Store {
                         let (column, row) = excel::coordinate(address)?;
                         let (row, column) = (format!("r{row}"), excel::column_name(column)?);
                         let font = crate::extraction::font(source, cell)?;
-                        if cell.kind == CellKind::Formula {
-                            let field = &*cell.id;
-                            let formula = cell
-                                .formula
-                                .as_deref()
-                                .context("formula cell without formula")?;
+                        if cell.kind() == CellKind::Formula {
+                            let field = cell.id();
+                            let formula = cell.formula().context("formula cell without formula")?;
                             content["blocks"]["formulas"]["rows"][field]["formula"] =
                                 json!(format!("={formula}"));
                             if content["blocks"]["formulas"]["title"].is_null() {
@@ -356,7 +353,7 @@ impl Store {
                             formulas.insert(identity, json!({"row":row_id,"column":column_id}));
                         } else {
                             content["blocks"]["table-1"]["rows"][&row][&column] =
-                                cell.value.clone();
+                                cell.value().to_json();
                             if content["blocks"]["table-1"]["title"].is_null() {
                                 content["blocks"]["table-1"]["title"] = json!("本文");
                             }
@@ -370,10 +367,10 @@ impl Store {
                                 );
                             }
                         }
-                        if cell.kind == CellKind::Formula {
+                        if cell.kind() == CellKind::Formula {
                             slots.insert((
                                 "formulas".to_owned(),
-                                cell.id.to_string(),
+                                cell.id().to_string(),
                                 "formula".to_owned(),
                             ));
                         } else {
@@ -509,12 +506,12 @@ fn reapply(
     let mut count = 0;
     // The formula cells of each sheet by address, and what the element IDs
     // of each page name, read once for all the edits rather than for each.
-    let mut formulas: HashMap<(&str, &str), &Cell> = HashMap::new();
+    let mut formulas: HashMap<(&str, &str), Cell<'_>> = HashMap::new();
     for sheet in &extraction.sheets {
         let name = sheet["name"].as_str().unwrap_or_default();
         for cell in &sheet.cells {
-            if cell.kind == CellKind::Formula {
-                formulas.entry((name, &*cell.address)).or_insert(cell);
+            if cell.kind() == CellKind::Formula {
+                formulas.entry((name, cell.address())).or_insert(cell);
             }
         }
     }
@@ -529,7 +526,7 @@ fn reapply(
         let Some(target) = restored.iter().find(|r| r.sheet == sheet) else {
             continue;
         };
-        let layout_sheet = &layout.sheet(&target.page)?.fields;
+        let layout_sheet = layout.sheet(&target.page)?;
         let lookup = lookups
             .entry(target.page.as_str())
             .or_insert_with(|| identity::SheetLookup::new(layout_sheet, &target.page));
@@ -538,7 +535,7 @@ fn reapply(
             match formula {
                 Some(c) => Some((
                     "formulas".to_owned(),
-                    c.id.to_string(),
+                    c.id().to_string(),
                     "formula".to_owned(),
                 )),
                 None => {

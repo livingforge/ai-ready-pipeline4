@@ -20,6 +20,7 @@ mod import;
 pub(crate) use import::SheetData;
 pub mod number_format;
 mod visuals;
+pub(crate) use visuals::line_marks;
 mod worksheet;
 pub(crate) use worksheet::original_position;
 use worksheet::*;
@@ -39,6 +40,7 @@ mod render;
 #[cfg(windows)]
 mod render_native;
 mod text_edit;
+use text_edit::SharedStrings;
 mod vba;
 pub use vba::VbaNotUpdated;
 mod writeback;
@@ -95,18 +97,18 @@ pub struct Workbook {
 /// because a workbook has far more of them than any other fact, and writeback
 /// reads only a few; the JSON form is built only for the extraction.
 pub struct Cell {
-    pub address: String,
-    /// The extraction's `type`: `formula`, `string`, `number`, `boolean` or `error`.
-    pub kind: &'static str,
+    pub address: Box<str>,
     /// The value, or for a formula its cached result.
     pub value: Value,
-    pub formula: Option<String>,
+    pub formula: Option<Box<str>>,
+    /// The fonts the runs of rich text set; empty for text in the cell's font.
+    pub runs: Box<[crate::fonts::RunFont]>,
     /// Index of the cell's format in `cellXfs` (its `s` attribute).
-    pub format: usize,
+    pub format: u32,
+    /// The extraction's `type`: `formula`, `string`, `number`, `boolean` or `error`.
+    pub kind: crate::extraction::CellKind,
     /// Every run of the cell's text is bold, whatever the cell format says.
     pub bold_text: bool,
-    /// The fonts the runs of rich text set; empty for text in the cell's font.
-    pub runs: Vec<crate::fonts::RunFont>,
 }
 struct CellFormat {
     number_format: String,
@@ -142,19 +144,18 @@ impl Workbook {
                 let mut built = crate::extraction::Sheet::build(sheet.clone());
                 for cell in cells {
                     let (style, font) = self.appearance(cell);
-                    let typed = crate::extraction::Cell {
-                        id: format!("c-{}-{}", index + 1, cell.address).into(),
-                        address: cell.address.as_str().into(),
-                        kind: crate::extraction::CellKind::parse(cell.kind)?,
-                        value: cell.value.clone(),
-                        formula: cell.formula.as_deref().map(Into::into),
-                        number_format: built
-                            .number_format(&self.formats[cell.format].number_format),
+                    let typed = crate::extraction::NewCell {
+                        id: &format!("c-{}-{}", index + 1, cell.address),
+                        address: &cell.address,
+                        kind: cell.kind,
+                        value: &cell.value,
+                        formula: cell.formula.as_deref(),
+                        number_format: &self.formats[cell.format as usize].number_format,
                         font: None,
                         style: None,
                         position: None,
                     };
-                    built.push(typed, Some(font), Some(style));
+                    built.push(typed, Some(font), Some(style))?;
                 }
                 Ok(built.finish())
             })
@@ -162,7 +163,7 @@ impl Workbook {
     }
     /// The style and font of `cell`, as its format and runs give them.
     fn appearance(&self, cell: &Cell) -> (Value, Value) {
-        let format = &self.formats[cell.format];
+        let format = &self.formats[cell.format as usize];
         let mut style = format.appearance.clone();
         if cell.bold_text {
             style["bold"] = json!(true);
@@ -176,9 +177,9 @@ impl Workbook {
         (style, crate::fonts::element_font(&runs, &format.font))
     }
     fn cell_value(&self, sheet_index: usize, cell: &Cell) -> Value {
-        let format = &self.formats[cell.format];
+        let format = &self.formats[cell.format as usize];
         let (style, font) = self.appearance(cell);
-        json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind,"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":style,"font":font})
+        json!({"id":format!("c-{}-{}",sheet_index+1,cell.address),"address":cell.address,"type":cell.kind.as_str(),"value":cell.value,"cached":if cell.formula.is_some(){cell.value.clone()}else{Value::Null},"formula":cell.formula,"number_format":format.number_format,"style":style,"font":font})
     }
 }
 fn xml(bytes: &[u8]) -> Result<Document<'_>> {
@@ -383,6 +384,13 @@ pub(crate) fn formula_reference_equivalent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workbook has a cell for each value of its sheets: one holds its
+    /// value, address, formula and runs in no more than 88 bytes.
+    #[test]
+    fn a_worksheet_cell_is_small() {
+        assert!(std::mem::size_of::<Cell>() <= 88);
+    }
 
     #[test]
     fn excel_string_escapes_decode_and_literal_escapes_round_trip() {

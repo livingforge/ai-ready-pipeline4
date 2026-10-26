@@ -1,5 +1,28 @@
 //! Validation and progress tracking before adopting agent output.
 use super::*;
+use std::rc::Rc;
+
+/// What validation keeps for the rest of a command. Process-local only:
+/// never trust a persisted validation receipt after restart.
+#[derive(Default)]
+pub(super) struct ValidationCache {
+    /// Issues of accepted replies by what was validated.
+    verdicts: BTreeMap<String, Value>,
+    /// The input by its digest, with its index: every reply of one command
+    /// is validated against it.
+    input: Option<(String, Rc<IndexedInput>)>,
+}
+
+pub(super) struct IndexedInput {
+    input: crate::specifications::Input,
+    index: crate::specifications::InputIndex,
+}
+
+impl IndexedInput {
+    fn get(&self) -> crate::specifications::Indexed<'_> {
+        self.index.of(&self.input)
+    }
+}
 
 pub fn diagnostic(error: &anyhow::Error) -> Value {
     if let Some(payload) = crate::data::rejection(error) {
@@ -134,7 +157,8 @@ impl Workflow {
     }
 
     pub(super) fn preview_quality(&self, task: &Task, reply: &Value) -> Result<Value> {
-        let input = serde_json::from_value(self.store.json(&self.state.input)?)?;
+        let indexed = self.indexed_input()?;
+        let input = indexed.get();
         let (candidate, original) = match task.stage {
             Stage::Extract if reply.get("request_tables").is_none() => (reply.clone(), None),
             Stage::Repair if reply.get("request_tables").is_none() => {
@@ -150,19 +174,19 @@ impl Workflow {
                 );
             }
         };
-        let report = crate::semantic_contract::reply_report(&input, &candidate)?;
+        let report = crate::semantic_contract::reply_report_in(input, &candidate)?;
         let packet = self.artifact(&task.packet)?;
-        let source_ids: BTreeSet<String> =
-            crate::semantic::sources(&input, Some(s(&candidate["document"])?))?
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| {
-                    packet["scope"]["sources"]
-                        .as_array()
-                        .is_none_or(|sources| sources.contains(&json!(format!("s{}", index + 1))))
-                })
-                .map(|(_, source)| source.id.clone())
-                .collect();
+        let source_ids: BTreeSet<String> = input
+            .rows(s(&candidate["document"])?)?
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                packet["scope"]["sources"]
+                    .as_array()
+                    .is_none_or(|sources| sources.contains(&json!(format!("s{}", index + 1))))
+            })
+            .map(|(_, source)| source.id.clone())
+            .collect();
         let summarize = |report: &crate::specifications::Report| -> Result<Value> {
             let rows: Vec<_> = arr(&report.coverage["matrix"])?
                 .iter()
@@ -182,7 +206,7 @@ impl Workflow {
         let before = original
             .as_ref()
             .map(|base| -> Result<Value> {
-                summarize(&crate::semantic_contract::reply_report(&input, base)?)
+                summarize(&crate::semantic_contract::reply_report_in(input, base)?)
             })
             .transpose()?;
         let quantity_diagnostics: Vec<_> = report
@@ -280,19 +304,39 @@ impl Workflow {
         }
     }
 
+    /// The workflow input with its index, read once in this process.
+    fn indexed_input(&self) -> Result<Rc<IndexedInput>> {
+        if let Some((digest, input)) = &self.validation_cache.borrow().input
+            && *digest == self.state.input
+        {
+            return Ok(input.clone());
+        }
+        let input: crate::specifications::Input =
+            serde_json::from_value(self.store.json(&self.state.input)?)?;
+        let index = crate::specifications::InputIndex::new(&input)?;
+        let indexed = Rc::new(IndexedInput { input, index });
+        self.validation_cache.borrow_mut().input =
+            Some((self.state.input.clone(), indexed.clone()));
+        Ok(indexed)
+    }
+
     pub(super) fn validate_reply(&self, reply: &Value) -> Result<()> {
-        let vocabulary = self.module_vocabulary()?;
+        self.validate_reply_with(&self.module_vocabulary()?, reply)
+    }
+
+    /// [`Self::validate_reply`] with the module vocabulary already read.
+    pub(super) fn validate_reply_with(&self, vocabulary: &Value, reply: &Value) -> Result<()> {
         let key = hash(&encode(&json!([
             "reply",
             self.state.input,
             vocabulary,
             reply
         ])));
-        if self.validation_cache.borrow().contains_key(&key) {
+        if self.validation_cache.borrow().verdicts.contains_key(&key) {
             return Ok(());
         }
-        let input = serde_json::from_value(self.store.json(&self.state.input)?)?;
-        let mut errors = crate::semantic_contract::diagnostics(&input, reply)?;
+        let input = self.indexed_input()?;
+        let mut errors = crate::semantic_contract::diagnostics_in(input.get(), reply)?;
         if let (Some(modules), Some(reply_modules)) =
             (vocabulary.as_object(), reply["modules"].as_object())
         {
@@ -309,37 +353,46 @@ impl Workflow {
             )
             .into());
         }
-        self.validation_cache.borrow_mut().insert(key, Value::Null);
+        self.validation_cache
+            .borrow_mut()
+            .verdicts
+            .insert(key, Value::Null);
         Ok(())
     }
 
     pub(super) fn validate_replies(&self, replies: &Value) -> Result<Value> {
+        let vocabulary = self.module_vocabulary()?;
         let key = hash(&encode(&json!([
             "replies",
             self.state.input,
-            self.module_vocabulary()?,
+            vocabulary,
             replies
         ])));
-        if let Some(issues) = self.validation_cache.borrow().get(&key) {
+        if let Some(issues) = self.validation_cache.borrow().verdicts.get(&key) {
             return Ok(issues.clone());
         }
-        let input: crate::specifications::Input =
-            serde_json::from_value(self.store.json(&self.state.input)?)?;
-        let documents: BTreeSet<_> = input.sources.iter().map(|s| s.document.as_str()).collect();
+        let indexed = self.indexed_input()?;
+        let input = indexed.get();
+        let documents: BTreeSet<_> = input
+            .input
+            .sources
+            .iter()
+            .map(|s| s.document.as_str())
+            .collect();
         let mut values = Vec::new();
         for digest in obj(replies)?.values() {
             let reply = self.store.json(s(digest)?)?;
-            self.validate_reply(&reply)?;
+            self.validate_reply_with(&vocabulary, &reply)?;
             values.push(serde_json::from_value(reply)?);
         }
         if values.len() != documents.len() {
             return Ok(json!([]));
         }
-        let (model, _, _) = crate::semantic::assemble(&input, values, "workflow-validation")?;
-        let issues =
-            serde_json::to_value(crate::specifications::assess(&input, &model)?)?["issues"].clone();
+        let (model, _, _) = crate::semantic::assemble_in(input, values, "workflow-validation")?;
+        let issues = serde_json::to_value(input.assess(&model)?)?["issues"].clone();
         self.validation_cache
             .borrow_mut()
+            .verdicts
             .insert(key, issues.clone());
         Ok(issues)
     }

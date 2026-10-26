@@ -2,6 +2,7 @@ mod mapping;
 use mapping::*;
 mod adoption;
 pub use adoption::Batch;
+mod diagrams;
 mod diff;
 mod export;
 mod import;
@@ -20,7 +21,8 @@ mod identity;
 mod image_edit;
 mod layout;
 pub(crate) use layout::{
-    Layout, LayoutSheet, Meta, MetaCell, MetaRow, MetaText, metadata_from, metadata_value,
+    Layout, LayoutSheet, Line, Lines, Meta, MetaCell, MetaRow, MetaText, metadata_from,
+    metadata_value,
 };
 mod operation_edit;
 mod render;
@@ -37,7 +39,7 @@ use crate::{
     data::*,
     document_source::{Source, is_slide_operation, parse_slide_operations, slide_view},
     excel,
-    extraction::{Cell, CellKind, Extraction, Sheet},
+    extraction::{Cell, CellKind, CellValue, Extraction, Sheet},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -76,12 +78,13 @@ pub struct Inspection {
     pub meta: Value,
     pub extraction: Extraction,
     pub mappings: Value,
+    /// The extraction as the slide operations of `mappings` leave it, when
+    /// they change it: the default entries are of its cells.
+    operated: Option<Extraction>,
     /// The complete mapping entries; `mappings` keeps none.
-    entries: Vec<Entry>,
-    /// Content values and their fonts by page, block and field: one map, as
-    /// a large sheet has a value for each cell, and a key for each in two
-    /// maps took as much as the values.
-    pub content: HashMap<(String, String, String), Field>,
+    entries: Entries,
+    /// Content values and their fonts, by the entry each is the value of.
+    pub content: ContentFields,
     /// Content file name by validated page ID.
     pub page_files: BTreeMap<String, String>,
     pub fingerprint: String,
@@ -105,15 +108,69 @@ pub struct Inspection {
 impl Inspection {
     /// The complete mapping entries, as mappings.yml writes them.
     pub fn entries_json(&self) -> Vec<Value> {
-        self.entries.iter().map(|e| e.json().into_owned()).collect()
+        self.entries().map(|e| e.json().into_owned()).collect()
+    }
+
+    /// The extraction the default entries are of.
+    fn operated(&self) -> &Extraction {
+        self.operated.as_ref().unwrap_or(&self.extraction)
+    }
+
+    /// The complete mapping entries, in order.
+    pub(super) fn entries(&self) -> impl ExactSizeIterator<Item = EntryRef<'_>> {
+        self.entries.iter(self.operated())
+    }
+
+    /// The mapping entry numbered `index`.
+    pub(super) fn entry(&self, index: usize) -> EntryRef<'_> {
+        self.entries.get(index, self.operated())
     }
 
     /// Lets go of the content values and fonts and the mapping entries, the
     /// largest parts besides the extraction, before a step that reads none of
     /// them, such as replaying the structure.
     pub(super) fn release_content(&mut self) {
-        self.content = HashMap::new();
-        self.entries = Vec::new();
+        self.content = ContentFields::default();
+        self.entries = Entries::default();
+        self.operated = None;
+    }
+}
+
+/// Content values and their fonts, by the number of the mapping entry each
+/// is the value of. A large sheet has a value for each cell, and a map of
+/// them by page, block and field took several times the room of the values.
+#[derive(Clone, Debug, Default)]
+pub struct ContentFields {
+    fields: Vec<Option<Field>>,
+}
+
+impl ContentFields {
+    /// Fields of `entries` entries, none with a value yet.
+    pub(crate) fn new(entries: usize) -> Self {
+        Self {
+            fields: std::iter::repeat_with(|| None).take(entries).collect(),
+        }
+    }
+
+    /// The value of the entry numbered `entry`, if it has one.
+    pub fn get(&self, entry: usize) -> Option<&Field> {
+        self.fields.get(entry)?.as_ref()
+    }
+
+    /// Gives the entry numbered `entry` the value `field`.
+    pub(crate) fn set(&mut self, entry: usize, field: Field) {
+        self.fields[entry] = Some(field);
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Field> {
+        self.fields.iter().flatten()
+    }
+}
+
+impl std::ops::Index<usize> for ContentFields {
+    type Output = Field;
+    fn index(&self, entry: usize) -> &Field {
+        self.get(entry).expect("no content field of the entry")
     }
 }
 
@@ -194,14 +251,12 @@ impl Store {
     }
 
     /// Writes the extraction of the adopted document, or of its proposal, to
-    /// `out` with every cell's font, style and cached result in place, as the
-    /// `extraction-view` contract: made as it is written and checked a part
-    /// at a time.
+    /// `out` for reading, as the `extraction-view` contract has it
+    /// ([`crate::extraction::write_reading`]).
     pub fn write_extraction_view(&self, id: &str, proposal: bool, out: &Path) -> Result<()> {
         let dir = self.structure_dir(id, proposal)?;
         let extraction = self.inspect_records(&dir, false, false)?.0.extraction;
-        crate::extraction::check_view(&extraction, |part| validate("extraction-view", part))?;
-        write_lazy(out, crate::extraction::view_lazy(&extraction))
+        crate::extraction::write_reading(&extraction, out)
     }
 
     /// Saves `structure` as the corrections of the adopted document, or of its
@@ -563,7 +618,7 @@ fn resolved_element<'a>(
     let present: std::collections::HashSet<&str> = rows
         .iter()
         .flat_map(|row| &row.cells)
-        .map(|cell| string(&cell["id"]))
+        .map(|cell| cell.id())
         .collect::<Result<_>>()?;
     let mut members = Lazy::members(
         element.fields().context("table metadata missing")?,

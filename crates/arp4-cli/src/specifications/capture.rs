@@ -1,6 +1,8 @@
 use super::*;
 
-pub fn capture(paths: &[PathBuf]) -> Result<Input> {
+/// The input of the extractions at `paths`. With `root`, the project's
+/// cached interpretations are read for their structure requirements.
+pub fn capture(paths: &[PathBuf], root: Option<&std::path::Path>) -> Result<Input> {
     let mut input = Input {
         schema_version: 1,
         revisions: BTreeMap::new(),
@@ -14,15 +16,16 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
         let source_count = input.sources.len();
         let extraction = crate::extraction::read(path)?;
         let document = string(&extraction["document_id"])?;
+        let revision = crate::extraction::hash(&extraction)?;
         input.structure_requirements.insert(
             document.into(),
-            crate::document_structure::requirements(&extraction)?,
+            crate::document_structure::requirements(
+                &extraction,
+                root.map(|root| (root, revision.as_str())),
+            )?,
         );
         ensure!(
-            input
-                .revisions
-                .insert(document.into(), crate::extraction::hash(&extraction)?)
-                .is_none(),
+            input.revisions.insert(document.into(), revision).is_none(),
             "duplicate input document: {document}"
         );
         for finding in array(&extraction["findings"])? {
@@ -80,12 +83,12 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
                 .cells
                 .iter()
                 .enumerate()
-                .map(|(i, c)| Ok((crate::excel::coordinate(&c.address)?, i, c)))
+                .map(|(i, c)| Ok((crate::excel::coordinate(c.address())?, i, c)))
                 .collect::<Result<Vec<_>>>()?;
             cells.sort_by_key(|((column, row), _, _)| (*row, *column));
             for ((column, row), ci, cell) in cells {
-                let formula = cell.formula.as_deref().map_or(Value::Null, |f| json!(f));
-                for (key, value) in [("value", &cell.value), ("formula", &formula)] {
+                let formula = cell.formula().map_or(Value::Null, |f| json!(f));
+                for (key, value) in [("value", &cell.value().to_json()), ("formula", &formula)] {
                     let start = input.sources.len();
                     walk(
                         value,
@@ -96,13 +99,12 @@ pub fn capture(paths: &[PathBuf]) -> Result<Input> {
                     for source in &mut input.sources[start..] {
                         source.context = Some(CellContext {
                             sheet: string(&sheet["name"])?.into(),
-                            cell: cell.address.to_string(),
+                            cell: cell.address().to_string(),
                             row,
                             column,
-                            number_format: cell.number_format.to_string(),
+                            number_format: cell.number_format().to_string(),
                             position: cell
-                                .position
-                                .as_deref()
+                                .position()
                                 .map(|p| serde_json::from_value(p.clone()))
                                 .transpose()?,
                         });

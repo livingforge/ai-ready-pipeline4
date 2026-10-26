@@ -23,6 +23,21 @@ impl Workflow {
         document: Option<&str>,
         diagnostics: &[Value],
     ) -> Result<Vec<Value>> {
+        Ok(self
+            .concern_rows(diagnostics)?
+            .into_iter()
+            .filter(|row| Self::concerns_document(row, document))
+            .collect())
+    }
+    /// The concerns of `rows` that [`Self::concerns`] lists for `document`.
+    pub(super) fn concerns_of(rows: &[Value], document: Option<&str>) -> Vec<Value> {
+        rows.iter()
+            .filter(|row| Self::concerns_document(row, document))
+            .cloned()
+            .collect()
+    }
+    /// Every concern, before they are sorted out by document.
+    pub(super) fn concern_rows(&self, diagnostics: &[Value]) -> Result<Vec<Value>> {
         fn add(
             rows: &mut BTreeMap<String, Value>,
             value: &Value,
@@ -130,39 +145,39 @@ impl Workflow {
                 unresolved["reason"].as_str(),
             );
         }
-        Ok(rows
-            .into_values()
-            .filter(|row| {
-                let Some(document) = document else {
-                    return true;
-                };
-                let value = row.get("finding").unwrap_or(&row["diagnostic"]);
-                let mut docs = BTreeSet::new();
-                if let Some(doc) = value["document"].as_str() {
-                    docs.insert(doc.to_owned());
-                }
-                for id in value["items"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .chain(value["repair"]["items"].as_array().into_iter().flatten())
-                    .chain(value.get("item"))
-                {
-                    if let Some((doc, _)) = id.as_str().and_then(|id| id.rsplit_once('/')) {
-                        docs.insert(doc.to_owned());
-                    }
-                }
-                for doc in value["repair"]["documents"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                {
-                    docs.insert(doc.to_owned());
-                }
-                docs.is_empty() || docs.contains(document)
-            })
-            .collect())
+        Ok(rows.into_values().collect())
+    }
+    /// Whether [`Self::concerns`] lists the concern `row` for `document`;
+    /// without a document, it lists every one.
+    fn concerns_document(row: &Value, document: Option<&str>) -> bool {
+        let Some(document) = document else {
+            return true;
+        };
+        let value = row.get("finding").unwrap_or(&row["diagnostic"]);
+        let mut docs = BTreeSet::new();
+        if let Some(doc) = value["document"].as_str() {
+            docs.insert(doc.to_owned());
+        }
+        for id in value["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(value["repair"]["items"].as_array().into_iter().flatten())
+            .chain(value.get("item"))
+        {
+            if let Some((doc, _)) = id.as_str().and_then(|id| id.rsplit_once('/')) {
+                docs.insert(doc.to_owned());
+            }
+        }
+        for doc in value["repair"]["documents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            docs.insert(doc.to_owned());
+        }
+        docs.is_empty() || docs.contains(document)
     }
 
     pub(super) fn findings(&self) -> Vec<Value> {
