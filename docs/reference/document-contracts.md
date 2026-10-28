@@ -102,13 +102,24 @@
 | <code>/properties/document_id</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/pages</code> | <code>{"description":"ページID（content の page_id）ごとの要素","type":"object"}</code> |
 | <code>/properties/pages/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","element_metadata","visuals"],"type":"object"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_font</code> | <code>{"additionalProperties":false,"description":"font を持たない本文の要素と表のセルのフォント（最も多くの要素・セルが持つもの）。現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。多くの要素・セルがフォントを持たないページでは持たない","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font</code> | <code>{"additionalProperties":false,"description":"font を持たない本文の要素と表のセルのフォント（最も多くの要素・セルが持つもの）。現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。多くの要素・セルがフォントを持たないページでは持たない","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -124,6 +135,17 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -141,6 +163,17 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -179,6 +212,17 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -313,13 +357,24 @@
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/ref</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/type</code> | <code>{"enum":["image","chart","drawing"]}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts</code> | <code>{"description":"このシートの要素メタデータが番号で参照するフォントのうち、抽出結果の同じセルのフォントと異なるもの。同じフォントは1つにまとめる。空なら保存しない","type":"array"}</code> |
-| <code>/properties/sheets/additionalProperties/properties/fonts/items</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/fonts/items/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1371,13 +1426,24 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill</code> | <code>{"description":"図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/font</code> | <code>{"additionalProperties":false,"description":"図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font</code> | <code>{"additionalProperties":false,"description":"図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1407,9 +1473,11 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/type</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/style</code> | <code>{"additionalProperties":false,"description":"The emphasis every run of the shape's text shows. Absent when it shows none.","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style</code> | <code>{"additionalProperties":false,"description":"The emphasis the shape's text shows, in every run or, under partial, in some. Absent when it shows none.","minProperties":1,"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/highlight</code> | <code>{"const":true,"description":"Every run of the text is highlighted (Word and PowerPoint)."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/italic</code> | <code>{"const":true,"description":"Every run of the text is italic, as styles and themes resolve it."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/partial/items</code> | <code>{"enum":["italic","underline","strike","highlight"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/strike</code> | <code>{"const":true,"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/underline</code> | <code>{"const":true,"description":"Every run of the text is underlined, by a line of any kind."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/tail_end</code> | <code>{"description":"The mark at the end of the drawing's line (a:tailEnd), such as triangle for an arrowhead. Absent for none.","minLength":1,"type":"string"}</code> |
@@ -1422,13 +1490,24 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/transform/anyOf/1/additionalProperties/anyOf/1/additionalProperties</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/fonts</code> | <code>{"description":"セルが番号で参照する原本のフォント。同じフォントは1つにまとめる。数式の計算結果はセルの value にあり、別には保存しない","type":"array"}</code> |
-| <code>/properties/sheets/items/properties/fonts/items</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/fonts/items/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/fonts/items/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1463,6 +1542,8 @@
 | <code>/properties/sheets/items/properties/styles/items/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/items/properties/styles/items/properties/partial/items</code> | <code>{"enum":["bold","italic","underline","strike","highlight"]}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/tables</code> | <code>{"type":"array"}</code> |
@@ -1491,13 +1572,24 @@
 | <code>/properties/slide_layouts/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","address","type","value","formula","cached","number_format"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/cached</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/slide_layouts/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1523,6 +1615,8 @@
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/partial/items</code> | <code>{"enum":["bold","italic","underline","strike","highlight"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
@@ -1595,6 +1689,17 @@
 | <code>/properties/sheets/items/properties/cell_font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cell_font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/cell_font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cell_font/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/cell_font/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/sheets/items/properties/cell_font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/cell_font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1606,19 +1711,32 @@
 | <code>/properties/sheets/items/properties/cell_style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cell_style/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cell_style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/items/properties/cell_style/properties/partial/items</code> | <code>{"enum":["bold","italic","underline","strike","highlight"]}</code> |
 | <code>/properties/sheets/items/properties/cell_style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cell_style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","value"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"description":"シートの cell_font と異なるときだけ持つ。cell_font のあるシートでフォントを持たないセルは null"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1647,6 +1765,8 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/indent</code> | <code>{"description":"Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.","minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/partial/items</code> | <code>{"enum":["bold","italic","underline","strike","highlight"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/0/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style/anyOf/1</code> | <code>{"type":"null"}</code> |
@@ -1729,13 +1849,24 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill</code> | <code>{"description":"図形の塗り。RRGGBB、塗りなしはnone、グラデーション等の解決できない塗りはnull"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/fill/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/font</code> | <code>{"additionalProperties":false,"description":"図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font</code> | <code>{"additionalProperties":false,"description":"図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1765,9 +1896,11 @@
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder</code> | <code>{"additionalProperties":false,"description":"PowerPointのプレースホルダーの種類と番号","required":["type","index"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/index</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/placeholder/properties/type</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/items/properties/drawings/items/properties/style</code> | <code>{"additionalProperties":false,"description":"The emphasis every run of the shape's text shows. Absent when it shows none.","minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style</code> | <code>{"additionalProperties":false,"description":"The emphasis the shape's text shows, in every run or, under partial, in some. Absent when it shows none.","minProperties":1,"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/highlight</code> | <code>{"const":true,"description":"Every run of the text is highlighted (Word and PowerPoint)."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/italic</code> | <code>{"const":true,"description":"Every run of the text is italic, as styles and themes resolve it."}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/partial/items</code> | <code>{"enum":["italic","underline","strike","highlight"]}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/strike</code> | <code>{"const":true,"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/style/properties/underline</code> | <code>{"const":true,"description":"Every run of the text is underlined, by a line of any kind."}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/tail_end</code> | <code>{"description":"The mark at the end of the drawing's line (a:tailEnd), such as triangle for an arrowhead. Absent for none.","minLength":1,"type":"string"}</code> |
@@ -1827,13 +1960,24 @@
 | <code>/properties/slide_layouts/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["id","address","type","value","formula","cached","number_format"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/cached</code> | <code>{"type":["string","number","boolean","null"]}</code> |
-| <code>/properties/slide_layouts/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs</code> | <code>{"additionalProperties":false,"description":"\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない","minProperties":1,"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color/items</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto)$","type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color_theme</code> | <code>{"description":"テーマ色に由来するrunの色のテーマの色枠","minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/color_theme/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/east_asian</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/east_asian/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/latin</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/latin/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/size</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/runs/properties/size/items</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
@@ -1859,6 +2003,8 @@
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/fill</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/highlight</code> | <code>{"description":"Every run of the text is highlighted (Word and PowerPoint). Absent when not.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/italic</code> | <code>{"description":"Every run of the text is italic, as styles and themes resolve it. Absent when not.","type":"boolean"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/partial</code> | <code>{"description":"The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.","minItems":1,"type":"array","uniqueItems":true}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/partial/items</code> | <code>{"enum":["bold","italic","underline","strike","highlight"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/style/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/type</code> | <code>{"enum":["string","number","boolean","null","formula","error"]}</code> |
@@ -2376,12 +2522,12 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: one per cell or shape text, mixed where its runs differ. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where every run of the text shows it; fill is a filled cell behind the text.","required":["property","value","hits","cells"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: of a cell or shape text whose runs differ, mixed and the value of each run. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where some run of the text shows it; fill is a filled cell behind the text.","required":["property","value","hits","cells"],"type":"object"}</code> |
 | <code>/properties/cells</code> | <code>{"description":"The cells and shape texts with text in this value.","minimum":0,"type":"integer"}</code> |
 | <code>/properties/family</code> | <code>{"description":"For a color, the family a --color filter names it by; auto is black.","enum":["red","orange","yellow","green","cyan","blue","purple","pink","gray","black","white"]}</code> |
 | <code>/properties/hits</code> | <code>{"description":"The hits of a search filtering by this value alone.","minimum":1,"type":"integer"}</code> |
 | <code>/properties/property</code> | <code>{"enum":["color","theme","font","size","bold","italic","underline","strike","highlight","fill"]}</code> |
-| <code>/properties/value</code> | <code>{"description":"Font color as RRGGBB, auto or mixed; theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill).","type":["string","number","boolean"]}</code> |
+| <code>/properties/value</code> | <code>{"description":"Font color as RRGGBB, auto or mixed (text whose runs differ); theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill).","type":["string","number","boolean"]}</code> |
 
 ## search-passage
 

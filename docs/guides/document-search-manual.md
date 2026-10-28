@@ -224,7 +224,7 @@ arp4 documents search "秒" --color red --root C:/project
 | 特定の色だけ | `--color FF0000` |
 | 赤か青 | `--color red --color blue` |
 | テーマの色（アクセント2など） | `--color accent2` |
-| 一部の文字だけ色が違うセル | `--color mixed` |
+| 一部の文字だけ色が違うセル（色を問わない） | `--color mixed` |
 | フォント | `--font "MS ゴシック"` |
 | 14ポイント以上 | `--size 14..` |
 | 太字・斜体・下線 | `--bold`・`--italic`・`--underline` |
@@ -232,7 +232,7 @@ arp4 documents search "秒" --color red --root C:/project
 | 蛍光ペン（Word・PowerPoint） | `--highlight` |
 | 塗りつぶしのあるセル | `--fill` |
 
-色の系統には `red`・`orange`・`yellow`・`green`・`cyan`・`blue`・`purple`・`pink`・`gray`・`black`・`white` を使えます。自動色（Excelの「自動」）は `black` に入ります。複数の条件を付けると、すべてを満たすセルがある箇所だけを返します（`--bold --color red` は赤い太字）。斜体・下線・取り消し線・蛍光ペンは、セルや段落の文字全体に付いているときだけ一致します。
+色の系統には `red`・`orange`・`yellow`・`green`・`cyan`・`blue`・`purple`・`pink`・`gray`・`black`・`white` を使えます。自動色（Excelの「自動」）は `black` に入ります。書式はセルや段落の文字の一部だけに付いていても一致します（「仕様**書**」のように1文字だけ太字のセルも `--bold` で見つかります）。複数の条件を付けると、すべてを満たすセルがある箇所だけを返します。条件ごとに別の文字でもよく、`--bold --color red` は太字の部分と赤い部分を持つセルを返します。
 
 どんな色やフォントが使われているかは、先に `search-formats` で確認できます。
 
@@ -244,14 +244,15 @@ arp4 documents search-formats --root C:/project
 {"items":[{"cells":9,"family":"black","hits":4,"property":"color","value":"auto"},{"cells":2,"family":"red","hits":2,"property":"color","value":"FF0000"},{"cells":1,"family":"red","hits":1,"property":"color","value":"C00000"},{"cells":1,"hits":1,"property":"color","value":"mixed"},{"cells":3,"hits":1,"property":"font","value":"Meiryo UI"}, …], …}
 ```
 
-`hits` はその値だけで絞ったときの件数、`cells` はその書式の文字があるセルの数です。
+`hits` はその値だけで絞ったときの件数、`cells` はその書式の文字があるセルの数です。一部の文字だけ赤いセルは、`mixed` と、`FF0000` などその文字の色の両方に数えます。
 
 注意点:
 
-- **セルの一部だけが赤い場合は `--color red` で見つかりません。** 書式はセルごとに1つで、文字ごとに色が違うセルは `mixed` になります。`--color mixed` で探して原本で確認してください。
+- **見つかるのはセルまでです。** セルの一部だけが赤い場合も見つかりますが、どの文字が赤いかは原本で確認してください。
+- **以前に取り込んだ文書は取り込み直してください。** 一部の文字だけの書式は取り込み時に記録します。この機能より前に取り込んだ文書は `documents import --force` で取り込み直し、`search-refresh` を実行するまで、一部だけの書式では見つかりません。
 - 条件付き書式で赤く見えるセルや、表示形式（`[赤]`）で赤く表示される数値は対象外です。
 - Markdown・CSVなどフォント情報のない文書、コメント、画像のOCR文字は書式では絞れません。
-- 太字・取り消し線は、取り込み時にセルの書式として記録される形式（Excelのセルなど）だけが対象です。
+- 太字は、取り込み時にセルの書式として記録される形式（Excelのセル、Word・PowerPointの段落と表のセル）だけが対象です。図形の文字の太字は対象外です。
 
 ## 件数が多いとき
 

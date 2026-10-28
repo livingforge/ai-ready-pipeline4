@@ -3,7 +3,7 @@
 //! the theme, and font edits written to the runs.
 use super::word::Block;
 use super::*;
-use crate::fonts::{AUTO, Color, Emphasis, FontEdit, RunFont, Theme};
+use crate::fonts::{AUTO, Color, ElementEmphasis, Emphasis, FontEdit, RunFont, Theme};
 
 /// A style of `word/styles.xml`.
 struct Style {
@@ -305,7 +305,7 @@ impl WordStyles {
     }
 
     /// The font and emphasis of a block of Word text from the runs that show it.
-    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, Emphasis) {
+    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, ElementEmphasis) {
         let runs: Vec<_> = block
             .runs
             .iter()

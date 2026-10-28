@@ -44,12 +44,12 @@
   },
   "search-format": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: one per cell or shape text, mixed where its runs differ. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where every run of the text shows it; fill is a filled cell behind the text.",
+    "description": "One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: of a cell or shape text whose runs differ, mixed and the value of each run. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where some run of the text shows it; fill is a filled cell behind the text.",
     "type": "object", "additionalProperties": false,
     "required": ["property", "value", "hits", "cells"],
     "properties": {
       "property": {"enum": ["color", "theme", "font", "size", "bold", "italic", "underline", "strike", "highlight", "fill"]},
-      "value": {"type": ["string", "number", "boolean"], "description": "Font color as RRGGBB, auto or mixed; theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill)."},
+      "value": {"type": ["string", "number", "boolean"], "description": "Font color as RRGGBB, auto or mixed (text whose runs differ); theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill)."},
       "family": {"enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray", "black", "white"], "description": "For a color, the family a --color filter names it by; auto is black."},
       "hits": {"type": "integer", "minimum": 1, "description": "The hits of a search filtering by this value alone."},
       "cells": {"type": "integer", "minimum": 0, "description": "The cells and shape texts with text in this value."}

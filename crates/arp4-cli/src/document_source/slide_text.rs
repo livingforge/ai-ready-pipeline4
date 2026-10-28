@@ -187,7 +187,7 @@ impl<'a, 'input> Text<'a, 'input> {
         address: String,
         place: Option<super::word_fonts::TablePlace>,
     ) -> Block<'a, 'input> {
-        let bold = self.runs > 0 && self.runs == self.bold_runs;
+        let bold = crate::fonts::Share::of(self.bold_runs, self.runs);
         Block::slide(
             address,
             self.text,

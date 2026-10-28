@@ -1338,6 +1338,7 @@ pub(crate) enum DocumentCommand {
         /// One to 32 quoted queries against one saved index snapshot. Within each query,
         /// whitespace separates literal AND terms; punctuation is not query syntax.
         /// With a format filter the query may be left out, to search by format alone.
+        /// A format filter keeps a cell or shape text in the format in whole or in part.
         #[arg(
             num_args = 0..=32,
             required_unless_present_any = [
@@ -1347,7 +1348,8 @@ pub(crate) enum DocumentCommand {
         query: Vec<String>,
         /// Only hits with text in this font color: RRGGBB, a family (red, orange,
         /// yellow, green, cyan, blue, purple, pink, gray, black, white), a theme slot
-        /// (accent1, dk1, ...), auto or mixed. Repeat for any of several.
+        /// (accent1, dk1, ...), auto, or mixed for text in several colors. Repeat for
+        /// any of several.
         #[arg(long)]
         color: Vec<String>,
         /// Only hits with text in this font, latin or East Asian, compared as

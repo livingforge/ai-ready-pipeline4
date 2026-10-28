@@ -5,7 +5,7 @@
 use super::word::Block;
 use super::word_fonts::TablePlace;
 use super::*;
-use crate::fonts::{Color, ColorContext, Emphasis, FontEdit, RunFont, Theme};
+use crate::fonts::{Color, ColorContext, ElementEmphasis, FontEdit, RunFont, Theme};
 use std::cell::OnceCell;
 
 /// The sizes PowerPoint gives text whose master defines no text styles:
@@ -498,7 +498,7 @@ impl SlideFonts {
 
     /// The font and emphasis of a block of slide text from the runs that show
     /// it; an empty placeholder shows the font of its paragraph end.
-    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, Emphasis) {
+    pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, ElementEmphasis) {
         self.runs_font(&block.runs, block.place.as_ref(), block.empty)
     }
 
@@ -509,7 +509,7 @@ impl SlideFonts {
         runs: &[Node<'_, '_>],
         place: Option<&TablePlace>,
         empty: Option<Node<'_, '_>>,
-    ) -> (Value, Emphasis) {
+    ) -> (Value, ElementEmphasis) {
         let context = self.context();
         let ends: Vec<Node<'_, '_>> = empty
             .into_iter()

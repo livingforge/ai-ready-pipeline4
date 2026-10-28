@@ -133,8 +133,8 @@ pub struct Cell {
     pub format: u32,
     /// The extraction's `type`: `formula`, `string`, `number`, `boolean` or `error`.
     pub kind: crate::extraction::CellKind,
-    /// Every run of the cell's text is bold, whatever the cell format says.
-    pub bold_text: bool,
+    /// The runs of the cell's text written bold, whatever the cell format says.
+    pub bold_text: crate::fonts::Share,
 }
 struct CellFormat {
     number_format: String,
@@ -191,7 +191,7 @@ impl Workbook {
     fn appearance(&self, cell: &Cell) -> (Value, Value) {
         let format = &self.formats[cell.format as usize];
         let mut style = format.appearance.clone();
-        if cell.bold_text {
+        if cell.bold_text == crate::fonts::Share::Every {
             style["bold"] = json!(true);
         }
         let runs: Vec<_> = cell
@@ -199,7 +199,12 @@ impl Workbook {
             .iter()
             .map(|run| run.clone().or(&format.font))
             .collect();
-        crate::fonts::element_emphasis(&runs, &format.font).mark(&mut style);
+        // Bold only some runs show is partial when the cell is not bold.
+        let bold = match cell.bold_text {
+            crate::fonts::Share::Some if style["bold"] != true => crate::fonts::Share::Some,
+            _ => crate::fonts::Share::None,
+        };
+        crate::fonts::element_emphasis(&runs, &format.font).mark(&mut style, bold);
         (style, crate::fonts::element_font(&runs, &format.font))
     }
     fn cell_value(&self, sheet_index: usize, cell: &Cell) -> Value {
@@ -224,14 +229,18 @@ fn on(properties: Node<'_, '_>, name: &str) -> bool {
         .is_some_and(|n| !matches!(n.attribute("val"), Some("0" | "false" | "off")))
 }
 
-/// Whether the text is written in runs that are all bold. Authors set a
-/// header apart this way without changing the cell format.
-fn bold_runs(node: Node<'_, '_>) -> bool {
-    let mut runs = node
+/// The runs of the text written bold. Authors set a header apart this way,
+/// writing every run bold, without changing the cell format.
+fn bold_runs(node: Node<'_, '_>) -> crate::fonts::Share {
+    let runs: Vec<_> = node
         .children()
         .filter(|n| n.has_tag_name((NS, "r")))
-        .peekable();
-    runs.peek().is_some() && runs.all(|r| child(r, "rPr").is_some_and(|p| on(p, "b")))
+        .collect();
+    let bold = runs
+        .iter()
+        .filter(|r| child(**r, "rPr").is_some_and(|p| on(p, "b")))
+        .count();
+    crate::fonts::Share::of(bold, runs.len())
 }
 
 /// Cell text from its `t` runs. Phonetic guides (`rPh`, furigana Excel keeps

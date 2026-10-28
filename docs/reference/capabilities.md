@@ -14,7 +14,7 @@
     ],
     "csv_import": true,
     "document_diagram_bodies": "Excel and PowerPoint drawings joined by lines as one diagram element: shapes with their kind, place and editable text; lines written A → B by their arrowheads, joining the recorded connections, else what an end touches or lies on within the structure policy distance (an Excel cell holding text too), marked as inferred",
-    "document_fonts": "effective latin and East Asian font names, size in points and RRGGBB color per cell, paragraph and shape text, resolved through styles and themes; mixed when runs differ; PDF strings read-only (font name without subset prefix, size on the page, device colors)",
+    "document_fonts": "effective latin and East Asian font names, size in points and RRGGBB color per cell, paragraph and shape text, resolved through styles and themes; mixed when runs differ, with the value of each run; emphasis every run shows, and as partial what only some do; PDF strings read-only (font name without subset prefix, size on the page, device colors)",
     "document_ids": "source path below the sources folder",
     "document_input_formats": [
       "xlsx",
@@ -93,7 +93,7 @@
     "documents_search": true,
     "documents_search_batch": true,
     "documents_search_engine": "SQLite FTS5 BM25; TiniestSegmenter Japanese segmentation; Unicode normalization; character bigrams; explicit synonyms",
-    "documents_search_formats": "--color (RRGGBB, color family, theme slot, auto, mixed), --font, --size, --bold, --italic, --underline, --strike, --highlight and --fill keep hits with a cell or shape text in that effective format of the adopted extraction, with or without a query; one format per cell, mixed where runs differ, a mark only where every run shows it; documents search-formats lists each indexed value with its hits",
+    "documents_search_formats": "--color (RRGGBB, color family, theme slot, auto, mixed), --font, --size, --bold, --italic, --underline, --strike, --highlight and --fill keep hits with a cell or shape text in that effective format of the adopted extraction, with or without a query; text in the format in whole or in part matches, each condition by some of one cell's text; mixed matches text whose colors differ; documents search-formats lists each indexed value with its hits",
     "documents_search_freshness": "saved index snapshot; external changes remain unchecked until search-refresh",
     "documents_search_refresh": "explicit documents search-refresh command",
     "documents_search_scope": "adopted extraction with structure context; proposals and unexported content edits are not indexed",

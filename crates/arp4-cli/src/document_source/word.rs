@@ -378,7 +378,8 @@ pub(super) struct Block<'a, 'input> {
     /// Whether an edit can write new line breaks, as Word and PowerPoint
     /// paragraphs hold them.
     breaks: bool,
-    bold: bool,
+    /// The runs written bold, as authors set text apart.
+    bold: crate::fonts::Share,
     fill: bool,
     in_table: bool,
     /// The runs that show the text, whose fonts are the block's font.
@@ -405,7 +406,7 @@ impl<'a, 'input> Block<'a, 'input> {
             segments,
             application,
             breaks: false,
-            bold: false,
+            bold: crate::fonts::Share::None,
             fill: false,
             in_table: false,
             runs: vec![],
@@ -420,7 +421,7 @@ impl<'a, 'input> Block<'a, 'input> {
         address: String,
         text: String,
         segments: Vec<Segment<'a, 'input>>,
-        bold: bool,
+        bold: crate::fonts::Share,
         runs: Vec<Node<'a, 'input>>,
         place: Option<super::word_fonts::TablePlace>,
     ) -> Self {
@@ -448,7 +449,7 @@ pub(super) fn blocks_sheet(
     blocks: &[Block<'_, '_>],
     merges: &[String],
     tables: &[Value],
-    font: &dyn Fn(&Block<'_, '_>) -> (Value, crate::fonts::Emphasis),
+    font: &dyn Fn(&Block<'_, '_>) -> (Value, crate::fonts::ElementEmphasis),
 ) -> Result<crate::extraction::Sheet> {
     let mut cells = BlockCells::new();
     for block in blocks {
@@ -482,12 +483,12 @@ impl BlockCells {
         &mut self,
         block: &Block<'_, '_>,
         text: String,
-        (font, emphasis): (Value, crate::fonts::Emphasis),
+        (font, emphasis): (Value, crate::fonts::ElementEmphasis),
     ) {
         self.count += 1;
-        let mut style = json!({"bold":block.bold,"fill":u8::from(block.fill),
-            "border":u8::from(block.in_table)});
-        emphasis.mark(&mut style);
+        let mut style = json!({"bold":block.bold == crate::fonts::Share::Every,
+            "fill":u8::from(block.fill),"border":u8::from(block.in_table)});
+        emphasis.mark(&mut style, block.bold);
         let cell = crate::extraction::NewCell {
             id: &format!("text-{}", self.count),
             address: &block.address,
@@ -908,7 +909,7 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
             address,
             application: "Word",
             breaks: true,
-            bold: self.runs > 0 && self.runs == self.bold_runs,
+            bold: crate::fonts::Share::of(self.bold_runs, self.runs),
             text: self.text,
             segments: self.segments,
             fill,
@@ -1229,7 +1230,10 @@ fn place<'a, 'input>(
                 Content::Text(mut block) => {
                     let last = if k + 1 == count { bottom } else { row };
                     block.address = address(row, left)?;
-                    emphasis.push((cell.row, block.bold || cell.fill));
+                    emphasis.push((
+                        cell.row,
+                        block.bold == crate::fonts::Share::Every || cell.fill,
+                    ));
                     if right > left || last > row {
                         output.merges.push(range((row, left), (last, right))?);
                     }
@@ -1699,9 +1703,10 @@ mod tests {
             )
             .unwrap()
         );
+        // Text bold in part is not a bold cell, and is bold in part.
         assert_eq!(
             sheet["cells"][4]["style"],
-            json!({"bold":false,"fill":0,"border":1})
+            json!({"bold":false,"fill":0,"border":1,"partial":["bold"]})
         );
         assert_eq!(sheet["cells"][0]["style"]["border"], 0);
     }

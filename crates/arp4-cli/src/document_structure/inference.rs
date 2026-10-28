@@ -1014,25 +1014,9 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
         header = plain_header(group, header_top).map(|end| (header_top, end));
         plain = header.is_some();
     }
-    // Records in columns: every row starts with a marked label and nothing else is marked.
     if header.is_none() && explicit.is_none() && !single && !caption {
-        let marked = |c: &Cell<'_>| c.bold() || c.fill() != 0;
-        let tops: BTreeSet<_> = group.iter().map(|c| c.top).collect();
         let columns: BTreeSet<_> = group.iter().map(|c| c.left).collect();
-        let labelled = group
-            .iter()
-            .all(|c| (c.left == left) == marked(c) && (c.left != left || c.string()));
-        // Every row starts at the left edge.
-        let complete = || {
-            group
-                .iter()
-                .filter(|c| c.left == left)
-                .map(|c| c.top)
-                .collect::<BTreeSet<_>>()
-                .len()
-                == tops.len()
-        };
-        if labelled && tops.len() >= 2 && columns.len() >= 3 && complete() {
+        if columns.len() >= 3 && labels_down(group, left) {
             header = Some((
                 header_top,
                 row(group, header_top)
@@ -1053,6 +1037,27 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
         header,
         plain,
     })
+}
+
+/// Records in columns: every row, two or more, starts with a marked label at
+/// `left` and nothing else is marked.
+fn labels_down(group: &[&Cell<'_>], left: u32) -> bool {
+    let marked = |c: &Cell<'_>| c.bold() || c.fill() != 0;
+    let tops: BTreeSet<_> = group.iter().map(|c| c.top).collect();
+    let labelled = group
+        .iter()
+        .all(|c| (c.left == left) == marked(c) && (c.left != left || c.string()));
+    // Every row starts at the left edge.
+    let complete = || {
+        group
+            .iter()
+            .filter(|c| c.left == left)
+            .map(|c| c.top)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == tops.len()
+    };
+    labelled && tops.len() >= 2 && complete()
 }
 
 /// Rows of bold labels after the first record. A row that repeats the last
@@ -1201,10 +1206,21 @@ fn refine(
         return Ok(vec![]);
     }
     group.sort_by_key(|i| (cells[*i].top, cells[*i].left));
-    // Two grids can touch along a full vertical edge. A different final row,
-    // together with a header and record labels on both sides, gives a much
-    // stronger boundary than adjacency gives evidence of one wide grid.
-    if let Some((left, right)) = split_touching_tables(cells, boxes, &group)? {
+    // Two grids can touch along a full vertical edge, or be joined only by
+    // empty fields of a ruled sheet. A header and record labels on both
+    // sides, with what one grid would share but they do not, give a much
+    // stronger boundary than adjacency gives evidence of one wide grid. A
+    // title or a note across both, bordered with them, belongs to neither.
+    let mut split = split_touching_tables(cells, boxes, &group)?;
+    if split.is_none()
+        && let Some((outer, inner)) = bands(cells, &group)
+    {
+        split = split_touching_tables(cells, boxes, &inner)?;
+        if split.is_some() {
+            leftovers.extend(outer);
+        }
+    }
+    if let Some((left, right)) = split {
         let mut tables = refine(cells, boxes, left, leftovers)?;
         append(&mut tables, refine(cells, boxes, right, leftovers)?, None);
         return Ok(tables);
@@ -1461,6 +1477,15 @@ impl Boxes {
         Self { all, by_top, wide }
     }
 
+    /// The boxes starting on `row`.
+    fn on(&self, row: u32) -> impl Iterator<Item = Extent> + '_ {
+        self.by_top
+            .get(&row)
+            .into_iter()
+            .flatten()
+            .map(|&k| self.all[k])
+    }
+
     /// The first box starting on `row` within the columns `left` to `right`.
     fn starting(&self, row: u32, left: u32, right: u32) -> Option<Extent> {
         self.by_top
@@ -1482,6 +1507,181 @@ impl Boxes {
     }
 }
 
+/// One side of a column edge that two grids touching along it would share,
+/// when the side reads as a table of its own: a header from its first row,
+/// or labels down its first column, and names or numbers counting up by one
+/// on at least half of the rows under its header.
+struct Side {
+    left: u32,
+    right: u32,
+    top: u32,
+    /// Its last row, carried down by the empty boxes of the grid below it.
+    bottom: u32,
+    /// The last header row; `None` when labels run down its first column.
+    header_end: Option<u32>,
+    /// The one fill of every heading, when they share one.
+    fill: Option<u64>,
+    /// A heading merged down through every header row, as authors merge down
+    /// the headings that have no subheadings.
+    merged_down: bool,
+    /// The rows (first, last) of the labels in its first column merged down
+    /// over several records.
+    merged: Vec<(u32, u32)>,
+    /// The row and look (bold, fill) of each cell with a value.
+    looks: Vec<(u32, (bool, u64))>,
+}
+
+fn side(cells: &[Cell<'_>], boxes: &Boxes, side: &[usize]) -> Result<Option<Side>> {
+    let (left, top, right, last_value) = bounds(cells, side);
+    let mut bottom = last_value;
+    // Empty boxes of the grid below a side carry it down.
+    while let Some((_, _, _, b)) = boxes.starting(bottom + 1, left, right) {
+        bottom = b;
+    }
+    let view: Vec<_> = side.iter().map(|&i| &cells[i]).collect();
+    // One column, though merged across several, as row labels of a grid
+    // whose records lie on the other side.
+    let columns: BTreeSet<u32> = view.iter().map(|c| c.left).collect();
+    if columns.len() < 2 || bottom < top + 2 {
+        return Ok(None);
+    }
+    // Every column starts on its first row, written or a field of the grid,
+    // as a column of the other table standing lower does not.
+    let mut starting: BTreeSet<u32> = BTreeSet::new();
+    for (l, r) in view
+        .iter()
+        .filter(|c| c.top == top)
+        .map(|c| c.span())
+        .chain(boxes.on(top).map(|(l, _, r, _)| (l, r)))
+    {
+        starting.extend(l.max(left)..=r.min(right));
+    }
+    if starting.len() < (right - left + 1) as usize {
+        return Ok(None);
+    }
+    let layout = layout(&view, None)?;
+    let header_end = match layout.header {
+        Some((first, end)) if first == top && !layout.plain => Some(end),
+        None if labels_down(&view, left) => None,
+        _ => return Ok(None),
+    };
+    // Its header rows hold headings only, as the records of the other table
+    // beside them do not.
+    if header_end.is_some_and(|end| {
+        view.iter()
+            .any(|c| c.top <= end && c.nonempty() && !c.bold() && c.fill() == 0)
+    }) {
+        return Ok(None);
+    }
+    let body = header_end.map_or(top, |end| end + 1);
+    let labels: Vec<_> = view
+        .iter()
+        .filter(|c| c.left == left && c.top >= body && c.nonempty())
+        .collect();
+    // Every row under its header, written or not.
+    let rows = (last_value + 1).saturating_sub(body) as usize;
+    // Fewer header rows than those under them: a side read alone may take
+    // records that keep their columns' fills for headings.
+    if (body - top) as usize > rows {
+        return Ok(None);
+    }
+    // Labels of the records: names, as a sparse column of notes or a column
+    // of marks such as `●` beside another table labels none, or numbers
+    // counting the records.
+    let names: Vec<_> = labels
+        .iter()
+        .filter(|c| c.string() && c.text().chars().any(char::is_alphanumeric))
+        .collect();
+    let named: usize = names.iter().map(|c| (c.bottom - c.top + 1) as usize).sum();
+    let numbers: Option<Vec<f64>> = labels.iter().map(|c| c.source.value().as_f64()).collect();
+    let counted = numbers.is_some_and(|n| {
+        n.len() >= 2 && n.len() * 2 >= rows && n.windows(2).all(|w| w[1] == w[0] + 1.0)
+    });
+    if header_end.is_some() && !(names.len() >= 2 && named * 2 >= rows) && !counted {
+        return Ok(None);
+    }
+    let headings: BTreeSet<u64> = header_end.map_or(BTreeSet::new(), |end| {
+        view.iter()
+            .filter(|c| c.top <= end && c.nonempty())
+            .map(|c| c.fill())
+            .collect()
+    });
+    Ok(Some(Side {
+        left,
+        right,
+        top,
+        bottom,
+        header_end,
+        fill: match headings.into_iter().collect::<Vec<_>>().as_slice() {
+            [fill] if *fill != 0 => Some(*fill),
+            _ => None,
+        },
+        merged_down: header_end
+            .is_some_and(|end| end > top && view.iter().any(|c| c.top == top && c.bottom == end)),
+        merged: labels
+            .iter()
+            .filter(|c| c.bottom > c.top)
+            .map(|c| (c.top, c.bottom))
+            .collect(),
+        looks: view
+            .iter()
+            .filter(|c| c.nonempty())
+            .map(|c| (c.top, (c.bold(), c.fill())))
+            .collect(),
+    }))
+}
+
+/// Whether two tables of their own on either side of a column edge are two
+/// tables rather than one wide grid. One grid ends its columns on one row,
+/// reads its header on the same rows and needs no empty column inside.
+fn apart(a: &Side, b: &Side, boxes: &Boxes) -> bool {
+    // An empty column that only empty fields of a ruled grid bridge.
+    let gap = b.left > a.right + 1;
+    let looks = |side: &Side, rows: std::ops::RangeInclusive<u32>| -> BTreeSet<(bool, u64)> {
+        side.looks
+            .iter()
+            .filter(|(y, _)| rows.contains(y))
+            .map(|(_, look)| *look)
+            .collect()
+    };
+    // A header ending lower on one side, with headings starting on those
+    // rows, unless the other side's cells there look like them: one header
+    // read further on one side, as a row of subheadings in a fill of its own.
+    // Headings merged down through those rows tell neither.
+    let headers = match (a.header_end, b.header_end) {
+        (Some(x), Some(y)) if x != y => {
+            let rows = x.min(y) + 1..=x.max(y);
+            let (short, long) = if x < y { (a, b) } else { (b, a) };
+            let headings = looks(long, rows.clone());
+            !headings.is_empty() && looks(short, rows).is_disjoint(&headings)
+        }
+        (x, y) => x != y,
+    };
+    let ends = a.bottom != b.bottom || headers;
+    // A side starting higher whose headings without subheadings are merged
+    // down through its header rows would have merged down those of the other
+    // side as well, or drawn their empty fields there.
+    let (higher, lower) = if a.top <= b.top { (a, b) } else { (b, a) };
+    let stepped = higher.top < lower.top
+        && higher.merged_down
+        && (higher.top..lower.top).all(|y| {
+            boxes
+                .on(y)
+                .all(|(l, _, r, _)| r < lower.left || l > lower.right)
+        });
+    // Labels merged down on the right that run past where one on the left
+    // ends do not nest under it, as one grid's categories do.
+    let crossing = a.merged.iter().any(|&(_, end)| {
+        b.merged
+            .iter()
+            .any(|&(first, last)| first <= end && end < last)
+    });
+    // Headings of one fill on each side, different on the two.
+    let shaded = a.fill.zip(b.fill).is_some_and(|(x, y)| x != y);
+    gap || ends || stepped || crossing || shaded
+}
+
+/// Two tables side by side in a group of touching cells, left and right.
 fn split_touching_tables(
     cells: &[Cell<'_>],
     boxes: &Boxes,
@@ -1525,48 +1725,59 @@ fn split_touching_tables(
             continue;
         }
         let (a, b): (Group, Group) = group.iter().copied().partition(|&i| cells[i].right <= seam);
-        let plausible = |side: &[usize]| -> Result<Option<u32>> {
-            let (l, t, r, mut bottom) = bounds(cells, side);
-            let last_value = bottom;
-            // Empty boxes of the grid below a side carry it down.
-            while let Some((_, _, _, b)) = boxes.starting(bottom + 1, l, r) {
-                bottom = b;
-            }
-            if l == r || t != top || bottom < top + 2 {
-                return Ok(None);
-            }
-            let view: Vec<_> = side.iter().map(|&i| &cells[i]).collect();
-            let side = layout(&view, None)?;
-            if side.header != Some((top, top)) || side.plain {
-                return Ok(None);
-            }
-            // Labels of the records: names, on at least half of its rows, as a
-            // sparse column of notes or a column of marks such as `●` beside
-            // another table labels none.
-            let labels = view
-                .iter()
-                .filter(|c| {
-                    c.top > top
-                        && c.left == l
-                        && c.nonempty()
-                        && c.string()
-                        && c.text().chars().any(char::is_alphanumeric)
-                })
-                .count();
-            // Every row it spans under its header, written or not.
-            let rows = (last_value - top) as usize;
-            Ok((labels >= 2 && labels * 2 >= rows).then_some(bottom))
-        };
         if a.is_empty() || b.is_empty() {
             continue;
         }
-        if let (Some(a_bottom), Some(b_bottom)) = (plausible(&a)?, plausible(&b)?)
-            && a_bottom != b_bottom
+        if let (Some(x), Some(y)) = (side(cells, boxes, &a)?, side(cells, boxes, &b)?)
+            && apart(&x, &y, boxes)
         {
             return Ok(Some((a, b)));
         }
     }
     Ok(None)
+}
+
+/// The rows over and under the rest of a group that hold one cell each, when
+/// one of them spans the whole group: a title or a note across tables side by
+/// side, with plain text over the title. Returns them and the rest.
+fn bands(cells: &[Cell<'_>], group: &[usize]) -> Option<(Group, Group)> {
+    let (left, _, right, _) = bounds(cells, group);
+    let whole = |i: usize| cells[i].span() == (left, right);
+    let plain = |i: usize| !cells[i].bordered() && cells[i].fill() == 0;
+    let mut spanned = false;
+    let mut start = 0;
+    while let Some(&i) = group.get(start) {
+        // In row order, so the next cell starts on the first row after it.
+        let alone = group
+            .get(start + 1)
+            .is_none_or(|&j| cells[j].top > cells[i].bottom);
+        if !alone || !(whole(i) || plain(i)) {
+            break;
+        }
+        spanned |= whole(i);
+        start += 1;
+    }
+    let mut end = group.len();
+    while end > start {
+        let i = group[end - 1];
+        let alone = group[start..end - 1]
+            .iter()
+            .rev()
+            .all(|&j| cells[j].bottom < cells[i].top);
+        if !alone || !whole(i) {
+            break;
+        }
+        spanned = true;
+        end -= 1;
+    }
+    (spanned && start < end).then(|| {
+        let outer = group[..start]
+            .iter()
+            .chain(&group[end..])
+            .copied()
+            .collect();
+        (outer, group[start..end].to_vec())
+    })
 }
 
 /// Which cells of the records are row labels.

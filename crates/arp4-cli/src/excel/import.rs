@@ -317,7 +317,7 @@ fn grid(worksheet: Node<'_, '_>, heights: &[(u32, f64)]) -> Value {
 /// The cells of a worksheet as its rows are read, a part of them at a time.
 struct Rows<'w> {
     sheet: &'w str,
-    shared: &'w [(String, bool, Vec<crate::fonts::RunFont>)],
+    shared: &'w [(String, crate::fonts::Share, Vec<crate::fonts::RunFont>)],
     palette: &'w fonts::Palette,
     cell_formats: &'w [CellFormat],
     date1904: bool,
@@ -411,11 +411,11 @@ impl Rows<'_> {
                 if c.attribute("vm").is_some() {
                     self.rich_values.push(format!("{}!{address}", self.sheet));
                 }
-                let mut bold_text = false;
+                let mut bold_text = crate::fonts::Share::None;
                 let mut runs = vec![];
                 let (kind, value) = match c.attribute("t").unwrap_or("n") {
                     "inlineStr" => {
-                        bold_text = child(c, "is").is_some_and(bold_runs);
+                        bold_text = child(c, "is").map_or(crate::fonts::Share::None, bold_runs);
                         runs = child(c, "is")
                             .map(|is| self.palette.runs(is))
                             .unwrap_or_default();

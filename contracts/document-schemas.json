@@ -6110,7 +6110,7 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                 "required": [
                   "latin",
                   "east_asian",
@@ -6165,6 +6165,55 @@
                     "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                     "type": "string",
                     "minLength": 1
+                  },
+                  "runs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                    "properties": {
+                      "latin": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "east_asian": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "size": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      },
+                      "color": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^([0-9A-F]{6}|auto)$"
+                        }
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来するrunの色のテーマの色枠",
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -6209,6 +6258,21 @@
                     "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
                     "type": "integer",
                     "minimum": 1
+                  },
+                  "partial": {
+                    "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "bold",
+                        "italic",
+                        "underline",
+                        "strike",
+                        "highlight"
+                      ]
+                    }
                   }
                 },
                 "required": [
@@ -6679,7 +6743,7 @@
                   "font": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "description": "図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                     "required": [
                       "latin",
                       "east_asian",
@@ -6734,11 +6798,60 @@
                         "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                         "type": "string",
                         "minLength": 1
+                      },
+                      "runs": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                        "properties": {
+                          "latin": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "east_asian": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "size": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          },
+                          "color": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^([0-9A-F]{6}|auto)$"
+                            }
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来するrunの色のテーマの色枠",
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        }
                       }
                     }
                   },
                   "style": {
-                    "description": "The emphasis every run of the shape's text shows. Absent when it shows none.",
+                    "description": "The emphasis the shape's text shows, in every run or, under partial, in some. Absent when it shows none.",
                     "type": "object",
                     "additionalProperties": false,
                     "minProperties": 1,
@@ -6758,6 +6871,20 @@
                       "highlight": {
                         "description": "Every run of the text is highlighted (Word and PowerPoint).",
                         "const": true
+                      },
+                      "partial": {
+                        "description": "The marks only some runs of the text show, in this order: italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "italic",
+                            "underline",
+                            "strike",
+                            "highlight"
+                          ]
+                        }
                       }
                     }
                   },
@@ -7386,6 +7513,21 @@
                       "highlight": {
                         "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
                         "type": "boolean"
+                      },
+                      "partial": {
+                        "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "bold",
+                            "italic",
+                            "underline",
+                            "strike",
+                            "highlight"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -7397,7 +7539,7 @@
                   "font": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                     "required": [
                       "latin",
                       "east_asian",
@@ -7452,6 +7594,55 @@
                         "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                         "type": "string",
                         "minLength": 1
+                      },
+                      "runs": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                        "properties": {
+                          "latin": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "east_asian": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "size": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          },
+                          "color": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^([0-9A-F]{6}|auto)$"
+                            }
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来するrunの色のテーマの色枠",
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -7943,6 +8134,21 @@
                             "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
                             "type": "integer",
                             "minimum": 1
+                          },
+                          "partial": {
+                            "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                            "type": "array",
+                            "minItems": 1,
+                            "uniqueItems": true,
+                            "items": {
+                              "enum": [
+                                "bold",
+                                "italic",
+                                "underline",
+                                "strike",
+                                "highlight"
+                              ]
+                            }
                           }
                         },
                         "required": [
@@ -7962,7 +8168,7 @@
                       {
                         "type": "object",
                         "additionalProperties": false,
-                        "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                        "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                         "required": [
                           "latin",
                           "east_asian",
@@ -8017,6 +8223,55 @@
                             "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                             "type": "string",
                             "minLength": 1
+                          },
+                          "runs": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "minProperties": 1,
+                            "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                            "properties": {
+                              "latin": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "east_asian": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "size": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "number",
+                                  "exclusiveMinimum": 0
+                                }
+                              },
+                              "color": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^([0-9A-F]{6}|auto)$"
+                                }
+                              },
+                              "color_theme": {
+                                "description": "テーマ色に由来するrunの色のテーマの色枠",
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            }
                           }
                         }
                       },
@@ -8496,7 +8751,7 @@
                   "font": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "description": "図形の文字の実効フォント。文字を持つ図形だけに置く。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                     "required": [
                       "latin",
                       "east_asian",
@@ -8551,11 +8806,60 @@
                         "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                         "type": "string",
                         "minLength": 1
+                      },
+                      "runs": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                        "properties": {
+                          "latin": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "east_asian": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "size": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          },
+                          "color": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^([0-9A-F]{6}|auto)$"
+                            }
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来するrunの色のテーマの色枠",
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        }
                       }
                     }
                   },
                   "style": {
-                    "description": "The emphasis every run of the shape's text shows. Absent when it shows none.",
+                    "description": "The emphasis the shape's text shows, in every run or, under partial, in some. Absent when it shows none.",
                     "type": "object",
                     "additionalProperties": false,
                     "minProperties": 1,
@@ -8575,6 +8879,20 @@
                       "highlight": {
                         "description": "Every run of the text is highlighted (Word and PowerPoint).",
                         "const": true
+                      },
+                      "partial": {
+                        "description": "The marks only some runs of the text show, in this order: italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "italic",
+                            "underline",
+                            "strike",
+                            "highlight"
+                          ]
+                        }
                       }
                     }
                   },
@@ -8798,6 +9116,55 @@
                   "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                   "type": "string",
                   "minLength": 1
+                },
+                "runs": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                  "properties": {
+                    "latin": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "east_asian": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "size": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "color": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^([0-9A-F]{6}|auto)$"
+                      }
+                    },
+                    "color_theme": {
+                      "description": "テーマ色に由来するrunの色のテーマの色枠",
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
                 }
               }
             },
@@ -8838,6 +9205,21 @@
                   "description": "Excel indent level of the cell's alignment, which authors use to place an item under its parent. Absent when the cell is not indented.",
                   "type": "integer",
                   "minimum": 1
+                },
+                "partial": {
+                  "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "bold",
+                      "italic",
+                      "underline",
+                      "strike",
+                      "highlight"
+                    ]
+                  }
                 }
               },
               "required": [
@@ -9298,6 +9680,21 @@
                       "highlight": {
                         "description": "Every run of the text is highlighted (Word and PowerPoint). Absent when not.",
                         "type": "boolean"
+                      },
+                      "partial": {
+                        "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "bold",
+                            "italic",
+                            "underline",
+                            "strike",
+                            "highlight"
+                          ]
+                        }
                       }
                     },
                     "required": [
@@ -9309,7 +9706,7 @@
                   "font": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                    "description": "要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                     "required": [
                       "latin",
                       "east_asian",
@@ -9364,6 +9761,55 @@
                         "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                         "type": "string",
                         "minLength": 1
+                      },
+                      "runs": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                        "properties": {
+                          "latin": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "east_asian": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "size": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          },
+                          "color": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "pattern": "^([0-9A-F]{6}|auto)$"
+                            }
+                          },
+                          "color_theme": {
+                            "description": "テーマ色に由来するrunの色のテーマの色枠",
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        }
                       }
                     }
                   }
@@ -12013,7 +12459,7 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
+                "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。",
                 "required": [
                   "latin",
                   "east_asian",
@@ -12068,6 +12514,55 @@
                     "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                     "type": "string",
                     "minLength": 1
+                  },
+                  "runs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                    "properties": {
+                      "latin": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "east_asian": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "size": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      },
+                      "color": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^([0-9A-F]{6}|auto)$"
+                        }
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来するrunの色のテーマの色枠",
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -12523,7 +13018,7 @@
             "element_font": {
               "type": "object",
               "additionalProperties": false,
-              "description": "font を持たない本文の要素と表のセルのフォント（最も多くの要素・セルが持つもの）。現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。多くの要素・セルがフォントを持たないページでは持たない",
+              "description": "font を持たない本文の要素と表のセルのフォント（最も多くの要素・セルが持つもの）。現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"で各runの値をrunsに持ち、解決できない項目はnull。多くの要素・セルがフォントを持たないページでは持たない",
               "required": [
                 "latin",
                 "east_asian",
@@ -12578,6 +13073,55 @@
                   "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                   "type": "string",
                   "minLength": 1
+                },
+                "runs": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                  "properties": {
+                    "latin": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "east_asian": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "size": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "color": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^([0-9A-F]{6}|auto)$"
+                      }
+                    },
+                    "color_theme": {
+                      "description": "テーマ色に由来するrunの色のテーマの色枠",
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
                 }
               }
             },
@@ -12660,6 +13204,55 @@
                                 "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                                 "type": "string",
                                 "minLength": 1
+                              },
+                              "runs": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "minProperties": 1,
+                                "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                                "properties": {
+                                  "latin": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "east_asian": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "size": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0
+                                    }
+                                  },
+                                  "color": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "pattern": "^([0-9A-F]{6}|auto)$"
+                                    }
+                                  },
+                                  "color_theme": {
+                                    "description": "テーマ色に由来するrunの色のテーマの色枠",
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                }
                               }
                             }
                           },
@@ -12745,6 +13338,55 @@
                                 "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                                 "type": "string",
                                 "minLength": 1
+                              },
+                              "runs": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "minProperties": 1,
+                                "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                                "properties": {
+                                  "latin": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "east_asian": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "size": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0
+                                    }
+                                  },
+                                  "color": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "pattern": "^([0-9A-F]{6}|auto)$"
+                                    }
+                                  },
+                                  "color_theme": {
+                                    "description": "テーマ色に由来するrunの色のテーマの色枠",
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                }
                               }
                             }
                           },
@@ -12909,6 +13551,55 @@
                                             "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                                             "type": "string",
                                             "minLength": 1
+                                          },
+                                          "runs": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "minProperties": 1,
+                                            "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
+                                            "properties": {
+                                              "latin": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              },
+                                              "east_asian": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              },
+                                              "size": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "number",
+                                                  "exclusiveMinimum": 0
+                                                }
+                                              },
+                                              "color": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "string",
+                                                  "pattern": "^([0-9A-F]{6}|auto)$"
+                                                }
+                                              },
+                                              "color_theme": {
+                                                "description": "テーマ色に由来するrunの色のテーマの色枠",
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            }
                                           }
                                         }
                                       },

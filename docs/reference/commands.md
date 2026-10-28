@@ -1987,11 +1987,11 @@ Usage: arp4 documents search [OPTIONS] [QUERY]...
 
 Arguments:
   [QUERY]...
-          One to 32 quoted queries against one saved index snapshot. Within each query, whitespace separates literal AND terms; punctuation is not query syntax. With a format filter the query may be left out, to search by format alone
+          One to 32 quoted queries against one saved index snapshot. Within each query, whitespace separates literal AND terms; punctuation is not query syntax. With a format filter the query may be left out, to search by format alone. A format filter keeps a cell or shape text in the format in whole or in part
 
 Options:
       --color <COLOR>
-          Only hits with text in this font color: RRGGBB, a family (red, orange, yellow, green, cyan, blue, purple, pink, gray, black, white), a theme slot (accent1, dk1, ...), auto or mixed. Repeat for any of several
+          Only hits with text in this font color: RRGGBB, a family (red, orange, yellow, green, cyan, blue, purple, pink, gray, black, white), a theme slot (accent1, dk1, ...), auto, or mixed for text in several colors. Repeat for any of several
 
       --full
           Return all details (not supported by spec workflow; use read pagination there)

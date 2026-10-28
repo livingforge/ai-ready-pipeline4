@@ -1,7 +1,7 @@
 //! The format of indexed text, which search filters by: the effective font of
-//! a cell or shape text, and the emphasis its style records. The extraction
-//! keeps one format per cell; a property its runs disagree on is `mixed`, and
-//! a mark only some of its runs show is not recorded.
+//! a cell or shape text, and the emphasis its style records. A cell's format
+//! holds every value its runs show: of a property they disagree on, `mixed`
+//! and the value of each run, and each mark some run shows.
 use super::analyzer::normalize;
 use crate::fonts::{AUTO, MIXED};
 use anyhow::{Context, Result, bail, ensure};
@@ -40,29 +40,46 @@ const PROPERTIES: [&str; 10] = [
 ];
 
 /// The format of text with `font` (an extraction font, null for none) and
-/// `style` (an extraction style, null for none), as the index stores it;
-/// `None` when neither records anything.
+/// `style` (an extraction style, null for none), as the index stores it: each
+/// font property as the values the text shows, and each mark the whole text
+/// or part of it shows. `None` when neither records anything.
 pub(super) fn of(font: &Value, style: &Value) -> Option<Value> {
     let mut format = Map::new();
-    for key in ["color", "latin", "east_asian", "size"] {
-        if !font[key].is_null() {
-            format.insert(key.into(), font[key].clone());
+    for (key, from) in [
+        ("color", "color"),
+        ("theme", "color_theme"),
+        ("latin", "latin"),
+        ("east_asian", "east_asian"),
+        ("size", "size"),
+    ] {
+        let mut values: Vec<Value> = vec![];
+        let runs = font["runs"][from].as_array().into_iter().flatten();
+        for value in std::iter::once(&font[from]).chain(runs) {
+            if !value.is_null() && !values.contains(value) {
+                values.push(value.clone());
+            }
+        }
+        if !values.is_empty() {
+            format.insert(key.into(), json!(values));
         }
     }
-    if let Some(theme) = font["color_theme"].as_str() {
-        format.insert("theme".into(), json!(theme));
-    }
+    let partial = style["partial"].as_array();
     for key in MARKS {
         // A style records the fill a cell has by number, 0 for none.
         let marked = match key {
             "fill" => style[key].as_u64().is_some_and(|fill| fill != 0),
-            _ => style[key] == true,
+            _ => style[key] == true || partial.is_some_and(|marks| marks.contains(&json!(key))),
         };
         if marked {
             format.insert(key.into(), json!(true));
         }
     }
     (!format.is_empty()).then_some(Value::Object(format))
+}
+
+/// The values a format holds of `key`.
+fn values<'a>(format: &'a Value, key: &str) -> impl Iterator<Item = &'a Value> {
+    format[key].as_array().into_iter().flatten()
 }
 
 /// The family of a font color: by hue, or by lightness when the color has
@@ -123,8 +140,9 @@ enum ColorSpec {
     Theme(&'static str),
 }
 
-/// Which cells a search keeps: every condition given holds for one cell's
-/// format. Several colors or fonts are alternatives; every mark must show.
+/// Which cells a search keeps: every condition given holds for some of one
+/// cell's text, not necessarily the same part. Several colors or fonts are
+/// alternatives; every mark must show.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FormatFilter {
     colors: Vec<ColorSpec>,
@@ -233,22 +251,25 @@ impl FormatFilter {
 
     /// Whether text in `format`, as [`of`] gives it, passes.
     pub(super) fn matches(&self, format: &Value) -> bool {
-        let color = format["color"].as_str();
         let colored = self.colors.is_empty()
             || self.colors.iter().any(|spec| match spec {
-                ColorSpec::Exact(exact) => color == Some(exact),
-                ColorSpec::Family(wanted) => color.and_then(family) == Some(wanted),
-                ColorSpec::Theme(slot) => format["theme"] == *slot,
+                ColorSpec::Exact(exact) => values(format, "color").any(|color| color == exact),
+                ColorSpec::Family(wanted) => values(format, "color")
+                    .any(|color| color.as_str().and_then(family) == Some(wanted)),
+                ColorSpec::Theme(slot) => values(format, "theme").any(|theme| theme == slot),
             });
         let named = self.fonts.is_empty()
             || ["latin", "east_asian"].iter().any(|key| {
-                format[key]
-                    .as_str()
-                    .is_some_and(|name| self.fonts.contains(&normalize(name)))
+                values(format, key).any(|name| {
+                    name.as_str()
+                        .is_some_and(|name| self.fonts.contains(&normalize(name)))
+                })
             });
         let sized = self.size.is_none_or(|(low, high)| {
-            format["size"].as_f64().is_some_and(|size| {
-                low.is_none_or(|low| size >= low) && high.is_none_or(|high| size <= high)
+            values(format, "size").any(|size| {
+                size.as_f64().is_some_and(|size| {
+                    low.is_none_or(|low| size >= low) && high.is_none_or(|high| size <= high)
+                })
             })
         });
         colored && named && sized && self.marks.iter().all(|mark| format[*mark] == true)
@@ -286,8 +307,8 @@ fn properties(format: &Value) -> BTreeSet<(usize, String)> {
         ("font", "east_asian"),
         ("size", "size"),
     ] {
-        if !format[key].is_null() {
-            add(property, &format[key]);
+        for value in values(format, key) {
+            add(property, value);
         }
     }
     for key in MARKS {
@@ -371,7 +392,11 @@ mod tests {
             let marks: &[&str] = if bold { &["bold"] } else { &[] };
             FormatFilter::new(&owned(colors), &owned(fonts), size, marks).unwrap()
         };
-        let red = json!({"color":"C00000","theme":"accent2","latin":"Arial","east_asian":"ＭＳ ゴシック","size":10.5,"bold":true});
+        let red = of(
+            &json!({"color":"C00000","color_theme":"accent2","latin":"Arial","east_asian":"ＭＳ ゴシック","size":10.5}),
+            &json!({"bold":true}),
+        )
+        .unwrap();
         assert!(filter(&["red"], &[], None, false).matches(&red));
         assert!(filter(&["#c00000"], &[], None, false).matches(&red));
         assert!(filter(&["ACCENT2"], &[], None, false).matches(&red));
@@ -382,9 +407,23 @@ mod tests {
         assert!(filter(&[], &["MS ゴシック"], None, false).matches(&red));
         assert!(filter(&[], &["arial"], Some("10..11"), true).matches(&red));
         assert!(!filter(&["red"], &[], Some("11.."), false).matches(&red));
-        assert!(!filter(&[], &[], Some("..12"), false).matches(&json!({"size":"mixed"})));
-        assert!(filter(&["mixed"], &[], None, false).matches(&json!({"color":"mixed"})));
-        assert!(!filter(&["red"], &[], None, true).matches(&json!({"color":"FF0000"})));
+        let plain = |font: Value| of(&font, &Value::Null).unwrap();
+        assert!(!filter(&[], &[], Some("..12"), false).matches(&plain(json!({"size":"mixed"}))));
+        assert!(!filter(&["red"], &[], None, true).matches(&plain(json!({"color":"FF0000"}))));
+        // Text in part red, in part 14 points and in part bold has those
+        // formats, and each condition may hold for another part of it.
+        let parts = of(
+            &json!({"color":"mixed","latin":"Arial","size":"mixed",
+                "runs":{"color":["auto","FF0000"],"color_theme":["accent2"],"size":[10.5,14]}}),
+            &json!({"bold":false,"partial":["bold"]}),
+        )
+        .unwrap();
+        assert!(filter(&["mixed"], &[], None, false).matches(&parts));
+        assert!(filter(&["red"], &[], Some("12.."), true).matches(&parts));
+        assert!(filter(&["black"], &["arial"], Some("..11"), false).matches(&parts));
+        assert!(filter(&["accent2"], &[], None, false).matches(&parts));
+        assert!(!filter(&["blue"], &[], None, false).matches(&parts));
+        assert!(!filter(&[], &[], Some("15.."), false).matches(&parts));
         for (colors, size) in [
             (&["crimson"][..], None),
             (&[][..], Some("12..10")),
@@ -407,12 +446,13 @@ mod tests {
     fn marks_come_from_the_style_and_must_all_show() {
         let format = of(
             &json!({"color":"auto"}),
-            &json!({"bold":false,"fill":3,"border":0,"strike":true,"italic":true}),
+            &json!({"bold":false,"fill":3,"border":0,"strike":true,"partial":["italic"]}),
         )
         .unwrap();
+        // A mark only part of the text shows is a mark of the text.
         assert_eq!(
             format,
-            json!({"color":"auto","italic":true,"strike":true,"fill":true})
+            json!({"color":["auto"],"italic":true,"strike":true,"fill":true})
         );
         // No fill is 0; a style without emphasis gives nothing to filter by.
         assert_eq!(
@@ -434,28 +474,30 @@ mod tests {
 
     #[test]
     fn an_inventory_counts_each_passage_once_per_value() {
-        let items = inventory([
-            (
-                1,
-                &json!({"color":"FF0000","latin":"Arial","east_asian":"Arial","bold":true}),
-                2,
+        let format = |font: Value, style: Value| of(&font, &style).unwrap();
+        let (bold, red, parts) = (
+            format(
+                json!({"color":"FF0000","latin":"Arial","east_asian":"Arial"}),
+                json!({"bold":true}),
             ),
-            (
-                1,
-                &json!({"color":"FF0000","latin":"Arial","east_asian":"Arial"}),
-                1,
+            format(
+                json!({"color":"FF0000","latin":"Arial","east_asian":"Arial"}),
+                Value::Null,
             ),
-            (
-                2,
-                &json!({"color":"auto","latin":"Arial","east_asian":"Arial"}),
-                4,
+            format(
+                json!({"color":"mixed","latin":"Arial","east_asian":"Arial",
+                    "runs":{"color":["auto","FF0000"]}}),
+                Value::Null,
             ),
-        ]);
+        );
+        let items = inventory([(1, &bold, 2), (1, &red, 1), (2, &parts, 4)]);
+        // Text in part red counts as red, and as each other color it shows.
         assert_eq!(
             items,
             vec![
-                json!({"property":"color","value":"FF0000","family":"red","hits":1,"cells":3}),
+                json!({"property":"color","value":"FF0000","family":"red","hits":2,"cells":7}),
                 json!({"property":"color","value":"auto","family":"black","hits":1,"cells":4}),
+                json!({"property":"color","value":"mixed","hits":1,"cells":4}),
                 json!({"property":"font","value":"Arial","hits":2,"cells":7}),
                 json!({"property":"bold","value":true,"hits":1,"cells":2}),
             ]
