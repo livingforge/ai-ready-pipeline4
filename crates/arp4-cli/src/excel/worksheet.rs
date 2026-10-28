@@ -50,6 +50,7 @@ mod efficiency_measurement {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         };
         let operations = [&operation];
         let start = Instant::now();
@@ -94,6 +95,7 @@ mod efficiency_measurement {
                     style_rows: 1,
                     merges: false,
                     vba_unchanged: false,
+                    band: None,
                 });
                 length = if insertion {
                     length + count
@@ -150,6 +152,7 @@ mod efficiency_measurement {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         };
         let start = Instant::now();
         for _ in 0..10 {
@@ -196,6 +199,7 @@ mod efficiency_measurement {
                             style_rows: 1,
                             merges: false,
                             vba_unchanged: false,
+                            band: None,
                         };
                         let second = StructuralOperation {
                             id: "second".into(),
@@ -207,6 +211,7 @@ mod efficiency_measurement {
                             style_rows: 1,
                             merges: false,
                             vba_unchanged: false,
+                            band: None,
                         };
                         let operations = [&first, &second];
                         let expected = (1..=8).find(|&index| {
@@ -316,6 +321,20 @@ pub(super) fn scalar_body(prefix: &str, value: &Value) -> Result<String> {
             if *value { 1 } else { 0 }
         ),
         Value::Number(number) => format!(" t=\"n\"><{prefix}v>{number}</{prefix}v>"),
+        // A formula without its result, which Excel calculates on opening.
+        Value::Object(object) if object.len() == 1 && object.contains_key("formula") => {
+            let formula = object["formula"]
+                .as_str()
+                .and_then(|text| text.strip_prefix('='))
+                .context("a formula is text starting with =")?;
+            format!(
+                "><{prefix}f>{}</{prefix}f>",
+                formula
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            )
+        }
         _ => bail!("scalar required"),
     })
 }
@@ -343,11 +362,19 @@ pub(super) fn render_cell(
         .to_owned();
     opening = replace_xml_attribute(&format!("{opening}>"), "r", address)?;
     opening = opening.trim_end_matches('>').to_owned();
-    let body = super::text_edit::edited_body(cell, original, shared, value, prefix)?;
+    let body = if value.is_object() {
+        scalar_body(prefix, value)?
+    } else {
+        super::text_edit::edited_body(cell, original, shared, value, prefix)?
+    };
     let retained: String = cell
         .children()
         .filter(Node::is_element)
-        .filter(|node| !node.has_tag_name((NS, "v")) && !node.has_tag_name((NS, "is")))
+        .filter(|node| {
+            !node.has_tag_name((NS, "v"))
+                && !node.has_tag_name((NS, "is"))
+                && !node.has_tag_name((NS, "f"))
+        })
         .map(|node| &original[node.range()])
         .collect();
     Ok(format!("{opening}{body}{retained}</{tag}>"))
@@ -413,109 +440,18 @@ pub(super) fn transform_row(
         );
         let final_address = format!("{}{}", column_name(final_column)?, context.final_row);
         cells.insert(final_column);
-        if let Some(value) = context.changes.get(&(context.final_row, final_column)) {
-            edits.push((
-                local_range,
-                render_cell(
-                    context.original,
-                    cell,
-                    &final_address,
-                    value,
-                    context.shared,
-                )?,
-            ));
-        } else {
-            if final_address != address {
-                let cell_raw = &context.original[cell_range.clone()];
-                let (opening, _) = xml_opening(cell_raw)?;
-                let new_opening = replace_xml_attribute(opening, "r", &final_address)?;
-                edits.push((
-                    cell_range.start - row_start..cell_range.start - row_start + opening.len(),
-                    new_opening,
-                ));
-            }
-            if context.recalc && child(cell, "f").is_some() {
-                if let Some(cache) = child(cell, "v") {
-                    edits.push((
-                        cache.range().start - row_start..cache.range().end - row_start,
-                        String::new(),
-                    ));
-                }
-                if let Some(formula) = child(cell, "f")
-                    && let Some(text) = formula.text()
-                    && let Some(text_node) = formula.children().find(Node::is_text)
-                {
-                    edits.push((
-                        text_node.range().start - row_start..text_node.range().end - row_start,
-                        xml_attr(&context.moves.rewrite(text, Some(context.sheet))?),
-                    ));
-                }
-                if let Some(formula) = child(cell, "f")
-                    && formula.attribute("t") == Some("array")
-                    && let Some(reference) = formula.attribute("ref")
-                {
-                    let area = Area::parse(reference)?;
-                    let own = sheet_operations(context.sheet, context.moves.operations);
-                    let mapped = map_area(area, &own)?
-                        .filter(|mapped| same_size(area, *mapped))
-                        .with_context(|| {
-                            format!(
-                                "row/column changes cannot cut through array formula {}!{reference}; change it in Excel",
-                                context.sheet
-                            )
-                        })?;
-                    let (opening, _) = xml_opening(&context.original[formula.range()])?;
-                    edits.push((
-                        formula.range().start - row_start
-                            ..formula.range().start - row_start + opening.len(),
-                        replace_xml_attribute(opening, "ref", &mapped.render()?)?,
-                    ));
-                }
-                // A What-If data table keeps its range and input cells as
-                // attributes of the formula in its top-left cell.
-                if let Some(formula) = child(cell, "f")
-                    && formula.attribute("t") == Some("dataTable")
-                {
-                    let (opening, _) = xml_opening(&context.original[formula.range()])?;
-                    let mut rewritten = opening.to_owned();
-                    if let Some(reference) = formula.attribute("ref") {
-                        let area = Area::parse(reference)?;
-                        let own = sheet_operations(context.sheet, context.moves.operations);
-                        let mapped = map_area(area, &own)?
-                            .filter(|mapped| same_size(area, *mapped))
-                            .with_context(|| {
-                                format!(
-                                    "row/column changes cannot cut through data table {}!{reference}; change it in Excel",
-                                    context.sheet
-                                )
-                            })?;
-                        rewritten = replace_xml_attribute(&rewritten, "ref", &mapped.render()?)?;
-                    }
-                    for input in ["r1", "r2"] {
-                        if let Some(address) = formula.attribute(input) {
-                            let mapped = map_coordinate(
-                                context.sheet,
-                                address,
-                                context.moves.operations,
-                            )?
-                            .with_context(|| {
-                                format!(
-                                    "row/column changes would delete input cell {}!{address} of a data table; change it in Excel",
-                                    context.sheet
-                                )
-                            })?;
-                            rewritten = replace_xml_attribute(&rewritten, input, &mapped)?;
-                        }
-                    }
-                    if rewritten != opening {
-                        edits.push((
-                            formula.range().start - row_start
-                                ..formula.range().start - row_start + opening.len(),
-                            rewritten,
-                        ));
-                    }
-                }
-            }
+        let rendered = match context.changes.get(&(context.final_row, final_column)) {
+            Some(value) => render_cell(
+                context.original,
+                cell,
+                &final_address,
+                value,
+                context.shared,
+            )?,
+            None => rewrite_cell(cell, &final_address, context)?,
+        };
+        if rendered != context.original[cell_range] {
+            edits.push((local_range, rendered));
         }
     }
     Ok(RowOutput {
@@ -523,6 +459,115 @@ pub(super) fn transform_row(
         raw: splice(raw, edits, "worksheet")?,
         cells,
     })
+}
+
+/// The cell `cell` of the original at `address`, where the operations put it:
+/// its formula's references follow the cells they name, an array formula or
+/// data table keeps its range and inputs, and a stale result is left out.
+pub(super) fn rewrite_cell(
+    cell: Node<'_, '_>,
+    address: &str,
+    context: &RowTransform<'_, '_, '_>,
+) -> Result<String> {
+    let cell_range = cell.range();
+    let start = cell_range.start;
+    let local = |range: std::ops::Range<usize>| range.start - start..range.end - start;
+    let raw = &context.original[cell_range.clone()];
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = vec![];
+    if cell.attribute("r") != Some(address) {
+        let (opening, _) = xml_opening(raw)?;
+        edits.push((
+            0..opening.len(),
+            replace_xml_attribute(opening, "r", address)?,
+        ));
+    }
+    if context.recalc && child(cell, "f").is_some() {
+        if let Some(cache) = child(cell, "v") {
+            edits.push((local(cache.range()), String::new()));
+        }
+        if let Some(formula) = child(cell, "f")
+            && let Some(text) = formula.text()
+            && let Some(text_node) = formula.children().find(Node::is_text)
+        {
+            edits.push((
+                local(text_node.range()),
+                xml_attr(&context.moves.rewrite(text, Some(context.sheet))?),
+            ));
+        }
+        if let Some(formula) = child(cell, "f")
+            && formula.attribute("t") == Some("array")
+            && let Some(reference) = formula.attribute("ref")
+        {
+            let area = Area::parse(reference)?;
+            let own = sheet_operations(context.sheet, context.moves.operations);
+            operations_meeting(
+                area,
+                &own,
+                &format!("the array formula {}!{reference}", context.sheet),
+            )?;
+            let mapped = map_area(area, &own)?
+                .filter(|mapped| same_size(area, *mapped))
+                .with_context(|| {
+                    format!(
+                        "row/column changes cannot cut through array formula {}!{reference}; change it in Excel",
+                        context.sheet
+                    )
+                })?;
+            let (opening, _) = xml_opening(&context.original[formula.range()])?;
+            let range = local(formula.range());
+            edits.push((
+                range.start..range.start + opening.len(),
+                replace_xml_attribute(opening, "ref", &mapped.render()?)?,
+            ));
+        }
+        // A What-If data table keeps its range and input cells as
+        // attributes of the formula in its top-left cell.
+        if let Some(formula) = child(cell, "f")
+            && formula.attribute("t") == Some("dataTable")
+        {
+            let (opening, _) = xml_opening(&context.original[formula.range()])?;
+            let mut rewritten = opening.to_owned();
+            if let Some(reference) = formula.attribute("ref") {
+                let area = Area::parse(reference)?;
+                let own = sheet_operations(context.sheet, context.moves.operations);
+                operations_meeting(
+                    area,
+                    &own,
+                    &format!("the data table {}!{reference}", context.sheet),
+                )?;
+                let mapped = map_area(area, &own)?
+                    .filter(|mapped| same_size(area, *mapped))
+                    .with_context(|| {
+                        format!(
+                            "row/column changes cannot cut through data table {}!{reference}; change it in Excel",
+                            context.sheet
+                        )
+                    })?;
+                rewritten = replace_xml_attribute(&rewritten, "ref", &mapped.render()?)?;
+            }
+            for input in ["r1", "r2"] {
+                if let Some(address) = formula.attribute(input) {
+                    let mapped = map_coordinate(
+                        context.sheet,
+                        address,
+                        context.moves.operations,
+                    )?
+                    .with_context(|| {
+                        format!(
+                            "row/column changes would delete input cell {}!{address} of a data table; change it in Excel",
+                            context.sheet
+                        )
+                    })?;
+                    rewritten = replace_xml_attribute(&rewritten, input, &mapped)?;
+                }
+            }
+            if rewritten != opening {
+                let range = local(formula.range());
+                edits.push((range.start..range.start + opening.len(), rewritten));
+            }
+        }
+    }
+    splice(raw, edits, "cell")
 }
 
 /// The area the cells of `rows` span, or `None` when the rows hold no cells.
@@ -733,7 +778,7 @@ fn rule_sqref(node: Node<'_, '_>) -> Option<String> {
 /// Offset from the old top-left cell of `sqref` to the old cell that becomes
 /// the new top-left. Rule formulas are written relative to that cell, so they
 /// are re-expressed from it before references move.
-fn anchor_shift(sqref: &str, operations: &[&StructuralOperation]) -> Result<(i64, i64)> {
+pub(super) fn anchor_shift(sqref: &str, operations: &[&StructuralOperation]) -> Result<(i64, i64)> {
     let areas = sqref
         .split_whitespace()
         .map(Area::parse)
@@ -741,7 +786,10 @@ fn anchor_shift(sqref: &str, operations: &[&StructuralOperation]) -> Result<(i64
     let Some(first) = areas.first() else {
         return Ok((0, 0));
     };
-    let survivor = |span: Option<(u32, u32)>, row: bool| -> Result<Option<u32>> {
+    let survivor = |span: Option<(u32, u32)>,
+                    row: bool,
+                    operations: &[StructuralOperation]|
+     -> Result<Option<u32>> {
         let Some((start, end)) = span else {
             return Ok(Some(1));
         };
@@ -789,14 +837,20 @@ fn anchor_shift(sqref: &str, operations: &[&StructuralOperation]) -> Result<(i64
         }
         let first = segments.first().map(|segment| segment.0);
         if let Some(index) = first {
-            map_span(index, index, operations, row)?;
+            let operations: Vec<&StructuralOperation> = operations.iter().collect();
+            map_span(index, index, &operations, row)?;
         }
         Ok(first)
     };
     for area in &areas {
-        if let (Some(row), Some(column)) =
-            (survivor(area.rows, true)?, survivor(area.columns, false)?)
-        {
+        // Cells shifted in a band move the range as whole rows or columns
+        // when the band holds it across; a band reaching part of it splits
+        // it and leaves its first part where it is.
+        let held = operations_holding(*area, operations)?;
+        if let (Some(row), Some(column)) = (
+            survivor(area.rows, true, &held)?,
+            survivor(area.columns, false, &held)?,
+        ) {
             return Ok((
                 i64::from(row) - i64::from(first.first_row()),
                 i64::from(column) - i64::from(first.first_column()),
@@ -929,7 +983,7 @@ pub(super) fn add_merges(text: &str, ranges: &[String]) -> Result<String> {
 }
 
 /// Removes emptied containers (then emptied extensions) and refreshes counts.
-fn tidy_containers(mut text: String) -> Result<String> {
+pub(super) fn tidy_containers(mut text: String) -> Result<String> {
     loop {
         let doc = xml(text.as_bytes())?;
         let empty = doc.descendants().find_map(|node| {
@@ -1018,10 +1072,58 @@ pub(super) fn rewrite_sheet_references(
             _ => Ok((0, 0)),
         }
     };
+    // On a sheet whose cells shift within a band, each conditional format
+    // and data validation is written again whole, split as Excel splits it.
+    let banded = own.iter().any(|operation| !operation.whole());
+    let others: Vec<StructuralOperation> = moves
+        .operations
+        .iter()
+        .filter(|operation| operation.sheet.to_lowercase() != sheet.to_lowercase())
+        .cloned()
+        .collect();
+    let mut rules: Vec<std::ops::Range<usize>> = vec![];
     for node in doc.descendants().filter(Node::is_element) {
+        if rules
+            .iter()
+            .any(|rule| rule.start <= node.range().start && node.range().end <= rule.end)
+        {
+            continue;
+        }
+        if banded
+            && matches!(
+                (node.tag_name().namespace(), node.tag_name().name()),
+                (
+                    Some(NS) | Some(X14),
+                    "conditionalFormatting" | "dataValidation"
+                )
+            )
+        {
+            let relocated = super::rules::relocate_rule(original, node, sheet, &own, &others)?;
+            if relocated.is_empty() {
+                removals.push(node.range());
+            } else {
+                edits.push((node.range(), relocated));
+            }
+            rules.push(node.range());
+            continue;
+        }
         let name = node.tag_name().name();
         match (node.tag_name().namespace(), name) {
             (Some(NS), "f") if !cells_transformed => rewrite_text(node, (0, 0), &mut edits)?,
+            // A sparkline whose cells are deleted keeps no source, as Excel
+            // writes it.
+            (Some(XM), "f")
+                if node
+                    .parent_element()
+                    .is_some_and(|parent| parent.has_tag_name((X14, "sparkline")))
+                    && node
+                        .text()
+                        .map(|text| moves.rewrite(text, Some(sheet)))
+                        .transpose()?
+                        .is_some_and(|text| text.contains("#REF!")) =>
+            {
+                removals.push(node.range())
+            }
             (Some(NS), "formula" | "formula1" | "formula2") | (Some(XM), "f") => {
                 rewrite_text(node, rule_shift(node)?, &mut edits)?
             }
@@ -1154,6 +1256,13 @@ pub(super) fn rewrite_sheet_references(
                 if name == "filterColumn" && columns_changed {
                     filter_column_edit(original, node, &own, &mut removals, &mut attributes)?;
                 }
+                if name == "pane"
+                    && node
+                        .parent_element()
+                        .is_some_and(|view| view.has_tag_name((NS, "sheetView")))
+                {
+                    frozen_pane_edit(original, node, &own, &mut attributes)?;
+                }
             }
             _ => {}
         }
@@ -1174,7 +1283,11 @@ pub(crate) fn original_position(
     operations: &[&StructuralOperation],
     row: bool,
 ) -> Option<u32> {
-    for operation in operations.iter().rev().filter(|o| o.row_operation() == row) {
+    for operation in operations
+        .iter()
+        .rev()
+        .filter(|o| o.row_operation() == row && o.whole())
+    {
         let end = operation.at + operation.count;
         if operation.insertion() {
             if (operation.at..end).contains(&position) {
@@ -1198,7 +1311,11 @@ pub(super) struct InsertedIntervals(Vec<(u32, u32)>);
 impl InsertedIntervals {
     pub(super) fn new(operations: &[&StructuralOperation], row: bool) -> Self {
         let mut intervals = Vec::<(u32, u32)>::new();
-        for operation in operations.iter().filter(|o| o.row_operation() == row) {
+        // Cells inserted in a band are no inserted row or column.
+        for operation in operations
+            .iter()
+            .filter(|o| o.row_operation() == row && o.whole())
+        {
             let end = operation.at + operation.count;
             let mut next = Vec::with_capacity(intervals.len() + 2);
             for (start, stop) in intervals {
@@ -1246,6 +1363,21 @@ impl InsertedIntervals {
         } else {
             None
         }
+    }
+
+    /// The final position after the inserted run holding `position`.
+    pub(super) fn end_of(&self, position: u32) -> Option<u32> {
+        let index = self.0.partition_point(|&(_, stop)| stop <= position);
+        let &(start, stop) = self.0.get(index)?;
+        (start <= position && position < stop).then_some(stop)
+    }
+
+    /// The inserted positions that take their format from an original one.
+    pub(super) fn inheriting(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0
+            .iter()
+            .filter(|&&(start, _)| start > 1)
+            .flat_map(|&(start, stop)| start..stop)
     }
 }
 
@@ -1320,6 +1452,71 @@ fn inherit_sparklines(text: String, operations: &[&StructuralOperation]) -> Resu
         }
     }
     apply_edits(&text, edits, vec![])
+}
+
+/// Keeps the frozen rows and columns of a sheet view as Excel does (checked
+/// against Excel): rows or columns inserted or deleted above or left of the
+/// split change how many are frozen, at least one staying frozen, and the
+/// scrolled pane then starts right after them. Selections stay as they are.
+fn frozen_pane_edit(
+    original: &str,
+    node: Node<'_, '_>,
+    operations: &[&StructuralOperation],
+    attributes: &mut AttributeEdits,
+) -> Result<()> {
+    if !matches!(node.attribute("state"), Some("frozen" | "frozenSplit")) {
+        return Ok(());
+    }
+    let mut top_left = node.attribute("topLeftCell").map(coordinate).transpose()?;
+    for (split_name, row) in [("ySplit", true), ("xSplit", false)] {
+        let Some(Ok(before)) = node.attribute(split_name).map(str::parse::<u32>) else {
+            continue;
+        };
+        let mut split = before;
+        // Each change of the split scrolls the pane back to it, even when a
+        // later one restores the split.
+        let mut scrolled = false;
+        for operation in operations
+            .iter()
+            .filter(|o| o.row_operation() == row && o.whole())
+        {
+            if matches!(operation.kind, OperationKind::MoveColumns { .. }) || operation.at > split {
+                continue;
+            }
+            let previous = split;
+            if operation.insertion() {
+                split += operation.count;
+            } else {
+                let removed = (operation.at + operation.count).min(split + 1) - operation.at;
+                split = split.saturating_sub(removed).max(1);
+            }
+            scrolled |= split != previous;
+        }
+        if !scrolled {
+            continue;
+        }
+        if split != before {
+            attributes.set(original, node, split_name, &split.to_string())?;
+        }
+        if let Some((column, top_row)) = &mut top_left {
+            if row {
+                *top_row = split + 1;
+            } else {
+                *column = split + 1;
+            }
+        }
+    }
+    if let Some((column, row)) = top_left
+        && node.attribute("topLeftCell").map(coordinate).transpose()? != Some((column, row))
+    {
+        attributes.set(
+            original,
+            node,
+            "topLeftCell",
+            &format!("{}{row}", column_name(column)?),
+        )?;
+    }
+    Ok(())
 }
 
 /// Re-bases an autoFilter column after column operations. `colId` counts from

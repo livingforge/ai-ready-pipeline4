@@ -927,6 +927,13 @@ impl IndexMut<&str> for LayoutSheet {
 pub(crate) struct Layout {
     pub(crate) fields: Value,
     pub(crate) sheets: BTreeMap<String, LayoutSheet>,
+    /// Not stored: the pending row and column operations its rows and
+    /// columns are placed under, which tell where a cell shifted within a
+    /// band is shown.
+    pub(crate) operations: std::sync::Arc<Vec<crate::excel::StructuralOperation>>,
+    /// Not stored: the pending placements of drawings, which with the
+    /// operations tell which drawings a deletion takes.
+    pub(crate) placements: std::sync::Arc<Vec<crate::excel::PlaceOperation>>,
 }
 
 impl Layout {
@@ -954,6 +961,8 @@ impl Layout {
                 .map(|(page, sheet)| Ok((page, LayoutSheet::from_value(sheet)?)))
                 .collect::<Result<_>>()?,
             fields: value,
+            operations: Default::default(),
+            placements: Default::default(),
         })
     }
 

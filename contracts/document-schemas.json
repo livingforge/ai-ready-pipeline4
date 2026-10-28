@@ -78,6 +78,10 @@
                 "null"
               ]
             },
+            "formula": {
+              "type": "boolean",
+              "description": "trueは、Excelの原本で空のセル・挿入した行列のセル・新しく入れた数式のセルに、afterの数式（=から始まる原文）を数式として入れる。値のあるセル・数式の既存セルには使えない（既存の数式はformulaなしで編集する）"
+            },
             "font": {
               "type": "object",
               "additionalProperties": false,
@@ -162,6 +166,11 @@
                   }
                 }
               }
+            },
+            "written_after": {
+              "description": "数式の参照を、原本の位置ではなく、この行・列・セルの操作（とそれより前の操作）の後のセルの位置で書く（formula: true の新しい数式と、既存の数式の編集）。exportではこれより後の操作だけが参照を動かす（documents cells copy・rows move が記録する）",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+              "type": "string"
             }
           },
           "allOf": [
@@ -611,6 +620,20 @@
         "type": "object",
         "description": "表の1記録、または区分。記録のキーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。区分は、縦に結合するか先頭の記録の行だけに書いて複数の記録の見出しとなるセルで、記録と同じ規則のキーでその値を持ち、範囲の記録を children に持つ。区分のセルは先頭の記録のノードに置かず、区分の下の空のセルはどのノードにも置かない。値はセルの値で、キーと木の形は編集しない",
         "properties": {
+          "fill_down": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "description": "この記録から下へ数式を複写した列。キーはこの記録の列のキー、値はこの記録を含めて数式が続く、同じ並びのノードの数。続くノードはそのキーを書かず、この記録の数式の相対参照をノード1つごとに1行下へずらした数式（Excelのフィルで下へ複写した数式）を持つ。3ノード以上続く数式に使う"
+          },
+          "blank_records": {
+            "type": "integer",
+            "minimum": 2,
+            "description": "何も書かないノード（値が上のノードの fill_down の数式だけの記録など）が同じ並びで続く数。このメンバーだけを持つノードは、その数の空のノード {} を表す。2ノード以上続くときに使う"
+          },
           "marks": {
             "type": "array",
             "items": {
@@ -802,11 +825,17 @@
               "enum": [
                 "cell",
                 "formula",
+                "new_formula",
                 "operation",
                 "excluded",
                 "pending",
                 "shape"
               ]
+            },
+            "written_after": {
+              "description": "new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+              "type": "string"
             }
           },
           "required": [
@@ -2376,11 +2405,17 @@
                   "enum": [
                     "cell",
                     "formula",
+                    "new_formula",
                     "operation",
                     "excluded",
                     "pending",
                     "shape"
                   ]
+                },
+                "written_after": {
+                  "description": "new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
                 }
               },
               "required": [
@@ -3910,11 +3945,17 @@
                   "enum": [
                     "cell",
                     "formula",
+                    "new_formula",
                     "operation",
                     "excluded",
                     "pending",
                     "shape"
                   ]
+                },
+                "written_after": {
+                  "description": "new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
                 }
               },
               "required": [
@@ -5350,6 +5391,169 @@
                     "to"
                   ],
                   "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Excelの空のワークシートを追加する（documents sheets add）。after・beforeがなければ最後に置く",
+                  "not": {
+                    "required": [
+                      "after",
+                      "before"
+                    ]
+                  },
+                  "properties": {
+                    "after": {
+                      "description": "このシートの後に置く",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "before": {
+                      "description": "このシートの前に置く",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "id": {
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "add_sheet"
+                    },
+                    "name": {
+                      "description": "新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）",
+                      "maxLength": 31,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reason": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "reason",
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Excelのワークシートを複製する（documents sheets copy）。コピー元を指す数式・入力規則・条件付き書式・名前はコピーを指す",
+                  "not": {
+                    "required": [
+                      "after",
+                      "before"
+                    ]
+                  },
+                  "properties": {
+                    "after": {
+                      "description": "このシートの後に置く",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "before": {
+                      "description": "このシートの前に置く",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "from": {
+                      "description": "コピー元の原本のワークシート",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "id": {
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "copy_sheet"
+                    },
+                    "name": {
+                      "description": "新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）",
+                      "maxLength": 31,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reason": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "reason",
+                    "kind",
+                    "name",
+                    "from"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Excelの原本のワークシートを削除する（documents sheets delete）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は #REF! になる",
+                  "properties": {
+                    "id": {
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "delete_sheet"
+                    },
+                    "reason": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "sheet": {
+                      "description": "原本のワークシートの名前",
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "reason",
+                    "kind",
+                    "sheet"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Excelの原本のワークシートの名前を変える（documents sheets rename）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は新しい名前を指す。ほかの操作は原本の名前でシートを指す",
+                  "properties": {
+                    "id": {
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "rename_sheet"
+                    },
+                    "name": {
+                      "description": "新しい名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートや操作が付ける名前と重ならない）",
+                      "maxLength": 31,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "reason": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "sheet": {
+                      "description": "原本のワークシートの名前",
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "reason",
+                    "kind",
+                    "sheet",
+                    "name"
+                  ],
+                  "type": "object"
                 }
               ]
             },
@@ -6728,6 +6932,155 @@
               "type": "integer",
               "minimum": 0,
               "description": "styles での番号。styles の番号を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない"
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "tooltip": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "range"
+                ]
+              }
+            },
+            "validations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "operator": {
+                    "type": "string"
+                  },
+                  "formula1": {
+                    "type": "string"
+                  },
+                  "formula2": {
+                    "type": "string"
+                  },
+                  "allow_blank": {
+                    "type": "boolean"
+                  },
+                  "error_style": {
+                    "type": "string"
+                  },
+                  "prompt_title": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "error_title": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "range",
+                  "type",
+                  "allow_blank"
+                ]
+              }
+            },
+            "conditional_formats": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "type": "string"
+                  },
+                  "rules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "operator": {
+                          "type": "string"
+                        },
+                        "priority": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "formulas": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "stop": {
+                          "type": "boolean"
+                        },
+                        "format": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "bold": {
+                              "type": "boolean"
+                            },
+                            "italic": {
+                              "type": "boolean"
+                            },
+                            "strike": {
+                              "type": "boolean"
+                            },
+                            "font_color": {
+                              "pattern": "^[0-9A-F]{6}$",
+                              "type": "string"
+                            },
+                            "fill": {
+                              "pattern": "^[0-9A-F]{6}$",
+                              "type": "string"
+                            },
+                            "number_format": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "priority",
+                        "formulas"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "range",
+                  "rules"
+                ]
+              }
             }
           },
           "required": [
@@ -8493,6 +8846,155 @@
                 "border"
               ],
               "description": "style を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない"
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "tooltip": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "range"
+                ]
+              }
+            },
+            "validations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "operator": {
+                    "type": "string"
+                  },
+                  "formula1": {
+                    "type": "string"
+                  },
+                  "formula2": {
+                    "type": "string"
+                  },
+                  "allow_blank": {
+                    "type": "boolean"
+                  },
+                  "error_style": {
+                    "type": "string"
+                  },
+                  "prompt_title": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "error_title": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "range",
+                  "type",
+                  "allow_blank"
+                ]
+              }
+            },
+            "conditional_formats": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "range": {
+                    "type": "string"
+                  },
+                  "rules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "operator": {
+                          "type": "string"
+                        },
+                        "priority": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "formulas": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "stop": {
+                          "type": "boolean"
+                        },
+                        "format": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "bold": {
+                              "type": "boolean"
+                            },
+                            "italic": {
+                              "type": "boolean"
+                            },
+                            "strike": {
+                              "type": "boolean"
+                            },
+                            "font_color": {
+                              "pattern": "^[0-9A-F]{6}$",
+                              "type": "string"
+                            },
+                            "fill": {
+                              "pattern": "^[0-9A-F]{6}$",
+                              "type": "string"
+                            },
+                            "number_format": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "priority",
+                        "formulas"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "range",
+                  "rules"
+                ]
+              }
             }
           },
           "required": [
@@ -9137,11 +9639,17 @@
               "enum": [
                 "cell",
                 "formula",
+                "new_formula",
                 "operation",
                 "excluded",
                 "pending",
                 "shape"
               ]
+            },
+            "written_after": {
+              "description": "new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+              "type": "string"
             }
           },
           "required": [
@@ -9281,6 +9789,901 @@
                 "kind",
                 "asset",
                 "anchor"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Excelのセル範囲を挿入・削除し、他のセルをずらす（documents cells insert|delete）。下・上へずらすときは範囲の列の中で行を、右・左へずらすときは範囲の行の中で列を挿入・削除したことになる。範囲は、それより前に記録した行・列の操作の後の番地",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "insert_cells",
+                    "delete_cells"
+                  ]
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "shift": {
+                  "description": "insert_cellsはdown・right、delete_cellsはup・left",
+                  "enum": [
+                    "down",
+                    "right",
+                    "up",
+                    "left"
+                  ]
+                },
+                "vba_unchanged": {
+                  "const": true,
+                  "description": "VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range",
+                "shift"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "anyOf": [
+                {
+                  "required": [
+                    "from"
+                  ]
+                },
+                {
+                  "required": [
+                    "wrap"
+                  ]
+                },
+                {
+                  "required": [
+                    "shrink"
+                  ]
+                },
+                {
+                  "required": [
+                    "horizontal"
+                  ]
+                },
+                {
+                  "required": [
+                    "vertical"
+                  ]
+                },
+                {
+                  "required": [
+                    "row_height"
+                  ]
+                },
+                {
+                  "required": [
+                    "column_width"
+                  ]
+                },
+                {
+                  "required": [
+                    "merge"
+                  ]
+                },
+                {
+                  "required": [
+                    "bold"
+                  ]
+                },
+                {
+                  "required": [
+                    "italic"
+                  ]
+                },
+                {
+                  "required": [
+                    "strike"
+                  ]
+                },
+                {
+                  "required": [
+                    "underline"
+                  ]
+                },
+                {
+                  "required": [
+                    "fill"
+                  ]
+                },
+                {
+                  "required": [
+                    "number_format"
+                  ]
+                },
+                {
+                  "required": [
+                    "borders"
+                  ]
+                }
+              ],
+              "description": "Excelのセル範囲の書式（書式のコピー、配置、フォントの太字・斜体・下線・取り消し線、塗りつぶし、罫線、表示形式、行の高さ・列幅、結合）を変える（documents format）。範囲と書式元のセルは、それより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "bold": {
+                  "description": "太字にする（true）か外す（false）",
+                  "type": "boolean"
+                },
+                "borders": {
+                  "description": "罫線。記録順に範囲へ当てる。edgesのallは外枠と内側、outlineは外枠、insideは内側の縦横、horizontal・verticalは内側の横・縦、top・bottom・left・rightは範囲の上下左右の辺。styleのnoneは線を消す",
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "description": "線の色（RRGGBB）。省略は自動",
+                        "pattern": "^[0-9A-F]{6}$",
+                        "type": "string"
+                      },
+                      "edges": {
+                        "enum": [
+                          "all",
+                          "outline",
+                          "inside",
+                          "horizontal",
+                          "vertical",
+                          "top",
+                          "bottom",
+                          "left",
+                          "right"
+                        ]
+                      },
+                      "style": {
+                        "enum": [
+                          "none",
+                          "thin",
+                          "medium",
+                          "thick",
+                          "dashed",
+                          "dotted",
+                          "double",
+                          "hair",
+                          "mediumDashed",
+                          "dashDot",
+                          "mediumDashDot",
+                          "dashDotDot",
+                          "mediumDashDotDot",
+                          "slantDashDot"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "edges",
+                      "style"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "column_width": {
+                  "description": "範囲の列の幅（標準フォントの文字数、Excelの列幅と同じ単位）",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "fill": {
+                  "description": "塗りつぶしの色（RRGGBB、単色の塗り）。noneは塗りつぶしなし",
+                  "oneOf": [
+                    {
+                      "pattern": "^[0-9A-F]{6}$",
+                      "type": "string"
+                    },
+                    {
+                      "const": "none"
+                    }
+                  ]
+                },
+                "from": {
+                  "description": "書式（罫線・塗り・表示形式・フォント・配置・保護）をそのまま写す元のセル",
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*$",
+                  "type": "string"
+                },
+                "horizontal": {
+                  "enum": [
+                    "general",
+                    "left",
+                    "center",
+                    "right",
+                    "fill",
+                    "justify",
+                    "centerContinuous",
+                    "distributed"
+                  ]
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "italic": {
+                  "description": "斜体にする（true）か外す（false）",
+                  "type": "boolean"
+                },
+                "kind": {
+                  "const": "format_cells"
+                },
+                "merge": {
+                  "description": "trueは範囲を1つに結合する（左上以外のセルが空のとき）。falseは範囲の内側の結合を解除する",
+                  "type": "boolean"
+                },
+                "number_format": {
+                  "description": "表示形式の書式記号（General、0.00、yyyy/mm/dd、@ など）",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "row_height": {
+                  "description": "範囲の行の高さ（ポイント）。autoは高さの指定を外し、Excelが開くときに文字に合わせる",
+                  "oneOf": [
+                    {
+                      "exclusiveMinimum": 0,
+                      "maximum": 409,
+                      "type": "number"
+                    },
+                    {
+                      "const": "auto"
+                    }
+                  ]
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "shrink": {
+                  "description": "縮小して全体を表示する",
+                  "type": "boolean"
+                },
+                "strike": {
+                  "description": "取り消し線を引く（true）か外す（false）",
+                  "type": "boolean"
+                },
+                "underline": {
+                  "description": "下線",
+                  "enum": [
+                    "none",
+                    "single",
+                    "double"
+                  ]
+                },
+                "vertical": {
+                  "enum": [
+                    "top",
+                    "center",
+                    "bottom",
+                    "justify",
+                    "distributed"
+                  ]
+                },
+                "wrap": {
+                  "description": "折り返して全体を表示する",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Excelのセル範囲の書式と結合を、同じシートの別の場所へ写す（documents cells copy。値と数式は同時に記録するvalue_editsが写す）。範囲と写し先の左上のセルは、それより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "copy_cells"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "to": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*$",
+                  "type": "string",
+                  "description": "写し先の左上のセル"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range",
+                "to"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲にリンクを付ける（documents links set）。範囲のリンクは置き換える。locationはブック内の場所（シート!セルまたは名前）、urlは外部のURL。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "set_link"
+                },
+                "location": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "tooltip": {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                "url": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "keep_format": {
+                  "description": "trueはセルの書式を変えない（リンクの青い下線を付けない。documents rows move が記録する）",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range"
+              ],
+              "type": "object",
+              "oneOf": [
+                {
+                  "required": [
+                    "location"
+                  ]
+                },
+                {
+                  "required": [
+                    "url"
+                  ]
+                }
+              ]
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲にかかるリンクを外す（documents links clear）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "clear_links"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "範囲の左上のセルにメモを付ける、またはメモの文字を変える（documents notes set）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "author": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "set_note"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲のメモを削除する（documents notes clear）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "clear_notes"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲に入力規則を付ける（documents validations set）。範囲の既存の入力規則は範囲から外す。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "set_validation"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "list",
+                        "whole",
+                        "decimal",
+                        "date",
+                        "time",
+                        "textLength",
+                        "custom"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "between",
+                        "notBetween",
+                        "equal",
+                        "notEqual",
+                        "greaterThan",
+                        "lessThan",
+                        "greaterThanOrEqual",
+                        "lessThanOrEqual"
+                      ]
+                    },
+                    "formula1": {
+                      "minLength": 1,
+                      "maxLength": 255,
+                      "type": "string",
+                      "description": "数式（=を付けない）。リストは\"a,b\"のように引用符で囲んだ値の並び、またはセル範囲"
+                    },
+                    "formula2": {
+                      "minLength": 1,
+                      "maxLength": 255,
+                      "type": "string"
+                    },
+                    "allow_blank": {
+                      "type": "boolean"
+                    },
+                    "error_style": {
+                      "enum": [
+                        "stop",
+                        "warning",
+                        "information"
+                      ]
+                    },
+                    "prompt_title": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "maxLength": 255,
+                      "type": "string"
+                    },
+                    "error_title": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "error": {
+                      "maxLength": 255,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "formula1"
+                  ]
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range",
+                "rule"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲の入力規則を外す（documents validations clear）。範囲の外のセルの規則は残す。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "clear_validations"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲に条件付き書式を、ほかの規則より先に評価する規則として足す（documents conditional-formats add）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "add_conditional_format"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "expression",
+                        "cellIs"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "between",
+                        "notBetween",
+                        "equal",
+                        "notEqual",
+                        "greaterThan",
+                        "lessThan",
+                        "greaterThanOrEqual",
+                        "lessThanOrEqual"
+                      ]
+                    },
+                    "formulas": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 2,
+                      "items": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "stop": {
+                      "type": "boolean"
+                    },
+                    "format": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "bold": {
+                          "type": "boolean"
+                        },
+                        "italic": {
+                          "type": "boolean"
+                        },
+                        "strike": {
+                          "type": "boolean"
+                        },
+                        "font_color": {
+                          "pattern": "^[0-9A-F]{6}$",
+                          "type": "string"
+                        },
+                        "fill": {
+                          "pattern": "^[0-9A-F]{6}$",
+                          "type": "string"
+                        },
+                        "number_format": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "formulas",
+                    "format"
+                  ]
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range",
+                "rule"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "セル範囲の条件付き書式を外す（documents conditional-formats clear）。範囲の外のセルの規則は残す。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "clear_conditional_formats"
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "anyOf": [
+                {
+                  "required": [
+                    "from"
+                  ]
+                },
+                {
+                  "required": [
+                    "placement"
+                  ]
+                }
+              ],
+              "dependentRequired": {
+                "from": [
+                  "to"
+                ],
+                "to": [
+                  "from"
+                ]
+              },
+              "description": "Excelの図形・画像・グループ・グラフ（グループの外のもの）の位置・大きさ・配置設定を変える（documents drawings place）。セルはそれより前に記録した行・列の操作の後の番地。配置設定は、その後に記録した行・列の操作での動き方を決める",
+              "properties": {
+                "drawing": {
+                  "description": "抽出のdrawingsのID（<Drawing部品>#<cNvPr id>）",
+                  "pattern": "^xl/drawings/[^#]+#[0-9]+$",
+                  "type": "string"
+                },
+                "from": {
+                  "description": "新しい左上の角のセル",
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*$",
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "place_drawing"
+                },
+                "placement": {
+                  "description": "twoCellはセルに合わせて移動とサイズ変更、oneCellは移動のみ、absoluteは固定",
+                  "enum": [
+                    "twoCell",
+                    "oneCell",
+                    "absolute"
+                  ]
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "to": {
+                  "description": "新しい右下の角のセル",
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*$",
+                  "type": "string"
+                },
+                "from_offset": {
+                  "additionalProperties": false,
+                  "description": "fromの角のセルの中での位置（EMU。col は横、row は縦）。省くとセルの左上",
+                  "properties": {
+                    "col": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "row": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "col",
+                    "row"
+                  ],
+                  "type": "object"
+                },
+                "to_offset": {
+                  "additionalProperties": false,
+                  "description": "toの角のセルの中での位置（EMU。col は横、row は縦）。省くとセルの左上",
+                  "properties": {
+                    "col": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "row": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "col",
+                    "row"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "drawing"
               ],
               "type": "object"
             },
@@ -10065,6 +11468,169 @@
                 "to"
               ],
               "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Excelの空のワークシートを追加する（documents sheets add）。after・beforeがなければ最後に置く",
+              "not": {
+                "required": [
+                  "after",
+                  "before"
+                ]
+              },
+              "properties": {
+                "after": {
+                  "description": "このシートの後に置く",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "before": {
+                  "description": "このシートの前に置く",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "add_sheet"
+                },
+                "name": {
+                  "description": "新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）",
+                  "maxLength": 31,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Excelのワークシートを複製する（documents sheets copy）。コピー元を指す数式・入力規則・条件付き書式・名前はコピーを指す",
+              "not": {
+                "required": [
+                  "after",
+                  "before"
+                ]
+              },
+              "properties": {
+                "after": {
+                  "description": "このシートの後に置く",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "before": {
+                  "description": "このシートの前に置く",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "from": {
+                  "description": "コピー元の原本のワークシート",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "copy_sheet"
+                },
+                "name": {
+                  "description": "新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）",
+                  "maxLength": 31,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "name",
+                "from"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Excelの原本のワークシートを削除する（documents sheets delete）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は #REF! になる",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "delete_sheet"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "description": "原本のワークシートの名前",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "sheet"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Excelの原本のワークシートの名前を変える（documents sheets rename）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は新しい名前を指す。ほかの操作は原本の名前でシートを指す",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "rename_sheet"
+                },
+                "name": {
+                  "description": "新しい名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートや操作が付ける名前と重ならない）",
+                  "maxLength": 31,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "description": "原本のワークシートの名前",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "reason",
+                "kind",
+                "sheet",
+                "name"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -10136,6 +11702,9 @@
                       "boolean",
                       "null"
                     ]
+                  },
+                  "formula": {
+                    "type": "boolean"
                   },
                   "font": {
                     "type": "object",
@@ -10221,6 +11790,11 @@
                         }
                       }
                     }
+                  },
+                  "written_after": {
+                    "description": "数式の参照を、原本の位置ではなく、この行・列・セルの操作（とそれより前の操作）の後のセルの位置で書く（formula: true の新しい数式と、既存の数式の編集）。exportではこれより後の操作だけが参照を動かす（documents cells copy・rows move が記録する）",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "type": "string"
                   }
                 },
                 "allOf": [
@@ -10422,6 +11996,11 @@
                     "type": "string"
                   },
                   "column": {
+                    "type": "string"
+                  },
+                  "written_after": {
+                    "description": "数式が、この行・列・セルの操作の後のセルの位置で書かれていること（なければ原本の位置）",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
                     "type": "string"
                   }
                 }
@@ -10845,6 +12424,51 @@
                 "to"
               ],
               "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "適用済みのセルの挿入・削除（insert_cells・delete_cells）。範囲は記録したときの番地",
+              "properties": {
+                "id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "insert_cells",
+                    "delete_cells"
+                  ]
+                },
+                "range": {
+                  "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sheet": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "shift": {
+                  "enum": [
+                    "down",
+                    "right",
+                    "up",
+                    "left"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "sheet",
+                "reason",
+                "kind",
+                "range",
+                "shift"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -10862,7 +12486,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "additionalProperties": false,
-    "description": "documents elements-read が書き出す本文要素の読み出し。ページごとに、本文の elements と同じ順の要素メタデータ（ID・表の列と行・見出し関係・結合・数式区分・現在のフォント）と、画像・グラフ・図形の参照先 visuals を返す。layout.yml のフォント番号は解決済みのフォントで返す。編集の入力には使わない。",
+    "description": "documents elements-read が書き出す本文要素の読み出し。ページごとに、本文の elements と同じ順の要素メタデータ（ID・表の列と行・見出し関係・結合・数式区分・現在のフォント）と、画像・グラフ・図形の参照先 visuals を返す。layout.yml のフォント番号は解決済みのフォントで返し、ページで最も多いフォントは element_font に1回だけ書く。編集の入力には使わない。",
     "required": [
       "schema_version",
       "document_id",
@@ -10896,6 +12520,67 @@
             "name": {
               "type": "string"
             },
+            "element_font": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "font を持たない本文の要素と表のセルのフォント（最も多くの要素・セルが持つもの）。現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。多くの要素・セルがフォントを持たないページでは持たない",
+              "required": [
+                "latin",
+                "east_asian",
+                "size",
+                "color"
+              ],
+              "properties": {
+                "latin": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1,
+                  "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
+                },
+                "east_asian": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1,
+                  "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
+                },
+                "size": {
+                  "description": "ポイント",
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "const": "mixed"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "color": {
+                  "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "color_theme": {
+                  "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
             "element_metadata": {
               "type": "array",
               "items": {
@@ -10916,65 +12601,72 @@
                         "pattern": "^[a-z]+_([A-Za-z0-9./#_-]|%[0-9A-F]{2})*$"
                       },
                       "font": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                        "required": [
-                          "latin",
-                          "east_asian",
-                          "size",
-                          "color"
-                        ],
-                        "properties": {
-                          "latin": {
-                            "type": [
-                              "string",
-                              "null"
+                        "description": "ページの element_font と異なるときだけ持つ。element_font のあるページでフォントを持たない要素・セルは null",
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "latin",
+                              "east_asian",
+                              "size",
+                              "color"
                             ],
-                            "minLength": 1,
-                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                          },
-                          "east_asian": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
-                            "minLength": 1,
-                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                          },
-                          "size": {
-                            "description": "ポイント",
-                            "anyOf": [
-                              {
-                                "type": "number",
-                                "exclusiveMinimum": 0
+                            "properties": {
+                              "latin": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "minLength": 1,
+                                "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
                               },
-                              {
-                                "const": "mixed"
+                              "east_asian": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "minLength": 1,
+                                "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
                               },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "color": {
-                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                            "anyOf": [
-                              {
+                              "size": {
+                                "description": "ポイント",
+                                "anyOf": [
+                                  {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  {
+                                    "const": "mixed"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "color": {
+                                "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "color_theme": {
+                                "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                                 "type": "string",
-                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                              },
-                              {
-                                "type": "null"
+                                "minLength": 1
                               }
-                            ]
+                            }
                           },
-                          "color_theme": {
-                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                            "type": "string",
-                            "minLength": 1
+                          {
+                            "type": "null"
                           }
-                        }
+                        ]
                       }
                     },
                     "required": [
@@ -10994,65 +12686,72 @@
                         "const": "formula"
                       },
                       "font": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                        "required": [
-                          "latin",
-                          "east_asian",
-                          "size",
-                          "color"
-                        ],
-                        "properties": {
-                          "latin": {
-                            "type": [
-                              "string",
-                              "null"
+                        "description": "ページの element_font と異なるときだけ持つ。element_font のあるページでフォントを持たない要素・セルは null",
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "latin",
+                              "east_asian",
+                              "size",
+                              "color"
                             ],
-                            "minLength": 1,
-                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                          },
-                          "east_asian": {
-                            "type": [
-                              "string",
-                              "null"
-                            ],
-                            "minLength": 1,
-                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                          },
-                          "size": {
-                            "description": "ポイント",
-                            "anyOf": [
-                              {
-                                "type": "number",
-                                "exclusiveMinimum": 0
+                            "properties": {
+                              "latin": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "minLength": 1,
+                                "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
                               },
-                              {
-                                "const": "mixed"
+                              "east_asian": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "minLength": 1,
+                                "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
                               },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "color": {
-                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                            "anyOf": [
-                              {
+                              "size": {
+                                "description": "ポイント",
+                                "anyOf": [
+                                  {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  {
+                                    "const": "mixed"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "color": {
+                                "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "color_theme": {
+                                "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                                 "type": "string",
-                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                              },
-                              {
-                                "type": "null"
+                                "minLength": 1
                               }
-                            ]
+                            }
                           },
-                          "color_theme": {
-                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                            "type": "string",
-                            "minLength": 1
+                          {
+                            "type": "null"
                           }
-                        }
+                        ]
                       }
                     },
                     "required": [
@@ -11151,65 +12850,72 @@
                                     "minimum": 2
                                   },
                                   "font": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "description": "現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。",
-                                    "required": [
-                                      "latin",
-                                      "east_asian",
-                                      "size",
-                                      "color"
-                                    ],
-                                    "properties": {
-                                      "latin": {
-                                        "type": [
-                                          "string",
-                                          "null"
+                                    "description": "ページの element_font と異なるときだけ持つ。element_font のあるページでフォントを持たない要素・セルは null",
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "latin",
+                                          "east_asian",
+                                          "size",
+                                          "color"
                                         ],
-                                        "minLength": 1,
-                                        "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
-                                      },
-                                      "east_asian": {
-                                        "type": [
-                                          "string",
-                                          "null"
-                                        ],
-                                        "minLength": 1,
-                                        "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
-                                      },
-                                      "size": {
-                                        "description": "ポイント",
-                                        "anyOf": [
-                                          {
-                                            "type": "number",
-                                            "exclusiveMinimum": 0
+                                        "properties": {
+                                          "latin": {
+                                            "type": [
+                                              "string",
+                                              "null"
+                                            ],
+                                            "minLength": 1,
+                                            "description": "英数字用のフォント名。\"mixed\"はrunごとに異なることを示す"
                                           },
-                                          {
-                                            "const": "mixed"
+                                          "east_asian": {
+                                            "type": [
+                                              "string",
+                                              "null"
+                                            ],
+                                            "minLength": 1,
+                                            "description": "日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ"
                                           },
-                                          {
-                                            "type": "null"
-                                          }
-                                        ]
-                                      },
-                                      "color": {
-                                        "description": "文字色のRRGGBB（大文字）。自動色はauto",
-                                        "anyOf": [
-                                          {
+                                          "size": {
+                                            "description": "ポイント",
+                                            "anyOf": [
+                                              {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              {
+                                                "const": "mixed"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "color": {
+                                            "description": "文字色のRRGGBB（大文字）。自動色はauto",
+                                            "anyOf": [
+                                              {
+                                                "type": "string",
+                                                "pattern": "^([0-9A-F]{6}|auto|mixed)$"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "color_theme": {
+                                            "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
                                             "type": "string",
-                                            "pattern": "^([0-9A-F]{6}|auto|mixed)$"
-                                          },
-                                          {
-                                            "type": "null"
+                                            "minLength": 1
                                           }
-                                        ]
+                                        }
                                       },
-                                      "color_theme": {
-                                        "description": "テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値",
-                                        "type": "string",
-                                        "minLength": 1
+                                      {
+                                        "type": "null"
                                       }
-                                    }
+                                    ]
                                   },
                                   "mark": {
                                     "const": true,

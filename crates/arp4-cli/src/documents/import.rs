@@ -323,7 +323,7 @@ impl Store {
             for id in &ids {
                 let dir = under(&base, id)?;
                 if dir.exists() {
-                    fs::remove_dir_all(&dir)?;
+                    remove_folder(&dir, "remove the document of a missing original")?;
                     remove_empty_directories(dir.parent().unwrap(), &self.arp);
                 }
             }
@@ -334,7 +334,7 @@ impl Store {
     /// Discard one pending proposal without changing its adopted document or original.
     pub fn discard(&self, id: &str) -> Result<Value> {
         let proposal = self.proposal(id)?;
-        fs::remove_dir_all(&proposal)?;
+        remove_folder(&proposal, "discard the proposal")?;
         remove_empty_directories(proposal.parent().unwrap(), &self.arp);
         Ok(json!({"state":"discarded","document_id":id}))
     }
@@ -648,15 +648,15 @@ impl Store {
         fs::create_dir_all(destination.parent().unwrap())?;
         let previous = stage.path().join("previous");
         if destination.exists() {
-            fs::rename(&destination, &previous)?;
+            move_path(&destination, &previous, "set the earlier proposal aside")?;
         }
-        if let Err(error) = fs::rename(&ready, &destination) {
+        if let Err(error) = move_path(&ready, &destination, "put the new proposal in place") {
             if previous.exists() {
-                fs::rename(&previous, &destination)?;
+                move_path(&previous, &destination, "put the earlier proposal back")?;
             } else {
                 remove_empty_directories(destination.parent().unwrap(), &self.arp);
             }
-            return Err(error.into());
+            return Err(error);
         }
         let mut result =
             json!({"document_id":id,"proposal":destination,"findings":extraction["findings"]});

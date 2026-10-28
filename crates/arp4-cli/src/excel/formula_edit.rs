@@ -357,6 +357,90 @@ fn check_function(name: &str) -> Result<()> {
 /// Replaces the formula of each cell of `edits` (address to formula text
 /// without `=`) and drops its cached result. Shared formulas on the sheet are
 /// expanded first, since the edited cell may be the one others derive from.
+/// Writes the formulas `framed` give existing formula cells into the
+/// workbook at `path`, which the other edits wrote: each written as the
+/// cells stand after the operation it names (`written_after`), moved with
+/// the row and column operations of `structural` recorded after that one,
+/// into the cell the operations leave it in (`final_cell`).
+pub(super) fn apply_framed_formulas(
+    path: &Path,
+    structural: &[StructuralOperation],
+    framed: &[Value],
+) -> Result<Vec<String>> {
+    if framed.is_empty() {
+        return Ok(vec![]);
+    }
+    let book = Workbook::open(path)?;
+    let mut by_sheet: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for edit in framed {
+        let sheet = string(&edit["sheet"])?;
+        let cell = edit["final_cell"].as_str().with_context(|| {
+            format!(
+                "{sheet}!{} is deleted by a delete_rows/delete_columns operation, so its formula cannot be edited",
+                edit["cell"]
+            )
+        })?;
+        let frame = string(&edit["written_after"])?;
+        let at = structural
+            .iter()
+            .position(|operation| operation.id == frame)
+            .with_context(|| {
+                format!("the formula of {sheet}!{cell} is written after the operation {frame}, which is not recorded")
+            })?;
+        let text = string(&edit["after"])?
+            .strip_prefix('=')
+            .with_context(|| format!("the formula of {sheet}!{cell} must start with ="))?;
+        let moved = rewrite_references(text, Some(sheet), &structural[at + 1..])?;
+        check_formula(&moved).with_context(|| format!("formula of {sheet}!{cell}"))?;
+        by_sheet
+            .entry(sheet.to_owned())
+            .or_default()
+            .insert(cell.to_owned(), moved);
+    }
+    let mut patched = BTreeMap::new();
+    for (sheet, edits) in &by_sheet {
+        let part = book
+            .sheets
+            .iter()
+            .find(|s| s["name"] == sheet.as_str())
+            .map(|s| string(&s["part"]))
+            .transpose()?
+            .with_context(|| format!("sheet {sheet} is missing"))?;
+        let text = std::str::from_utf8(&book.parts[part])?;
+        patched.insert(
+            part.to_owned(),
+            edit_formulas(text, sheet, edits)?.into_bytes(),
+        );
+    }
+    let staged = path.with_extension(format!(
+        "framed.{}",
+        path.extension()
+            .context("workbook without an extension")?
+            .to_string_lossy()
+    ));
+    write_archive_without(&book.raw, &staged, &patched, &BTreeSet::new())?;
+    let read = Workbook::open(&staged)?;
+    for (sheet, edits) in &by_sheet {
+        let index = read
+            .sheets
+            .iter()
+            .position(|s| s["name"] == sheet.as_str())
+            .context("sheet missing")?;
+        for (cell, formula) in edits {
+            let found = read.cells[index]
+                .iter()
+                .find(|c| &*c.address == cell.as_str())
+                .and_then(|c| c.formula.as_deref());
+            ensure!(
+                found == Some(formula.as_str()),
+                "Excel formula read-back failed for {sheet}!{cell}: expected {formula}, found {found:?}"
+            );
+        }
+    }
+    fs::rename(&staged, path)?;
+    Ok(patched.into_keys().collect())
+}
+
 pub(super) fn edit_formulas(
     source: &str,
     sheet: &str,

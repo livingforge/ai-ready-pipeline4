@@ -113,32 +113,41 @@ pub(super) fn edited_body(
     {
         return preserved_container(container, source);
     }
-    ensure!(
-        child(container, "rPh").is_none() && child(container, "phoneticPr").is_none(),
-        "cell {} has phonetic text; edit it in Excel to preserve its readings",
-        cell.attribute("r").unwrap_or("")
-    );
     let runs: Vec<_> = container
         .children()
         .filter(|node| node.has_tag_name((NS, "r")))
         .collect();
-    if runs.is_empty() {
+    // Readings (rPh) of parts of the text, and the settings of how they show.
+    let readings: Vec<_> = container
+        .children()
+        .filter(|node| node.has_tag_name((NS, "rPh")))
+        .collect();
+    let phonetic = !readings.is_empty() || child(container, "phoneticPr").is_some();
+    if runs.is_empty() && !phonetic {
         return scalar_body(prefix, value);
     }
-    let after = value
-        .as_str()
-        .context("rich text must be edited as a string")?;
+    let Some(after) = value.as_str() else {
+        ensure!(runs.is_empty(), "rich text must be edited as a string");
+        // A value that is no text has no readings.
+        return scalar_body(prefix, value);
+    };
     // Validate Excel's text limit and XML characters before preserving run markup.
     scalar_body(prefix, value)?;
     ensure!(
-        container
-            .children()
-            .filter(Node::is_element)
-            .all(|node| node.has_tag_name((NS, "r"))),
+        container.children().filter(Node::is_element).all(|node| {
+            node.has_tag_name((NS, if runs.is_empty() { "t" } else { "r" }))
+                || node.has_tag_name((NS, "rPh"))
+                || node.has_tag_name((NS, "phoneticPr"))
+        }),
         "unsupported rich text content; edit it in Excel"
     );
     let mut before = String::new();
     let mut ranges = vec![];
+    if runs.is_empty() {
+        let text = child(container, "t").context("phonetic text has no text")?;
+        before.push_str(&decode_xstring(text.text().unwrap_or("")));
+        ranges.push((0..before.len(), text));
+    }
     for run in &runs {
         let text = child(*run, "t").context("rich text run has no text")?;
         ensure!(
@@ -183,7 +192,7 @@ pub(super) fn edited_body(
     let (start, end, new_end) = locate(true);
     ensure!(
         locate(false) == (start, end, new_end),
-        "ambiguous repeated rich text; edit it in Excel"
+        "ambiguous repeated text: which part changes decides the runs and readings it keeps; edit it in Excel"
     );
     let touched: Vec<_> = ranges
         .iter()
@@ -210,7 +219,9 @@ pub(super) fn edited_body(
     let raw = &source[container.range()];
     let opening_end = raw.find('>').context("invalid rich text container")? + 1;
     let closing_start = raw.rfind("</").context("invalid rich text container")?;
-    let mut content = raw[opening_end..closing_start].to_owned();
+    let content_start = container.range().start + opening_end;
+    let local =
+        |node: Node<'_, '_>| node.range().start - content_start..node.range().end - content_start;
     let encoded = encode_xstring(&replacement)
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -219,16 +230,59 @@ pub(super) fn edited_body(
     let tag = element_tag(&source[text.range()])?;
     let (opening, _) = xml_opening(&source[text.range()])?;
     let opening = set_xml_attribute(opening, "xml:space", "preserve")?;
-    let replacement = format!(
-        "{}>{encoded}</{tag}>",
-        opening.trim_end_matches('>').trim_end_matches('/')
-    );
-    content.replace_range(
-        text.range().start - container.range().start - opening_end
-            ..text.range().end - container.range().start - opening_end,
-        &replacement,
-    );
+    let mut edits = vec![(
+        local(*text),
+        format!(
+            "{}>{encoded}</{tag}>",
+            opening.trim_end_matches('>').trim_end_matches('/')
+        ),
+    )];
+    let units = |text: &str| u32::try_from(text.encode_utf16().count());
+    let changed = (units(&before[..start])?, units(&before[..end])?);
+    let shift = i64::from(units(&after[start..new_end])?) - i64::from(changed.1 - changed.0);
+    for reading in readings {
+        let span = reading_span(reading)?;
+        match moved_reading(span, changed, shift)? {
+            Some(moved) if moved == span => {}
+            Some((first, last)) => {
+                let (opening, _) = xml_opening(&source[reading.range()])?;
+                let opening = set_xml_attribute(opening, "sb", &first.to_string())?;
+                let opening = set_xml_attribute(&opening, "eb", &last.to_string())?;
+                let range = local(reading);
+                edits.push((range.start..range.start + opening.len(), opening));
+            }
+            None => edits.push((local(reading), String::new())),
+        }
+    }
+    let content = splice(&raw[opening_end..closing_start], edits, "text")?;
     wrap_container(container, &content)
+}
+
+/// The first and end UTF-16 units of the text a reading (`rPh`) reads.
+fn reading_span(reading: Node<'_, '_>) -> Result<(u32, u32)> {
+    let index = |name: &str| -> Result<u32> {
+        Ok(reading
+            .attribute(name)
+            .with_context(|| format!("reading without {name}"))?
+            .parse()?)
+    };
+    Ok((index("sb")?, index("eb")?))
+}
+
+/// Where a reading of the units `span` goes when the units `changed` of the
+/// text are replaced by text `shift` units longer: a reading before the
+/// change stays, one after it moves with its text, and one of text the
+/// change touches is dropped, since what the new text reads is not known.
+fn moved_reading(span: (u32, u32), changed: (u32, u32), shift: i64) -> Result<Option<(u32, u32)>> {
+    let (first, last) = span;
+    if last <= changed.0 {
+        return Ok(Some(span));
+    }
+    if first >= changed.1 {
+        let moved = |unit: u32| u32::try_from(i64::from(unit) + shift);
+        return Ok(Some((moved(first)?, moved(last)?)));
+    }
+    Ok(None)
 }
 
 fn preserved_container(container: Node<'_, '_>, source: &str) -> Result<String> {

@@ -32,6 +32,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
             };
             let mut result = arp4_cli::document_structure::execute(&root, command)?;
             result["ok"] = json!(true);
+            output.note_ignored(&mut result);
             // Read returns complete cell and image context; never truncate this protocol.
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -101,6 +102,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
             } else {
                 // Reading material uses the project format; control responses stay JSON.
                 result["ok"] = json!(ok);
+                output.note_ignored(&mut result);
                 if reading {
                     let format: arp4_cli::agent_format::AgentFormat =
                         serde_json::from_value(result["format"].clone())?;

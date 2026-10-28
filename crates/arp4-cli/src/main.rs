@@ -1,3 +1,4 @@
+mod arguments;
 mod response;
 mod workspace;
 
@@ -6,11 +7,11 @@ use arp4_cli::{
     data::*,
     document_source::SlidePosition,
     documents::{
-        Axis, Batch, EditKind, ImageRequest, Position, ShapeRequest, SheetEdit, SlideEdit,
-        SlideEditKind, Store,
+        Axis, Batch, CellRequest, CopyRequest, DrawingRequest, EditKind, FormatRequest,
+        ImageRequest, ObjectRequest, Position, ShapeRequest, SheetEdit, SlideEdit, SlideEditKind,
+        Store, invalid_rule, list_formula, rule_formula,
     },
 };
-use clap::Parser;
 mod cli;
 mod spec_command;
 use cli::*;
@@ -40,36 +41,6 @@ fn run(cli: Cli) -> Result<bool> {
             ),
         "workflow does not support --full; use read --task <task_ref>; continue with --offset <page.next_offset> until null"
     );
-    if output.limit.is_some() || output.offset.is_some() {
-        ensure!(
-            matches!(
-                &cli.command,
-                Command::Spec {
-                    command: SpecCommand::Check { out: None, .. }
-                } | Command::Spec {
-                    command: SpecCommand::Workflow {
-                        command: arp4_cli::workflow::WorkflowCommand::Read { .. }
-                            | arp4_cli::workflow::WorkflowCommand::Status { .. }
-                            | arp4_cli::workflow::WorkflowCommand::History,
-                        ..
-                    }
-                } | Command::Documents {
-                    command: DocumentCommand::Schema { pointer: None, .. }
-                        | DocumentCommand::Status { .. }
-                        | DocumentCommand::Check { .. }
-                        | DocumentCommand::Search { .. }
-                        | DocumentCommand::SearchFormats { .. }
-                        | DocumentCommand::Operations {
-                            command: OperationCommand::List { .. }
-                        }
-                        | DocumentCommand::Diff { out: None, .. }
-                        | DocumentCommand::Export { out: None, .. },
-                    ..
-                }
-            ),
-            "--limit/--offset require workflow read/status/history, spec check, schema without --pointer, check, status, search, search-formats, operations list, diff without --out, or export without --out"
-        );
-    }
     match cli.command {
         Command::Spec { command } => return spec_command::execute(command, output),
         Command::Doctor => {
@@ -155,9 +126,17 @@ fn run(cli: Cli) -> Result<bool> {
                     | DocumentCommand::StructureSave { .. }
                     | DocumentCommand::Rows { .. }
                     | DocumentCommand::Columns { .. }
+                    | DocumentCommand::Cells { .. }
+                    | DocumentCommand::Sheets { .. }
                     | DocumentCommand::Slides { .. }
                     | DocumentCommand::Shapes { .. }
                     | DocumentCommand::Images { .. }
+                    | DocumentCommand::Format(_)
+                    | DocumentCommand::Drawings { .. }
+                    | DocumentCommand::Links { .. }
+                    | DocumentCommand::Notes { .. }
+                    | DocumentCommand::Validations { .. }
+                    | DocumentCommand::ConditionalFormats { .. }
                     | DocumentCommand::SearchRefresh { .. }
             );
             let _lock = if mutate {
@@ -245,6 +224,7 @@ fn run(cli: Cli) -> Result<bool> {
                         full: output.full,
                         limit: output.limit,
                         offset: None,
+                        ignored: Vec::new(),
                     };
                     let first = &batch.results[0];
                     let summary = json!({"indexed_documents":first.indexed_documents,
@@ -477,7 +457,7 @@ fn run(cli: Cli) -> Result<bool> {
                                     }
                                     // The proposal held what the document holds and is gone.
                                     Ok(_) => {}
-                                    Err(error) => failed.push(json!({"document_id":id,"reason":format!("imported but not adopted: {error:#}")})),
+                                    Err(error) => failed.push(json!({"document_id":id,"reason":format!("imported; its adoption did not complete: {error:#}")})),
                                 }
                             }
                             proposals = !not_adopted.is_empty();
@@ -505,9 +485,7 @@ fn run(cli: Cli) -> Result<bool> {
                             if adopt {
                                 let id = string(&result["document_id"])?.to_owned();
                                 let taken = store.adopt_import(&id).with_context(|| {
-                                    format!(
-                                        "{id} was imported but not adopted; its proposal remains"
-                                    )
+                                    format!("{id} was imported; its adoption did not complete")
                                 })?;
                                 match taken["state"].as_str() {
                                     Some("needs_record") => {
@@ -638,12 +616,16 @@ fn run(cli: Cli) -> Result<bool> {
                     result["state"] = json!("reviewed");
                     result
                 }
-                DocumentCommand::Export { document, out } => {
+                DocumentCommand::Export {
+                    document,
+                    out,
+                    calculate,
+                } => {
                     // A plan shown a page at a time is saved for its later pages.
                     let mut result = if out.is_none() && !output.full {
                         store.export_plan(&document)?
                     } else {
-                        store.export(&document, out.as_deref())?
+                        store.export(&document, out.as_deref(), calculate)?
                     };
                     if !output.full {
                         let items = summarize_export(&mut result, include_hashes)?;
@@ -746,6 +728,7 @@ fn run(cli: Cli) -> Result<bool> {
                     let (target, edit) = column_edit(command)?;
                     edit_sheet(&store, target, edit, include_hashes)?
                 }
+                DocumentCommand::Sheets { command } => add_sheet(&store, command, include_hashes)?,
                 DocumentCommand::Slides { command } => {
                     edit_slides(&store, command, include_hashes)?
                 }
@@ -753,6 +736,27 @@ fn run(cli: Cli) -> Result<bool> {
                     edit_shapes(&store, command, include_hashes)?
                 }
                 DocumentCommand::Images { command } => add_image(&store, command, include_hashes)?,
+                DocumentCommand::Format(args) => format_cells(&store, args, include_hashes)?,
+                DocumentCommand::Cells { command } => shift_cells(&store, command, include_hashes)?,
+                DocumentCommand::Links { command } => {
+                    let (cells, kind, settings) = link_settings(*command);
+                    edit_cell_objects(&store, cells, kind, settings, include_hashes)?
+                }
+                DocumentCommand::Notes { command } => {
+                    let (cells, kind, settings) = note_settings(*command);
+                    edit_cell_objects(&store, cells, kind, settings, include_hashes)?
+                }
+                DocumentCommand::Validations { command } => {
+                    let (cells, kind, settings) = validation_settings(*command)?;
+                    edit_cell_objects(&store, cells, kind, settings, include_hashes)?
+                }
+                DocumentCommand::ConditionalFormats { command } => {
+                    let (cells, kind, settings) = conditional_format_settings(*command)?;
+                    edit_cell_objects(&store, cells, kind, settings, include_hashes)?
+                }
+                DocumentCommand::Drawings { command } => {
+                    place_drawing(&store, command, include_hashes)?
+                }
                 DocumentCommand::Check {
                     document,
                     proposal,
@@ -865,6 +869,26 @@ fn row_edit(command: RowCommand) -> Result<(EditTarget, SheetEdit)> {
             from,
             count,
         } => (target, EditKind::Delete { from, count }),
+        RowCommand::Move {
+            target,
+            place,
+            from,
+            count,
+        } => {
+            let position = match (place.after, place.before) {
+                (Some(s), _) => Position::After(s),
+                (_, Some(s)) => Position::Before(s),
+                _ => unreachable!("clap requires position"),
+            };
+            (
+                target,
+                EditKind::Move {
+                    from,
+                    count,
+                    position,
+                },
+            )
+        }
     };
     let edit = sheet_edit(&target, Axis::Rows, kind);
     Ok((target, edit))
@@ -971,6 +995,60 @@ fn edit_sheet(
 ) -> Result<Value> {
     let (id, proposal) = edited_document(&target.document, &target.proposal);
     let result = store.edit_sheet(id, proposal, &edit)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+/// Adds a worksheet and reports it with the check state it leaves.
+fn add_sheet(store: &Store, command: SheetCommand, include_hashes: bool) -> Result<Value> {
+    let (target, from, place) = match command {
+        SheetCommand::Add { target, place } => (target, None, place),
+        SheetCommand::Copy {
+            target,
+            sheet,
+            place,
+        } => (target, Some(sheet), place),
+        SheetCommand::Delete { target } => {
+            return change_sheet(store, target, None, include_hashes);
+        }
+        SheetCommand::Rename { target, name } => {
+            return change_sheet(store, target, Some(name), include_hashes);
+        }
+    };
+    let edit = arp4_cli::documents::WorksheetEdit {
+        name: target.name.clone(),
+        from,
+        next_to: match (place.after, place.before) {
+            (Some(after), _) => Some((after, true)),
+            (None, Some(before)) => Some((before, false)),
+            (None, None) => None,
+        },
+        id: target.id.clone(),
+        reason: target.reason.clone(),
+        base: target.base.clone(),
+        dry_run: target.dry_run,
+    };
+    let (id, proposal) = edited_document(&target.document, &target.proposal);
+    let result = store.add_worksheet(id, proposal, &edit)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+/// Deletes or renames a worksheet and reports it with the check state it leaves.
+fn change_sheet(
+    store: &Store,
+    target: SheetChangeTarget,
+    name: Option<String>,
+    include_hashes: bool,
+) -> Result<Value> {
+    let edit = arp4_cli::documents::SheetChangeEdit {
+        sheet: target.sheet.clone(),
+        name,
+        id: target.id.clone(),
+        reason: target.reason.clone(),
+        base: target.base.clone(),
+        dry_run: target.dry_run,
+    };
+    let (id, proposal) = edited_document(&target.document, &target.proposal);
+    let result = store.change_worksheet(id, proposal, &edit)?;
     edit_report(store, id, proposal, result, include_hashes)
 }
 
@@ -1184,6 +1262,332 @@ fn add_image(store: &Store, command: ImageCommand, include_hashes: bool) -> Resu
     };
     let (id, proposal) = edited_document(&document, &proposal);
     let result = store.add_image(id, proposal, &request)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+fn format_cells(store: &Store, args: FormatArgs, include_hashes: bool) -> Result<Value> {
+    let request = FormatRequest {
+        sheet: args.sheet,
+        range: args.range,
+        from: args.from,
+        wrap: args.wrap,
+        shrink: args.shrink,
+        horizontal: args.horizontal,
+        vertical: args.vertical,
+        bold: args.bold,
+        italic: args.italic,
+        strike: args.strike,
+        underline: args.underline,
+        fill: args.fill,
+        number_format: args.number_format,
+        borders: args.borders,
+        row_height: args.row_height,
+        column_width: args.column_width,
+        merge: (args.merge || args.unmerge).then_some(args.merge),
+        id: args.id,
+        reason: args.reason,
+        base: args.base,
+        dry_run: args.dry_run,
+    };
+    let (id, proposal) = edited_document(&args.document, &args.proposal);
+    let result = store.format_cells(id, proposal, &request)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+fn edit_cell_objects(
+    store: &Store,
+    cells: ObjectArgs,
+    kind: &str,
+    settings: Value,
+    include_hashes: bool,
+) -> Result<Value> {
+    let request = ObjectRequest {
+        sheet: cells.sheet,
+        range: cells.range,
+        kind: kind.to_owned(),
+        settings,
+        id: cells.id,
+        reason: cells.reason,
+        base: cells.base,
+        dry_run: cells.dry_run,
+    };
+    let (id, proposal) = edited_document(&cells.document, &cells.proposal);
+    let result = store.edit_cell_objects(id, proposal, &request)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+/// The settings a JSON object records, those given only.
+fn given(pairs: &[(&str, Option<Value>)]) -> Value {
+    Value::Object(
+        pairs
+            .iter()
+            .filter_map(|(key, value)| Some(((*key).to_owned(), value.clone()?)))
+            .collect(),
+    )
+}
+
+fn link_settings(command: LinkCommand) -> (ObjectArgs, &'static str, Value) {
+    match command {
+        LinkCommand::Set {
+            cells,
+            location,
+            url,
+            tooltip,
+        } => (
+            cells,
+            "set_link",
+            given(&[
+                ("location", location.map(Value::from)),
+                ("url", url.map(Value::from)),
+                ("tooltip", tooltip.map(Value::from)),
+            ]),
+        ),
+        LinkCommand::Clear { cells } => (cells, "clear_links", json!({})),
+    }
+}
+
+fn note_settings(command: NoteCommand) -> (ObjectArgs, &'static str, Value) {
+    match command {
+        NoteCommand::Set {
+            cells,
+            text,
+            author,
+        } => (
+            cells,
+            "set_note",
+            given(&[
+                ("text", Some(Value::from(text))),
+                ("author", author.map(Value::from)),
+            ]),
+        ),
+        NoteCommand::Clear { cells } => (cells, "clear_notes", json!({})),
+    }
+}
+
+/// The operator a rule records for the one an option names.
+fn operator(name: &str) -> &'static str {
+    match name {
+        "not-between" => "notBetween",
+        "equal" => "equal",
+        "not-equal" => "notEqual",
+        "greater" => "greaterThan",
+        "less" => "lessThan",
+        "greater-or-equal" => "greaterThanOrEqual",
+        "less-or-equal" => "lessThanOrEqual",
+        _ => "between",
+    }
+}
+
+fn validation_settings(command: ValidationCommand) -> Result<(ObjectArgs, &'static str, Value)> {
+    let ValidationArgs {
+        cells,
+        list,
+        source,
+        kind,
+        operator: compared,
+        value1,
+        value2,
+        formula,
+        allow_blank,
+        error_style,
+        prompt_title,
+        prompt,
+        error_title,
+        error,
+    } = match command {
+        ValidationCommand::Set(rule) => *rule,
+        ValidationCommand::Clear { cells } => return Ok((cells, "clear_validations", json!({}))),
+    };
+    let mut rule = given(&[
+        ("allow_blank", allow_blank.map(Value::from)),
+        ("error_style", error_style.map(Value::from)),
+        ("prompt_title", prompt_title.map(Value::from)),
+        ("prompt", prompt.map(Value::from)),
+        ("error_title", error_title.map(Value::from)),
+        ("error", error.map(Value::from)),
+    ]);
+    if let Some(items) = list {
+        rule["type"] = json!("list");
+        rule["formula1"] = json!(list_formula(&items)?);
+    } else if let Some(source) = source {
+        rule["type"] = json!("list");
+        rule["formula1"] = json!(rule_formula(&source, "--source")?);
+    } else if let Some(formula) = formula {
+        rule["type"] = json!("custom");
+        rule["formula1"] = json!(rule_formula(&formula, "--formula")?);
+    } else if let Some(kind) = kind {
+        rule["type"] = json!(if kind == "text-length" {
+            "textLength"
+        } else {
+            kind.as_str()
+        });
+        rule["operator"] = json!(operator(&compared));
+        rule["formula1"] = json!(rule_formula(
+            value1.as_deref().unwrap_or_default(),
+            "--value1"
+        )?);
+        if matches!(compared.as_str(), "between" | "not-between") {
+            let Some(value2) = &value2 else {
+                return Err(invalid_rule(format!(
+                    "--operator {compared} needs --value2"
+                )));
+            };
+            rule["formula2"] = json!(rule_formula(value2, "--value2")?);
+        }
+    } else {
+        return Err(invalid_rule("give --list, --source, --type or --formula"));
+    }
+    Ok((cells, "set_validation", json!({"rule":rule})))
+}
+
+fn conditional_format_settings(
+    command: ConditionalFormatCommand,
+) -> Result<(ObjectArgs, &'static str, Value)> {
+    let ConditionalFormatCommand::Add {
+        cells,
+        formula,
+        cell_is,
+        value1,
+        value2,
+        fill,
+        font_color,
+        bold,
+        italic,
+        strike,
+        number_format,
+        stop,
+    } = command
+    else {
+        let ConditionalFormatCommand::Clear { cells } = command else {
+            unreachable!()
+        };
+        return Ok((cells, "clear_conditional_formats", json!({})));
+    };
+    let color = |text: Option<String>, option: &str| -> Result<Option<Value>> {
+        text.map(|text| {
+            let upper = text.trim_start_matches('#').to_ascii_uppercase();
+            if upper.len() != 6 || !upper.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(invalid_rule(format!(
+                    "{option} takes a color as RRGGBB, such as FFC7CE"
+                )));
+            }
+            Ok(Value::from(upper))
+        })
+        .transpose()
+    };
+    let format = given(&[
+        ("fill", color(fill, "--fill")?),
+        ("font_color", color(font_color, "--font-color")?),
+        ("bold", bold.then_some(Value::from(true))),
+        ("italic", italic.then_some(Value::from(true))),
+        ("strike", strike.then_some(Value::from(true))),
+        ("number_format", number_format.map(Value::from)),
+    ]);
+    if format.as_object().is_none_or(|f| f.is_empty()) {
+        return Err(invalid_rule(
+            "give the format: --fill, --font-color, --bold, --italic, --strike or --number-format",
+        ));
+    }
+    let mut rule = json!({"format":format});
+    if let Some(formula) = formula {
+        rule["type"] = json!("expression");
+        rule["formulas"] = json!([rule_formula(&formula, "--formula")?]);
+    } else if let Some(compared) = cell_is {
+        rule["type"] = json!("cellIs");
+        rule["operator"] = json!(operator(&compared));
+        let mut formulas = vec![rule_formula(
+            value1.as_deref().unwrap_or_default(),
+            "--value1",
+        )?];
+        if matches!(compared.as_str(), "between" | "not-between") {
+            let Some(value2) = &value2 else {
+                return Err(invalid_rule(format!("--cell-is {compared} needs --value2")));
+            };
+            formulas.push(rule_formula(value2, "--value2")?);
+        }
+        rule["formulas"] = json!(formulas);
+    }
+    if stop {
+        rule["stop"] = json!(true);
+    }
+    Ok((cells, "add_conditional_format", json!({"rule":rule})))
+}
+
+fn shift_cells(store: &Store, command: CellCommand, include_hashes: bool) -> Result<Value> {
+    let (cells, insertion, shift) = match command {
+        CellCommand::Insert { cells, shift } => (cells, true, shift),
+        CellCommand::Delete { cells, shift } => (cells, false, shift),
+        CellCommand::Copy {
+            cells,
+            to,
+            formats_only,
+            values_only,
+        } => {
+            if cells.vba_unchanged {
+                return Err(arp4_cli::documents::invalid_rule(
+                    "--vba-unchanged applies to row, column and cell shifts; a copy moves no cell",
+                ));
+            }
+            let request = CopyRequest {
+                sheet: cells.sheet,
+                range: cells.range,
+                to,
+                formats: !values_only,
+                values: !formats_only,
+                id: cells.id,
+                reason: cells.reason,
+                base: cells.base,
+                dry_run: cells.dry_run,
+            };
+            let (id, proposal) = edited_document(&cells.document, &cells.proposal);
+            let result = store.copy_cells(id, proposal, &request)?;
+            return edit_report(store, id, proposal, result, include_hashes);
+        }
+    };
+    let request = CellRequest {
+        sheet: cells.sheet,
+        range: cells.range,
+        insertion,
+        shift,
+        id: cells.id,
+        reason: cells.reason,
+        base: cells.base,
+        dry_run: cells.dry_run,
+        vba_unchanged: cells.vba_unchanged,
+    };
+    let (id, proposal) = edited_document(&cells.document, &cells.proposal);
+    let result = store.shift_cells(id, proposal, &request)?;
+    edit_report(store, id, proposal, result, include_hashes)
+}
+
+fn place_drawing(store: &Store, command: DrawingCommand, include_hashes: bool) -> Result<Value> {
+    let DrawingCommand::Place {
+        document,
+        proposal,
+        sheet,
+        drawing,
+        from,
+        to,
+        placement,
+        id,
+        reason,
+        base,
+        dry_run,
+    } = command;
+    let request = DrawingRequest {
+        sheet,
+        drawing,
+        from,
+        to,
+        offsets: None,
+        placement,
+        id,
+        reason,
+        base,
+        dry_run,
+    };
+    let (id, proposal) = edited_document(&document, &proposal);
+    let result = store.place_drawing(id, proposal, &request)?;
     edit_report(store, id, proposal, result, include_hashes)
 }
 
@@ -1541,6 +1945,23 @@ fn main() -> std::process::ExitCode {
     #[cfg(windows)]
     if std::env::args_os()
         .nth(1)
+        .is_some_and(|arg| arg == "--internal-excel-calculate")
+    {
+        let outcome = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("Excel calculation request path missing"))
+            .and_then(|path| arp4_cli::excel::calculation_worker(std::path::Path::new(&path)));
+        return match outcome {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
+    #[cfg(windows)]
+    if std::env::args_os()
+        .nth(1)
         .is_some_and(|arg| arg == "--internal-office-unprotect")
     {
         let outcome = std::env::args_os()
@@ -1572,8 +1993,26 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    // The command line's tree of commands and the dispatch over it take more
+    // stack than a Windows main thread has (1 MiB) in a debug build.
+    match std::thread::Builder::new()
+        .name("arp4".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(command_line)
+    {
+        Ok(thread) => thread.join().unwrap_or(std::process::ExitCode::from(2)),
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::ExitCode::from(2)
+        }
+    }
+}
+
+/// Parses the command line and runs it, answering on standard output.
+fn command_line() -> std::process::ExitCode {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let (mut cli, ignored) = match arguments::parse(&args) {
+        Ok(parsed) => parsed,
         Err(error) => {
             if matches!(
                 error.kind(),
@@ -1581,22 +2020,21 @@ fn main() -> std::process::ExitCode {
             ) {
                 error.exit();
             }
-            // clap's "try --help" hint addresses a terminal user, not an agent.
-            let message = error.to_string();
-            let message = message
-                .split_once("\n\nFor more information, try")
-                .map_or(message.as_str(), |(head, _)| head);
-            response::error("invalid_arguments", message);
+            let (message, details) = arguments::invalid(&error, &args);
+            response::error("invalid_arguments", &message, details, &[]);
             return std::process::ExitCode::from(2);
         }
     };
+    cli.output.ignored = ignored.clone();
     match run(cli) {
         Ok(true) => std::process::ExitCode::SUCCESS,
         Ok(false) => std::process::ExitCode::from(2),
         Err(e) => {
             match rejection(&e) {
-                Some(payload) => response::reject(payload),
-                None => response::error("operation_failed", &format!("{e:#}")),
+                Some(payload) => response::reject(payload, &ignored),
+                None => {
+                    response::error("operation_failed", &format!("{e:#}"), Value::Null, &ignored)
+                }
             }
             std::process::ExitCode::from(2)
         }

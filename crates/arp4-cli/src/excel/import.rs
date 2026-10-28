@@ -743,6 +743,9 @@ impl Workbook {
         let mut sheet_cells = vec![];
         let (worksheets, skipped_sheets) = sheet_parts(&parts)?;
         let persons = visuals::persons(&parts)?;
+        let dxfs = super::cell_objects::differential_formats(
+            parts.get("xl/styles.xml").map(Vec::as_slice),
+        )?;
         for (name, part, state) in worksheets {
             let text = std::str::from_utf8(&parts[&part])?;
             // The sheet is parsed without its cells, and its rows a part at a time.
@@ -861,8 +864,12 @@ impl Workbook {
             )?;
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
+            let links = super::cell_objects::extract_links(&parts, &part, doc.root_element())?;
+            let validations = super::cell_objects::extract_validations(doc.root_element());
+            let conditional_formats =
+                super::cell_objects::extract_conditional_formats(doc.root_element(), &dxfs);
             let computed = computed_ranges(&parts, &part, formulas)?;
-            let mut sheet = json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"computed":computed});
+            let mut sheet = json!({"name":name,"part":part,"state":state,"hidden_rows":hidden_rows,"hidden_columns":hidden_columns,"merges":merges,"drawings":drawings,"tables":tables,"comments":comments,"links":links,"validations":validations,"conditional_formats":conditional_formats,"computed":computed});
             // Drawings are placed on the cells, which these sizes place on the sheet.
             if sheet["drawings"].as_array().is_some_and(|d| !d.is_empty()) {
                 sheet["grid"] = grid(doc.root_element(), &heights);

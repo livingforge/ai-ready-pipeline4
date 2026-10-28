@@ -125,6 +125,7 @@ impl Store {
             }
             // As with_default_entries leaves them: the entries are its own.
             mappings["entries"] = json!([]);
+            let (extraction, original) = with_added_sheets(extraction, &mappings["operations"])?;
             let reviewed = self.reviewed(&metadata, dir, &fp)?;
             ensure!(
                 !require_reviewed || reviewed,
@@ -134,6 +135,7 @@ impl Store {
                 Inspection {
                     meta,
                     extraction,
+                    original,
                     mappings,
                     operated: None,
                     entries: Entries::default(),
@@ -156,6 +158,14 @@ impl Store {
             ));
         }
         let layout = layout.expect("loaded for an inspection validating the files");
+        let mut stored = complete_mappings(read_planned(
+            "mappings.yml",
+            &metadata.join("mappings.yml"),
+            planned,
+            "mappings",
+        )?);
+        // The sheets operations add are read as sheets of the workbook.
+        let (extraction, original) = with_added_sheets(extraction, &stored["operations"])?;
         // Every file besides the records and assets is a content page, read once here.
         let mut content_pages = vec![];
         let mut page_files = BTreeMap::new();
@@ -186,13 +196,8 @@ impl Store {
             content_pages.push(page);
         }
         let structure_sha256 = layout["structure_sha256"].as_str().map(str::to_owned);
+        let formula_places = identity::formula_places(&layout)?;
         let layout = keep.layout.then_some(layout);
-        let mut stored = complete_mappings(read_planned(
-            "mappings.yml",
-            &metadata.join("mappings.yml"),
-            planned,
-            "mappings",
-        )?);
         // A journal recording nothing is not stored: it is the one of this
         // extraction.
         if stored.get("interpretation").is_none() {
@@ -260,8 +265,16 @@ impl Store {
             )
             .collect();
         self.image_assets(dir, &assets)?;
-        let (mappings, entries) =
-            regenerate_mappings(mappings, entries, &operated, &content_pages, &operations)?;
+        let mut entries = entries;
+        shift_entries(&mut entries, &operated, &operations)?;
+        let (mappings, entries) = regenerate_mappings(
+            mappings,
+            entries,
+            &operated,
+            &content_pages,
+            &operations,
+            &formula_places,
+        )?;
         // The pages give their values and fonts up; nothing reads them after.
         // Validating the content takes the values out of the pages but those kept.
         let mut content = Self::validate_content(&entries, &operated, content_pages, keep.pages)?;
@@ -314,6 +327,7 @@ impl Store {
             Inspection {
                 meta,
                 extraction,
+                original,
                 mappings,
                 operated,
                 entries,
@@ -498,7 +512,7 @@ impl Store {
         crate::document_structure::replay_verified_corrections(
             &self.root,
             &inspected.mappings["interpretation"],
-            &inspected.extraction,
+            inspected.original_extraction(),
             string(&inspected.meta["extraction"])?,
             &inspected.axes,
         )
@@ -877,10 +891,11 @@ fn validate_coverage(
                 }
                 cover(sheet, place);
             } else {
-                // A workbook cell holding nothing in the original takes a value.
+                // A workbook cell holding nothing in the original takes a value
+                // or a formula.
                 ensure!(
                     !text_format
-                        && e.writeback()? == "cell"
+                        && matches!(e.writeback()?, "cell" | "new_formula")
                         && sheet_names.contains(sheet)
                         && excel::coordinate(cell).is_ok(),
                     "missing Excel target"
@@ -910,12 +925,29 @@ fn validate_coverage(
                 }
             }
             "pending" => {}
-            "cell" => {
+            writeback @ ("cell" | "new_formula") => {
                 let value = value.context("writeback requires field")?;
                 ensure!(
                     !text_format || value.is_string(),
                     "text replacement must be a string; use an empty string to clear text"
                 );
+                // A formula given to a cell holding none, as Excel writes it.
+                let new_formula = writeback == "new_formula";
+                if new_formula {
+                    let formula = value
+                        .as_str()
+                        .and_then(|v| v.strip_prefix('='))
+                        .context("a new formula must be text starting with =")?;
+                    excel::check_formula(formula).context("new formula")?;
+                    if let Some(MappingTarget::Cell { sheet, cell }) = &mapped_target {
+                        ensure!(
+                            cells
+                                .get(sheet, cell)
+                                .is_none_or(|source| source.kind() == CellKind::Null),
+                            "{sheet}!{cell} holds a value; a new formula goes into a cell holding none"
+                        );
+                    }
+                }
                 let destination = match mapped_target.context("cell writeback requires target")? {
                     MappingTarget::Cell { sheet, cell } => {
                         // A cell the original leaves empty holds no value or type.
@@ -933,7 +965,12 @@ fn validate_coverage(
                             );
                         }
                         let original = source.map_or(CellValue::Null, |source| source.value());
-                        if !text_format && *value != original {
+                        if new_formula {
+                            computed
+                                .get(sheet)
+                                .context("missing Excel target sheet")?
+                                .ensure_not_computed(cell)?;
+                        } else if !text_format && *value != original {
                             let (column, row) = excel::coordinate(cell)?;
                             let book_sheet = &extraction
                                 .sheets

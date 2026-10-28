@@ -439,6 +439,7 @@ fn to_operations(
                         style_rows: 1,
                         merges: false,
                         vba_unchanged: false,
+                        band: None,
                     });
                 }
             }
@@ -456,6 +457,7 @@ fn to_operations(
                         style_rows: 1,
                         merges: false,
                         vba_unchanged: false,
+                        band: None,
                     });
                 }
                 cursor += 1;

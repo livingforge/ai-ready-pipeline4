@@ -78,6 +78,61 @@ struct Sheet<'a> {
     operations: &'a [StructuralOperation],
     /// The original cells by column, then row.
     cells: BTreeMap<u32, BTreeMap<u32, Cell<'a>>>,
+    /// The last original row and column the sheet uses past its values.
+    extent: (u32, u32),
+}
+
+/// The last row and column of the extraction `sheet` that its merges,
+/// bordered blanks, comments, drawings and set row heights and column widths
+/// reach: places beside empty cells Excel takes rows and columns at, as
+/// widening a merged remarks column or making room beside a drawing does.
+fn used_extent(sheet: &Value) -> Result<(u32, u32)> {
+    let (mut rows, mut columns) = (0, 0);
+    let mut reach = |address: &str| -> Result<()> {
+        let (column, row) = excel::coordinate(address)?;
+        rows = rows.max(row);
+        columns = columns.max(column);
+        Ok(())
+    };
+    let ranges = sheet["merges"]
+        .as_array()
+        .into_iter()
+        .chain(sheet["bordered_blanks"].as_array())
+        .flatten()
+        .filter_map(Value::as_str);
+    for range in ranges {
+        reach(range.rsplit(':').next().unwrap_or(range))?;
+    }
+    for comment in sheet["comments"].as_array().into_iter().flatten() {
+        if let Some(cell) = comment["address"].as_str() {
+            reach(cell)?;
+        }
+    }
+    for drawing in sheet["drawings"].as_array().into_iter().flatten() {
+        for corner in ["from", "to"] {
+            let marker = &drawing["anchor"][corner];
+            // A corner at a cell's top or left edge does not reach into it.
+            for (name, last) in [("row", &mut rows), ("col", &mut columns)] {
+                if let Some(index) = marker[name].as_u64() {
+                    let inside =
+                        marker[format!("{name}Off")].as_i64().unwrap_or(0) > 0 || corner == "from";
+                    *last = (*last).max(u32::try_from(index)? + u32::from(inside));
+                }
+            }
+        }
+    }
+    for (key, last) in [("rows", &mut rows), ("columns", &mut columns)] {
+        for span in sheet["grid"][key].as_array().into_iter().flatten() {
+            if let Some(end) = span[1].as_u64() {
+                *last = (*last).max(u32::try_from(end)?.min(if key == "rows" {
+                    1_048_576
+                } else {
+                    16_384
+                }));
+            }
+        }
+    }
+    Ok((rows, columns))
 }
 
 impl<'a> Sheet<'a> {
@@ -223,19 +278,21 @@ impl<'a> Sheet<'a> {
     }
 
     /// The position of `anchor` after the recorded operations. An original row
-    /// or column must hold a value or lie above or left of one, and still exist.
+    /// or column must lie within the sheet's values or its extent, and still exist.
     fn place(&self, anchor: &Anchor, rows: bool) -> Result<u32> {
         let axis = Self::axis_name(rows);
         match anchor {
             Anchor::Last => self.last(rows),
             Anchor::Inserted { id, offset } => self.inserted(id, *offset, rows),
             Anchor::Original(position) => {
-                let last = self.last_original(rows);
+                let last =
+                    self.last_original(rows)
+                        .max(if rows { self.extent.0 } else { self.extent.1 });
                 if *position > last {
                     return Err(rejection(
                         "invalid_position",
                         format!(
-                            "{axis} {} of {} is past the last {axis} holding a value ({}); use last to add after it",
+                            "{axis} {} of {} is past the last {axis} the sheet uses with a value, merge, border, drawing or set size ({}); use last to add after the last value",
                             Self::label(*position, rows)?,
                             self.name,
                             if last == 0 {
@@ -459,11 +516,14 @@ fn converted(
 }
 
 /// A content value to add: the row key, the column key and the value.
-type Addition = (String, String, Value);
+type Addition<T = Value> = (String, String, T);
 
 struct Plan {
     operation: Value,
     additions: Vec<Addition>,
+    /// The formulas given to cells of the rows or columns inserted, by row
+    /// and column key, as `{formula: =...}` values give them.
+    formulas: Vec<Addition<String>>,
     conversions: Vec<Value>,
     warnings: Vec<String>,
     /// First and last position of the edited rows or columns on the final sheet.
@@ -474,6 +534,44 @@ impl Store {
     /// Inserts or deletes rows or columns of an adopted document, or of the
     /// proposal of `id`, recording the operation and its content together.
     pub fn edit_sheet(&self, id: &str, proposal: bool, edit: &SheetEdit) -> Result<Value> {
+        // Rows are moved as the operations that make Excel's move.
+        if let (
+            Axis::Rows,
+            EditKind::Move {
+                from,
+                count,
+                position,
+            },
+        ) = (edit.axis, &edit.kind)
+        {
+            let from = from
+                .strip_prefix('r')
+                .unwrap_or(from)
+                .parse::<u32>()
+                .ok()
+                .filter(|row| (1..=1_048_576).contains(row))
+                .ok_or_else(|| {
+                    rejection(
+                        "invalid_position",
+                        format!("--from {from} is no row number of the original sheet (15 or r15)"),
+                    )
+                })?;
+            return self.move_rows(
+                id,
+                proposal,
+                &super::MoveRequest {
+                    sheet: edit.sheet.clone(),
+                    from,
+                    count: *count,
+                    position: position.clone(),
+                    id: edit.id.clone(),
+                    reason: edit.reason.clone(),
+                    base: edit.base.clone(),
+                    dry_run: edit.dry_run,
+                    vba_unchanged: edit.vba_unchanged,
+                },
+            );
+        }
         let dir = if proposal {
             self.proposal(id)?
         } else {
@@ -576,6 +674,11 @@ impl Store {
                 .map_or_else(|| format!("sheet-{}", index + 1), str::to_owned),
             operations: &prior,
             cells,
+            extent: if laid_out {
+                (0, 0)
+            } else {
+                used_extent(&sheets[index].fields)?
+            },
         };
         let source = under(&self.root, string(&inspected.meta["source"]["path"])?)?;
         // The original is opened only once the content the inspection read is
@@ -588,7 +691,7 @@ impl Store {
         }
         // As the extraction records it of the original, which is current.
         let date1904 = extraction["date1904"] == true;
-        let plan = plan(&sheet, edit, &op_id, date1904)?;
+        let plan = plan(&sheet, edit, &op_id, date1904, laid_out)?;
         if laid_out
             && (plan.operation.get("style_rows").is_some() || plan.operation["merges"] == true)
         {
@@ -614,6 +717,31 @@ impl Store {
         let mut new_values = prior_values.to_vec();
         new_values.push(plan.operation.clone());
         let operations = excel::parse_operations(&new_values, sheets)?;
+        // The merges of the style rows rows inserted without --merges do not
+        // get, which leave a row of single cells in a table of merged ones.
+        let uncopied = if !laid_out
+            && matches!(edit.kind, EditKind::Insert { merges: false, .. })
+            && edit.axis == Axis::Rows
+            && plan.operation["style_from"].is_u64()
+        {
+            let mut copying = new_values.clone();
+            if let Some(last) = copying.last_mut() {
+                last["merges"] = json!(true);
+            }
+            let copied = excel::copied_merges(
+                &sheets[index].fields,
+                &excel::parse_operations(&copying, sheets)?,
+            )?;
+            let kept: BTreeSet<String> = excel::copied_merges(&sheets[index].fields, &operations)?
+                .into_iter()
+                .collect();
+            copied
+                .into_iter()
+                .filter(|merge| !kept.contains(merge))
+                .collect()
+        } else {
+            vec![]
+        };
 
         if let Some(index) = repeated {
             let present = plan.additions.iter().all(|(row, column, value)| {
@@ -765,6 +893,7 @@ impl Store {
             )?),
             Axis::Columns => None,
         };
+        let page_id = sheet.page.clone();
         drop(sheet);
         mappings["operations"] = Value::Array(new_values);
 
@@ -772,12 +901,32 @@ impl Store {
         let mut layout = current_layout;
         {
             let layout = &mut layout;
-            identity::update(layout, &operations)?;
-            elements::geometry(
+            identity::arrange(
                 layout,
                 operated_extraction(extraction, &mappings["operations"])?.as_ref(),
                 &operations,
             )?;
+        }
+        // The formulas given to the new cells are formulas of the page.
+        if !plan.formulas.is_empty() {
+            let rows = identity::key_identities(layout.sheet(&page_id)?, "rows");
+            let columns = identity::key_identities(layout.sheet(&page_id)?, "columns");
+            let page = pages.get_mut(&page_name).context("content page missing")?;
+            for (row, column, formula) in &plan.formulas {
+                let (Some(row_id), Some(column_id)) = (rows.get(row), columns.get(column)) else {
+                    bail!("{row}/{column} has no row or column identity for its formula");
+                };
+                identity::add_formula(&mut layout, &page_id, row_id, column_id)?;
+                page.set(
+                    "formulas",
+                    identity::formula_name(&page_id, row, column),
+                    "formula".to_owned(),
+                    json!(formula),
+                );
+            }
+            if !page.titles.contains_key("formulas") {
+                page.titles.insert("formulas".into(), json!("数式原文"));
+            }
         }
         planned.insert(
             "mappings.yml".to_owned(),
@@ -805,10 +954,17 @@ impl Store {
                 Axis::Rows => row.clone(),
                 Axis::Columns => column.clone(),
             }).collect::<BTreeSet<_>>(),
-            "values":plan.additions.len(),
+            "values":plan.additions.len() + plan.formulas.len(),
         });
         if !plan.conversions.is_empty() {
             report["converted"] = json!(plan.conversions);
+        }
+        if !uncopied.is_empty() {
+            report["merges_not_copied"] = json!({
+                "count": uncopied.len(),
+                "merges": uncopied.iter().take(8).collect::<Vec<_>>(),
+                "hint": "the style rows hold merges the new rows do not get, as Excel's Insert leaves them; to give the new rows the merges of their style rows, insert with --merges instead (once written, take this operation back with documents operations remove first)",
+            });
         }
         if !plan.warnings.is_empty() {
             report["warnings"] = json!(plan.warnings);
@@ -854,16 +1010,16 @@ impl Store {
             "document changed during the edit"
         );
         let backup = stage.path().join("previous");
-        fs::rename(dir, &backup)?;
-        if let Err(error) = fs::rename(&ready, dir) {
-            if let Err(restore) = fs::rename(&backup, dir) {
+        move_path(dir, &backup, "set the document aside")?;
+        if let Err(error) = move_path(&ready, dir, "put the edited document in place") {
+            if let Err(restore) = move_path(&backup, dir, "put the document back") {
                 let recovery = stage.keep();
                 bail!(
-                    "edit failed: {error}; rollback failed: {restore}; recovery data: {}",
+                    "edit failed: {error:#}; rollback failed: {restore:#}; recovery data: {}",
                     recovery.display()
                 );
             }
-            return Err(error.into());
+            return Err(error);
         }
         Ok(())
     }
@@ -889,7 +1045,13 @@ fn span(plan: &Plan, axis: Axis) -> Result<Value> {
     }))
 }
 
-fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result<Plan> {
+fn plan(
+    sheet: &Sheet<'_>,
+    edit: &SheetEdit,
+    id: &str,
+    date1904: bool,
+    laid_out: bool,
+) -> Result<Plan> {
     let rows = edit.axis == Axis::Rows;
     let axis = Sheet::axis_name(rows);
     let kind = match (&edit.kind, rows) {
@@ -905,6 +1067,7 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
         operation["vba_unchanged"] = json!(true);
     }
     let mut additions = vec![];
+    let mut formulas = vec![];
     let mut conversions = vec![];
     let mut warnings = vec![];
     ensure!(
@@ -1127,6 +1290,31 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
                         (format!("r{row}"), key.clone(), None)
                     };
                     let place = format!("{row_key}/{column_key}");
+                    // A formula given as {formula: =...} goes in as one.
+                    if let Some(formula) = value.as_object().and_then(|object| {
+                        (object.len() == 1).then(|| object.get("formula")).flatten()
+                    }) {
+                        let text = formula
+                            .as_str()
+                            .filter(|text| text.starts_with('='))
+                            .ok_or_else(|| {
+                                rejection(
+                                    "invalid_values",
+                                    format!("{place}: a formula is text starting with =, such as {{formula: \"=ROW()-4\"}}"),
+                                )
+                            })?;
+                        excel::check_formula(&text[1..]).map_err(|error| {
+                            rejection("invalid_values", format!("{place}: {error:#}"))
+                        })?;
+                        if laid_out {
+                            return Err(rejection(
+                                "invalid_values",
+                                format!("{place}: formulas go into Excel cells only"),
+                            ));
+                        }
+                        formulas.push((row_key, column_key, text.to_owned()));
+                        continue;
+                    }
                     let stored = converted(value, reference, date1904, &place, &mut warnings)?;
                     if stored != *value {
                         conversions.push(json!({"key":place,"from":value,"to":stored}));
@@ -1175,6 +1363,7 @@ fn plan(sheet: &Sheet<'_>, edit: &SheetEdit, id: &str, date1904: bool) -> Result
     Ok(Plan {
         operation,
         additions,
+        formulas,
         conversions,
         warnings,
         span,
@@ -1192,9 +1381,32 @@ fn deleted_content(
     // column once.
     let with = excel::CoordinateMap::new(operations);
     let without = excel::CoordinateMap::new(sheet.operations);
+    // The drawings deleted with the cells holding them, with and without it.
+    let placements = excel::parse_place_operations(
+        array(&inspected.mappings["operations"]).map_or(&[][..], Vec::as_slice),
+        &inspected.extraction.sheets,
+    )?;
+    let source = inspected
+        .extraction
+        .sheets
+        .iter()
+        .find(|source| source["name"] == sheet.name);
+    let drawings = |operations: &[StructuralOperation]| -> Result<BTreeSet<String>> {
+        Ok(match source {
+            Some(source) => {
+                super::visual_elements::deleted_drawings(source, operations, &placements)?
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            }
+            None => BTreeSet::new(),
+        })
+    };
+    let (drawings_with, drawings_without) = (drawings(operations)?, drawings(sheet.operations)?);
     let gone = |target: &MappingTarget<'_>,
                 coordinates: &excel::CoordinateMap<'_>,
-                operations: &[StructuralOperation]|
+                operations: &[StructuralOperation],
+                drawings: &BTreeSet<String>|
      -> Result<bool> {
         Ok(match target {
             MappingTarget::Cell { sheet: name, cell } => coordinates.map(name, cell)?.is_none(),
@@ -1212,8 +1424,9 @@ fn deleted_content(
                 row,
             } => excel::resolve_insertion(name, insertion, *offset, None, Some(*row), operations)
                 .is_err(),
-            // A shape's anchor moves with the cells; its text stays.
-            MappingTarget::Shape { .. } => false,
+            // A shape's anchor moves with the cells; its text stays unless
+            // the shape goes with the cells holding it.
+            MappingTarget::Shape { shape, .. } => drawings.contains(*shape),
         })
     };
     let mut deleted = vec![];
@@ -1235,7 +1448,9 @@ fn deleted_content(
         if name != sheet.name {
             continue;
         }
-        if gone(&target, &with, operations)? && !gone(&target, &without, sheet.operations)? {
+        if gone(&target, &with, operations, &drawings_with)?
+            && !gone(&target, &without, sheet.operations, &drawings_without)?
+        {
             deleted.push((
                 entry.page()?.to_owned(),
                 entry.block()?.to_owned(),
@@ -1297,8 +1512,17 @@ fn neighbors(
         }
     }
     let describe = |(row, (key, values)): (&u32, &(&str, &[elements::GridValue]))| {
+        // The first values from the left, which name the row, rather than the
+        // first of the columns' identities in text order (A, AC, AF, ...).
+        let mut values: Vec<_> = values.iter().collect();
+        values.sort_by_cached_key(|value| {
+            (
+                excel::column_number(&value.column).unwrap_or(u32::MAX),
+                value.column.to_string(),
+            )
+        });
         let values: serde_json::Map<String, Value> = values
-            .iter()
+            .into_iter()
             .take(4)
             .map(|elements::GridValue { column, value, .. }| {
                 let value = match value.as_str() {
@@ -1350,12 +1574,14 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         }];
         let sheet = Sheet {
             name: "S",
             page: "sheet-1".to_owned(),
             operations: &operations,
             cells,
+            extent: (0, 0),
         };
         let start = Instant::now();
         assert_eq!(
@@ -1420,6 +1646,7 @@ mod tests {
             page: "sheet-1".to_owned(),
             operations: &[],
             cells,
+            extent: (0, 0),
         };
         let mut original = Vec::new();
         let mut optimized = Vec::new();

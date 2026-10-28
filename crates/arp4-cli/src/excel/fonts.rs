@@ -247,15 +247,133 @@ impl Workbook {
         fonts: &[Value],
         assets: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Value> {
-        if fonts.is_empty() {
-            return self.patch_with_operations_and_assets(
+        // Sheets added go in first, as the sheets the other edits write, and
+        // sheets deleted and renamed go last.
+        let sheets = super::parse_sheet_operations(operations, &self.sheets)?;
+        let sheet_changes = super::parse_sheet_changes(operations, &self.sheets)?;
+        if !sheets.is_empty() || !sheet_changes.is_empty() {
+            let (added, removed) = super::sheet_add::add_sheets(self, &sheets)?;
+            let staged = destination.with_extension(format!(
+                "sheets.{}",
+                destination
+                    .extension()
+                    .context("workbook without an extension")?
+                    .to_string_lossy()
+            ));
+            write_archive_without(&self.raw, &staged, &added, &removed)?;
+            let book = Workbook::open(&staged);
+            fs::remove_file(&staged)?;
+            let rest: Vec<Value> = operations
+                .iter()
+                .filter(|operation| !super::is_sheet_operation(operation))
+                .cloned()
+                .collect();
+            let mut report =
+                book?.patch_with_fonts(destination, &rest, changes, formulas, fonts, assets)?;
+            let mut parts: BTreeSet<String> = report["changed_parts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str().map(str::to_owned))
+                .collect();
+            parts.extend(added.into_keys());
+            parts.extend(super::sheet_add::change_sheets(
+                destination,
+                &sheet_changes,
+            )?);
+            report["changed_parts"] = json!(parts);
+            if !sheets.is_empty() {
+                report["added_sheets"] = json!(sheets.iter().map(|s| &s.name).collect::<Vec<_>>());
+            }
+            let (renamed, deleted): (Vec<_>, Vec<_>) = sheet_changes
+                .iter()
+                .partition(|change| change.name.is_some());
+            if !renamed.is_empty() {
+                report["renamed_sheets"] = json!(
+                    renamed
+                        .iter()
+                        .map(|change| json!({"sheet":change.sheet,"name":change.name}))
+                        .collect::<Vec<_>>()
+                );
+            }
+            if !deleted.is_empty() {
+                report["deleted_sheets"] =
+                    json!(deleted.iter().map(|c| &c.sheet).collect::<Vec<_>>());
+            }
+            if let Some(report) = report.as_object_mut() {
+                report.remove("non_edit_preservation_verified");
+            }
+            return Ok(report);
+        }
+        // A formula written as the cells stand after an operation goes in
+        // once every operation has moved the cells.
+        let (framed, formulas): (Vec<Value>, Vec<Value>) = formulas
+            .iter()
+            .cloned()
+            .partition(|formula| formula["written_after"].is_string());
+        let formulas = formulas.as_slice();
+        let mut report = if fonts.is_empty() {
+            self.patch_with_operations_and_assets(
                 destination,
                 operations,
                 changes,
                 formulas,
                 assets,
-            );
+            )?
+        } else {
+            self.patch_fonts_first(destination, operations, changes, formulas, fonts, assets)?
+        };
+        // Formats go in last, in the cells every operation leaves.
+        let formats = super::parse_format_operations(operations, &self.sheets)?;
+        let structural = super::parse_operations(operations, &self.sheets)?;
+        let mut formatted =
+            super::formula_edit::apply_framed_formulas(destination, &structural, &framed)?;
+        formatted.extend(super::formatting::apply_formats(
+            destination,
+            &structural,
+            &formats,
+        )?);
+        let placements = super::parse_place_operations(operations, &self.sheets)?;
+        formatted.extend(super::placing::apply_placements(
+            self,
+            destination,
+            &structural,
+            &placements,
+        )?);
+        let objects = super::parse_cell_object_operations(operations, &self.sheets)?;
+        formatted.extend(super::cell_objects::apply_cell_objects(
+            destination,
+            &structural,
+            &objects,
+        )?);
+        if !formatted.is_empty() {
+            let mut parts: BTreeSet<String> = report["changed_parts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str().map(str::to_owned))
+                .collect();
+            parts.extend(formatted);
+            report["changed_parts"] = json!(parts);
+            // That check covered the edits before the formats.
+            if let Some(report) = report.as_object_mut() {
+                report.remove("non_edit_preservation_verified");
+            }
         }
+        Ok(report)
+    }
+
+    /// [`Workbook::patch_with_fonts`] with fonts to write: the original cells
+    /// and shapes get them before the other edits.
+    fn patch_fonts_first(
+        &self,
+        destination: &Path,
+        operations: &[Value],
+        changes: &[Value],
+        formulas: &[Value],
+        fonts: &[Value],
+        assets: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Value> {
         ensure!(
             !self
                 .parts
@@ -473,15 +591,24 @@ impl Workbook {
 
 /// The cell formats and fonts of a styles part, with formats added for new
 /// fonts. A format or font identical to an existing one is reused.
-struct StyleFormats<'a> {
+pub(super) struct StyleFormats<'a> {
     source: &'a str,
     fonts: Vec<String>,
     formats: Vec<String>,
+    borders: Vec<String>,
+    fills: Vec<String>,
     font_count: usize,
     format_count: usize,
-    /// The first index of each font and format.
+    border_count: usize,
+    fill_count: usize,
+    /// The first index of each font, format, border and fill.
     font_index: BTreeMap<String, usize>,
     format_index: BTreeMap<String, usize>,
+    border_index: BTreeMap<String, usize>,
+    fill_index: BTreeMap<String, usize>,
+    /// The number formats the part defines, by ID, and how many it had.
+    number_formats: Vec<(u32, String)>,
+    number_format_count: usize,
     /// (font index, edit) to the index of the edited font.
     edited_fonts: BTreeMap<(usize, String), usize>,
 }
@@ -505,7 +632,7 @@ fn first_indices(items: &[String]) -> BTreeMap<String, usize> {
 }
 
 impl<'a> StyleFormats<'a> {
-    fn new(source: &'a str) -> Result<Self> {
+    pub(super) fn new(source: &'a str) -> Result<Self> {
         let doc = Document::parse(source)?;
         let list = |name: &str| -> Result<Vec<String>> {
             let parent = child(doc.root_element(), name)
@@ -518,16 +645,289 @@ impl<'a> StyleFormats<'a> {
         };
         let fonts = list("fonts")?;
         let formats = list("cellXfs")?;
+        // A styles part may leave out the borders and fills no format draws.
+        let optional = |name: &str| -> Result<Vec<String>> {
+            if child(doc.root_element(), name).is_some() {
+                list(name)
+            } else {
+                Ok(vec![])
+            }
+        };
+        let borders = optional("borders")?;
+        let fills = optional("fills")?;
+        let number_formats: Vec<(u32, String)> = child(doc.root_element(), "numFmts")
+            .into_iter()
+            .flat_map(|list| list.children().filter(|n| n.has_tag_name((NS, "numFmt"))))
+            .filter_map(|n| {
+                Some((
+                    n.attribute("numFmtId")?.parse().ok()?,
+                    n.attribute("formatCode")?.to_owned(),
+                ))
+            })
+            .collect();
         Ok(Self {
             source,
             font_count: fonts.len(),
             format_count: formats.len(),
+            border_count: borders.len(),
+            fill_count: fills.len(),
             font_index: first_indices(&fonts),
             format_index: first_indices(&formats),
+            border_index: first_indices(&borders),
+            fill_index: first_indices(&fills),
+            number_format_count: number_formats.len(),
+            number_formats,
             fonts,
             formats,
+            borders,
+            fills,
             edited_fonts: BTreeMap::new(),
         })
+    }
+
+    /// The index of a format like `format` with the font emphasis, fill and
+    /// number format `look` sets, and the sides of `lines` (left, right, top,
+    /// bottom) drawn, or taken away when the line is none.
+    pub(super) fn with_look(
+        &mut self,
+        format: usize,
+        look: &super::CellLook,
+        lines: &[Option<Option<Line>>; 4],
+    ) -> Result<usize> {
+        if look.is_empty() && lines.iter().all(Option::is_none) {
+            return Ok(format);
+        }
+        let xf = self
+            .formats
+            .get(format)
+            .with_context(|| format!("cell format {format} is missing"))?
+            .clone();
+        let (opening, rest) = xml_opening(&xf)?;
+        let mut opening = opening.to_owned();
+        let index = |opening: &str, name: &str| -> Result<usize> {
+            Ok(xml_attribute_value(opening, name)?.unwrap_or("0").parse()?)
+        };
+        if look.bold.is_some()
+            || look.italic.is_some()
+            || look.strike.is_some()
+            || look.underline.is_some()
+        {
+            let font = index(&opening, "fontId")?;
+            let original = self
+                .fonts
+                .get(font)
+                .with_context(|| format!("font {font} is missing"))?;
+            let emphasized = emphasized_font(original, look)?;
+            let font = index_of(&mut self.fonts, &mut self.font_index, emphasized);
+            opening = set_xml_attribute(&opening, "fontId", &font.to_string())?;
+            opening = set_xml_attribute(&opening, "applyFont", "1")?;
+        }
+        if let Some(fill) = &look.fill {
+            ensure!(
+                !self.fills.is_empty(),
+                "the workbook's styles part has no fills to add to"
+            );
+            let prefix = element_tag(&self.fills[0])?
+                .strip_suffix("fill")
+                .context("invalid fill tag")?
+                .to_owned();
+            let element = if fill == "none" {
+                format!(r#"<{prefix}fill><{prefix}patternFill patternType="none"/></{prefix}fill>"#)
+            } else {
+                format!(
+                    r#"<{prefix}fill><{prefix}patternFill patternType="solid"><{prefix}fgColor rgb="FF{fill}"/><{prefix}bgColor indexed="64"/></{prefix}patternFill></{prefix}fill>"#
+                )
+            };
+            let fill = index_of(&mut self.fills, &mut self.fill_index, element);
+            opening = set_xml_attribute(&opening, "fillId", &fill.to_string())?;
+            opening = set_xml_attribute(&opening, "applyFill", "1")?;
+        }
+        if let Some(code) = &look.number_format {
+            let id = self.number_format_id(code);
+            opening = set_xml_attribute(&opening, "numFmtId", &id.to_string())?;
+            opening = set_xml_attribute(&opening, "applyNumberFormat", "1")?;
+        }
+        if lines.iter().any(Option::is_some) {
+            ensure!(
+                !self.borders.is_empty(),
+                "the workbook's styles part has no borders to add to"
+            );
+            let border = index(&opening, "borderId")?;
+            let original = self
+                .borders
+                .get(border)
+                .with_context(|| format!("border {border} is missing"))?;
+            let drawn = drawn_border(original, lines)?;
+            let border = index_of(&mut self.borders, &mut self.border_index, drawn);
+            opening = set_xml_attribute(&opening, "borderId", &border.to_string())?;
+            opening = set_xml_attribute(&opening, "applyBorder", "1")?;
+        }
+        Ok(index_of(
+            &mut self.formats,
+            &mut self.format_index,
+            format!("{opening}{rest}"),
+        ))
+    }
+
+    /// The index of a format like `format` whose font shows a link, as Excel
+    /// gives a cell it links: underlined, in the theme's link color.
+    pub(super) fn with_link_font(&mut self, format: usize) -> Result<usize> {
+        self.link_font(format, true)
+    }
+
+    /// The index of a format like `format` whose font no longer shows a link:
+    /// without the underline and the theme's link color, when it has them.
+    pub(super) fn without_link_font(&mut self, format: usize) -> Result<usize> {
+        self.link_font(format, false)
+    }
+
+    fn link_font(&mut self, format: usize, linked: bool) -> Result<usize> {
+        let xf = self
+            .formats
+            .get(format)
+            .with_context(|| format!("cell format {format} is missing"))?
+            .clone();
+        let (opening, rest) = xml_opening(&xf)?;
+        let font: usize = xml_attribute_value(opening, "fontId")?
+            .unwrap_or("0")
+            .parse()?;
+        let original = self
+            .fonts
+            .get(font)
+            .with_context(|| format!("font {font} is missing"))?;
+        let wrapped = with_namespace(original);
+        let doc = Document::parse(&wrapped)?;
+        let element = doc
+            .root_element()
+            .first_element_child()
+            .context("font element")?;
+        let prefix = element_tag(original)?
+            .strip_suffix("font")
+            .context("invalid font tag")?
+            .to_owned();
+        let shows_link =
+            child(element, "color").is_some_and(|color| color.attribute("theme") == Some("10"));
+        if !linked && !shows_link {
+            return Ok(format);
+        }
+        let mut children = if linked {
+            format!(r#"<{prefix}u/><{prefix}color theme="10"/>"#)
+        } else {
+            String::new()
+        };
+        for node in element.children().filter(Node::is_element) {
+            if !matches!(node.tag_name().name(), "u" | "color") {
+                children.push_str(&wrapped[node.range()]);
+            }
+        }
+        let (font_opening, _) = xml_opening(original)?;
+        let font_opening = font_opening.trim_end_matches("/>").trim_end_matches('>');
+        let linked = format!("{font_opening}>{children}</{prefix}font>");
+        let font = index_of(&mut self.fonts, &mut self.font_index, linked);
+        let mut opening = set_xml_attribute(opening, "fontId", &font.to_string())?;
+        opening = set_xml_attribute(&opening, "applyFont", "1")?;
+        Ok(index_of(
+            &mut self.formats,
+            &mut self.format_index,
+            format!("{opening}{rest}"),
+        ))
+    }
+
+    /// The ID of the number format `code`: a built-in one, one the part
+    /// defines, or one defined for it.
+    fn number_format_id(&mut self, code: &str) -> u32 {
+        const BUILT_IN: [(u32, &str); 8] = [
+            (0, "General"),
+            (1, "0"),
+            (2, "0.00"),
+            (3, "#,##0"),
+            (4, "#,##0.00"),
+            (9, "0%"),
+            (10, "0.00%"),
+            (49, "@"),
+        ];
+        if let Some((id, _)) = BUILT_IN.iter().find(|(_, built)| *built == code) {
+            return *id;
+        }
+        if let Some((id, _)) = self
+            .number_formats
+            .iter()
+            .find(|(_, defined)| defined == code)
+        {
+            return *id;
+        }
+        let id = self
+            .number_formats
+            .iter()
+            .map(|(id, _)| id + 1)
+            .max()
+            .unwrap_or(0)
+            .max(164);
+        self.number_formats.push((id, code.to_owned()));
+        id
+    }
+
+    /// Whether the format `format` draws a line on its `side` (`left`, ...).
+    pub(super) fn draws(&self, format: usize, side: &str) -> Result<bool> {
+        let xf = self
+            .formats
+            .get(format)
+            .with_context(|| format!("cell format {format} is missing"))?;
+        let border: usize = xml_attribute_value(xml_opening(xf)?.0, "borderId")?
+            .unwrap_or("0")
+            .parse()?;
+        let Some(border) = self.borders.get(border) else {
+            return Ok(false);
+        };
+        let wrapped = with_namespace(border);
+        let doc = Document::parse(&wrapped)?;
+        Ok(doc
+            .root_element()
+            .first_element_child()
+            .and_then(|element| child(element, side))
+            .and_then(|node| node.attribute("style"))
+            .is_some_and(|style| style != "none"))
+    }
+
+    /// The index of a format like `format` whose borders are only those
+    /// the format `next` draws alike: Excel's format of a cell inserted
+    /// between a cell of `format` and one of `next`, which keeps a line only
+    /// where the cells on both sides of the insertion draw it.
+    pub(super) fn with_shared_borders(&mut self, format: usize, next: usize) -> Result<usize> {
+        let border_of = |formats: &[String], index: usize| -> Result<usize> {
+            let xf = formats
+                .get(index)
+                .with_context(|| format!("cell format {index} is missing"))?;
+            Ok(xml_attribute_value(xml_opening(xf)?.0, "borderId")?
+                .unwrap_or("0")
+                .parse()?)
+        };
+        let (own, other) = (
+            border_of(&self.formats, format)?,
+            border_of(&self.formats, next)?,
+        );
+        if own == other {
+            return Ok(format);
+        }
+        // A border the part does not list draws nothing ARP can tell.
+        let (Some(own_border), Some(other_border)) =
+            (self.borders.get(own), self.borders.get(other))
+        else {
+            return Ok(format);
+        };
+        let Some(shared) = shared_border(own_border, other_border)? else {
+            return Ok(format);
+        };
+        let index = index_of(&mut self.borders, &mut self.border_index, shared);
+        let xf = self.formats[format].clone();
+        let (opening, rest) = xml_opening(&xf)?;
+        let mut opening = set_xml_attribute(opening, "borderId", &index.to_string())?;
+        opening = set_xml_attribute(&opening, "applyBorder", "1")?;
+        Ok(index_of(
+            &mut self.formats,
+            &mut self.format_index,
+            format!("{opening}{rest}"),
+        ))
     }
 
     /// The index of a format like `format` with its font edited by `edit`.
@@ -567,12 +967,151 @@ impl<'a> StyleFormats<'a> {
         Ok(index_of(&mut self.formats, &mut self.format_index, edited).to_string())
     }
 
+    /// The index of a format like `format` with the alignment settings of
+    /// `alignment` changed; a setting back at Excel's default is left out.
+    pub(super) fn with_alignment(
+        &mut self,
+        format: usize,
+        alignment: &super::Alignment,
+    ) -> Result<usize> {
+        let xf = self
+            .formats
+            .get(format)
+            .with_context(|| format!("cell format {format} is missing"))?
+            .clone();
+        let wrapped = with_namespace(&xf);
+        let doc = Document::parse(&wrapped)?;
+        let element = doc
+            .root_element()
+            .first_element_child()
+            .context("format element")?;
+        let prefix = element_tag(&xf)?
+            .strip_suffix("xf")
+            .context("invalid format tag")?
+            .to_owned();
+        let old = child(element, "alignment");
+        let mut attributes: Vec<(String, String)> = old
+            .map(|node| {
+                node.attributes()
+                    .map(|a| (a.name().to_owned(), a.value().to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut set = |name: &str, value: Option<&str>| {
+            attributes.retain(|(key, _)| key != name);
+            if let Some(value) = value {
+                attributes.push((name.to_owned(), value.to_owned()));
+            }
+        };
+        if let Some(wrap) = alignment.wrap {
+            set("wrapText", wrap.then_some("1"));
+        }
+        if let Some(shrink) = alignment.shrink {
+            set("shrinkToFit", shrink.then_some("1"));
+        }
+        if let Some(horizontal) = &alignment.horizontal {
+            set(
+                "horizontal",
+                (horizontal != "general").then_some(horizontal),
+            );
+        }
+        if let Some(vertical) = &alignment.vertical {
+            set("vertical", (vertical != "bottom").then_some(vertical));
+        }
+        let rendered: String = attributes
+            .iter()
+            .map(|(name, value)| format!(" {name}=\"{}\"", xml_attr(value)))
+            .collect();
+        let replacement = if attributes.is_empty() {
+            String::new()
+        } else {
+            format!("<{prefix}alignment{rendered}/>")
+        };
+        // Offsets in the wrapped text less the wrapper's opening tag.
+        let offset = wrapped.find(&xf).context("format in wrapper")?;
+        let (opening, _) = xml_opening(&xf)?;
+        let opening = set_xml_attribute(opening, "applyAlignment", "1")?;
+        let edited = match old {
+            Some(node) => {
+                let range = node.range().start - offset..node.range().end - offset;
+                let mut edited = xf.clone();
+                edited.replace_range(range, &replacement);
+                let (old_opening, _) = xml_opening(&edited)?;
+                format!("{opening}{}", &edited[old_opening.len()..])
+            }
+            // An alignment goes first among the format's children.
+            None if xf.trim_end().ends_with("/>") => format!(
+                "{}>{replacement}</{prefix}xf>",
+                opening
+                    .trim_end_matches('>')
+                    .trim_end_matches('/')
+                    .trim_end()
+            ),
+            None => format!("{opening}{replacement}{}", &xf[xml_opening(&xf)?.0.len()..]),
+        };
+        Ok(index_of(&mut self.formats, &mut self.format_index, edited))
+    }
+
     /// The styles part with the added fonts and formats.
-    fn finish(self) -> Result<String> {
+    pub(super) fn finish(self) -> Result<String> {
         let doc = Document::parse(self.source)?;
         let mut edits = vec![];
+        if self.number_formats.len() > self.number_format_count {
+            let added: String = self.number_formats[self.number_format_count..]
+                .iter()
+                .map(|(id, code)| {
+                    format!(
+                        r#"<numFmt numFmtId="{id}" formatCode="{}"/>"#,
+                        xml_attr(code)
+                    )
+                })
+                .collect();
+            let count = self.number_formats.len();
+            match child(doc.root_element(), "numFmts") {
+                Some(list) => {
+                    let raw = &self.source[list.range()];
+                    let (opening, _) = xml_opening(raw)?;
+                    let count = set_xml_attribute(opening, "count", &count.to_string())?;
+                    let prefix = element_tag(opening)?
+                        .strip_suffix("numFmts")
+                        .context("invalid numFmts tag")?;
+                    let added = added.replace("<numFmt ", &format!("<{prefix}numFmt "));
+                    let inner = match raw.rfind("</") {
+                        Some(close) if !raw.trim_end().ends_with("/>") => {
+                            format!("{}{added}{}", &raw[opening.len()..close], &raw[close..])
+                        }
+                        _ => format!("{added}</{prefix}numFmts>"),
+                    };
+                    let count = if raw.trim_end().ends_with("/>") {
+                        format!(
+                            "{}>",
+                            count.trim_end_matches('>').trim_end_matches('/').trim_end()
+                        )
+                    } else {
+                        count
+                    };
+                    edits.push((list.range(), format!("{count}{inner}")));
+                }
+                None => {
+                    // The number formats come first in a styles part.
+                    let root = doc.root_element();
+                    let (opening, _) = xml_opening(&self.source[root.range()])?;
+                    let prefix = element_tag(opening)?
+                        .strip_suffix("styleSheet")
+                        .context("invalid styleSheet tag")?;
+                    let added = added.replace("<numFmt ", &format!("<{prefix}numFmt "));
+                    let at = root.range().start + opening.len();
+                    edits.push((
+                        at..at,
+                        format!(r#"<{prefix}numFmts count="{count}">{added}</{prefix}numFmts>"#),
+                    ));
+                }
+            }
+        }
         for (name, items, original) in [
             ("fonts", &self.fonts, self.font_count),
+            ("fills", &self.fills, self.fill_count),
+            ("borders", &self.borders, self.border_count),
             ("cellXfs", &self.formats, self.format_count),
         ] {
             if items.len() == original {
@@ -597,6 +1136,202 @@ impl<'a> StyleFormats<'a> {
         Document::parse(&result)?;
         Ok(result)
     }
+}
+
+/// A line of a cell border: its style (`thin`, ...) and `RRGGBB` color,
+/// none for the automatic color.
+pub(super) type Line = (String, Option<String>);
+
+/// The `font` element `font` with the emphasis `look` sets.
+fn emphasized_font(font: &str, look: &super::CellLook) -> Result<String> {
+    let wrapped = with_namespace(font);
+    let doc = Document::parse(&wrapped)?;
+    let element = doc
+        .root_element()
+        .first_element_child()
+        .context("font element")?;
+    let prefix = element_tag(font)?
+        .strip_suffix("font")
+        .context("invalid font tag")?
+        .to_owned();
+    let set = [
+        ("b", look.bold.map(|on| on.then(|| format!("<{prefix}b/>")))),
+        (
+            "i",
+            look.italic.map(|on| on.then(|| format!("<{prefix}i/>"))),
+        ),
+        (
+            "strike",
+            look.strike
+                .map(|on| on.then(|| format!("<{prefix}strike/>"))),
+        ),
+        (
+            "u",
+            look.underline.as_deref().map(|underline| match underline {
+                "none" => None,
+                "double" => Some(format!(r#"<{prefix}u val="double"/>"#)),
+                _ => Some(format!("<{prefix}u/>")),
+            }),
+        ),
+    ];
+    // An emphasis goes first; a font's children may come in any order.
+    let mut children = String::new();
+    for (name, value) in &set {
+        if let Some(Some(xml)) = value {
+            children.push_str(xml);
+        } else if value.is_none()
+            && let Some(node) = child(element, name)
+        {
+            children.push_str(&wrapped[node.range()]);
+        }
+    }
+    for node in element.children().filter(Node::is_element) {
+        if !set.iter().any(|(name, _)| node.tag_name().name() == *name) {
+            children.push_str(&wrapped[node.range()]);
+        }
+    }
+    let (opening, _) = xml_opening(font)?;
+    let opening = opening.trim_end_matches("/>").trim_end_matches('>');
+    Ok(format!("{opening}>{children}</{prefix}font>"))
+}
+
+/// The `border` element `border` with the sides of `lines` (left, right,
+/// top, bottom) drawn, or taken away when the line is none, its sides in
+/// the order Excel writes them.
+fn drawn_border(border: &str, lines: &[Option<Option<Line>>; 4]) -> Result<String> {
+    let wrapped = with_namespace(border);
+    let doc = Document::parse(&wrapped)?;
+    let element = doc
+        .root_element()
+        .first_element_child()
+        .context("border element")?;
+    let prefix = element_tag(border)?
+        .strip_suffix("border")
+        .context("invalid border tag")?
+        .to_owned();
+    let mut children = String::new();
+    for name in [
+        "start",
+        "end",
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "diagonal",
+        "vertical",
+        "horizontal",
+    ] {
+        let side = ["left", "right", "top", "bottom"]
+            .iter()
+            .position(|side| *side == name);
+        match side.and_then(|side| lines[side].as_ref()) {
+            Some(Some((style, color))) => {
+                let color = match color {
+                    Some(color) => format!(r#"<{prefix}color rgb="FF{color}"/>"#),
+                    None => format!(r#"<{prefix}color indexed="64"/>"#),
+                };
+                children.push_str(&format!(
+                    r#"<{prefix}{name} style="{}">{color}</{prefix}{name}>"#,
+                    xml_attr(style)
+                ));
+            }
+            Some(None) => children.push_str(&format!("<{prefix}{name}/>")),
+            None => match child(element, name) {
+                Some(node) => children.push_str(&wrapped[node.range()]),
+                // Excel writes the four sides and the diagonal of every border.
+                None if side.is_some() || name == "diagonal" => {
+                    children.push_str(&format!("<{prefix}{name}/>"));
+                }
+                None => {}
+            },
+        }
+    }
+    let (opening, _) = xml_opening(border)?;
+    let opening = opening.trim_end_matches("/>").trim_end_matches('>');
+    Ok(format!("{opening}>{children}</{prefix}border>"))
+}
+
+/// The `border` element `own` with only the lines `other` draws alike on
+/// the same side: the other sides are written empty, as Excel writes a side
+/// without a line, and the diagonal keeps its direction only while drawn.
+/// None when `own` keeps all its lines.
+fn shared_border(own: &str, other: &str) -> Result<Option<String>> {
+    let (own_wrapped, other_wrapped) = (with_namespace(own), with_namespace(other));
+    let (own_doc, other_doc) = (
+        Document::parse(&own_wrapped)?,
+        Document::parse(&other_wrapped)?,
+    );
+    let own_border = own_doc
+        .root_element()
+        .first_element_child()
+        .context("border element")?;
+    let other_border = other_doc
+        .root_element()
+        .first_element_child()
+        .context("border element")?;
+    let prefix = element_tag(own)?
+        .strip_suffix("border")
+        .context("invalid border tag")?
+        .to_owned();
+    // A side as it draws: its line style and color.
+    let line = |border: Node<'_, '_>, name: &str| -> Option<(String, String)> {
+        let side = child(border, name)?;
+        let style = side.attribute("style").filter(|style| *style != "none")?;
+        let color = side
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "color")
+            .map(|color| {
+                let mut attributes: Vec<_> = color
+                    .attributes()
+                    .map(|a| format!("{}={}", a.name(), a.value()))
+                    .collect();
+                attributes.sort();
+                attributes.join(" ")
+            })
+            .unwrap_or_default();
+        Some((style.to_owned(), color))
+    };
+    let diagonal = |border: Node<'_, '_>| {
+        (
+            border.attribute("diagonalUp") == Some("1"),
+            border.attribute("diagonalDown") == Some("1"),
+        )
+    };
+    let mut children = String::new();
+    let mut kept_diagonal = false;
+    let mut dropped = false;
+    for node in own_border.children().filter(Node::is_element) {
+        let name = node.tag_name().name();
+        let drawn = line(own_border, name).is_some();
+        let shared = drawn
+            && line(own_border, name) == line(other_border, name)
+            && (name != "diagonal" || diagonal(own_border) == diagonal(other_border));
+        if shared || !drawn {
+            children.push_str(&own_wrapped[node.range()]);
+            kept_diagonal |= shared && name == "diagonal";
+        } else {
+            dropped = true;
+            children.push_str(&format!("<{prefix}{name}/>"));
+        }
+    }
+    if !dropped {
+        return Ok(None);
+    }
+    let (opening, _) = xml_opening(own)?;
+    let mut opening = opening
+        .trim_end_matches("/>")
+        .trim_end_matches('>')
+        .to_owned();
+    if !kept_diagonal {
+        for name in ["diagonalUp", "diagonalDown"] {
+            if xml_attribute_value(&format!("{opening}>"), name)?.is_some() {
+                opening = set_xml_attribute(&format!("{opening}>"), name, "0")?
+                    .trim_end_matches('>')
+                    .to_owned();
+            }
+        }
+    }
+    Ok(Some(format!("{opening}>{children}</{prefix}border>")))
 }
 
 /// A styles child element wrapped so that it parses on its own: the
@@ -734,5 +1469,37 @@ mod tests {
         assert_eq!(formats.with_font(0, &edit).unwrap(), "1");
         assert_eq!((formats.fonts.len(), formats.formats.len()), (3, 3));
         assert_eq!(formats.finish().unwrap(), listed);
+    }
+
+    /// A format with new alignment settings keeps the others and the format's
+    /// other children; a setting back at Excel's default is left out, and a
+    /// format equal to one listed is that one.
+    #[test]
+    fn alignment_changes_make_formats_like_the_old_ones() {
+        let source = format!(
+            r#"<x:styleSheet xmlns:x="{NS}"><x:fonts count="1"><x:font/></x:fonts><x:cellXfs count="3"><x:xf fontId="0"/><x:xf fontId="0" applyAlignment="1"><x:alignment horizontal="center" wrapText="1"/><x:protection locked="0"/></x:xf><x:xf fontId="0" applyAlignment="1"><x:alignment horizontal="center"/><x:protection locked="0"/></x:xf></x:cellXfs></x:styleSheet>"#
+        );
+        let mut formats = StyleFormats::new(&source).unwrap();
+        let wrap = |wrap| super::super::Alignment {
+            wrap: Some(wrap),
+            ..Default::default()
+        };
+        assert_eq!(formats.with_alignment(1, &wrap(false)).unwrap(), 2);
+        assert_eq!(formats.with_alignment(0, &wrap(true)).unwrap(), 3);
+        assert_eq!(
+            formats.formats[3],
+            r#"<x:xf fontId="0" applyAlignment="1"><x:alignment wrapText="1"/></x:xf>"#
+        );
+        let top = super::super::Alignment {
+            vertical: Some("top".into()),
+            horizontal: Some("general".into()),
+            ..Default::default()
+        };
+        assert_eq!(formats.with_alignment(1, &top).unwrap(), 4);
+        assert_eq!(
+            formats.formats[4],
+            r#"<x:xf fontId="0" applyAlignment="1"><x:alignment wrapText="1" vertical="top"/><x:protection locked="0"/></x:xf>"#
+        );
+        Document::parse(&formats.finish().unwrap()).unwrap();
     }
 }

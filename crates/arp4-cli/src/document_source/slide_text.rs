@@ -793,6 +793,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         }
     }
 

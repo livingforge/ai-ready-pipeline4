@@ -134,6 +134,20 @@ pub fn worker(request_path: &Path) -> Result<()> {
 }
 
 fn render_with_excel(excel: &IDispatch, request: &Request) -> Result<()> {
+    let (scratch, source) = open_quietly(excel, &request.source)?;
+    if request.recalculate {
+        call(excel, "CalculateFull", vec![])?;
+    }
+    let outcome = render_range(excel, &scratch, &source, request);
+    let _ = call(&source, "Close", vec![Arg::Bool(false)]);
+    let _ = call(&scratch, "Close", vec![Arg::Bool(false)]);
+    outcome
+}
+
+/// Opens the workbook at `path` read-only in `excel` with alerts, events,
+/// macros, link updates and calculation off, beside a new scratch workbook
+/// that holds the calculation setting: (scratch, workbook).
+fn open_quietly(excel: &IDispatch, path: &str) -> Result<(IDispatch, IDispatch)> {
     put(excel, "Visible", Arg::Bool(false))?;
     put(excel, "DisplayAlerts", Arg::Bool(false))?;
     put(excel, "EnableEvents", Arg::Bool(false))?;
@@ -147,7 +161,7 @@ fn render_with_excel(excel: &IDispatch, request: &Request) -> Result<()> {
         &workbooks,
         "Open",
         vec![
-            Arg::Text(&request.source),
+            Arg::Text(path),
             Arg::Int(0),
             Arg::Bool(true),
             Arg::Missing,
@@ -162,13 +176,42 @@ fn render_with_excel(excel: &IDispatch, request: &Request) -> Result<()> {
             Arg::Bool(false),
         ],
     )?;
-    if request.recalculate {
-        call(excel, "CalculateFull", vec![])?;
-    }
-    let outcome = render_range(excel, &scratch, &source, request);
+    Ok((scratch, source))
+}
+
+#[derive(Deserialize)]
+struct CalculationRequest {
+    source: String,
+    output: String,
+    result: String,
+}
+
+/// Calculates every formula of a workbook as Excel does opening it, and
+/// saves the calculated copy for its results to be read.
+pub fn calculation_worker(request_path: &Path) -> Result<()> {
+    let request: CalculationRequest = serde_json::from_slice(&fs::read(request_path)?)?;
+    super::render::validate_source(Path::new(&request.source))?;
+    let _apartment = Apartment::new()?;
+    let (excel, job) = isolated_application("Excel.Application", "excel.exe")?;
+    let outcome = calculate_with_excel(&excel, &request);
+    let _ = call(&excel, "Quit", vec![]);
+    drop(job);
+    outcome
+}
+
+fn calculate_with_excel(excel: &IDispatch, request: &CalculationRequest) -> Result<()> {
+    let (scratch, source) = open_quietly(excel, &request.source)?;
+    let saved = call(excel, "CalculateFull", vec![])
+        .and_then(|_| call(&source, "SaveCopyAs", vec![Arg::Text(&request.output)]));
     let _ = call(&source, "Close", vec![Arg::Bool(false)]);
     let _ = call(&scratch, "Close", vec![Arg::Bool(false)]);
-    outcome
+    saved?;
+    let version = get(excel, "Version")?.string()?;
+    fs::write(
+        &request.result,
+        serde_json::to_vec(&json!({"engine":"excel-com","version":version}))?,
+    )?;
+    Ok(())
 }
 
 fn render_range(

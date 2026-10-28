@@ -412,9 +412,15 @@ impl Workbook {
                     .context("missing writeback sheet")?
                     .ensure_not_computed(cell)?;
             }
+            // A formula given to a cell holding none is written as one.
+            let after = if change["formula"] == true {
+                json!({"formula":change["after"],"written_after":change["written_after"]})
+            } else {
+                change["after"].clone()
+            };
             ensure!(
                 change_map
-                    .insert((sheet.to_owned(), row, column), change["after"].clone())
+                    .insert((sheet.to_owned(), row, column), after)
                     .is_none(),
                 "duplicate writeback target"
             );
@@ -438,8 +444,10 @@ impl Workbook {
             && image_operations.is_empty();
         // Renamed table columns rename structured references in every formula.
         let rewriting = structural || !labels.renamed.is_empty();
-        let recalc =
-            structural || (!changes.is_empty() || !formulas.is_empty()) && self.has_formulas();
+        let new_formulas = changes.iter().any(|change| change["formula"] == true);
+        let recalc = structural
+            || new_formulas
+            || (!changes.is_empty() || !formulas.is_empty()) && self.has_formulas();
         let mut patched = BTreeMap::new();
         let mut removed = BTreeSet::new();
         let mut table_formulas = BTreeMap::new();
@@ -453,6 +461,27 @@ impl Workbook {
             },
         )
         .with_renamed_columns(labels.renamed.clone());
+        // A formula given to a cell holding none is written as the original's
+        // places give it, and moves with the operations as the others do;
+        // one written after an operation, as the cells stand after it, moves
+        // with the operations recorded after that one.
+        for ((sheet, _, _), value) in change_map.iter_mut() {
+            if let Some(formula) = value["formula"].as_str().and_then(|f| f.strip_prefix('=')) {
+                let moved = match value["written_after"].as_str() {
+                    Some(frame) => {
+                        let at = operations
+                            .iter()
+                            .position(|operation| operation.id == frame)
+                            .with_context(|| {
+                                format!("a formula of {sheet} is written after the operation {frame}, which is not recorded")
+                            })?;
+                        rewrite_references(formula, Some(sheet), &operations[at + 1..])?
+                    }
+                    None => moves.rewrite(formula, Some(sheet))?,
+                };
+                *value = json!({"formula":format!("={moved}")});
+            }
+        }
         if structural || !labels.parts.is_empty() {
             relocate_tables(
                 &self.parts,
@@ -481,6 +510,12 @@ impl Workbook {
                 .or_default()
                 .insert((row, column), value);
         }
+        let mut borders = SharedBorders::new(
+            self.parts
+                .get("xl/styles.xml")
+                .map(|bytes| std::str::from_utf8(bytes))
+                .transpose()?,
+        );
         for sheet in &self.sheets {
             let name = string(&sheet["name"])?;
             let sheet_operations = operations_by_sheet.remove(name).unwrap_or_default();
@@ -516,14 +551,43 @@ impl Workbook {
                 .context("invalid sheetData tag")?
                 .to_owned();
             let mut formats = CellFormats::read(doc.root_element(), &sheet_operations)?;
-            let mut rows = vec![];
-            let indexed_styles = sheet_operations
-                .iter()
-                .any(|operation| operation.style_from.is_some());
+            // Cells shifted within a band leave their rows: the sheet is laid
+            // out cell by cell.
+            let banded = sheet_operations.iter().any(|operation| !operation.whole());
+            let mut rows = if banded {
+                let formulas: BTreeMap<(u32, u32), &str> = table_formulas
+                    .range((name.to_owned(), 0, 0)..=(name.to_owned(), u32::MAX, u32::MAX))
+                    .map(|((_, row, column), formula)| ((*row, *column), formula.as_str()))
+                    .collect();
+                super::shifted::shifted_rows(
+                    sheet_data,
+                    &prefix,
+                    &RowTransform {
+                        shared: &shared,
+                        original,
+                        original_row: 0,
+                        final_row: 0,
+                        sheet: name,
+                        operations: &sheet_operations,
+                        moves: &moves,
+                        changes: &sheet_changes,
+                        recalc,
+                    },
+                    &formats,
+                    &formulas,
+                    &mut borders,
+                )?
+            } else {
+                vec![]
+            };
+            let indexed_styles = !banded
+                && sheet_operations
+                    .iter()
+                    .any(|operation| operation.style_from.is_some());
             let mut original_rows = BTreeMap::new();
             for row in sheet_data
                 .children()
-                .filter(|node| node.has_tag_name((NS, "row")))
+                .filter(|node| !banded && node.has_tag_name((NS, "row")))
             {
                 let original_row: u32 =
                     row.attribute("r").context("missing row number")?.parse()?;
@@ -556,7 +620,7 @@ impl Workbook {
                     },
                 )?);
             }
-            for operation in &sheet_operations {
+            for operation in sheet_operations.iter().filter(|_| !banded) {
                 if !matches!(operation.kind, OperationKind::InsertRows) {
                     continue;
                 }
@@ -583,13 +647,13 @@ impl Workbook {
                 }
             }
             let mut seen_rows: BTreeSet<u32> = rows.iter().map(|row| row.number).collect();
-            for (row, _column) in sheet_changes.keys() {
+            for (row, _column) in sheet_changes.keys().filter(|_| !banded) {
                 if !seen_rows.contains(row) {
                     rows.push(new_row(None, *row, &prefix));
                     seen_rows.insert(*row);
                 }
             }
-            for row in &mut rows {
+            for row in rows.iter_mut().filter(|_| !banded) {
                 let mut existing = row.cells.clone();
                 let mut additions = Vec::new();
                 for ((_, change_column), value) in
@@ -599,7 +663,15 @@ impl Workbook {
                         continue;
                     }
                     let address = format!("{}{}", column_name(*change_column)?, row.number);
-                    let style = formats.style(row, *change_column);
+                    let style = formats
+                        .style(row, *change_column)
+                        .map(|style| {
+                            match formats.after_inserted_column(row.number, *change_column) {
+                                Some(next) => borders.between(&style, Some(next)),
+                                None => Ok(style),
+                            }
+                        })
+                        .transpose()?;
                     additions.push((
                         *change_column,
                         render_new_cell(&address, value, &prefix, style.as_deref())?,
@@ -616,8 +688,20 @@ impl Workbook {
                         continue;
                     }
                     let prefix = row.prefix().to_owned();
+                    // Excel formats the formula like the other cells it fills in.
+                    let style = formats
+                        .style(row, formula_column)
+                        .map(|style| {
+                            match formats.after_inserted_column(row.number, formula_column) {
+                                Some(next) => borders.between(&style, Some(next)),
+                                None => Ok(style),
+                            }
+                        })
+                        .transpose()?
+                        .map(|s| format!(r#" s="{}""#, xml_attr(&s)))
+                        .unwrap_or_default();
                     let cell = format!(
-                        r#"<{prefix}c r="{}{}"><{prefix}f>{}</{prefix}f></{prefix}c>"#,
+                        r#"<{prefix}c r="{}{}"{style}><{prefix}f>{}</{prefix}f></{prefix}c>"#,
                         column_name(formula_column)?,
                         row.number,
                         xml_attr(formula)
@@ -625,19 +709,27 @@ impl Workbook {
                     additions.push((formula_column, cell));
                     existing.insert(formula_column);
                 }
-                for (column, style) in formats.template_cells(row.number) {
-                    let Some(column) = transform_index(column, &sheet_operations, false) else {
-                        continue;
-                    };
+                let template =
+                    formats
+                        .template_cells(row.number)
+                        .into_iter()
+                        .filter_map(|(column, style)| {
+                            Some((transform_index(column, &sheet_operations, false)?, style))
+                        });
+                for (column, style) in template.chain(formats.inserted_column_cells(row.number)) {
                     if existing.contains(&column) {
                         continue;
                     }
+                    let style = match formats.after_inserted_column(row.number, column) {
+                        Some(next) => borders.between(style, Some(next))?,
+                        None => style.to_owned(),
+                    };
                     let prefix = row.prefix().to_owned();
                     let cell = format!(
                         r#"<{prefix}c r="{}{}" s="{}"/>"#,
                         column_name(column)?,
                         row.number,
-                        xml_attr(style)
+                        xml_attr(&style)
                     );
                     additions.push((column, cell));
                     existing.insert(column);
@@ -682,12 +774,17 @@ impl Workbook {
             }
             patched.insert(part.to_owned(), result.into_bytes());
         }
+        if let Some(styles) = borders.finish()? {
+            patched.insert("xl/styles.xml".into(), styles.into_bytes());
+        }
+        let placements = super::parse_place_operations(operation_values, &self.sheets)?;
         apply_image_operations(
             &self.parts,
             &mut patched,
             &self.sheets,
             &operations,
             &image_operations,
+            &placements,
             assets,
         )?;
         if structural {
@@ -1151,12 +1248,24 @@ fn ensure_read_back(
         );
     }
     for change in changes {
-        let found = change["sheet"]
+        let cell = change["sheet"]
             .as_str()
             .zip(change["cell"].as_str())
-            .and_then(|key| cells.get(&key))
-            .map(|cell| &cell.value)
-            .unwrap_or(&Value::Null);
+            .and_then(|key| cells.get(&key));
+        if change["formula"] == true {
+            let found = cell.and_then(|cell| cell.formula.as_deref());
+            ensure!(
+                found.is_some()
+                    && (!operations.is_empty()
+                        || found == string(&change["after"])?.strip_prefix('=')),
+                "Excel formula read-back failed for {}!{}: expected {}, found {found:?}",
+                change["sheet"],
+                change["cell"],
+                change["after"]
+            );
+            continue;
+        }
+        let found = cell.map(|cell| &cell.value).unwrap_or(&Value::Null);
         ensure!(
             found == &change["after"]
                 || (found.is_number()
@@ -1217,6 +1326,70 @@ pub(super) fn request_full_calculation(original: &str) -> Result<String> {
         result.insert_str(pos, &format!("<{prefix}calcPr fullCalcOnLoad=\"1\"/>"));
     }
     Ok(result)
+}
+
+/// The formats of cells inserted between two cells across columns, made as
+/// the workbook is written: Excel formats such a cell like the cell before
+/// it but keeps only the borders the cells on both sides draw alike, so a
+/// column inserted beside a bordered block or merge draws no stray lines.
+pub(super) struct SharedBorders<'s> {
+    source: Option<&'s str>,
+    styles: Option<super::fonts::StyleFormats<'s>>,
+    made: BTreeMap<(String, String), String>,
+}
+
+impl<'s> SharedBorders<'s> {
+    pub(super) fn new(source: Option<&'s str>) -> Self {
+        Self {
+            source,
+            styles: None,
+            made: BTreeMap::new(),
+        }
+    }
+
+    /// The format of a cell inserted after one of format `style`, before one
+    /// of format `next` (none: the default format).
+    pub(super) fn between(&mut self, style: &str, next: Option<&str>) -> Result<String> {
+        let next = next.unwrap_or("0");
+        if style == next {
+            return Ok(style.to_owned());
+        }
+        let key = (style.to_owned(), next.to_owned());
+        if let Some(made) = self.made.get(&key) {
+            return Ok(made.clone());
+        }
+        let Some(source) = self.source else {
+            return Ok(style.to_owned());
+        };
+        let styles = match &mut self.styles {
+            Some(styles) => styles,
+            None => match super::fonts::StyleFormats::new(source) {
+                Ok(styles) => self.styles.insert(styles),
+                // A styles part without the lists of formats tells no
+                // borders to keep apart: the cell keeps the format before it.
+                Err(_) => {
+                    self.source = None;
+                    return Ok(style.to_owned());
+                }
+            },
+        };
+        let made = styles
+            .with_shared_borders(style.parse()?, next.parse()?)?
+            .to_string();
+        self.made.insert(key, made.clone());
+        Ok(made)
+    }
+
+    /// The styles part with the formats made, if any was.
+    pub(super) fn finish(self) -> Result<Option<String>> {
+        match (self.styles, self.source) {
+            (Some(styles), Some(source)) => {
+                let finished = styles.finish()?;
+                Ok((finished != source).then_some(finished))
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 /// The formatting Excel gives a cell ARP creates: an inserted row's cell is
@@ -1288,6 +1461,52 @@ impl<'a> CellFormats<'a> {
             .collect()
     }
 
+    /// The final columns and formats of the cells inserted columns get in the
+    /// final `row`. Excel formats each like the cell to its left, so borders
+    /// and fills run on through the new columns.
+    pub(super) fn inserted_column_cells(&self, row: u32) -> Vec<(u32, &str)> {
+        let Some(source_row) = self.source_row(row) else {
+            return vec![];
+        };
+        self.inserted_columns
+            .inheriting()
+            .filter_map(|column| {
+                let style = self.cells.get(&(source_row, self.source(column, false)?))?;
+                (style != "0").then_some((column, style.as_str()))
+            })
+            .collect()
+    }
+
+    /// For a cell of a column inserted next to an original one in the final
+    /// `row`, the format of the cell after the inserted columns: Excel keeps
+    /// only the borders the cells on both sides draw alike.
+    pub(super) fn after_inserted_column(&self, row: u32, column: u32) -> Option<&str> {
+        self.inserted_columns.inherited_from(column)?;
+        let next = self.inserted_columns.end_of(column)?;
+        let source_row = self.source_row(row)?;
+        let next = original_position(next, &self.operations, false)?;
+        Some(
+            self.cells
+                .get(&(source_row, next))
+                .map(String::as_str)
+                .or_else(|| {
+                    self.columns
+                        .iter()
+                        .find(|(min, max, _)| (*min..=*max).contains(&next))
+                        .map(|(_, _, style)| style.as_str())
+                })
+                .unwrap_or("0"),
+        )
+    }
+
+    /// The original row a final row is, or takes its format from.
+    fn source_row(&self, row: u32) -> Option<u32> {
+        self.templates
+            .get(&row)
+            .copied()
+            .or_else(|| self.source(row, true))
+    }
+
     /// The original position a final row or column is, or takes its format from.
     fn source(&self, position: u32, row: bool) -> Option<u32> {
         let inserted = if row {
@@ -1304,11 +1523,7 @@ impl<'a> CellFormats<'a> {
 
     pub(super) fn style(&self, row: &RowOutput, column: u32) -> Option<String> {
         let source_column = self.source(column, false);
-        let source_row = self
-            .templates
-            .get(&row.number)
-            .copied()
-            .or_else(|| self.source(row.number, true));
+        let source_row = self.source_row(row.number);
         if let (Some(source_row), Some(source_column)) = (source_row, source_column)
             && let Some(style) = self.cells.get(&(source_row, source_column))
         {

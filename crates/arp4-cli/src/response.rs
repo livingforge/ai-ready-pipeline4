@@ -17,6 +17,9 @@ pub struct Output {
     /// Zero-based item offset (default: 0); use page.next_offset for the next page.
     #[arg(long, global = true)]
     pub offset: Option<usize>,
+    /// Options the command took without effect, reported with each response.
+    #[arg(skip)]
+    pub ignored: Vec<Value>,
 }
 
 /// The length of the JSON of `value`, counted without writing it out.
@@ -439,6 +442,7 @@ impl Output {
             value = json!({"items":value});
         }
         value["ok"] = json!(ok);
+        self.note_ignored(&mut value);
         if !self.full {
             value = bounded(value, MAX_RESPONSE_BYTES - 1);
         }
@@ -447,6 +451,13 @@ impl Output {
 
     pub fn emit(&self, value: Value, ok: bool) {
         println!("{}", self.render(value, ok));
+    }
+
+    /// List in a response written without [`Output::emit`] the options it ignored.
+    pub fn note_ignored(&self, value: &mut Value) {
+        if !self.ignored.is_empty() {
+            value["ignored_options"] = json!(self.ignored);
+        }
     }
 }
 
@@ -462,20 +473,25 @@ pub fn omit_hashes(value: &mut Value, keys: &[&str], include: bool) {
 /// stays a JSON array. When the diagnostics do not fit the response budget, whole
 /// entries are dropped from the end and `diagnostics_omitted` counts them; a
 /// diagnostic is never cut in the middle.
-pub fn reject(payload: &Value) {
-    println!("{}", render_rejection(payload));
+pub fn reject(payload: &Value, ignored: &[Value]) {
+    println!("{}", rejection(payload, ignored));
 }
 
-pub fn render_rejection(payload: &Value) -> String {
+fn rejection(payload: &Value, ignored: &[Value]) -> Value {
     let mut error = payload.clone();
     let code = payload["code"].as_str().unwrap_or("operation_failed");
     error["code"] = json!(code);
+    let mut response = json!({"ok":false});
+    if !ignored.is_empty() {
+        response["ignored_options"] = json!(ignored);
+    }
     if let Some(diagnostics) = payload["diagnostics"].as_array() {
         let mut kept = Vec::new();
         let mut base = error.clone();
         base["diagnostics"] = json!([]);
         base["diagnostics_omitted"] = json!(diagnostics.len());
-        let mut used = bytes(&json!({"error":base,"ok":false}));
+        response["error"] = base;
+        let mut used = bytes(&response);
         for diagnostic in diagnostics {
             let size = bytes(diagnostic) + 1;
             if used + size > MAX_RESPONSE_BYTES - 1 {
@@ -490,10 +506,12 @@ pub fn render_rejection(payload: &Value) -> String {
             error["diagnostics_omitted"] = json!(omitted);
         }
     }
-    json!({"error":error,"ok":false}).to_string()
+    response["error"] = error;
+    response
 }
 
-pub fn error(code: &str, message: &str) {
+/// An error response; `details` adds members to `error` beside the message.
+pub fn error(code: &str, message: &str, details: Value, ignored: &[Value]) {
     // Error messages may include a complete source value or a schema dump.
     let end = message
         .char_indices()
@@ -506,10 +524,15 @@ pub fn error(code: &str, message: &str) {
     } else {
         (message, false)
     };
-    Output::default().emit(
-        json!({"error":{"code":code,"message":message,"truncated":truncated}}),
-        false,
-    );
+    let mut error = json!({"code":code,"message":message,"truncated":truncated});
+    if let Value::Object(details) = details {
+        error.as_object_mut().unwrap().extend(details);
+    }
+    Output {
+        ignored: ignored.to_vec(),
+        ..Output::default()
+    }
+    .emit(json!({ "error": error }), false);
 }
 
 #[cfg(test)]
@@ -618,7 +641,7 @@ mod tests {
             .collect();
         let payload = json!({"code":"reply_validation_failed","document":"doc","diagnostics":long,
             "next_action":"Correct the reported fields."});
-        let rendered = render_rejection(&payload);
+        let rendered = rejection(&payload, &[]).to_string();
         assert!(rendered.len() < MAX_RESPONSE_BYTES, "{}", rendered.len());
         let value: Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(value["ok"], false);
@@ -636,11 +659,11 @@ mod tests {
             assert_eq!(diagnostic["message"].as_str().unwrap().len(), 60);
         }
         let short = json!({"code":"reply_validation_failed","diagnostics":[{"path":"/a"}]});
-        let value: Value = serde_json::from_str(&render_rejection(&short)).unwrap();
+        let value: Value = serde_json::from_str(&rejection(&short, &[]).to_string()).unwrap();
         assert_eq!(value["error"]["diagnostics"], json!([{"path":"/a"}]));
         assert!(value["error"].get("diagnostics_omitted").is_none());
         let no_code = json!({"diagnostics":[]});
-        let value: Value = serde_json::from_str(&render_rejection(&no_code)).unwrap();
+        let value: Value = serde_json::from_str(&rejection(&no_code, &[]).to_string()).unwrap();
         assert_eq!(value["error"]["code"], "operation_failed");
     }
 

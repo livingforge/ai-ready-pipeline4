@@ -153,6 +153,8 @@ fn semantic_changes(
                         "style_from",
                         "style_rows",
                         "merges",
+                        "range",
+                        "shift",
                     ]
                     .iter()
                     .all(|key| old[*key] == o[*key])

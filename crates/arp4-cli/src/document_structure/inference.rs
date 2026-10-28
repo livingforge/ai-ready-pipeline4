@@ -44,6 +44,9 @@ impl Cell<'_> {
     fn string(&self) -> bool {
         self.source.kind() == CellKind::String
     }
+    fn formula(&self) -> bool {
+        self.source.formula().is_some()
+    }
     fn text(&self) -> &str {
         self.source.value().as_str().unwrap_or("")
     }
@@ -803,16 +806,40 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
     let shades: BTreeSet<u64> = first.iter().map(|c| c.fill()).collect();
     let shaded = !shades.contains(&0);
     let shade = |c: &&Cell<'_>| shades.contains(&c.fill());
+    // Whether the header may go on into a row: its headings in its fills,
+    // and no formula, though its value is not yet calculated, as records may
+    // keep every column's fill under its heading.
+    let heading = |line: &[&Cell<'_>]| {
+        line.iter()
+            .all(|c| !c.formula() && (!c.nonempty() || shade(c)))
+    };
     // Fills that the header rows share and no record uses.
     let mut fill_end = None;
     if shaded && (first.len() >= 2 || single) {
         let mut end = last(&first_all);
-        loop {
-            let next = valued(row(group, end + 1));
-            if next.is_empty() || !next.iter().all(shade) {
+        'header: loop {
+            let next = row(group, end + 1);
+            let headings = valued(next.clone());
+            if headings.is_empty() || !heading(&next) {
                 break;
             }
-            end = last(&next);
+            // A heading merged down takes the rows beside it, which must be
+            // headings too, as a category merged down beside its records is
+            // none.
+            let mut reach = last(&headings);
+            let mut y = end + 2;
+            while y <= reach {
+                let beside = row(group, y);
+                if !heading(&beside) {
+                    break 'header;
+                }
+                reach = valued(beside)
+                    .iter()
+                    .map(|c| c.bottom)
+                    .fold(reach, u32::max);
+                y += 1;
+            }
+            end = reach;
         }
         let next_row = group
             .iter()
@@ -828,7 +855,8 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
                 .collect();
             let plain = line.iter().filter(|c| !shade(c)).map(|c| c.left).min();
             plain.is_some_and(|x| line.iter().all(|c| !shade(c) || c.right < x))
-        }) {
+        }) || calculated_under(group, &first, end)
+        {
             fill_end = Some(end);
         }
     }
@@ -866,6 +894,29 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
         }
     }
     bold_end.max(fill_end)
+}
+
+/// Whether the rows after `end` are records set apart from the text headings
+/// over them by what they hold rather than by their look: of three headings or
+/// more, one over a column whose cells, in two records or more, are all
+/// formulas, numbers or dates.
+fn calculated_under(group: &[&Cell<'_>], headings: &[&Cell<'_>], end: u32) -> bool {
+    if headings.len() < 3 || !headings.iter().all(|h| h.string()) {
+        return false;
+    }
+    headings.iter().any(|h| {
+        let below: Vec<_> = group
+            .iter()
+            .filter(|c| {
+                c.top > end
+                    && (c.nonempty() || c.formula())
+                    && h.left <= c.left
+                    && c.right <= h.right
+            })
+            .collect();
+        let rows: BTreeSet<u32> = below.iter().map(|c| c.top).collect();
+        rows.len() >= 2 && below.iter().all(|c| c.formula() || !c.string())
+    })
 }
 
 /// The last row of a heading row written as plain as its records: three or
@@ -1739,6 +1790,82 @@ fn stub_labels(
     Some((end?, spans)).filter(|(_, spans)| !spans.is_empty())
 }
 
+/// The last column of the row labels of records grouped by labels merged down
+/// column by column, as a hierarchy of categories over named records: from
+/// `label_left`, past numbers, columns of text with one value in every
+/// record, the first merged down over two records or more and each later one
+/// within the values of those on its left, then the column of names that
+/// tells the records of a group apart. Each of them has a heading of its own
+/// among the `header` rows, as a folder tree drawn the same way under one
+/// heading over its levels has not. `None` without two such levels, or one
+/// and the names after it.
+fn merged_levels(
+    group: &[&Cell<'_>],
+    header: Option<(u32, u32)>,
+    body: &dyn Fn(&Cell<'_>) -> bool,
+    label_left: u32,
+) -> Option<u32> {
+    let (first, last) = header?;
+    let headed = |x: u32| {
+        group.iter().any(|c| {
+            c.top >= first && c.bottom <= last && c.left == x && c.right == x && c.nonempty()
+        })
+    };
+    let mut columns: BTreeMap<u32, Vec<&Cell<'_>>> = BTreeMap::new();
+    for c in group.iter().filter(|c| body(c) && c.nonempty()) {
+        columns.entry(c.left).or_default().push(c);
+    }
+    let records: BTreeSet<u32> = columns.values().flatten().map(|c| c.top).collect();
+    // One value of the column in every record, the column alone.
+    let one_each = |cells: &[&Cell<'_>]| {
+        cells.iter().all(|c| c.right == c.left)
+            && records
+                .iter()
+                .all(|&y| cells.iter().filter(|c| c.top <= y && y <= c.bottom).count() == 1)
+    };
+    let mut x = label_left;
+    while let Some(cells) = columns.get(&x)
+        && one_each(cells)
+        && cells.iter().all(|c| !c.string() || number_mark(c))
+    {
+        x += 1;
+    }
+    let mut levels: Vec<&Vec<&Cell<'_>>> = vec![];
+    while let Some(cells) = columns.get(&x)
+        && headed(x)
+        && one_each(cells)
+        && cells.iter().all(|c| c.string() && !number_mark(c))
+        && levels.iter().all(|outer| {
+            cells
+                .iter()
+                .all(|c| outer.iter().any(|o| o.top <= c.top && c.bottom <= o.bottom))
+        })
+    {
+        if cells
+            .iter()
+            .any(|c| records.range(c.top..=c.bottom).nth(1).is_some())
+        {
+            levels.push(cells);
+            x += 1;
+            continue;
+        }
+        // Names, each once within the innermost category.
+        let innermost = levels.last()?;
+        let owner = |c: &Cell<'_>| {
+            innermost
+                .iter()
+                .position(|o| o.top <= c.top && c.bottom <= o.bottom)
+        };
+        let distinct = cells
+            .iter()
+            .map(|c| (owner(c), c.text()))
+            .collect::<HashSet<_>>()
+            .len();
+        return (distinct == cells.len()).then_some(x);
+    }
+    (levels.len() >= 2).then(|| x - 1)
+}
+
 /// Roles and header links of one table, or `None` when the group is not a table.
 fn interpret(
     cells: &[Cell<'_>],
@@ -1920,11 +2047,23 @@ fn interpret(
         // source item of a mapping.
         // The column ends where its heading does: a value merged across the
         // columns after it, such as a reserved row's name, does not widen it.
+        // A heading merged down through the header rows or left blank below
+        // is the column's own.
         let column = |x: u32| -> Option<(u32, Vec<&&Cell<'_>>)> {
             let cells = starting(x);
             let own_heading = group.iter().find(|c| {
                 in_header(c)
-                    && header.is_some_and(|(first, last)| c.top == first && c.bottom == last)
+                    && header.is_some_and(|(first, last)| {
+                        c.top == first
+                            && (c.bottom == last
+                                || !group.iter().any(|o| {
+                                    in_header(o)
+                                        && o.nonempty()
+                                        && o.top > c.bottom
+                                        && o.left <= c.right
+                                        && o.right >= c.left
+                                }))
+                    })
                     && c.left == x
             });
             let right = own_heading?.right;
@@ -2121,6 +2260,12 @@ fn interpret(
             Labels::Columns(shaded)
         } else if year_labels {
             Labels::Through(left)
+        } else if let Some(end) = merged_levels(&group, header, &body, label_left)
+            .filter(|end| stub.as_ref().is_none_or(|(last, _)| end > last))
+        {
+            // Levels merged down reaching past the headings merged down, as
+            // the names under a group of columns.
+            Labels::Through(end)
         } else if let Some((_, spans)) = &stub {
             Labels::Spans(spans.clone())
         } else if nested_labels {
@@ -2973,7 +3118,19 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
             let free = explicit.is_none()
                 && candidate.parent.is_none()
                 && !holding.contains(&candidate.key);
-            let hierarchy = free
+            // Records grouped by labels merged down column by column under
+            // their headings are a table, though the records start further
+            // right where a label is merged down over them, and a value
+            // merged down over several records leaves its column sparse.
+            let grouped = || -> Result<bool> {
+                let mut group: Vec<_> = indices.iter().map(|i| &cells[*i]).collect();
+                group.sort_by_key(|c| (c.top, c.left));
+                let layout = layout(&group, explicit)?;
+                Ok(layout.header.is_some_and(|(_, last)| {
+                    merged_levels(&group, layout.header, &|c| c.top > last, layout.left).is_some()
+                }))
+            };
+            let hierarchy = (free && !grouped()?)
                 .then(|| outline::outline(&cells, indices, sheet_index))
                 .flatten();
             let stepped = hierarchy.is_some();
@@ -3134,7 +3291,11 @@ mod tests {
     }
     /// The roles of the cells of the sheet `cells` makes, by address.
     fn roles(cells: Vec<Value>) -> BTreeMap<String, String> {
-        let extraction = json!({"sheets":[{"name":"S","cells":cells,"merges":[]}]});
+        merged_roles(cells, &[])
+    }
+    /// The roles of the cells of the sheet `cells` and `merges` make.
+    fn merged_roles(cells: Vec<Value>, merges: &[&str]) -> BTreeMap<String, String> {
+        let extraction = json!({"sheets":[{"name":"S","cells":cells,"merges":merges}]});
         element_values(&crate::extraction::sample(extraction.clone()))
             .unwrap()
             .iter()
@@ -3194,6 +3355,90 @@ mod tests {
         }
         let found = roles(form);
         assert!(found.values().all(|r| r != "column_header"), "{found:?}");
+    }
+    #[test]
+    fn records_keeping_their_columns_fills_are_no_heading_rows() {
+        // An evaluation sheet filled by column from its two heading rows
+        // down, categories merged down at the left, a score calculated in F
+        // and the totals under the records.
+        let filled = |mut c: Value, fill: u32| {
+            c["style"]["fill"] = json!(fill);
+            c
+        };
+        let calculated = |address: &str, value: u32, fill: u32| {
+            let mut c = filled(number(address, value), fill);
+            c["formula"] = json!(format!("XLOOKUP(E{},M!A:A,M!B:B,0)", &address[1..]));
+            c
+        };
+        let fills = [2, 2, 2, 3, 4, 5, 2, 2];
+        let columns = ["A", "B", "C", "D", "E", "F", "G", "H"];
+        for scored_from in [3, 4] {
+            let mut cells = vec![];
+            for (row, headings) in [
+                (
+                    1,
+                    [
+                        "評価シート",
+                        "評価基準",
+                        "入力項目",
+                        "入力内容",
+                        "選択値",
+                        "補足",
+                        "判定",
+                        "備考",
+                    ],
+                ),
+                (
+                    2,
+                    [
+                        "基本評価",
+                        "評価項目",
+                        "区分",
+                        "説明",
+                        "入力",
+                        "点数",
+                        "判定",
+                        "備考",
+                    ],
+                ),
+            ] {
+                for (k, heading) in headings.into_iter().enumerate() {
+                    cells.push(filled(
+                        cell(&format!("{}{row}", columns[k]), heading),
+                        fills[k],
+                    ));
+                }
+            }
+            for row in 3..=10 {
+                if row == 3 || row == 8 {
+                    let category = if row == 3 {
+                        "基本評価"
+                    } else {
+                        "補助評価"
+                    };
+                    cells.push(filled(cell(&format!("A{row}"), category), fills[0]));
+                }
+                for (k, value) in [(1, "項目"), (2, "区分"), (3, "説明文"), (4, "あり")] {
+                    let at = format!("{}{row}", columns[k]);
+                    cells.push(filled(cell(&at, &format!("{value}{row}")), fills[k]));
+                }
+                // The first record may be scored later than the others.
+                if row >= scored_from {
+                    cells.push(calculated(&format!("F{row}"), row % 3, fills[5]));
+                }
+            }
+            cells.push(filled(cell("A11", "総合スコア"), fills[0]));
+            cells.push(calculated("B11", 7, 0));
+            cells.push(filled(cell("A12", "最終判定"), fills[0]));
+            cells.push(calculated("B12", 2, 0));
+            let found = merged_roles(cells, &["A3:A7", "A8:A10"]);
+            for heading in ["A1", "H1", "A2", "F2", "H2"] {
+                assert_eq!(found[heading], "column_header", "{scored_from}: {found:?}");
+            }
+            for record in ["A3", "B3", "B4", "F5", "B10"] {
+                assert_ne!(found[record], "column_header", "{scored_from}: {found:?}");
+            }
+        }
     }
     #[test]
     fn rows_and_covering_cells_are_those_a_scan_finds() {
@@ -3452,9 +3697,10 @@ mod tests {
                 .unwrap()["headers"]
                 .clone()
         };
-        assert_eq!(headers("C3"), json!(["s1-C1", "s1-A2"]));
+        // The items name the records of each group.
+        assert_eq!(headers("C3"), json!(["s1-C1", "s1-A2", "s1-B3"]));
         assert_eq!(headers("B3"), json!(["s1-B1", "s1-A2"]));
-        assert_eq!(headers("C4"), json!(["s1-C1", "s1-A4"]));
+        assert_eq!(headers("C4"), json!(["s1-C1", "s1-A4", "s1-B4"]));
         assert_eq!(headers("A4"), json!(["s1-A1"]));
         assert_eq!(headers("B1"), json!([]));
     }

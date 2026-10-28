@@ -29,10 +29,35 @@ pub fn validate_image_asset(path: &str, bytes: &[u8]) -> Result<()> {
 /// Moves cell-anchored drawings with their cells as Excel does, by the object's
 /// placement (`editAs`): `absolute` stays where it is, `oneCell` moves with its
 /// top-left cell and keeps its size, and the default `twoCell` moves and sizes
-/// with the cells under both corners.
+/// with the cells under both corners, and goes with the rows or columns a
+/// deletion takes whole (see [`deleted_with_cells`]).
+/// The objects whose `cNvPr` IDs `placed` holds are moved but not deleted:
+/// their placements decide (see [`drawing_deleted`]).
 pub(super) fn rewrite_drawing_anchors(
     original: &str,
     operations: &[StructuralOperation],
+    placed: &BTreeSet<String>,
+) -> Result<String> {
+    rewrite_anchors(original, operations, Some(placed))
+}
+
+/// [`rewrite_drawing_anchors`] for an object a placement (`place_drawing`)
+/// moves: it is not deleted with the cells it ends in, as the deletions it
+/// would go with are refused by the original's anchor, which the content
+/// follows too.
+pub(super) fn move_placed_anchors(
+    original: &str,
+    operations: &[StructuralOperation],
+) -> Result<String> {
+    rewrite_anchors(original, operations, None)
+}
+
+/// [`rewrite_drawing_anchors`], deleting the objects the deletions take
+/// but those `kept` names when it is given, else none.
+fn rewrite_anchors(
+    original: &str,
+    operations: &[StructuralOperation],
+    kept: Option<&BTreeSet<String>>,
 ) -> Result<String> {
     if operations.is_empty() {
         return Ok(original.to_owned());
@@ -47,9 +72,54 @@ pub(super) fn rewrite_drawing_anchors(
         } else {
             anchor.attribute("editAs").unwrap_or("twoCell")
         };
+        let placed = || {
+            anchor
+                .descendants()
+                .find(|n| n.has_tag_name((XDR, "cNvPr")))
+                .and_then(|n| n.attribute("id"))
+                .is_some_and(|id| kept.is_some_and(|kept| kept.contains(id)))
+        };
+        if kept.is_some()
+            && !placed()
+            && let Some(from) = marker_corner(anchor, "from")?
+            && deleted_with_cells(placement, from, marker_corner(anchor, "to")?, operations)?
+        {
+            edits.push((anchor.range(), String::new()));
+            continue;
+        }
         move_marker_anchor(anchor, placement, operations, &mut edits)?;
     }
     splice(original, edits, "drawing")
+}
+
+/// The corner of the marker `name` (`from`, `to`) of a cell anchor.
+fn marker_corner(anchor: Node<'_, '_>, name: &str) -> Result<Option<Corner>> {
+    let Some(marker) = anchor
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == name)
+    else {
+        return Ok(None);
+    };
+    let mut corner = [(0, false); 2];
+    for (axis, (index, offset)) in [("col", "colOff"), ("row", "rowOff")]
+        .into_iter()
+        .enumerate()
+    {
+        let (Some(index), Some(offset)) =
+            (child_ns(marker, XDR, index), child_ns(marker, XDR, offset))
+        else {
+            return Ok(None);
+        };
+        corner[axis] = (
+            index
+                .text()
+                .context("anchor coordinate is empty")?
+                .trim()
+                .parse()?,
+            offset.text().is_some_and(|text| text.trim() == "0"),
+        );
+    }
+    Ok(Some(corner))
 }
 
 /// A corner of an anchor on one axis: its 0-based column or row index and
@@ -72,32 +142,177 @@ pub(super) fn move_corners(
         return Ok((unchanged(from), to.map(unchanged)));
     }
     let position = |index: u32| index.checked_add(1).context("anchor coordinate overflow");
-    let mut shifts = [0i64; 2];
-    let mut moved_from = unchanged(from);
-    for (axis, (index, _)) in from.into_iter().enumerate() {
-        let position = position(index)?;
-        let (mapped, deleted) = map_anchor_index(position, operations, axis == 1, false)?;
-        shifts[axis] = i64::from(mapped) - i64::from(position);
-        moved_from[axis] = (mapped - 1, deleted);
-    }
-    let Some(to) = to else {
-        return Ok((moved_from, None));
-    };
-    let mut moved_to = unchanged(to);
-    for (axis, (index, at_edge)) in to.into_iter().enumerate() {
-        let position = position(index)?;
-        moved_to[axis] = if placement == "oneCell" {
-            let moved = i64::from(position) + shifts[axis];
-            (
-                u32::try_from(moved.max(1)).context("anchor coordinate overflow")? - 1,
-                false,
-            )
-        } else {
-            let (mapped, deleted) = map_anchor_index(position, operations, axis == 1, at_edge)?;
-            (mapped - 1, deleted)
+    // Each corner as it goes: its index, whether its offset is 0, and whether
+    // an operation deleted its cell.
+    let mut from_now = from.map(|(index, _)| (index, false, false));
+    let mut to_now = to.map(|corner| corner.map(|(index, at_edge)| (index, at_edge, false)));
+    for operation in operations {
+        let axis = usize::from(operation.row_operation());
+        // Cells shifted in a band move an object the band holds across, and
+        // leave alone one it misses or holds only part of, as Excel does.
+        if let Some((first, last)) = operation.band {
+            let across = 1 - axis;
+            let low = from_now[across].0 + 1;
+            let high = match to_now {
+                Some(to) if to[across].1 && to[across].0 > from_now[across].0 => to[across].0,
+                Some(to) => to[across].0 + 1,
+                None => low,
+            };
+            if low < first || high > last {
+                continue;
+            }
+        }
+        let whole = StructuralOperation {
+            band: None,
+            ..operation.clone()
         };
+        let whole = std::slice::from_ref(&whole);
+        let start = position(from_now[axis].0)?;
+        let (mapped, deleted) = map_anchor_index(start, whole, axis == 1, false)?;
+        let shift = i64::from(mapped) - i64::from(start);
+        from_now[axis] = (mapped - 1, from_now[axis].1, from_now[axis].2 || deleted);
+        if let Some(to) = &mut to_now {
+            let (index, at_edge, was_deleted) = to[axis];
+            let end = position(index)?;
+            to[axis] = if placement == "oneCell" {
+                let moved = i64::from(end) + shift;
+                (
+                    u32::try_from(moved.max(1)).context("anchor coordinate overflow")? - 1,
+                    at_edge,
+                    was_deleted,
+                )
+            } else {
+                let (mapped, deleted) = map_anchor_index(end, whole, axis == 1, at_edge)?;
+                (mapped - 1, at_edge, was_deleted || deleted)
+            };
+        }
     }
-    Ok((moved_from, Some(moved_to)))
+    let corner =
+        |corner: [(u32, bool, bool); 2]| corner.map(|(index, _, deleted)| (index, deleted));
+    Ok((corner(from_now), to_now.map(corner)))
+}
+
+/// Whether `operations` delete an object with the rows or columns holding
+/// it, as Excel does (checked against Excel): one that moves and sizes with
+/// its cells (`twoCell`) goes with the rows or columns a deletion takes
+/// whole, its far corner at most at the edge after them; one that only
+/// moves or stays keeps its size and is never deleted.
+pub(super) fn deleted_with_cells(
+    placement: &str,
+    from: Corner,
+    to: Option<Corner>,
+    operations: &[StructuralOperation],
+) -> Result<bool> {
+    let (true, Some(mut to)) = (placement == "twoCell", to) else {
+        return Ok(false);
+    };
+    let mut from = from;
+    for operation in operations {
+        if operation.whole()
+            && matches!(
+                operation.kind,
+                OperationKind::DeleteRows | OperationKind::DeleteColumns
+            )
+        {
+            let axis = usize::from(operation.row_operation());
+            // 0-based, as the markers count.
+            let first = operation.at - 1;
+            let end = first + operation.count;
+            let (start, _) = from[axis];
+            let (stop, at_edge) = to[axis];
+            if start >= first && (stop < end || stop == end && at_edge) {
+                return Ok(true);
+            }
+        }
+        let (moved_from, moved_to) =
+            move_corners(placement, from, Some(to), std::slice::from_ref(operation))?;
+        let moved_to = moved_to.context("corner without its pair")?;
+        from = [0, 1].map(|axis| (moved_from[axis].0, from[axis].1 || moved_from[axis].1));
+        to = [0, 1].map(|axis| (moved_to[axis].0, to[axis].1 || moved_to[axis].1));
+    }
+    Ok(false)
+}
+
+/// [`deleted_with_cells`] for an anchor of the extraction (`anchor` of a
+/// drawing): an absolute anchor and a slide's never are.
+pub(crate) fn anchor_deleted(anchor: &Value, operations: &[StructuralOperation]) -> Result<bool> {
+    if anchor["kind"] != "twoCellAnchor" || anchor.get("to").is_none() {
+        return Ok(false);
+    }
+    let corner = |key: &str| -> Result<Corner> {
+        let mut out = [(0, false); 2];
+        for (axis, name) in ["col", "row"].iter().enumerate() {
+            out[axis] = (
+                u32::try_from(
+                    anchor[key][name]
+                        .as_u64()
+                        .context("invalid drawing marker")?,
+                )?,
+                anchor[key][format!("{name}Off")].as_i64().unwrap_or(0) == 0,
+            );
+        }
+        Ok(out)
+    };
+    deleted_with_cells(
+        anchor["edit_as"].as_str().unwrap_or("twoCell"),
+        corner("from")?,
+        Some(corner("to")?),
+        operations,
+    )
+}
+
+/// Whether the drawing `id` of the sheet `sheet`, whose extraction anchor is
+/// `anchor`, goes with the cells the row and column `operations` (of every
+/// sheet, in the order recorded) delete, as Excel deletes an object that
+/// moves and sizes with its cells: the placements among them set its
+/// corners and placement as they come, so a deletion takes it where it is
+/// then.
+pub(crate) fn drawing_deleted(
+    sheet: &str,
+    id: &str,
+    anchor: &Value,
+    operations: &[StructuralOperation],
+    placements: &[PlaceOperation],
+) -> Result<bool> {
+    let placed: Vec<&PlaceOperation> = placements.iter().filter(|p| p.drawing == id).collect();
+    if placed.is_empty() {
+        let own: Vec<StructuralOperation> = operations
+            .iter()
+            .filter(|operation| operation.sheet == sheet)
+            .cloned()
+            .collect();
+        return anchor_deleted(anchor, &own);
+    }
+    let mut current = anchor.clone();
+    for (index, operation) in operations.iter().enumerate() {
+        for placement in placed.iter().filter(|p| p.preceding == index) {
+            current = placed_anchor(&current, placement);
+        }
+        if operation.sheet != sheet {
+            continue;
+        }
+        let step = std::slice::from_ref(operation);
+        if anchor_deleted(&current, step)? {
+            return Ok(true);
+        }
+        current = project_anchor(&current, step)?;
+    }
+    Ok(false)
+}
+
+/// The extraction anchor `anchor` with the corners and placement
+/// `placement` sets.
+fn placed_anchor(anchor: &Value, placement: &PlaceOperation) -> Value {
+    let mut anchor = anchor.clone();
+    if let (Some(from), Some(to)) = (placement.from, placement.to) {
+        let [a, b] = placement.offsets.unwrap_or_default();
+        anchor["from"] = json!({"col":from.0 - 1,"row":from.1 - 1,"colOff":a.0,"rowOff":a.1});
+        anchor["to"] = json!({"col":to.0 - 1,"row":to.1 - 1,"colOff":b.0,"rowOff":b.1});
+    }
+    if let Some(edit_as) = &placement.placement {
+        anchor["edit_as"] = json!(edit_as);
+    }
+    anchor
 }
 
 /// Project captured DrawingML anchors with exactly the same placement rules as
@@ -554,6 +769,7 @@ pub(super) fn apply_image_operations(
     sheets: &[Value],
     structural: &[StructuralOperation],
     images: &[ImageOperation],
+    placements: &[PlaceOperation],
     assets: &BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     for sheet in sheets {
@@ -620,7 +836,14 @@ pub(super) fn apply_image_operations(
             .or_else(|| parts.get(&drawing_part))
             .context("drawing part missing")?;
         let drawing = std::str::from_utf8(drawing_bytes)?;
-        let mut drawing = rewrite_drawing_anchors(drawing, &sheet_operations)?;
+        // The objects placements move, which they delete or keep.
+        let placed: BTreeSet<String> = placements
+            .iter()
+            .filter_map(|placement| placement.drawing.rsplit_once('#'))
+            .filter(|(part, _)| *part == drawing_part)
+            .map(|(_, number)| number.to_owned())
+            .collect();
+        let mut drawing = rewrite_drawing_anchors(drawing, &sheet_operations, &placed)?;
         let mut doc_pr_id = next_doc_pr_id(&drawing)?;
         // The drawing's relationships and the names of its objects, read when
         // the first picture is added; the pictures go in after the objects
@@ -653,7 +876,18 @@ pub(super) fn apply_image_operations(
                 None => names.insert(picture_names(&drawing)?),
             };
             let name = picture_name(names, operation.name.as_deref(), &operation.asset)?;
-            let anchor = image_anchor_xml(operation, &relationship_id, doc_pr_id, &name);
+            // Like a picture Excel inserts, it moves with its top left cell
+            // when rows and columns change after it.
+            let later: Vec<_> = structural[operation.preceding..]
+                .iter()
+                .filter(|later| later.sheet == sheet_name)
+                .cloned()
+                .collect();
+            let anchor = rewrite_drawing_anchors(
+                &image_anchor_xml(operation, &relationship_id, doc_pr_id, &name),
+                &later,
+                &BTreeSet::new(),
+            )?;
             // The name as the drawing reads it back.
             names.extend(picture_names(&anchor)?);
             anchors.push_str(&anchor);

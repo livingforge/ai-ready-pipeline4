@@ -9,7 +9,8 @@ use crate::documents::{Meta, MetaCell};
 use anyhow::{Context, Result, bail, ensure};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 mod diagrams;
@@ -23,6 +24,20 @@ pub(crate) use diagrams::{
 const MARKS: &str = "marks";
 /// The member of a node holding the nodes of the records it heads.
 const CHILDREN: &str = "children";
+/// The member of a node naming the formulas it fills down: for each key, the
+/// count of nodes of its list from it holding the formula, each with its
+/// relative references a row lower than the node before, as Excel fills a
+/// formula down. The nodes after it leave the key out.
+const FILL_DOWN: &str = "fill_down";
+/// The fewest nodes a formula is written filled down over: over two, a
+/// member of the first node names fewer lines than it leaves out.
+const FILL_MIN: usize = 3;
+/// The only member of a node standing for nodes following each other in a
+/// list that write nothing, such as records holding only formulas filled
+/// down: their count, two or more.
+const BLANK_RECORDS: &str = "blank_records";
+/// The members a node has of its own, which no key of a cell names.
+const RESERVED: [&str; 4] = [MARKS, CHILDREN, FILL_DOWN, BLANK_RECORDS];
 /// The value of a blank cell under a category, which no node shows.
 static BLANK: Value = Value::Null;
 
@@ -50,8 +65,13 @@ impl<T> PerCell<T> {
         }
     }
 
+    /// The place in `items` of the cell at `cell` of `record`.
+    fn place(&self, record: usize, cell: usize) -> usize {
+        self.starts[record] + cell
+    }
+
     fn get(&self, record: usize, cell: usize) -> Option<&T> {
-        self.items[self.starts[record] + cell].as_ref()
+        self.items[self.place(record, cell)].as_ref()
     }
 
     fn set(&mut self, record: usize, cell: usize, item: T) {
@@ -352,7 +372,7 @@ impl<'a> Table<'a> {
                 if text.is_some() {
                     headed.insert(column);
                 }
-                if matches!(text.as_deref(), Some(MARKS | CHILDREN)) {
+                if text.as_deref().is_some_and(|text| RESERVED.contains(&text)) {
                     qualified.insert(column);
                 }
             }
@@ -583,7 +603,7 @@ fn plain_table(e: &Meta, values: &PerCell<Value>) -> Result<bool> {
         .items
         .iter()
         .flatten()
-        .all(|key| !matches!(&**key, MARKS | CHILDREN)))
+        .all(|key| !RESERVED.contains(&&**key)))
 }
 
 /// A page as encoding makes it, to be written: its members besides its
@@ -882,13 +902,16 @@ fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
     let rows = body.take("rows");
     let mut pending: Vec<(Option<V>, &[Slot])> = vec![(rows, &table.roots)];
     while let Some((nodes, slots)) = pending.pop() {
-        let nodes = nodes
-            .and_then(V::items)
-            .context("table rows must be a list of records")?;
+        let nodes = blank_nodes(
+            nodes
+                .and_then(V::items)
+                .context("table rows must be a list of records")?,
+        )?;
         ensure!(
             nodes.len() == slots.len(),
             "table records changed; use ARP row operations or structure-save"
         );
+        let mut filling = Filling::default();
         // Each node is let go once read, when it is owned.
         for (mut node, &slot) in nodes.into_iter().zip(slots) {
             if let Slot::Record(record) = slot {
@@ -908,7 +931,7 @@ fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
                 Slot::Category(c) => write!(f, "category {}", table.categories[c].key),
             });
             ensure!(node.value().is_object(), "{at} must be a map of its values");
-            let mut expected = BTreeSet::new();
+            let mut expected = BTreeMap::new();
             let mut marks = vec![];
             for (record, j, cell) in cells {
                 if is_mark(cell) {
@@ -916,12 +939,35 @@ fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
                     continue;
                 }
                 let key = Table::key(&keys, record, j)?;
-                expected.insert(key);
-                let value = node.take(key).with_context(|| {
-                    format!("{at} has no {key}; keys follow the headings, edit values only")
-                })?;
+                expected.insert(key, (record, j));
+                let value = match filling.formula(key)? {
+                    Some(formula) => {
+                        ensure!(
+                            node.value().get(key).is_none(),
+                            "{at} has {key}, which {FILL_DOWN} fills down over it; edit values only"
+                        );
+                        ensure!(
+                            cell.get("formula").is_some(),
+                            "{FILL_DOWN} fills {key} down over a cell of no formula in {at}"
+                        );
+                        V::made(Value::String(formula))?
+                    }
+                    None => node.take(key).with_context(|| {
+                        format!("{at} has no {key}; keys follow the headings, edit values only")
+                    })?,
+                };
                 values.set(record, j, value);
             }
+            if let Some(fills) = node.take(FILL_DOWN) {
+                filling.start(fills.value(), |key| {
+                    let &(record, j) = expected.get(key).with_context(|| {
+                        format!("{FILL_DOWN} of {at} names no key of it: {key}")
+                    })?;
+                    let value = values.get(record, j).context("filled formula missing")?;
+                    filled_formula(&table, record, j, value.value())
+                })?;
+            }
+            filling.next(&at)?;
             if marks.is_empty() {
                 ensure!(node.value().get(MARKS).is_none(), "{at} has no marks");
             } else {
@@ -958,11 +1004,15 @@ fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
                 .as_object()
                 .into_iter()
                 .flat_map(|members| members.keys())
-                .find(|k| !matches!(k.as_str(), MARKS | CHILDREN) && !expected.contains(k.as_str()))
+                .find(|k| {
+                    !matches!(k.as_str(), MARKS | CHILDREN | FILL_DOWN)
+                        && !expected.contains_key(k.as_str())
+                })
             {
                 bail!("{at} has unknown key {key}; keys follow the headings, edit values only");
             }
         }
+        filling.end()?;
     }
     for value in values.items.iter().flatten() {
         ensure!(
@@ -1048,24 +1098,68 @@ fn read_nodes(
     slots: &[Slot],
     depth: usize,
 ) -> Result<()> {
-    // Each cell is given a value once: the cells of nodes are each their own.
-    let set = |values: &mut PerCell<Value>, record: usize, j: usize, value: Value| {
-        let cell = &mut values.items[values.starts[record] + j];
-        ensure!(cell.is_none(), "table cell read twice");
-        *cell = Some(value);
-        Ok(())
-    };
     let mut slots = slots.iter();
-    while let Some(node) = reader.item(depth + 1)? {
-        let slot = *slots.next().context("table records changed")?;
+    let mut filling = Filling::default();
+    let mut list = NodeList {
+        reader,
+        table,
+        keys,
+        values,
+        filling: &mut filling,
+        depth,
+    };
+    while let Some(node) = list.reader.item(depth + 1)? {
         ensure!(
             matches!(node, YamlNode::Mapping),
             "table node must be a map"
         );
+        let first = list.reader.key()?;
+        if first.as_deref() == Some(BLANK_RECORDS) {
+            let node = list.reader.node(depth + 2)?;
+            let count = blank_count(&list.reader.value(node, depth + 2)?)?;
+            ensure!(
+                list.reader.key()?.is_none(),
+                "a node of {BLANK_RECORDS} has no other member"
+            );
+            for _ in 0..count {
+                let slot = *slots.next().context("table records changed")?;
+                list.node(slot, None)?;
+            }
+        } else {
+            let slot = *slots.next().context("table records changed")?;
+            list.node(slot, first)?;
+        }
+    }
+    ensure!(slots.next().is_none(), "table records changed");
+    filling.end()
+}
+
+/// The list of nodes [`read_nodes`] reads.
+struct NodeList<'r, 'y, 't> {
+    reader: &'r mut YamlReader<'y>,
+    table: &'r Table<'t>,
+    keys: &'r PerCell<Rc<str>>,
+    values: &'r mut PerCell<Value>,
+    filling: &'r mut Filling,
+    depth: usize,
+}
+
+impl<'y> NodeList<'_, 'y, '_> {
+    /// Reads the node of `slot`: its members from the first, `first`, read
+    /// already; none for a node writing none.
+    fn node(&mut self, slot: Slot, first: Option<Cow<'y, str>>) -> Result<()> {
+        let (table, depth) = (self.table, self.depth);
+        // Each cell is given a value once: the cells of nodes are each their own.
+        let set = |values: &mut PerCell<Value>, record: usize, j: usize, value: Value| {
+            let cell = &mut values.items[values.starts[record] + j];
+            ensure!(cell.is_none(), "table cell read twice");
+            *cell = Some(value);
+            Ok(())
+        };
         if let Slot::Record(record) = slot {
             for (j, cell) in table.cells(record)?.iter().enumerate() {
                 if cell.get("category").is_some() {
-                    set(values, record, j, Value::Null)?;
+                    set(self.values, record, j, Value::Null)?;
                 }
             }
         }
@@ -1076,29 +1170,44 @@ fn read_nodes(
             if is_mark(cell) {
                 marks.push((record, j));
             } else {
-                expected.push((Table::key(keys, record, j)?, record, j));
+                expected.push((Table::key(self.keys, record, j)?, record, j));
             }
         }
         expected.sort_unstable_by_key(|&(key, ..)| key);
         ensure!(
             expected.windows(2).all(|pair| pair[0].0 != pair[1].0)
-                && expected.iter().all(|e| ![MARKS, CHILDREN].contains(&e.0)),
-            "table node keys repeat or name its marks or children"
+                && expected.iter().all(|e| !RESERVED.contains(&e.0)),
+            "table node keys repeat or name its marks, children, fills or blank records"
         );
         let mut found = vec![false; expected.len()];
+        for (at, &(key, record, j)) in expected.iter().enumerate() {
+            if let Some(formula) = self.filling.formula(key)? {
+                ensure!(
+                    table.cells(record)?[j].get("formula").is_some(),
+                    "{FILL_DOWN} fills {key} down over a cell of no formula"
+                );
+                found[at] = true;
+                set(self.values, record, j, Value::String(formula))?;
+            }
+        }
+        let mut fills = None;
         let under = table.under(slot);
         let (mut marked, mut headed) = (false, false);
-        while let Some(key) = reader.key()? {
-            let node = reader.node(depth + 2)?;
+        let mut next = first;
+        while let Some(key) = next.take() {
+            let node = self.reader.node(depth + 2)?;
             match &*key {
+                FILL_DOWN if fills.is_none() => {
+                    fills = Some(self.reader.value(node, depth + 2)?);
+                }
                 MARKS if !marked && !marks.is_empty() => {
                     marked = true;
-                    let Value::Array(given) = reader.value(node, depth + 2)? else {
+                    let Value::Array(given) = self.reader.value(node, depth + 2)? else {
                         bail!("table marks must be a list");
                     };
                     ensure!(given.len() == marks.len(), "table marks changed");
                     for (&(record, j), value) in marks.iter().zip(given) {
-                        set(values, record, j, value)?;
+                        set(self.values, record, j, value)?;
                     }
                 }
                 CHILDREN if !headed && !under.is_empty() => {
@@ -1107,18 +1216,23 @@ fn read_nodes(
                         matches!(node, YamlNode::Sequence),
                         "table children must be a list"
                     );
-                    read_nodes(reader, table, keys, values, under, depth + 2)?;
+                    read_nodes(self.reader, table, self.keys, self.values, under, depth + 2)?;
                 }
                 key => {
                     let at = expected
                         .binary_search_by(|&(expected, ..)| expected.cmp(key))
                         .ok()
                         .context("unknown table node key")?;
+                    ensure!(
+                        !self.filling.fills(key),
+                        "table node has {key}, which {FILL_DOWN} fills down over it"
+                    );
                     ensure!(!std::mem::replace(&mut found[at], true), "duplicate key");
                     let (_, record, j) = expected[at];
-                    set(values, record, j, reader.value(node, depth + 2)?)?;
+                    set(self.values, record, j, self.reader.value(node, depth + 2)?)?;
                 }
             }
+            next = self.reader.key()?;
         }
         ensure!(
             found.iter().all(|&found| found)
@@ -1126,9 +1240,157 @@ fn read_nodes(
                 && headed == !under.is_empty(),
             "table node changed"
         );
+        if let Some(fills) = fills {
+            let values = &*self.values;
+            self.filling.start(&fills, |key| {
+                let at = expected
+                    .binary_search_by(|&(expected, ..)| expected.cmp(key))
+                    .ok()
+                    .with_context(|| format!("{FILL_DOWN} names no key of its node: {key}"))?;
+                let (_, record, j) = expected[at];
+                let value = values.get(record, j).context("filled formula missing")?;
+                filled_formula(table, record, j, value)
+            })?;
+        }
+        self.filling.next("table node")
     }
-    ensure!(slots.next().is_none(), "table records changed");
-    Ok(())
+}
+
+/// The nodes of a list, each node of [`BLANK_RECORDS`] given as the nodes
+/// that write nothing it stands for.
+fn blank_nodes<V: Body>(nodes: Vec<V>) -> Result<Vec<V>> {
+    if nodes
+        .iter()
+        .all(|node| node.value().get(BLANK_RECORDS).is_none())
+    {
+        return Ok(nodes);
+    }
+    let mut all = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let Some(count) = node.value().get(BLANK_RECORDS) else {
+            all.push(node);
+            continue;
+        };
+        ensure!(
+            node.value()
+                .as_object()
+                .is_some_and(|members| members.len() == 1),
+            "a node of {BLANK_RECORDS} has no other member"
+        );
+        for _ in 0..blank_count(count)? {
+            all.push(V::made(json!({}))?);
+        }
+    }
+    Ok(all)
+}
+
+/// The count of nodes a [`BLANK_RECORDS`] node writes as one.
+fn blank_count(count: &Value) -> Result<usize> {
+    let count = count
+        .as_u64()
+        .filter(|&count| count >= 2)
+        .with_context(|| format!("{BLANK_RECORDS} must count two nodes or more"))?;
+    Ok(usize::try_from(count)?)
+}
+
+/// The formulas being filled down a list of nodes as it is read, from the
+/// nodes whose [`FILL_DOWN`] names them.
+#[derive(Default)]
+struct Filling(Vec<Fill>);
+
+struct Fill {
+    key: String,
+    /// The formula of the node it is filled down from.
+    formula: String,
+    /// The node being read, by its distance from that node.
+    distance: usize,
+    /// The nodes it is filled down over, that node with them.
+    count: usize,
+    /// Whether the node being read took it.
+    taken: bool,
+}
+
+impl Filling {
+    /// Whether a formula is filled down over the node being read at `key`.
+    fn fills(&self, key: &str) -> bool {
+        self.0.iter().any(|fill| fill.key == key)
+    }
+
+    /// The formula filled down over the node being read at `key`, if any:
+    /// a row lower for each node from the one it is filled down from.
+    fn formula(&mut self, key: &str) -> Result<Option<String>> {
+        let Some(fill) = self.0.iter_mut().find(|fill| fill.key == key) else {
+            return Ok(None);
+        };
+        fill.taken = true;
+        let rows = i64::try_from(fill.distance)?;
+        Ok(Some(crate::excel::shift_relative(&fill.formula, rows, 0)?))
+    }
+
+    /// Starts the formulas the [`FILL_DOWN`] `fills` of the node being read
+    /// names, each node's formula at a key given by `formula`.
+    fn start(&mut self, fills: &Value, formula: impl Fn(&str) -> Result<String>) -> Result<()> {
+        let fills = fills
+            .as_object()
+            .filter(|fills| !fills.is_empty())
+            .with_context(|| format!("{FILL_DOWN} must map keys to counts of records"))?;
+        for (key, count) in fills {
+            let count = count
+                .as_u64()
+                .filter(|&count| count >= 2)
+                .with_context(|| format!("{FILL_DOWN} of {key} must count two records or more"))?;
+            ensure!(
+                !self.fills(key),
+                "{FILL_DOWN} of {key} starts where a formula is filled down over it"
+            );
+            self.0.push(Fill {
+                key: key.clone(),
+                formula: formula(key)?,
+                distance: 0,
+                count: usize::try_from(count)?,
+                taken: true,
+            });
+        }
+        Ok(())
+    }
+
+    /// Ends the node read: each formula filled down over it was taken, and
+    /// runs on to the next node unless this is its last.
+    fn next(&mut self, at: impl std::fmt::Display) -> Result<()> {
+        if let Some(fill) = self.0.iter().find(|fill| !fill.taken) {
+            bail!(
+                "{at} has no {}, which {FILL_DOWN} fills down over it",
+                fill.key
+            );
+        }
+        for fill in &mut self.0 {
+            fill.distance += 1;
+            fill.taken = false;
+        }
+        self.0.retain(|fill| fill.distance < fill.count);
+        Ok(())
+    }
+
+    /// Ends the list read: no formula is filled down past its last node.
+    fn end(&self) -> Result<()> {
+        match self.0.first() {
+            Some(fill) => bail!("{FILL_DOWN} of {} runs past the last record", fill.key),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The formula of the cell at `cell` of `record` of `table`, holding
+/// `value`, that its node fills down.
+fn filled_formula(table: &Table, record: usize, cell: usize, value: &Value) -> Result<String> {
+    ensure!(
+        table.cells(record)?[cell].get("formula").is_some(),
+        "{FILL_DOWN} names a cell of no formula"
+    );
+    Ok(value
+        .as_str()
+        .context("formula must be a string")?
+        .to_owned())
 }
 
 /// Whether `value` is a value a table cell may hold: neither a list nor an
@@ -1148,20 +1410,36 @@ trait Body: Sized {
     fn items(self) -> Option<Vec<Self>>;
     /// The value of a blank cell under a category.
     fn blank() -> Self;
+    /// A value made in reading it, such as a formula filled down.
+    fn made(value: Value) -> Result<Self>;
 }
 
-impl Body for &Value {
+/// Borrowed, but for the values made in reading it.
+impl Body for Cow<'_, Value> {
     fn value(&self) -> &Value {
         self
     }
     fn take(&mut self, key: &str) -> Option<Self> {
-        self.get(key)
+        match self {
+            Cow::Borrowed(value) => value.get(key).map(Cow::Borrowed),
+            Cow::Owned(value) => Body::take(value, key).map(Cow::Owned),
+        }
     }
     fn items(self) -> Option<Vec<Self>> {
-        self.as_array().map(|items| items.iter().collect())
+        match self {
+            Cow::Borrowed(value) => value
+                .as_array()
+                .map(|items| items.iter().map(Cow::Borrowed).collect()),
+            Cow::Owned(value) => {
+                Body::items(value).map(|items| items.into_iter().map(Cow::Owned).collect())
+            }
+        }
     }
     fn blank() -> Self {
-        &BLANK
+        Cow::Borrowed(&BLANK)
+    }
+    fn made(value: Value) -> Result<Self> {
+        Ok(Cow::Owned(value))
     }
 }
 
@@ -1181,6 +1459,9 @@ impl Body for Value {
     fn blank() -> Self {
         Value::Null
     }
+    fn made(value: Value) -> Result<Self> {
+        Ok(value)
+    }
 }
 
 /// Displays what its function writes.
@@ -1194,11 +1475,12 @@ impl<F: Fn(&mut std::fmt::Formatter<'_>) -> std::fmt::Result> std::fmt::Display 
 
 /// Calls `visit` with each value of `body` and the element or table cell of
 /// `metadata` it belongs to, in the order of the metadata, after checking
-/// that the body still has the shape the metadata records. Nothing is copied.
+/// that the body still has the shape the metadata records. Nothing is copied
+/// but the formulas a node fills down, made as they are read.
 pub(crate) fn each<'a>(
     body: &'a Value,
     metadata: &'a [Meta],
-    mut visit: impl FnMut(Item<'a>, &'a Value) -> Result<()>,
+    mut visit: impl FnMut(Item<'a>, Cow<'a, Value>) -> Result<()>,
 ) -> Result<()> {
     let body = array(body)?;
     let elements = metadata;
@@ -1215,7 +1497,7 @@ pub(crate) fn each<'a>(
             fields.len() == 1 && fields.contains_key(kind),
             "element kind changed; use ARP structural operations"
         );
-        element(e, kind, &value[kind], &mut visit)?;
+        element(e, kind, Cow::Borrowed(&value[kind]), &mut visit)?;
     }
     Ok(())
 }
@@ -1446,7 +1728,7 @@ pub(crate) fn read_each_element<'a>(
 pub(crate) fn join(body: &Value, metadata: &[Meta]) -> Result<Vec<Meta>> {
     let mut values = vec![];
     each(body, metadata, |_, value| {
-        values.push(value.clone());
+        values.push(value.into_owned());
         Ok(())
     })?;
     let mut values = values.into_iter();
@@ -1587,16 +1869,7 @@ pub(crate) fn encoded_yaml_to(
         elements.push(match element {
             Encoding::Element(element) => Out::Value(element.kind, &element.value),
             Encoding::Cells(values) => {
-                let table = Table::of(e)?;
-                let keys = table.keys(|i, j| values.get(i, j))?;
-                let order = table.key_order(&keys)?;
-                Out::Cells(Box::new(CellsBody {
-                    table,
-                    keys,
-                    values,
-                    order: order.iter().cloned().collect(),
-                    listed: order,
-                }))
+                Out::Cells(Box::new(CellsBody::new(e, Values::Held(values))?))
             }
         });
     }
@@ -1623,10 +1896,8 @@ fn page_yaml(
             continue;
         }
         outs.push(if e["type"] == "table" {
-            let table = Table::of(e)?;
-            let values = table_values(e, value)?;
-            let keys = table.keys(|i, j| values.get(i, j).copied())?;
-            Out::Tree(kind, value, table.key_order(&keys)?)
+            let values = table_values(e, Cow::Borrowed(value))?;
+            Out::Cells(Box::new(CellsBody::new(e, Values::Borrowed(values))?))
         } else {
             Out::Value(kind, value)
         });
@@ -1644,25 +1915,180 @@ fn write_page_yaml(
     Ok(())
 }
 
-/// An element of a page as it is written: its kind and value, a table's with
-/// the order of its keys, or a table by the values of its cells.
+/// An element of a page as it is written: its kind and value, or a table by
+/// the values of its cells.
 enum Out<'a> {
     Value(&'a str, &'a Value),
-    Tree(&'a str, &'a Value, Vec<String>),
     Cells(Box<CellsBody<'a>>),
     /// The elements of a diagram, written together.
     Diagram(Ordered<'a>),
 }
 
+/// The values of the cells of a table by their places: held by an encoded
+/// page, or borrowed from the tree of a page.
+enum Values<'a> {
+    Held(&'a PerCell<Value>),
+    Borrowed(PerCell<Cow<'a, Value>>),
+}
+
+impl Values<'_> {
+    fn get(&self, record: usize, cell: usize) -> Option<&Value> {
+        match self {
+            Self::Held(values) => values.get(record, cell),
+            Self::Borrowed(values) => values.get(record, cell).map(|value| &**value),
+        }
+    }
+
+    fn place(&self, record: usize, cell: usize) -> usize {
+        match self {
+            Self::Held(values) => values.place(record, cell),
+            Self::Borrowed(values) => values.place(record, cell),
+        }
+    }
+}
+
 /// A table written from the values of its cells: as [`table_body`] makes its
-/// tree, with the keys of each node in the order [`Node`] writes them.
+/// tree, the keys of each node in the order of the table's columns, each
+/// formula filled down over [`FILL_MIN`] nodes or more written once.
 struct CellsBody<'a> {
     table: Table<'a>,
     keys: PerCell<Rc<str>>,
-    values: &'a PerCell<Value>,
+    values: Values<'a>,
     /// The keys in the order they are written first.
     listed: Vec<String>,
     order: std::collections::HashSet<String>,
+    fills: Fills,
+}
+
+impl<'a> CellsBody<'a> {
+    /// Whether the node of `slot` writes nothing: each of its cells is filled
+    /// down from a node before it, and it heads no node.
+    fn writes_nothing(&self, slot: Slot) -> Result<bool> {
+        if !self.table.under(slot).is_empty() {
+            return Ok(false);
+        }
+        for (record, j, cell) in self.table.node_cells(slot)? {
+            if is_mark(cell) || !self.fills.filled(self.values.place(record, j)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn new(element: &'a Meta, values: Values<'a>) -> Result<Self> {
+        let table = Table::of(element)?;
+        let keys = table.keys(|i, j| values.get(i, j))?;
+        let order = table.key_order(&keys)?;
+        let fills = Fills::of(&table, &keys, &values)?;
+        Ok(Self {
+            table,
+            keys,
+            values,
+            order: order.iter().cloned().collect(),
+            listed: order,
+            fills,
+        })
+    }
+}
+
+/// The formulas of a table written filled down: for each cell by its place,
+/// 0 for a cell written, 1 for one filled down from a node before it, and
+/// the count of nodes for the cell of the node a formula is filled down from.
+/// Empty for a table of no such formula.
+struct Fills(Vec<u32>);
+
+/// Cells of nodes following each other in a list, at one key, whose formula
+/// each is the first's filled down to it.
+struct Run<'v> {
+    key: &'v str,
+    formula: &'v str,
+    places: Vec<usize>,
+}
+
+impl Fills {
+    fn of(table: &Table, keys: &PerCell<Rc<str>>, values: &Values) -> Result<Self> {
+        let mut fills = vec![];
+        let mut close = |run: Run| {
+            if run.places.len() >= FILL_MIN {
+                if fills.is_empty() {
+                    let count = table.rows.iter().map(|row| row.cells.len()).sum();
+                    fills = vec![0; count];
+                }
+                fills[run.places[0]] = u32::try_from(run.places.len()).unwrap_or(u32::MAX);
+                for &place in &run.places[1..] {
+                    fills[place] = 1;
+                }
+            }
+        };
+        let mut lists = vec![table.roots.as_slice()];
+        while let Some(slots) = lists.pop() {
+            let mut runs: Vec<Run> = vec![];
+            for &slot in slots {
+                let under = table.under(slot);
+                if !under.is_empty() {
+                    lists.push(under);
+                }
+                // The formulas of the node by their keys; none for a key it
+                // has twice.
+                let mut formulas: Vec<(&str, Option<(usize, &str)>)> = vec![];
+                for (record, j, cell) in table.node_cells(slot)? {
+                    if is_mark(cell) || cell.get("formula").is_none() {
+                        continue;
+                    }
+                    let Some(Value::String(formula)) = values.get(record, j) else {
+                        continue;
+                    };
+                    let key = Table::key(keys, record, j)?;
+                    let formula = Some((values.place(record, j), formula.as_str()));
+                    match formulas.iter_mut().find(|(k, _)| *k == key) {
+                        Some(entry) => entry.1 = None,
+                        None => formulas.push((key, formula)),
+                    }
+                }
+                let mut open = vec![];
+                for mut run in runs {
+                    let at = formulas.iter().position(|(key, _)| *key == run.key);
+                    let next = at.and_then(|at| formulas[at].1).filter(|&(_, formula)| {
+                        i64::try_from(run.places.len()).is_ok_and(|rows| {
+                            crate::excel::shift_relative(run.formula, rows, 0)
+                                .is_ok_and(|filled| filled == formula)
+                        })
+                    });
+                    match next {
+                        Some((place, _)) => {
+                            run.places.push(place);
+                            formulas.swap_remove(at.expect("a run goes on at its key"));
+                            open.push(run);
+                        }
+                        None => close(run),
+                    }
+                }
+                for (key, formula) in formulas {
+                    if let Some((place, formula)) = formula {
+                        open.push(Run {
+                            key,
+                            formula,
+                            places: vec![place],
+                        });
+                    }
+                }
+                runs = open;
+            }
+            runs.into_iter().for_each(&mut close);
+        }
+        Ok(Self(fills))
+    }
+
+    /// Whether the cell at `place` is filled down from a node before it.
+    fn filled(&self, place: usize) -> bool {
+        self.0.get(place) == Some(&1)
+    }
+
+    /// The count of nodes the formula of the cell at `place` is filled down
+    /// over, if it is.
+    fn count(&self, place: usize) -> Option<u32> {
+        self.0.get(place).copied().filter(|&count| count > 1)
+    }
 }
 
 struct Page<'a> {
@@ -1710,7 +2136,6 @@ impl Serialize for Element<'_> {
         let mut map = s.serialize_map(Some(1))?;
         match self.0 {
             Out::Value(kind, value) => map.serialize_entry(kind, value)?,
-            Out::Tree(kind, value, order) => map.serialize_entry(kind, &TableBody(value, order))?,
             Out::Cells(body) => map.serialize_entry("table", body)?,
             Out::Diagram(body) => map.serialize_entry(DIAGRAM, body)?,
         }
@@ -1753,57 +2178,103 @@ struct CellNodes<'a>(&'a CellsBody<'a>, &'a [Slot]);
 
 impl Serialize for CellNodes<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut seq = s.serialize_seq(Some(self.1.len()))?;
-        for &slot in self.1 {
-            seq.serialize_element(&CellNode(self.0, slot))?;
+        let CellNodes(body, slots) = *self;
+        // The nodes, those that write nothing following each other as one:
+        // the place of the first, the count and whether they write nothing.
+        let mut groups: Vec<(usize, usize, bool)> = vec![];
+        for (at, &slot) in slots.iter().enumerate() {
+            let blank = body
+                .writes_nothing(slot)
+                .map_err(serde::ser::Error::custom)?;
+            match groups.last_mut() {
+                Some((_, count, true)) if blank => *count += 1,
+                _ => groups.push((at, 1, blank)),
+            }
+        }
+        let mut seq = s.serialize_seq(Some(groups.len()))?;
+        for (first, count, _) in groups {
+            if count >= 2 {
+                seq.serialize_element(&BlankRecords(count))?;
+            } else {
+                seq.serialize_element(&CellNode(body, slots[first]))?;
+            }
         }
         seq.end()
     }
 }
 
-/// A node of a [`CellsBody`], written as [`Node`] writes the node
-/// [`table_body`] makes of it.
+/// Nodes following each other that write nothing, written as their count.
+struct BlankRecords(usize);
+
+impl Serialize for BlankRecords {
+    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(1))?;
+        map.serialize_entry(BLANK_RECORDS, &self.0)?;
+        map.end()
+    }
+}
+
+/// A node of a [`CellsBody`], as [`table_body`] makes it: its values in the
+/// order of the table's columns, but those filled down from a node before
+/// it, then the counts of the formulas it fills down, its marks and its
+/// children.
 struct CellNode<'a>(&'a CellsBody<'a>, Slot);
 
 impl Serialize for CellNode<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         let CellNode(body, slot) = *self;
         let error = serde::ser::Error::custom;
-        let mut entries: Vec<(&str, &Value)> = vec![];
+        let mut entries: Vec<(&str, &Value, Option<u32>)> = vec![];
         let mut marks = vec![];
         for (record, j, _) in body.table.node_cells(slot).map_err(error)? {
             let value = body
                 .values
                 .get(record, j)
                 .ok_or_else(|| serde::ser::Error::custom("table cell value missing"))?;
+            let place = body.values.place(record, j);
             if is_mark(&body.table.cells(record).map_err(error)?[j]) {
                 marks.push(value);
-            } else {
-                entries.push((Table::key(&body.keys, record, j).map_err(error)?, value));
+            } else if !body.fills.filled(place) {
+                let key = Table::key(&body.keys, record, j).map_err(error)?;
+                entries.push((key, value, body.fills.count(place)));
             }
         }
         // As a map of them holds them: in the order of their keys, the
         // last value of a key.
-        entries.sort_by_key(|&(key, _)| key);
-        let mut unique: Vec<(&str, &Value)> = Vec::with_capacity(entries.len());
+        entries.sort_by_key(|&(key, ..)| key);
+        let mut unique: Vec<(&str, &Value, Option<u32>)> = Vec::with_capacity(entries.len());
         for entry in entries {
             match unique.last_mut() {
                 Some(last) if last.0 == entry.0 => *last = entry,
                 _ => unique.push(entry),
             }
         }
+        let ordered = || {
+            let listed = body.listed.iter().filter_map(|key| {
+                let at = unique.binary_search_by(|&(entry, ..)| entry.cmp(key));
+                at.ok().map(|at| unique[at])
+            });
+            listed.chain(
+                unique
+                    .iter()
+                    .copied()
+                    .filter(|&(key, ..)| !body.order.contains(key)),
+            )
+        };
+        let fills: Vec<(&str, u32)> = ordered()
+            .filter_map(|(key, _, count)| Some((key, count?)))
+            .collect();
         let children = body.table.under(slot);
-        let len = unique.len() + usize::from(!marks.is_empty()) + usize::from(!children.is_empty());
+        let len = unique.len()
+            + usize::from(!fills.is_empty())
+            + usize::from(!marks.is_empty())
+            + usize::from(!children.is_empty());
         let mut map = s.serialize_map(Some(len))?;
-        for key in &body.listed {
-            if let Ok(at) = unique.binary_search_by(|&(entry, _)| entry.cmp(key)) {
-                map.serialize_entry(key, unique[at].1)?;
-            }
+        for (key, value, _) in ordered() {
+            map.serialize_entry(key, value)?;
         }
-        for &(key, value) in &unique {
-            if !body.order.contains(key) {
-                map.serialize_entry(key, value)?;
-            }
+        if !fills.is_empty() {
+            map.serialize_entry(FILL_DOWN, &FillCounts(&fills))?;
         }
         if !marks.is_empty() {
             map.serialize_entry(MARKS, &marks)?;
@@ -1815,59 +2286,15 @@ impl Serialize for CellNode<'_> {
     }
 }
 
-struct TableBody<'a>(&'a Value, &'a [String]);
+/// The [`FILL_DOWN`] of a node: each key with the count of nodes its formula
+/// is filled down over, in the order the node writes its keys.
+struct FillCounts<'a>(&'a [(&'a str, u32)]);
 
-impl Serialize for TableBody<'_> {
+impl Serialize for FillCounts<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut map = s.serialize_map(None)?;
-        if let Some(columns) = self.0.get("columns") {
-            map.serialize_entry("columns", columns)?;
-        }
-        let rows = self.0["rows"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        map.serialize_entry("rows", &Nodes(rows, self.1))?;
-        map.end()
-    }
-}
-
-struct Nodes<'a>(&'a [Value], &'a [String]);
-
-impl Serialize for Nodes<'_> {
-    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut seq = s.serialize_seq(Some(self.0.len()))?;
-        for node in self.0 {
-            seq.serialize_element(&Node(node, self.1))?;
-        }
-        seq.end()
-    }
-}
-
-struct Node<'a>(&'a Value, &'a [String]);
-
-impl Serialize for Node<'_> {
-    fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        let Some(fields) = self.0.as_object() else {
-            return self.0.serialize(s);
-        };
-        let mut map = s.serialize_map(Some(fields.len()))?;
-        for key in self.1 {
-            if let Some(value) = fields.get(key) {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        for (key, value) in fields {
-            if !self.1.contains(key) && key != MARKS && key != CHILDREN {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        if let Some(marks) = fields.get(MARKS) {
-            map.serialize_entry(MARKS, marks)?;
-        }
-        if let Some(children) = fields.get(CHILDREN) {
-            let nodes = children.as_array().map(Vec::as_slice).unwrap_or_default();
-            map.serialize_entry(CHILDREN, &Nodes(nodes, self.1))?;
+        let mut map = s.serialize_map(Some(self.0.len()))?;
+        for (key, count) in self.0 {
+            map.serialize_entry(key, count)?;
         }
         map.end()
     }
@@ -2017,6 +2444,199 @@ title: t
             .unwrap()
             .remove("marks");
         assert!(join_json(&unmarked, &metadata).is_err());
+    }
+
+    /// The cell of a sheet at `column` and `row` holding `value`, a formula
+    /// for a text starting with `=`.
+    fn cell(row: usize, column: &str, value: Value) -> Value {
+        let mut cell = json!({"id":format!("{column}{row}"),"column":column});
+        if value.as_str().is_some_and(|text| text.starts_with('=')) {
+            cell["formula"] = value;
+        } else {
+            cell["value"] = value;
+        }
+        cell
+    }
+
+    /// The body of the table of `rows` under the headings of row 1, its
+    /// metadata, and its page written as a file holds it.
+    fn written(rows: Vec<Value>, columns: &[&str]) -> (Value, Vec<Meta>, String) {
+        let labels: serde_json::Map<String, Value> = columns
+            .iter()
+            .map(|c| (c.to_string(), json!(format!("{c}1"))))
+            .collect();
+        let ids: Vec<Value> = columns.iter().map(|c| json!({"id":c})).collect();
+        let elements = json!([{"id":"t","type":"table","headings":1,
+            "labels":labels,"columns":ids,"rows":rows}]);
+        let (body, metadata) = split_json(elements).unwrap();
+        let page = json!({"elements":body,"page_id":"p","schema_version":"7","title":"t"});
+        let typed = crate::documents::metadata_from(metadata).unwrap();
+        let text = String::from_utf8(yaml(&page, &typed, &Diagrams::default()).unwrap()).unwrap();
+        (body, typed, text)
+    }
+
+    /// The value of each cell of the page `text` as a file holds it, read
+    /// whole and node by node alike.
+    fn read_written(text: &str, metadata: &[Meta]) -> Result<Vec<Value>> {
+        let Content { elements, .. } = Content::read(text)?;
+        let mut whole = vec![];
+        into_each_element(elements, metadata, |_, value| {
+            whole.push(value);
+            Ok(())
+        })?;
+        let mut streamed = vec![];
+        read_each_element(text, metadata, &Diagrams::default(), |_, value| {
+            streamed.push(value);
+            Ok(())
+        })?;
+        streamed.reverse();
+        ensure!(whole == streamed, "the two readings differ");
+        Ok(whole)
+    }
+
+    /// The value of each cell of `body`.
+    fn cell_values(body: &Value, metadata: &[Meta]) -> Vec<Value> {
+        let mut values = vec![];
+        each(body, metadata, |_, value| {
+            values.push(value.into_owned());
+            Ok(())
+        })
+        .unwrap();
+        values
+    }
+
+    #[test]
+    fn formulas_filled_down_three_records_or_more_are_written_once() {
+        // A holds =ROW()-1 on each record; C holds =B<row>*2 but on row 5,
+        // whose formula breaks the fill in two.
+        let mut rows = vec![json!({"id":"r1","cells":[
+            cell(1, "A", json!("No")), cell(1, "B", json!("数")), cell(1, "C", json!("倍"))]})];
+        for row in 2..=8 {
+            let doubled = if row == 5 {
+                "=B5*3".into()
+            } else {
+                format!("=B{row}*2")
+            };
+            rows.push(json!({"id":format!("r{row}"),"cells":[
+                cell(row, "A", json!("=ROW()-1")), cell(row, "B", json!(row)),
+                cell(row, "C", json!(doubled))]}));
+        }
+        let (body, typed, text) = written(rows, &["A", "B", "C"]);
+        assert_eq!(
+            text,
+            r#"elements:
+- table:
+    columns:
+    - "No"
+    - 数
+    - 倍
+    rows:
+    - "No": =ROW()-1
+      数: 2
+      倍: =B2*2
+      fill_down:
+        "No": 7
+        倍: 3
+    - 数: 3
+    - 数: 4
+    - 数: 5
+      倍: =B5*3
+    - 数: 6
+      倍: =B6*2
+      fill_down:
+        倍: 3
+    - 数: 7
+    - 数: 8
+page_id: p
+schema_version: "7"
+title: t
+"#
+        );
+        assert_eq!(
+            read_written(&text, &typed).unwrap(),
+            cell_values(&body, &typed)
+        );
+        let refused = [
+            // A node a formula is filled down over writes it.
+            text.replace("    - 数: 4\n", "    - 数: 4\n      倍: =B4*2\n"),
+            // A fill runs past the last record.
+            text.replace("\"No\": 7", "\"No\": 8"),
+            // A fill names a cell of no formula.
+            text.replace(
+                "        倍: 3\n    - 数: 3",
+                "        倍: 3\n        数: 3\n    - 数: 3",
+            ),
+            // A fill counts fewer than two records.
+            text.replace("\"No\": 7", "\"No\": 1"),
+        ];
+        for text in refused {
+            assert!(read_written(&text, &typed).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn records_writing_nothing_one_after_another_are_written_as_their_count() {
+        // A holds =ROW()-1 on each record, B a name on rows 2, 5 and 9 only:
+        // two records between the first names hold only their formula, and
+        // three after each of the others.
+        let mut rows = vec![json!({"id":"r1","cells":[
+            cell(1, "A", json!("No")), cell(1, "B", json!("名"))]})];
+        for row in 2..=12 {
+            let mut cells = vec![cell(row, "A", json!("=ROW()-1"))];
+            if [2, 5, 9].contains(&row) {
+                cells.push(cell(row, "B", json!(format!("n{row}"))));
+            }
+            rows.push(json!({"id":format!("r{row}"),"cells":cells}));
+        }
+        let (body, typed, text) = written(rows, &["A", "B"]);
+        assert_eq!(
+            text,
+            r#"elements:
+- table:
+    columns:
+    - "No"
+    - 名
+    rows:
+    - "No": =ROW()-1
+      名: n2
+      fill_down:
+        "No": 11
+    - blank_records: 2
+    - 名: n5
+    - blank_records: 3
+    - 名: n9
+    - blank_records: 3
+page_id: p
+schema_version: "7"
+title: t
+"#
+        );
+        let values = cell_values(&body, &typed);
+        assert_eq!(read_written(&text, &typed).unwrap(), values);
+        // Records writing nothing written one by one are read alike.
+        let single = text.replace("    - blank_records: 2\n", "    - {}\n    - {}\n");
+        assert_eq!(read_written(&single, &typed).unwrap(), values);
+        let refused = [
+            // Blank records past the last record.
+            text.replace(
+                "    - blank_records: 3\npage",
+                "    - blank_records: 4\npage",
+            ),
+            // Fewer blank records than the records left.
+            text.replace(
+                "    - blank_records: 3\npage",
+                "    - blank_records: 2\npage",
+            ),
+            // A count of one, or a member besides the count.
+            text.replace("blank_records: 2", "blank_records: 1"),
+            text.replace(
+                "    - blank_records: 2\n",
+                "    - blank_records: 2\n      名: x\n",
+            ),
+        ];
+        for text in refused {
+            assert!(read_written(&text, &typed).is_err(), "{text}");
+        }
     }
 
     #[test]

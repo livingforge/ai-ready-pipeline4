@@ -1751,36 +1751,44 @@ Options:
 Usage: arp4 documents [OPTIONS] <COMMAND>
 
 Commands:
-  schema           Print a JSON contract by name, as a list of its properties; --pointer selects one node and --full prints all of it. An unknown name lists the contracts
-  init             Make the project's .arp folder and configuration
-  import           Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
-  remove           Remove the documents at or below an ID whose originals were moved, renamed or deleted
-  discard          Discard one proposal, leaving the original and adopted document untouched
-  search           Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
-  search-formats   List the font colors, theme colors, fonts, sizes and emphasis of the indexed text, each with the hits a search filtering by it alone returns
-  search-refresh   Reconcile canonical documents with the local search index
-  structure-read   Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
-  elements-read    Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
-  extraction-read  Write the extraction for reading (the extraction-view contract): as extraction.json stores it, one cell per line, with each font and style written out where extraction.json has its index; a sheet gives the font and style most of its cells have once (cell_font, cell_style), and a cell only one of its own. A formula's cached result is its value
-  structure-save   Save structure corrections; remove a managed work/structure view on success
-  rows             Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
-  columns          Insert or delete Excel worksheet columns, like rows
-  slides           Copy, add, delete, move, hide or show PowerPoint slides. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
-  shapes           Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
-  images           Add PNG pictures to an Excel worksheet over a cell range. The operation in mappings.yml is written after a trial write and the same validation as check
-  record           Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
-  adopt            Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
-  review           Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
-  diff             Show what changed: a proposal against its adopted document, or with --document an adopted document against the version Git's HEAD holds
-  apply            Write the exact export candidate whose layout was confirmed to the original, then re-extract it as a proposal formed by apply, ready to adopt
-  confirm-export   Record a human layout review of an exported candidate and its exact hash
-  values           Edit values, formulas, table labels, shape texts and fonts of Office and PDF content, and give values to empty Excel cells, as the value-edits contract describes (documents schema value-edits). Targets are cells of the extraction or element IDs of elements-read, so the values of rows and slides operations insert are edited too. Every edit is checked, and written by the original's writer to a scratch file, before any is saved; the request is recorded with the content
-  export           Without --out, plan the export of a reviewed document: what it writes to its original and what it leaves out. With --out, write the original with the edits to a new file and its report beside it
-  render           Render a page of an exported candidate to a PNG image, to look at it before confirm-export: an Excel sheet or range, a Word or PDF page, or a PowerPoint slide. Needs Windows and desktop Office (Excel; Word or PowerPoint for their documents); PDF pages are rendered by Windows
-  operations       List or take back pending row, column, slide, shape and image operations
-  check            Check documents and proposals as edits leave them: their state, and the blockers or error keeping each from the next step. --include-hashes adds the content hash and the original's SHA-256 that value edits are based on
-  status           The state of documents and proposals, like check
-  help             Print this message or the help of the given subcommand(s)
+  schema               Print a JSON contract by name, as a list of its properties; --pointer selects one node and --full prints all of it. An unknown name lists the contracts
+  init                 Make the project's .arp folder and configuration
+  import               Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
+  remove               Remove the documents at or below an ID whose originals were moved, renamed or deleted
+  discard              Discard one proposal, leaving the original and adopted document untouched
+  search               Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+  search-formats       List the font colors, theme colors, fonts, sizes and emphasis of the indexed text, each with the hits a search filtering by it alone returns
+  search-refresh       Reconcile canonical documents with the local search index
+  structure-read       Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
+  elements-read        Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
+  extraction-read      Write the extraction for reading (the extraction-view contract): as extraction.json stores it, one cell per line, with each font and style written out where extraction.json has its index; a sheet gives the font and style most of its cells have once (cell_font, cell_style), and a cell only one of its own. A formula's cached result is its value
+  structure-save       Save structure corrections; remove a managed work/structure view on success
+  rows                 Insert or delete Excel worksheet rows, or Word and PowerPoint paragraphs and table rows. The operation in mappings.yml and the content values it adds or removes are written together, after the same validation as check
+  columns              Insert or delete Excel worksheet columns, like rows
+  cells                Insert or delete a range of Excel cells, shifting the cells beside it within its rows or columns, as Excel's Insert and Delete do. The insert_cells or delete_cells operation in mappings.yml and the content values it moves or removes are written together, after a trial write and the same validation as check: a value stays with its cell, shown at the row and column the cell ends in
+  sheets               Add an empty Excel worksheet or a copy of one. The operation in mappings.yml, the sheet's content page (content/<name>.yml) and its layout are written together, after a trial write and the same validation as check
+  slides               Copy, add, delete, move, hide or show PowerPoint slides. The operation in mappings.yml and the content pages it adds or removes are written together, after the same validation as check
+  shapes               Change, add or delete shapes, pictures and connectors of a PowerPoint slide. Places and sizes are points on the slide, as the extraction's drawings give them; a shape is named by its drawing ID (<slide part>#<id>) or by the operation ID of the operation adding it
+  images               Add PNG pictures to an Excel worksheet over a cell range. The operation in mappings.yml is written after a trial write and the same validation as check
+  format               Change the format of a range of Excel cells: copy a cell's whole format (--from), alignment (--wrap, --shrink, --horizontal, --vertical), bold, italic, strike and underline, fill, borders, number format, row heights, column widths, or merge and take apart merges. The range names cells as the row and column operations recorded before leave them, as export writes them and layout_warnings names them; operations recorded after move it with the cells. Values stay. The format_cells operation in mappings.yml is written after a trial write and the same validation as check
+  drawings             Move, resize or change the placement of Excel drawing objects. The place_drawing operation in mappings.yml is written after a trial write and the same validation as check
+  links                Link Excel cells to places in the workbook or to URLs, or take their links off. The set_link or clear_links operation in mappings.yml names the cells as the row and column operations recorded before leave them; those recorded after move it with the cells. It is written last on export, after a trial write and the same validation as check
+  notes                Give Excel cells notes, change their text or delete them, as set_note and clear_notes operations, placed and written like links
+  validations          Give Excel cells data validations (drop-down lists, allowed values) or take them out of theirs, as set_validation and clear_validations operations, placed and written like links; rows and columns inserted after the cells later take them too, as in Excel
+  conditional-formats  Add conditional formats to Excel cells or take them out of theirs, as add_conditional_format and clear_conditional_formats operations, placed and written like validations
+  record               Record who formed a proposal, with which model and prompt. A folder ID or --all records every proposal below it that needs a record
+  adopt                Adopt a recorded proposal as the document without marking it reviewed. A folder ID or --all adopts every proposal below it that is ready
+  review               Review the edits of an adopted document. A folder ID or --all reviews every document below it that needs a review
+  diff                 Show what changed: a proposal against its adopted document, or with --document an adopted document against the version Git's HEAD holds
+  apply                Write the exact export candidate whose layout was confirmed to the original, then re-extract it as a proposal formed by apply, ready to adopt
+  confirm-export       Record a human layout review of an exported candidate and its exact hash
+  values               Edit values, formulas, table labels, shape texts and fonts of Office and PDF content, and give values to empty Excel cells, as the value-edits contract describes (documents schema value-edits). Targets are cells of the extraction or element IDs of elements-read, so the values of rows and slides operations insert are edited too. Every edit is checked, and written by the original's writer to a scratch file, before any is saved; the request is recorded with the content
+  export               Without --out, plan the export of a reviewed document: what it writes to its original and what it leaves out. With --out, write the original with the edits to a new file and its report beside it
+  render               Render a page of an exported candidate to a PNG image, to look at it before confirm-export: an Excel sheet or range, a Word or PDF page, or a PowerPoint slide. Needs Windows and desktop Office (Excel; Word or PowerPoint for their documents); PDF pages are rendered by Windows
+  operations           List or take back pending row, column, slide, shape and image operations
+  check                Check documents and proposals as edits leave them: their state, and the blockers or error keeping each from the next step. --include-hashes adds the content hash and the original's SHA-256 that value edits are based on
+  status               The state of documents and proposals, like check
+  help                 Print this message or the help of the given subcommand(s)
 
 Options:
       --full
@@ -2258,6 +2266,7 @@ Usage: arp4 documents rows [OPTIONS] <COMMAND>
 Commands:
   insert  Insert rows and write their values under the keys <operation ID>-<n>
   delete  Delete rows of the original sheet together with their content values
+  move    Excel only: move rows of the original sheet to the place --after or --before names, as Excel inserts cut rows: recorded as rows inserted there with the formats, heights and merges of the rows moved (<id>-insert), their values and formulas copied there (<id>-copy), their links, notes, validations and drawings set there, and the rows deleted (<id>-delete); the formulas reading the rows, there or elsewhere, are given the text Excel gives them, and the formats recorded on the rows recorded where they go. A move Excel would make otherwise is refused: one with names whose ends move, rules over only the rows or only the place they go to, or drawings over the rows and others
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2403,6 +2412,72 @@ Options:
 
       --count <COUNT>
           Number of rows to delete
+
+          [default: 1]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents rows move`
+
+```text
+Excel only: move rows of the original sheet to the place --after or --before names, as Excel inserts cut rows: recorded as rows inserted there with the formats, heights and merges of the rows moved (<id>-insert), their values and formulas copied there (<id>-copy), their links, notes, validations and drawings set there, and the rows deleted (<id>-delete); the formulas reading the rows, there or elsewhere, are given the text Excel gives them, and the formats recorded on the rows recorded where they go. A move Excel would make otherwise is refused: one with names whose ends move, rules over only the rows or only the place they go to, or drawings over the rows and others
+
+Usage: arp4 documents rows move [OPTIONS] --sheet <SHEET> --reason <REASON> --from <FROM> <--after <AFTER>|--before <BEFORE>> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet name; for Word the part (document, header-N, ...), for PowerPoint the page (slide-N, notes-N, or the operation ID of an inserted slide)
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the rows or columns change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --vba-unchanged
+          Excel workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
+      --after <AFTER>
+          Insert after this row or column: a row number (15 or r15) or column letters (C) of the original sheet, the key <operation ID>-<n> of one an earlier operation inserted, or last (the last one holding a value)
+
+      --before <BEFORE>
+          Insert before this row or column, given like --after
+
+      --from <FROM>
+          First row moved: a number of the original sheet (15 or r15)
+
+      --count <COUNT>
+          Number of rows moved
 
           [default: 1]
 
@@ -2626,6 +2701,467 @@ Options:
           Number of columns to delete
 
           [default: 1]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents cells`
+
+```text
+Insert or delete a range of Excel cells, shifting the cells beside it within its rows or columns, as Excel's Insert and Delete do. The insert_cells or delete_cells operation in mappings.yml and the content values it moves or removes are written together, after a trial write and the same validation as check: a value stays with its cell, shown at the row and column the cell ends in
+
+Usage: arp4 documents cells [OPTIONS] <COMMAND>
+
+Commands:
+  insert  Insert empty cells over the range, shifting the cells there and below it down (--shift down) or right of it right (--shift right) within the range's columns or rows. The new cells take the format of the cell above or left of them, as in Excel, and take values with documents values set or in the content
+  delete  Delete the cells of the range with their values, shifting the cells below it up (--shift up) or right of it left (--shift left) within the range's columns or rows
+  copy    Copy the cells of the range to the place at --to of the same sheet, as Excel pastes them: the values and formulas, their relative references moved by the distance, as value edits, and the formats and merges as a copy_cells operation, written together. The cells pasted over holding a value a formula would replace, or a formula, are refused
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents cells insert`
+
+```text
+Insert empty cells over the range, shifting the cells there and below it down (--shift down) or right of it right (--shift right) within the range's columns or rows. The new cells take the format of the cell above or left of them, as in Excel, and take values with documents values set or in the content
+
+Usage: arp4 documents cells insert [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> --shift <SHIFT> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B5:D5, as the row and column operations recorded before leave them, as export writes them
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells are inserted or deleted; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --vba-unchanged
+          Workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
+      --shift <SHIFT>
+          [possible values: down, right]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents cells delete`
+
+```text
+Delete the cells of the range with their values, shifting the cells below it up (--shift up) or right of it left (--shift left) within the range's columns or rows
+
+Usage: arp4 documents cells delete [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> --shift <SHIFT> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B5:D5, as the row and column operations recorded before leave them, as export writes them
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells are inserted or deleted; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --vba-unchanged
+          Workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
+      --shift <SHIFT>
+          [possible values: up, left]
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents cells copy`
+
+```text
+Copy the cells of the range to the place at --to of the same sheet, as Excel pastes them: the values and formulas, their relative references moved by the distance, as value edits, and the formats and merges as a copy_cells operation, written together. The cells pasted over holding a value a formula would replace, or a formula, are refused
+
+Usage: arp4 documents cells copy [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> --to <TO> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B5:D5, as the row and column operations recorded before leave them, as export writes them
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells are inserted or deleted; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --vba-unchanged
+          Workbooks with a VBA project: accept that the edit leaves the cell addresses in the VBA code as they are, as Excel does. Give it only after a person checked the macros against the lines vba_not_updated lists; it is recorded with the operation
+
+      --to <TO>
+          The top left cell to paste to, as the operations recorded before leave it
+
+      --formats-only
+          Copy the formats and merges only
+
+      --values-only
+          Copy the values and formulas only
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents sheets`
+
+```text
+Add an empty Excel worksheet or a copy of one. The operation in mappings.yml, the sheet's content page (content/<name>.yml) and its layout are written together, after a trial write and the same validation as check
+
+Usage: arp4 documents sheets [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add an empty worksheet, as Excel's Insert Sheet does, with the default row height of the first sheet
+  copy    Copy a worksheet of the original, as Excel's Move or Copy with Create a copy does: cells, formats, rows and columns, merges, rules, links, notes, drawings, charts, tables and print settings. Formulas, rules, chart series and names naming the sheet copied name the copy, names of the workbook referring to the sheet are given to the copy, and tables take new names as Excel gives them. The copy's content page takes the sheet's current values, and the formats, placements, pictures and what cells carry recorded on the sheet are recorded on the copy too (copied_operations). Refused for sheets with pivot tables, threaded comments, controls or embedded objects, and for sheets with row, column or cell operations recorded: copy the sheet first
+  delete  Delete a worksheet of the original, as Excel deletes a sheet: formulas, rules, chart series and names naming it read #REF!, its own names go, links are left as they are. Its content page goes with the operations and value edits recorded on it (dropped_operations). Export deletes it after every other edit. Refused for the last visible sheet and a sheet a pivot table reads from
+  rename  Rename a worksheet of the original, as Excel renames a sheet: formulas, rules, chart series and names naming it name it so, links are left as they are. Export renames it after every other edit, so the other commands keep naming it by its name in the original
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents sheets add`
+
+```text
+Add an empty worksheet, as Excel's Insert Sheet does, with the default row height of the first sheet
+
+Usage: arp4 documents sheets add [OPTIONS] --name <NAME> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --name <NAME>
+          Name of the new sheet: at most 31 characters, none of : \ / ? * [ ], unlike the workbook's other sheets
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the sheet is added; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --after <AFTER>
+          Put it after this sheet
+
+      --before <BEFORE>
+          Put it before this sheet
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents sheets copy`
+
+```text
+Copy a worksheet of the original, as Excel's Move or Copy with Create a copy does: cells, formats, rows and columns, merges, rules, links, notes, drawings, charts, tables and print settings. Formulas, rules, chart series and names naming the sheet copied name the copy, names of the workbook referring to the sheet are given to the copy, and tables take new names as Excel gives them. The copy's content page takes the sheet's current values, and the formats, placements, pictures and what cells carry recorded on the sheet are recorded on the copy too (copied_operations). Refused for sheets with pivot tables, threaded comments, controls or embedded objects, and for sheets with row, column or cell operations recorded: copy the sheet first
+
+Usage: arp4 documents sheets copy [OPTIONS] --name <NAME> --reason <REASON> --sheet <SHEET> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --name <NAME>
+          Name of the new sheet: at most 31 characters, none of : \ / ? * [ ], unlike the workbook's other sheets
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give one so that repeating the command, e.g. after a timeout, is reported unchanged
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the sheet is added; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --sheet <SHEET>
+          Worksheet of the original to copy
+
+      --after <AFTER>
+          Put it after this sheet
+
+      --before <BEFORE>
+          Put it before this sheet
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents sheets delete`
+
+```text
+Delete a worksheet of the original, as Excel deletes a sheet: formulas, rules, chart series and names naming it read #REF!, its own names go, links are left as they are. Its content page goes with the operations and value edits recorded on it (dropped_operations). Export deletes it after every other edit. Refused for the last visible sheet and a sheet a pivot table reads from
+
+Usage: arp4 documents sheets delete [OPTIONS] --sheet <SHEET> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original, by its name in the original
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the sheet is deleted or renamed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents sheets rename`
+
+```text
+Rename a worksheet of the original, as Excel renames a sheet: formulas, rules, chart series and names naming it name it so, links are left as they are. Export renames it after every other edit, so the other commands keep naming it by its name in the original
+
+Usage: arp4 documents sheets rename [OPTIONS] --sheet <SHEET> --reason <REASON> --name <NAME> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original, by its name in the original
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --reason <REASON>
+          Why the sheet is deleted or renamed; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --name <NAME>
+          The new name: at most 31 characters, none of : \ / ? * [ ], unlike every other sheet's
 
   -h, --help
           Print help
@@ -3524,6 +4060,870 @@ Options:
           Print help
 ```
 
+## `arp4 documents format`
+
+```text
+Change the format of a range of Excel cells: copy a cell's whole format (--from), alignment (--wrap, --shrink, --horizontal, --vertical), bold, italic, strike and underline, fill, borders, number format, row heights, column widths, or merge and take apart merges. The range names cells as the row and column operations recorded before leave them, as export writes them and layout_warnings names them; operations recorded after move it with the cells. Values stay. The format_cells operation in mappings.yml is written after a trial write and the same validation as check
+
+Usage: arp4 documents format [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3
+
+      --from <FROM>
+          Cell whose whole format (borders, fill, number format, font, alignment) the range takes
+
+      --wrap <WRAP>
+          Wrap text in the cells (true) or not (false)
+
+          [possible values: true, false]
+
+      --shrink <SHRINK>
+          Shrink text to fit the cells (true) or not (false)
+
+          [possible values: true, false]
+
+      --horizontal <HORIZONTAL>
+          Horizontal alignment
+
+          [possible values: general, left, center, right, fill, justify, centerContinuous, distributed]
+
+      --vertical <VERTICAL>
+          Vertical alignment
+
+          [possible values: top, center, bottom, justify, distributed]
+
+      --bold <BOLD>
+          Make the text bold (true) or not (false)
+
+          [possible values: true, false]
+
+      --italic <ITALIC>
+          Make the text italic (true) or not (false)
+
+          [possible values: true, false]
+
+      --strike <STRIKE>
+          Strike the text through (true) or not (false)
+
+          [possible values: true, false]
+
+      --underline <UNDERLINE>
+          Underline the text
+
+          [possible values: none, single, double]
+
+      --fill <FILL>
+          Fill the cells with a solid color, RRGGBB, or none for no fill
+
+      --number-format <NUMBER_FORMAT>
+          Number format code, such as 0.00, #,##0, yyyy/mm/dd or @ (text)
+
+      --border <BORDERS>
+          Lines to draw, as edges:style[:RRGGBB], applied in the order given: edges all, outline, inside, horizontal, vertical, top, bottom, left or right of the range; style thin, medium, thick, dashed, dotted, double, hair, ... or none to take the lines away. Repeat for more
+
+      --row-height <ROW_HEIGHT>
+          Height of the range's rows in points, or auto for the height Excel fits to their text on opening
+
+      --column-width <COLUMN_WIDTH>
+          Width of the range's columns in characters, as Excel gives it
+
+      --merge
+          Merge the range; its cells other than the top left must be empty
+
+      --unmerge
+          Take apart the merged ranges inside the range
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the format changes; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents drawings`
+
+```text
+Move, resize or change the placement of Excel drawing objects. The place_drawing operation in mappings.yml is written after a trial write and the same validation as check
+
+Usage: arp4 documents drawings [OPTIONS] <COMMAND>
+
+Commands:
+  place  Move or resize a shape, picture, group or chart of an Excel sheet by the cells of its corners, or change how later row and column changes move it (--placement: twoCell moves and sizes it with the cells, oneCell moves it keeping its size, absolute keeps it in place). The cells are named as the operations recorded before leave them. Objects inside a group move with the group; connectors joined to what moves keep their places and are named in joined_connectors
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents drawings place`
+
+```text
+Move or resize a shape, picture, group or chart of an Excel sheet by the cells of its corners, or change how later row and column changes move it (--placement: twoCell moves and sizes it with the cells, oneCell moves it keeping its size, absolute keeps it in place). The cells are named as the operations recorded before leave them. Objects inside a group move with the group; connectors joined to what moves keep their places and are named in joined_connectors
+
+Usage: arp4 documents drawings place [OPTIONS] --sheet <SHEET> --drawing <DRAWING> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --drawing <DRAWING>
+          The object's ID in the extraction's drawings, such as xl/drawings/drawing1.xml#4
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --from <FROM>
+          Cell at the object's new top left corner
+
+      --to <TO>
+          Cell at the object's new bottom right corner
+
+      --placement <PLACEMENT>
+          How later row and column changes move the object
+
+          [possible values: twoCell, oneCell, absolute]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the object moves; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents links`
+
+```text
+Link Excel cells to places in the workbook or to URLs, or take their links off. The set_link or clear_links operation in mappings.yml names the cells as the row and column operations recorded before leave them; those recorded after move it with the cells. It is written last on export, after a trial write and the same validation as check
+
+Usage: arp4 documents links [OPTIONS] <COMMAND>
+
+Commands:
+  set    Link the cells of the range to a place in the workbook (--location, Sheet!A1 or a defined name) or to a URL (--url), replacing the links there. The cells' values stay: give them a text with documents values
+  clear  Take the links off the cells of the range
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents links set`
+
+```text
+Link the cells of the range to a place in the workbook (--location, Sheet!A1 or a defined name) or to a URL (--url), replacing the links there. The cells' values stay: give them a text with documents values
+
+Usage: arp4 documents links set [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --location <LOCATION>
+
+
+      --url <URL>
+
+
+      --tooltip <TOOLTIP>
+          Text Excel shows over the link
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents links clear`
+
+```text
+Take the links off the cells of the range
+
+Usage: arp4 documents links clear [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents notes`
+
+```text
+Give Excel cells notes, change their text or delete them, as set_note and clear_notes operations, placed and written like links
+
+Usage: arp4 documents notes [OPTIONS] <COMMAND>
+
+Commands:
+  set    Give the top left cell of the range a note with this text, or change the text of its note. Threaded comments are edited in Excel
+  clear  Delete the notes of the cells of the range
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents notes set`
+
+```text
+Give the top left cell of the range a note with this text, or change the text of its note. Threaded comments are edited in Excel
+
+Usage: arp4 documents notes set [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> --text <TEXT> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --text <TEXT>
+
+
+      --author <AUTHOR>
+          The note's author; ARP when omitted
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents notes clear`
+
+```text
+Delete the notes of the cells of the range
+
+Usage: arp4 documents notes clear [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents validations`
+
+```text
+Give Excel cells data validations (drop-down lists, allowed values) or take them out of theirs, as set_validation and clear_validations operations, placed and written like links; rows and columns inserted after the cells later take them too, as in Excel
+
+Usage: arp4 documents validations [OPTIONS] <COMMAND>
+
+Commands:
+  set    Give the cells of the range a data validation, taking the range out of the validations there: a list (--list a,b,c or --source of the cells listing the items), or values of a --type compared by --operator with --value1 (and --value2), or a --formula
+  clear  Take the cells of the range out of their data validations
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents validations set`
+
+```text
+Give the cells of the range a data validation, taking the range out of the validations there: a list (--list a,b,c or --source of the cells listing the items), or values of a --type compared by --operator with --value1 (and --value2), or a --formula
+
+Usage: arp4 documents validations set [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --list <LIST>
+          The items of a drop-down list, comma-separated
+
+      --source <SOURCE>
+          The cells listing the items of a drop-down list, such as =$J$1:$J$5 or =Codes!$A$2:$A$9
+
+      --type <KIND>
+          The values allowed
+
+          [possible values: whole, decimal, date, time, text-length]
+
+      --operator <OPERATOR>
+          [default: between]
+          [possible values: between, not-between, equal, not-equal, greater, less, greater-or-equal, less-or-equal]
+
+      --value1 <VALUE1>
+          A value or formula the values are compared with
+
+      --value2 <VALUE2>
+          The second value for between and not-between
+
+      --formula <FORMULA>
+          A formula true for the values allowed
+
+      --allow-blank <ALLOW_BLANK>
+          Whether a blank cell passes (default true)
+
+          [possible values: true, false]
+
+      --error-style <ERROR_STYLE>
+          How a value not allowed is met
+
+          [possible values: stop, warning, information]
+
+      --prompt-title <PROMPT_TITLE>
+
+
+      --prompt <PROMPT>
+          Message Excel shows when the cell is selected
+
+      --error-title <ERROR_TITLE>
+
+
+      --error <ERROR>
+          Message Excel shows for a value not allowed
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents validations clear`
+
+```text
+Take the cells of the range out of their data validations
+
+Usage: arp4 documents validations clear [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents conditional-formats`
+
+```text
+Add conditional formats to Excel cells or take them out of theirs, as add_conditional_format and clear_conditional_formats operations, placed and written like validations
+
+Usage: arp4 documents conditional-formats [OPTIONS] <COMMAND>
+
+Commands:
+  add    Add a conditional format to the cells of the range, ahead of the others: a --formula true for the cells formatted (relative to the top left cell, such as =$C5>100), or values compared by --cell-is with --value1 (and --value2); the format given by --fill, --font-color, --bold, --italic, --strike and --number-format
+  clear  Take the cells of the range out of their conditional formats
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents conditional-formats add`
+
+```text
+Add a conditional format to the cells of the range, ahead of the others: a --formula true for the cells formatted (relative to the top left cell, such as =$C5>100), or values compared by --cell-is with --value1 (and --value2); the format given by --fill, --font-color, --bold, --italic, --strike and --number-format
+
+Usage: arp4 documents conditional-formats add [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+      --formula <FORMULA>
+
+
+      --cell-is <CELL_IS>
+          [possible values: between, not-between, equal, not-equal, greater, less, greater-or-equal, less-or-equal]
+
+      --value1 <VALUE1>
+
+
+      --value2 <VALUE2>
+
+
+      --fill <FILL>
+          Fill color, RRGGBB
+
+      --font-color <FONT_COLOR>
+          Font color, RRGGBB
+
+      --bold
+
+
+      --italic
+
+
+      --strike
+
+
+      --number-format <NUMBER_FORMAT>
+
+
+      --stop
+          Evaluate no later rule for the cells this one formats
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents conditional-formats clear`
+
+```text
+Take the cells of the range out of their conditional formats
+
+Usage: arp4 documents conditional-formats clear [OPTIONS] --sheet <SHEET> --range <RANGE> --reason <REASON> [DOCUMENT]
+
+Arguments:
+  [DOCUMENT]
+          Adopted document ID of an Excel workbook
+
+Options:
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --proposal <PROPOSAL>
+          Edit the proposal of this document ID instead, before record
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --sheet <SHEET>
+          Worksheet of the original
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+      --range <RANGE>
+          The cells, such as B3:F10 or B3, as the row and column operations recorded before leave them, as export writes them
+
+          [alias: --cell]
+
+      --id <ID>
+          Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted
+
+      --reason <REASON>
+          Why the cells change; recorded with the operation
+
+      --base <BASE>
+          The content hash from check --include-hashes; the edit is refused when the document changed since
+
+      --dry-run
+          Validate and report the edit without writing
+
+  -h, --help
+          Print help
+```
+
 ## `arp4 documents record`
 
 ```text
@@ -3845,6 +5245,9 @@ Options:
 
       --root <ROOT>
 
+
+      --calculate
+          Excel: calculate the formulas with desktop Excel (Windows) and write their results into the file, which otherwise leaves them out for Excel to calculate on opening. Needs --out
 
       --include-hashes
           Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports

@@ -93,6 +93,6 @@ impl Store {
     /// same.
     pub fn export_plan(&self, id: &str) -> Result<Value> {
         let inputs = json!({"document":id,"own":self.stamp_of(&self.document(id)?)?});
-        self.cached_result("export", &inputs, KEPT, || self.export(id, None))
+        self.cached_result("export", &inputs, KEPT, || self.export(id, None, false))
     }
 }

@@ -811,6 +811,44 @@ pub fn remove_empty_directories(directory: &Path, boundary: &Path) {
         current = directory.parent();
     }
 }
+/// Moves the folder or file `from` to `to`, as `what` (the step it takes,
+/// named in the error with both paths). Windows refuses to move a folder
+/// while another program has a file in it open, as a virus scanner or file
+/// sync does for a moment with files just written: the move is tried again
+/// for a while before it fails (see [`patiently`]).
+pub fn move_path(from: &Path, to: &Path, what: &str) -> Result<()> {
+    patiently(|| fs::rename(from, to))
+        .with_context(|| format!("{what}: move {} to {}", from.display(), to.display()))
+}
+/// Removes the folder `path` and all it holds, as `what`, tried again while
+/// another program holds a file of it open, as [`move_path`] is.
+pub fn remove_folder(path: &Path, what: &str) -> Result<()> {
+    patiently(|| fs::remove_dir_all(path))
+        .with_context(|| format!("{what}: remove {}", path.display()))
+}
+/// How long [`patiently`] waits in all for a file another program holds open.
+const HELD_OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// `step` done again, waiting longer each time, while it fails as Windows
+/// fails a step on a file another program holds open (access denied, sharing
+/// violation, or a folder whose deleted file is still open), until
+/// [`HELD_OPEN_WAIT`] has passed.
+fn patiently<T>(mut step: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let held_open = |error: &std::io::Error| {
+        cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 145))
+    };
+    let mut wait = std::time::Duration::from_millis(20);
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        match step() {
+            Err(error) if held_open(&error) && waited < HELD_OPEN_WAIT => {
+                std::thread::sleep(wait);
+                waited += wait;
+                wait = (wait * 2).min(std::time::Duration::from_millis(500));
+            }
+            result => return result,
+        }
+    }
+}
 /// A temporary directory inside ARP-managed storage. Dropping it also removes the
 /// parents it leaves empty, up to `boundary`.
 pub struct Stage {
@@ -1440,6 +1478,52 @@ mod tests {
         let kept = Stage::new_in(&parent, &boundary).unwrap().keep();
         assert!(kept.exists());
         fs::remove_dir(&kept).unwrap();
+    }
+
+    /// A folder whose file another program reads for a moment, as a virus
+    /// scanner reads a file just written, is moved once the file is let go;
+    /// a step that fails names itself and its paths.
+    #[test]
+    fn folders_are_moved_once_another_program_lets_their_files_go() {
+        let temp = tempfile::tempdir().unwrap();
+        let from = temp.path().join("ready");
+        fs::create_dir(&from).unwrap();
+        fs::write(from.join("image.png"), "x").unwrap();
+        #[cfg(windows)]
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Shared for reading only, as a scanner opens a file: Windows
+            // refuses to move the folder holding it while it is open.
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(from.join("image.png"))
+                .unwrap();
+            // Access denied (os error 5), as the move of a proposal just
+            // written failed on a computer whose scanner read it.
+            let blocked = fs::rename(&from, temp.path().join("tried"));
+            assert_eq!(blocked.unwrap_err().raw_os_error(), Some(5));
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                drop(file);
+            })
+        };
+        let to = temp.path().join("document");
+        move_path(&from, &to, "put the proposal in place").unwrap();
+        #[cfg(windows)]
+        held.join().unwrap();
+        assert!(to.join("image.png").is_file());
+
+        let error = move_path(&from, &to, "put the proposal in place").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with("put the proposal in place: move ")
+                && message.contains(&from.display().to_string())
+                && message.contains(&to.display().to_string()),
+            "{message}"
+        );
+        remove_folder(&to, "discard the proposal").unwrap();
+        assert!(!to.exists());
     }
 
     #[test]

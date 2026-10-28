@@ -1165,6 +1165,22 @@ pub(super) fn interpreted_groups<'e>(
                 .and_then(|place| source?.cells.get(by_address[place] as usize))
                 .map_or(CellValue::Null, |cell| cell.value())
         };
+        // The last row of each cell merged down, by its address.
+        let mut merged_down: HashMap<&str, u32> = HashMap::new();
+        for range in source
+            .into_iter()
+            .flat_map(|s| s["merges"].as_array().into_iter().flatten())
+        {
+            let (start, end) = string(range)?
+                .split_once(':')
+                .context("invalid merge range")?;
+            let (_, top) = excel::coordinate(start)?;
+            let (_, bottom) = excel::coordinate(end)?;
+            if bottom > top {
+                merged_down.insert(start, bottom);
+            }
+        }
+        let merged_to = |address: &str| merged_down.get(address).copied();
         // Cells are matched by the keys their rows and columns have in the
         // extraction, which pending operations leave as they are; each
         // identity is held by its number in its axis's list.
@@ -1290,7 +1306,7 @@ pub(super) fn interpreted_groups<'e>(
             // column; every other cell of the records of a category lists the
             // categories its row is in, outer first, as its `within`, and a
             // cell of a category those around it.
-            let found: Vec<(String, Category)> = categories(cells, value_at)?
+            let found: Vec<(String, Category)> = categories(cells, value_at, &merged_to)?
                 .into_iter()
                 .filter_map(|c| {
                     let (row, column) = lines(ids.get(c.cells[0].1)?);
@@ -1594,11 +1610,15 @@ struct Category<'a> {
 /// name of the first record), and nothing is written under it in its column
 /// down to the last row it heads. Once a column holds a category, every row
 /// header of it with a name to its right and nothing under it is one, as a
-/// category over a single record. Cells of a row reaching as far are one
+/// category over a single record. So is a value merged down over two records
+/// or more beside their names (`merged_to` gives the last row of a cell
+/// merged down), as a department over the functions it runs, when it lies
+/// within the categories on its left. Cells of a row reaching as far are one
 /// category; one crossing the bounds of a category left of it is none.
 fn categories<'a, 'v>(
     cells: &'a [ElementCell],
     value_at: &dyn Fn(&str) -> CellValue<'v>,
+    merged_to: &dyn Fn(&str) -> Option<u32>,
 ) -> Result<Vec<Category<'a>>> {
     // A category is of row headers: a table without them has none, and
     // its cells, which a large sheet has many of, are not gone through.
@@ -1607,6 +1627,8 @@ fn categories<'a, 'v>(
     }
     struct Seen<'a> {
         id: &'a str,
+        address: &'a str,
+        role: Role,
         x: u32,
         y: u32,
         headers: Vec<&'a str>,
@@ -1628,7 +1650,14 @@ fn categories<'a, 'v>(
         for header in &headers {
             heads.entry(header).or_default().push(seen.len());
         }
-        seen.push(Seen { id, x, y, headers });
+        seen.push(Seen {
+            id,
+            address: &cell.address,
+            role: cell.role,
+            x,
+            y,
+            headers,
+        });
     }
     let headed = |c: &Seen<'_>| heads.get(c.id).into_iter().flatten().map(|&i| &seen[i]);
     // The last row a row header reaches when nothing is written under it.
@@ -1671,6 +1700,53 @@ fn categories<'a, 'v>(
             found.push((c, end));
         }
     }
+    // Values merged down beside the names of the records they cover, within
+    // the categories on their left. A value of a record written on several
+    // lines, whose name heads the lines after its first, is that record's.
+    // Only under a heading of its column, as a title merged down beside the
+    // fields of a form is no value of records.
+    let records: BTreeSet<u32> = seen.iter().map(|c| c.y).collect();
+    let kept: BTreeSet<&str> = found.iter().map(|(f, _)| f.id).collect();
+    let headings: BTreeSet<&str> = seen
+        .iter()
+        .filter(|c| c.role == Role::ColumnHeader)
+        .map(|c| c.id)
+        .collect();
+    let mut merged = vec![];
+    for c in &seen {
+        let Some(end) = merged_to(c.address) else {
+            continue;
+        };
+        let names_before: Vec<&str> = names
+            .get(&c.y)
+            .into_iter()
+            .flatten()
+            .filter(|&&(x, id)| x < c.x && !kept.contains(id))
+            .map(|&(_, id)| id)
+            .collect();
+        let named = !names_before.is_empty()
+            && !names_before.iter().any(|id| {
+                heads
+                    .get(id)
+                    .into_iter()
+                    .flatten()
+                    .any(|&i| seen[i].y > c.y && seen[i].y <= end)
+            });
+        let within = found
+            .iter()
+            .filter(|(f, f_end)| f.x < c.x && f.y <= c.y && c.y <= *f_end)
+            .all(|&(_, f_end)| end <= f_end);
+        if c.role == Role::Data
+            && c.headers.iter().any(|h| headings.contains(h))
+            && written.contains(&(c.x, c.y))
+            && records.range(c.y..=end).nth(1).is_some()
+            && named
+            && within
+        {
+            merged.push((c, end));
+        }
+    }
+    found.extend(merged);
     let mut spans: BTreeMap<(u32, u32), Vec<(u32, &str)>> = BTreeMap::new();
     for (c, end) in found {
         spans.entry((c.y, end)).or_default().push((c.x, c.id));
@@ -2143,8 +2219,24 @@ pub(super) fn encode_grid(
     // innermost when tables are nested. Their semantic role needs
     // interpretation; do not copy a neighbouring header.
     let mut bounds = Bounds::new();
-    let body = || grid.values.iter().filter(|v| &*v.block == "table-1");
-    for GridValue { row, column, .. } in body() {
+    // The cells of the body's values and formulas, by row and column identity.
+    let mut places: Vec<(&str, &str)> = vec![];
+    for value in &grid.values {
+        match &*value.block {
+            "table-1" => places.push((&value.row, &value.column)),
+            "formulas" => {
+                let target = &sheet["formulas"][&*value.row];
+                if let (Some(row), Some(column)) =
+                    (target["row"].as_str(), target["column"].as_str())
+                {
+                    places.push((row, column));
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = || places.iter().copied();
+    for (row, column) in body() {
         let y = sheet.rows.position(row).context("row position missing")?;
         let x = sheet
             .columns
@@ -2164,7 +2256,7 @@ pub(super) fn encode_grid(
     let inserted = |axis: &Lines, id: &str| axis.key(id).is_some_and(|k| k.contains('-'));
     let mut ids = vec![];
     let mut points = vec![];
-    for GridValue { row, column, .. } in body() {
+    for (row, column) in body() {
         if !inserted(&sheet.rows, row) && !inserted(&sheet.columns, column) {
             continue;
         }
@@ -2177,6 +2269,26 @@ pub(super) fn encode_grid(
             sheet.columns.position(column).unwrap(),
         ));
         ids.push(id);
+    }
+    // Rows inserted right after a table's last row, or columns right after its
+    // last column, within its columns or rows, continue it: records added at
+    // its end, as the table reads again once Excel has them.
+    for b in bounds.values_mut() {
+        loop {
+            let below = points
+                .iter()
+                .any(|&(y, x)| y == b.2 + 1 && b.1 <= x && x <= b.3);
+            let right = points
+                .iter()
+                .any(|&(y, x)| x == b.3 + 1 && b.0 <= y && y <= b.2);
+            if below {
+                b.2 += 1;
+            } else if right {
+                b.3 += 1;
+            } else {
+                break;
+            }
+        }
     }
     // The innermost table around the insertion takes it.
     for (id, table) in ids.iter().zip(innermost(&bounds, &points)) {
@@ -2947,13 +3059,17 @@ mod tests {
     fn categories_nest_hold_the_cells_of_their_first_row_and_cover_blanks_under_them() {
         let (mut cells, mut values) = sales_table();
         let interpreted = element_cells(&cells);
-        let found = categories(&interpreted, &|address| {
-            values
-                .get(address)
-                .map_or(crate::extraction::CellValue::Null, |value| {
-                    crate::extraction::CellValue::of(value).unwrap()
-                })
-        })
+        let found = categories(
+            &interpreted,
+            &|address| {
+                values
+                    .get(address)
+                    .map_or(crate::extraction::CellValue::Null, |value| {
+                        crate::extraction::CellValue::of(value).unwrap()
+                    })
+            },
+            &|_| None,
+        )
         .unwrap();
         let shown: Vec<(Vec<&str>, u32, u32)> = found
             .iter()
@@ -2979,13 +3095,17 @@ mod tests {
             );
         }
         let interpreted = element_cells(&cells);
-        let found = categories(&interpreted, &|address| {
-            values
-                .get(address)
-                .map_or(crate::extraction::CellValue::Null, |value| {
-                    crate::extraction::CellValue::of(value).unwrap()
-                })
-        })
+        let found = categories(
+            &interpreted,
+            &|address| {
+                values
+                    .get(address)
+                    .map_or(crate::extraction::CellValue::Null, |value| {
+                        crate::extraction::CellValue::of(value).unwrap()
+                    })
+            },
+            &|_| None,
+        )
         .unwrap();
         assert!(found.iter().all(|c| c.cells[0].1 != "A4"));
     }

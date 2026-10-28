@@ -73,8 +73,11 @@
 | <code>/properties/schema_version</code> | <code>{"const":"7"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/node</code> | <code>{"description":"表の1記録、または区分。記録のキーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。区分は、縦に結合するか先頭の記録の行だけに書いて複数の記録の見出しとなるセルで、記録と同じ規則のキーでその値を持ち、範囲の記録を children に持つ。区分のセルは先頭の記録のノードに置かず、区分の下の空のセルはどのノードにも置かない。値はセルの値で、キーと木の形は編集しない","type":"object"}</code> |
+| <code>/$defs/node/properties/blank_records</code> | <code>{"description":"何も書かないノード（値が上のノードの fill_down の数式だけの記録など）が同じ並びで続く数。このメンバーだけを持つノードは、その数の空のノード {} を表す。2ノード以上続くときに使う","minimum":2,"type":"integer"}</code> |
 | <code>/$defs/node/properties/children</code> | <code>{"description":"この記録の名前が見出しとなる記録。区分では、範囲の記録と内側の区分","minItems":1,"type":"array"}</code> |
 | <code>/$defs/node/properties/children/items</code> | <code>{"$ref":"#/$defs/node"}</code> |
+| <code>/$defs/node/properties/fill_down</code> | <code>{"description":"この記録から下へ数式を複写した列。キーはこの記録の列のキー、値はこの記録を含めて数式が続く、同じ並びのノードの数。続くノードはそのキーを書かず、この記録の数式の相対参照をノード1つごとに1行下へずらした数式（Excelのフィルで下へ複写した数式）を持つ。3ノード以上続く数式に使う","minProperties":1,"type":"object"}</code> |
+| <code>/$defs/node/properties/fill_down/additionalProperties</code> | <code>{"minimum":2,"type":"integer"}</code> |
 | <code>/$defs/node/properties/marks</code> | <code>{"description":"見出しを持たず何の見出しにもならない記録のセル（木を描く「+」など）の値。列の順","minItems":1,"type":"array"}</code> |
 | <code>/$defs/node/properties/marks/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/$defs/node/additionalProperties</code> | <code>{"type":["string","number","boolean","null"]}</code> |
@@ -95,39 +98,54 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"documents elements-read が書き出す本文要素の読み出し。ページごとに、本文の elements と同じ順の要素メタデータ（ID・表の列と行・見出し関係・結合・数式区分・現在のフォント）と、画像・グラフ・図形の参照先 visuals を返す。layout.yml のフォント番号は解決済みのフォントで返す。編集の入力には使わない。","required":["schema_version","document_id","proposal","pages"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"documents elements-read が書き出す本文要素の読み出し。ページごとに、本文の elements と同じ順の要素メタデータ（ID・表の列と行・見出し関係・結合・数式区分・現在のフォント）と、画像・グラフ・図形の参照先 visuals を返す。layout.yml のフォント番号は解決済みのフォントで返し、ページで最も多いフォントは element_font に1回だけ書く。編集の入力には使わない。","required":["schema_version","document_id","proposal","pages"],"type":"object"}</code> |
 | <code>/properties/document_id</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/pages</code> | <code>{"description":"ページID（content の page_id）ごとの要素","type":"object"}</code> |
 | <code>/properties/pages/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","element_metadata","visuals"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font</code> | <code>{"additionalProperties":false,"description":"font を持たない本文の要素と表のセルのフォント（最も多くの要素・セルが持つもの）。現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。多くの要素・セルがフォントを持たないページでは持たない","required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata</code> | <code>{"description":"Readable IDs use a kind prefix and underscore-separated immutable identity components. Component bytes other than ASCII letters, digits, hyphen, dot, slash and hash are UTF-8 percent-encoded (uppercase hex), including underscore and percent. IDs do not hash values or current positions.","type":"array"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items</code> | <code>{}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font</code> | <code>{"description":"ページの element_font と異なるときだけ持つ。element_font のあるページでフォントを持たない要素・セルは null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0</code> | <code>{"additionalProperties":false,"required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/0/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/font/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/type</code> | <code>{"const":"text"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/0/properties/visual</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font</code> | <code>{"description":"ページの element_font と異なるときだけ持つ。element_font のあるページでフォントを持たない要素・セルは null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0</code> | <code>{"additionalProperties":false,"required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/0/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/font/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/1/properties/type</code> | <code>{"const":"formula"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","type"],"type":"object"}</code> |
@@ -153,17 +171,19 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/category</code> | <code>{"description":"区分の下にある空のセルが、その区分のキーを持つ。本文のどのノードにも置かない","pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/column_span</code> | <code>{"minimum":2,"type":"integer"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font</code> | <code>{"additionalProperties":false,"description":"現在のフォント。documents valuesのfont編集だけが変更し、exportが抽出結果のfontとの差分を原本へ書き戻す。要素の実効フォント。スタイル・テーマ・既定値の継承を解決した、表示される値。要素内のrunで異なる項目は\"mixed\"、解決できない項目はnull。","required":["latin","east_asian","size","color"],"type":"object"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size</code> | <code>{"description":"ポイント"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
-| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font</code> | <code>{"description":"ページの element_font と異なるときだけ持つ。element_font のあるページでフォントを持たない要素・セルは null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0</code> | <code>{"additionalProperties":false,"required":["latin","east_asian","size","color"],"type":"object"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/color</code> | <code>{"description":"文字色のRRGGBB（大文字）。自動色はauto"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/color/anyOf/0</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;auto&#124;mixed)$","type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/color/anyOf/1</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/color_theme</code> | <code>{"description":"テーマ色に由来する場合のテーマの色枠（dk1・lt1・accent1など）。colorは濃淡を適用した値","minLength":1,"type":"string"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/east_asian</code> | <code>{"description":"日本語など東アジア文字用のフォント名。Excelはフォント名が1つのためlatinと同じ","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/latin</code> | <code>{"description":"英数字用のフォント名。\"mixed\"はrunごとに異なることを示す","minLength":1,"type":["string","null"]}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size</code> | <code>{"description":"ポイント"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/0</code> | <code>{"exclusiveMinimum":0,"type":"number"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/font/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/formula</code> | <code>{"description":"表セルの値が数式であることを示す。値は本文にある","type":"null"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers</code> | <code>{"type":"array"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/headers/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
@@ -240,6 +260,13 @@
 | <code>/properties/history/items/oneOf/1/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/history/items/oneOf/1/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/history/items/oneOf/2</code> | <code>{"additionalProperties":false,"description":"適用済みのセルの挿入・削除（insert_cells・delete_cells）。範囲は記録したときの番地","required":["id","sheet","reason","kind","range","shift"],"type":"object"}</code> |
+| <code>/properties/history/items/oneOf/2/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/history/items/oneOf/2/properties/kind</code> | <code>{"enum":["insert_cells","delete_cells"]}</code> |
+| <code>/properties/history/items/oneOf/2/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
+| <code>/properties/history/items/oneOf/2/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history/items/oneOf/2/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/history/items/oneOf/2/properties/shift</code> | <code>{"enum":["down","right","up","left"]}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"14"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties</code> | <code>{"additionalProperties":false,"required":["name","rows","columns","metadata_sha256","element_metadata"],"type":"object"}</code> |
@@ -301,6 +328,7 @@
 | <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties</code> | <code>{"additionalProperties":false,"required":["row","column"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/column</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/row</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/formulas/additionalProperties/properties/written_after</code> | <code>{"description":"数式が、この行・列・セルの操作の後のセルの位置で書かれていること（なければ原本の位置）","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/metadata_sha256</code> | <code>{"description":"Digest of the stored value-free element_metadata; array slots are bound by this metadata.","pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/name</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/rows</code> | <code>{"description":"行の識別IDを抽出時の位置の順に並べた区間。r1..r12 は識別ID r1〜r12 が同じ番号の行、r13..r38 +1 は1行ずれた r14〜r39 の行、ins-1=r13 は番号を持たない識別IDとその行。未適用の挿入の識別IDは操作から決まるため保存しない","type":"array"}</code> |
@@ -337,7 +365,8 @@
 | <code>/properties/add/additionalProperties/properties/target/anyOf/3/properties/row</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/add/additionalProperties/properties/target/anyOf/3/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/add/additionalProperties/properties/target/anyOf/4</code> | <code>{"type":"null"}</code> |
-| <code>/properties/add/additionalProperties/properties/writeback</code> | <code>{"enum":["cell","formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/add/additionalProperties/properties/writeback</code> | <code>{"enum":["cell","formula","new_formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/add/additionalProperties/properties/written_after</code> | <code>{"description":"new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/excel_operations</code> | <code>{"type":"array"}</code> |
 | <code>/properties/excel_operations/items</code> | <code>{}</code> |
 | <code>/properties/excel_operations/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count"],"type":"object"}</code> |
@@ -618,7 +647,8 @@
 | <code>/properties/decisions/properties/add/additionalProperties/properties/target/anyOf/3/properties/row</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/decisions/properties/add/additionalProperties/properties/target/anyOf/3/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/decisions/properties/add/additionalProperties/properties/target/anyOf/4</code> | <code>{"type":"null"}</code> |
-| <code>/properties/decisions/properties/add/additionalProperties/properties/writeback</code> | <code>{"enum":["cell","formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/decisions/properties/add/additionalProperties/properties/writeback</code> | <code>{"enum":["cell","formula","new_formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/decisions/properties/add/additionalProperties/properties/written_after</code> | <code>{"description":"new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/decisions/properties/excel_operations</code> | <code>{"type":"array"}</code> |
 | <code>/properties/decisions/properties/excel_operations/items</code> | <code>{}</code> |
 | <code>/properties/decisions/properties/excel_operations/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count"],"type":"object"}</code> |
@@ -885,7 +915,8 @@
 | <code>/properties/mappings/properties/entries/items/properties/target/anyOf/3/properties/row</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/mappings/properties/entries/items/properties/target/anyOf/3/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/entries/items/properties/target/anyOf/4</code> | <code>{"type":"null"}</code> |
-| <code>/properties/mappings/properties/entries/items/properties/writeback</code> | <code>{"enum":["cell","formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/mappings/properties/entries/items/properties/writeback</code> | <code>{"enum":["cell","formula","new_formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/mappings/properties/entries/items/properties/written_after</code> | <code>{"description":"new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/mappings/properties/omissions</code> | <code>{"type":"array"}</code> |
 | <code>/properties/mappings/properties/omissions/items</code> | <code>{"additionalProperties":false,"required":["target","reason"],"type":"object"}</code> |
 | <code>/properties/mappings/properties/omissions/items/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1134,6 +1165,32 @@
 | <code>/properties/mappings/properties/operations/items/oneOf/8/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/8/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/mappings/properties/operations/items/oneOf/8/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9</code> | <code>{"additionalProperties":false,"description":"Excelの空のワークシートを追加する（documents sheets add）。after・beforeがなければ最後に置く","not":{"required":["after","before"]},"required":["id","reason","kind","name"],"type":"object"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9/properties/after</code> | <code>{"description":"このシートの後に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9/properties/before</code> | <code>{"description":"このシートの前に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9/properties/kind</code> | <code>{"const":"add_sheet"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9/properties/name</code> | <code>{"description":"新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）","maxLength":31,"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/9/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10</code> | <code>{"additionalProperties":false,"description":"Excelのワークシートを複製する（documents sheets copy）。コピー元を指す数式・入力規則・条件付き書式・名前はコピーを指す","not":{"required":["after","before"]},"required":["id","reason","kind","name","from"],"type":"object"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/after</code> | <code>{"description":"このシートの後に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/before</code> | <code>{"description":"このシートの前に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/from</code> | <code>{"description":"コピー元の原本のワークシート","minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/kind</code> | <code>{"const":"copy_sheet"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/name</code> | <code>{"description":"新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）","maxLength":31,"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/10/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/11</code> | <code>{"additionalProperties":false,"description":"Excelの原本のワークシートを削除する（documents sheets delete）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は #REF! になる","required":["id","reason","kind","sheet"],"type":"object"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/11/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/11/properties/kind</code> | <code>{"const":"delete_sheet"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/11/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/11/properties/sheet</code> | <code>{"description":"原本のワークシートの名前","minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/12</code> | <code>{"additionalProperties":false,"description":"Excelの原本のワークシートの名前を変える（documents sheets rename）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は新しい名前を指す。ほかの操作は原本の名前でシートを指す","required":["id","reason","kind","sheet","name"],"type":"object"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/12/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/12/properties/kind</code> | <code>{"const":"rename_sheet"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/12/properties/name</code> | <code>{"description":"新しい名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートや操作が付ける名前と重ならない）","maxLength":31,"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/12/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/mappings/properties/operations/items/oneOf/12/properties/sheet</code> | <code>{"description":"原本のワークシートの名前","minLength":1,"type":"string"}</code> |
 | <code>/properties/mappings/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/mappings/properties/tables</code> | <code>{"type":"array"}</code> |
 | <code>/properties/mappings/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["page","block","columns","references"],"type":"object"}</code> |
@@ -1253,6 +1310,24 @@
 | <code>/properties/sheets/items/properties/computed/items</code> | <code>{"additionalProperties":false,"required":["range","kind"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/computed/items/properties/kind</code> | <code>{"enum":["array","data_table","pivot"]}</code> |
 | <code>/properties/sheets/items/properties/computed/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items</code> | <code>{"additionalProperties":false,"required":["range","rules"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items</code> | <code>{"additionalProperties":false,"required":["type","priority","formulas"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format</code> | <code>{"additionalProperties":false,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/fill</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/font_color</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/italic</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/number_format</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/strike</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/formulas</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/formulas/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/operator</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/priority</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/stop</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/type</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","kind","anchor"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
@@ -1369,6 +1444,12 @@
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/links</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/links/items</code> | <code>{"additionalProperties":false,"required":["range"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/location</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/range</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/tooltip</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/url</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/merges</code> | <code>{"description":"結合範囲。保存時は1行に並べる","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1391,6 +1472,19 @@
 | <code>/properties/sheets/items/properties/tables/items/properties/parent</code> | <code>{"description":"Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/validations</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/validations/items</code> | <code>{"additionalProperties":false,"required":["range","type","allow_blank"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/allow_blank</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/error</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/error_style</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/error_title</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/formula1</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/formula2</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/operator</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/prompt</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/prompt_title</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/type</code> | <code>{"type":"string"}</code> |
 | <code>/properties/slide_layouts</code> | <code>{"description":"PowerPointのスライドレイアウト。add_slideで新しいスライドを作る元になる。cellsはそのレイアウトから作るスライドの空のプレースホルダーの文字とフォント","type":"array"}</code> |
 | <code>/properties/slide_layouts/items</code> | <code>{"additionalProperties":false,"required":["name","part","placeholders","cells"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells</code> | <code>{"type":"array"}</code> |
@@ -1574,6 +1668,24 @@
 | <code>/properties/sheets/items/properties/computed/items</code> | <code>{"additionalProperties":false,"required":["range","kind"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/computed/items/properties/kind</code> | <code>{"enum":["array","data_table","pivot"]}</code> |
 | <code>/properties/sheets/items/properties/computed/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items</code> | <code>{"additionalProperties":false,"required":["range","rules"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items</code> | <code>{"additionalProperties":false,"required":["type","priority","formulas"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format</code> | <code>{"additionalProperties":false,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/fill</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/font_color</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/italic</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/number_format</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/format/properties/strike</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/formulas</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/formulas/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/operator</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/priority</code> | <code>{"type":["integer","null"]}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/stop</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/conditional_formats/items/properties/rules/items/properties/type</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/drawings</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items</code> | <code>{"additionalProperties":false,"required":["id","kind","anchor"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/drawings/items/properties/anchor</code> | <code>{"additionalProperties":false,"required":["kind"],"type":"object"}</code> |
@@ -1678,6 +1790,12 @@
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/links</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/links/items</code> | <code>{"additionalProperties":false,"required":["range"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/location</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/range</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/tooltip</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/url</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/merges</code> | <code>{"description":"結合範囲。保存時は1行に並べる","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
@@ -1690,6 +1808,19 @@
 | <code>/properties/sheets/items/properties/tables/items/properties/parent</code> | <code>{"description":"Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/validations</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/validations/items</code> | <code>{"additionalProperties":false,"required":["range","type","allow_blank"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/allow_blank</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/error</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/error_style</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/error_title</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/formula1</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/formula2</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/operator</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/prompt</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/prompt_title</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/validations/items/properties/type</code> | <code>{"type":"string"}</code> |
 | <code>/properties/slide_layouts</code> | <code>{"description":"PowerPointのスライドレイアウト。add_slideで新しいスライドを作る元になる。cellsはそのレイアウトから作るスライドの空のプレースホルダーの文字とフォント","type":"array"}</code> |
 | <code>/properties/slide_layouts/items</code> | <code>{"additionalProperties":false,"required":["name","part","placeholders","cells"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells</code> | <code>{"type":"array"}</code> |
@@ -1800,7 +1931,8 @@
 | <code>/properties/entries/items/properties/target/anyOf/3/properties/row</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/entries/items/properties/target/anyOf/3/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/entries/items/properties/target/anyOf/4</code> | <code>{"type":"null"}</code> |
-| <code>/properties/entries/items/properties/writeback</code> | <code>{"enum":["cell","formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/entries/items/properties/writeback</code> | <code>{"enum":["cell","formula","new_formula","operation","excluded","pending","shape"]}</code> |
+| <code>/properties/entries/items/properties/written_after</code> | <code>{"description":"new_formulaの数式が、この行・列・セルの操作の後のセルの位置で書かれていること。exportではこれより後の操作だけが参照を動かす","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/interpretation</code> | <code>{"description":"Canonical correction journal; exact nested contract is document-structure-schema.json#/$defs/correction_journal and is validated by document management. Left out when it records nothing: inspection makes the empty journal of the current extraction.","type":"object"}</code> |
 | <code>/properties/omissions</code> | <code>{"description":"Left out when empty.","type":"array"}</code> |
 | <code>/properties/omissions/items</code> | <code>{"additionalProperties":false,"required":["target","reason"],"type":"object"}</code> |
@@ -1826,152 +1958,334 @@
 | <code>/properties/operations/items/oneOf/0/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/0/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/0/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/1</code> | <code>{"additionalProperties":false,"description":"Excelのセル範囲を挿入・削除し、他のセルをずらす（documents cells insert&#124;delete）。下・上へずらすときは範囲の列の中で行を、右・左へずらすときは範囲の行の中で列を挿入・削除したことになる。範囲は、それより前に記録した行・列の操作の後の番地","required":["id","sheet","reason","kind","range","shift"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/kind</code> | <code>{"enum":["insert_cells","delete_cells"]}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/1/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
-| <code>/properties/operations/items/oneOf/1/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
-| <code>/properties/operations/items/oneOf/2</code> | <code>{"additionalProperties":false,"required":["id","reason","kind","from"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/2/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/2/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/2/properties/from</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/shift</code> | <code>{"description":"insert_cellsはdown・right、delete_cellsはup・left","enum":["down","right","up","left"]}</code> |
+| <code>/properties/operations/items/oneOf/1/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した"}</code> |
+| <code>/properties/operations/items/oneOf/2</code> | <code>{"additionalProperties":false,"description":"Excelのセル範囲の書式（書式のコピー、配置、フォントの太字・斜体・下線・取り消し線、塗りつぶし、罫線、表示形式、行の高さ・列幅、結合）を変える（documents format）。範囲と書式元のセルは、それより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/bold</code> | <code>{"description":"太字にする（true）か外す（false）","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/borders</code> | <code>{"description":"罫線。記録順に範囲へ当てる。edgesのallは外枠と内側、outlineは外枠、insideは内側の縦横、horizontal・verticalは内側の横・縦、top・bottom・left・rightは範囲の上下左右の辺。styleのnoneは線を消す","minItems":1,"type":"array"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/borders/items</code> | <code>{"additionalProperties":false,"required":["edges","style"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/borders/items/properties/color</code> | <code>{"description":"線の色（RRGGBB）。省略は自動","pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/borders/items/properties/edges</code> | <code>{"enum":["all","outline","inside","horizontal","vertical","top","bottom","left","right"]}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/borders/items/properties/style</code> | <code>{"enum":["none","thin","medium","thick","dashed","dotted","double","hair","mediumDashed","dashDot","mediumDashDot","dashDotDot","mediumDashDotDot","slantDashDot"]}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/column_width</code> | <code>{"description":"範囲の列の幅（標準フォントの文字数、Excelの列幅と同じ単位）","maximum":255,"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/fill</code> | <code>{"description":"塗りつぶしの色（RRGGBB、単色の塗り）。noneは塗りつぶしなし"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/fill/oneOf/0</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/fill/oneOf/1</code> | <code>{"const":"none"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/from</code> | <code>{"description":"書式（罫線・塗り・表示形式・フォント・配置・保護）をそのまま写す元のセル","pattern":"^[A-Z]{1,3}[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/horizontal</code> | <code>{"enum":["general","left","center","right","fill","justify","centerContinuous","distributed"]}</code> |
 | <code>/properties/operations/items/oneOf/2/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/2/properties/kind</code> | <code>{"const":"insert_slide"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/italic</code> | <code>{"description":"斜体にする（true）か外す（false）","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/kind</code> | <code>{"const":"format_cells"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/merge</code> | <code>{"description":"trueは範囲を1つに結合する（左上以外のセルが空のとき）。falseは範囲の内側の結合を解除する","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/number_format</code> | <code>{"description":"表示形式の書式記号（General、0.00、yyyy/mm/dd、@ など）","maxLength":255,"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/2/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/2/oneOf/0</code> | <code>{"required":["after"]}</code> |
-| <code>/properties/operations/items/oneOf/2/oneOf/1</code> | <code>{"required":["before"]}</code> |
-| <code>/properties/operations/items/oneOf/3</code> | <code>{"additionalProperties":false,"description":"スライドレイアウトから新しいスライドを作り、別のスライドの前後へ置く。日付・フッター・スライド番号以外のプレースホルダーを空で持ち、その文字は操作IDの本文ページに書く","required":["id","reason","kind","layout"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/3/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/3/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/row_height</code> | <code>{"description":"範囲の行の高さ（ポイント）。autoは高さの指定を外し、Excelが開くときに文字に合わせる"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/row_height/oneOf/0</code> | <code>{"exclusiveMinimum":0,"maximum":409,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/row_height/oneOf/1</code> | <code>{"const":"auto"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/shrink</code> | <code>{"description":"縮小して全体を表示する","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/strike</code> | <code>{"description":"取り消し線を引く（true）か外す（false）","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/underline</code> | <code>{"description":"下線","enum":["none","single","double"]}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/vertical</code> | <code>{"enum":["top","center","bottom","justify","distributed"]}</code> |
+| <code>/properties/operations/items/oneOf/2/properties/wrap</code> | <code>{"description":"折り返して全体を表示する","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/0</code> | <code>{"required":["from"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/1</code> | <code>{"required":["wrap"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/2</code> | <code>{"required":["shrink"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/3</code> | <code>{"required":["horizontal"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/4</code> | <code>{"required":["vertical"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/5</code> | <code>{"required":["row_height"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/6</code> | <code>{"required":["column_width"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/7</code> | <code>{"required":["merge"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/8</code> | <code>{"required":["bold"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/9</code> | <code>{"required":["italic"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/10</code> | <code>{"required":["strike"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/11</code> | <code>{"required":["underline"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/12</code> | <code>{"required":["fill"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/13</code> | <code>{"required":["number_format"]}</code> |
+| <code>/properties/operations/items/oneOf/2/anyOf/14</code> | <code>{"required":["borders"]}</code> |
+| <code>/properties/operations/items/oneOf/3</code> | <code>{"additionalProperties":false,"description":"Excelのセル範囲の書式と結合を、同じシートの別の場所へ写す（documents cells copy。値と数式は同時に記録するvalue_editsが写す）。範囲と写し先の左上のセルは、それより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range","to"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/3/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/3/properties/kind</code> | <code>{"const":"add_slide"}</code> |
-| <code>/properties/operations/items/oneOf/3/properties/layout</code> | <code>{"description":"新しいスライドの元にするスライドレイアウトの部品（抽出のslide_layoutsのpart）","pattern":"^ppt/slideLayouts/[^/]+\\.xml$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/3/properties/kind</code> | <code>{"const":"copy_cells"}</code> |
+| <code>/properties/operations/items/oneOf/3/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/3/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/3/oneOf/0</code> | <code>{"required":["after"]}</code> |
-| <code>/properties/operations/items/oneOf/3/oneOf/1</code> | <code>{"required":["before"]}</code> |
-| <code>/properties/operations/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["id","reason","kind","slide"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/3/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/3/properties/to</code> | <code>{"description":"写し先の左上のセル","pattern":"^[A-Z]{1,3}[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/4</code> | <code>{"additionalProperties":false,"description":"セル範囲にリンクを付ける（documents links set）。範囲のリンクは置き換える。locationはブック内の場所（シート!セルまたは名前）、urlは外部のURL。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/4/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/4/properties/kind</code> | <code>{"const":"delete_slide"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/keep_format</code> | <code>{"description":"trueはセルの書式を変えない（リンクの青い下線を付けない。documents rows move が記録する）","type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/kind</code> | <code>{"const":"set_link"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/location</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/4/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/4/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/5</code> | <code>{"additionalProperties":false,"description":"スライドとそのノートを、別のスライドの前後へ移動する。セクションのある文書では移動先のスライドのセクションに入る。目的別スライドショーの順序は変えない","required":["id","reason","kind","slide"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/5/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/5/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/tooltip</code> | <code>{"maxLength":255,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/4/properties/url</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/4/oneOf/0</code> | <code>{"required":["location"]}</code> |
+| <code>/properties/operations/items/oneOf/4/oneOf/1</code> | <code>{"required":["url"]}</code> |
+| <code>/properties/operations/items/oneOf/5</code> | <code>{"additionalProperties":false,"description":"セル範囲にかかるリンクを外す（documents links clear）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/5/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/5/properties/kind</code> | <code>{"const":"move_slide"}</code> |
+| <code>/properties/operations/items/oneOf/5/properties/kind</code> | <code>{"const":"clear_links"}</code> |
+| <code>/properties/operations/items/oneOf/5/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/5/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/5/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/5/oneOf/0</code> | <code>{"not":{"required":["before"]},"required":["after"]}</code> |
-| <code>/properties/operations/items/oneOf/5/oneOf/1</code> | <code>{"not":{"required":["after"]},"required":["before"]}</code> |
-| <code>/properties/operations/items/oneOf/6</code> | <code>{"additionalProperties":false,"description":"スライドショーでスライドを非表示にする（hidden: true）、または表示に戻す（hidden: false）","required":["id","reason","kind","slide","hidden"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/6/properties/hidden</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/5/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/6</code> | <code>{"additionalProperties":false,"description":"範囲の左上のセルにメモを付ける、またはメモの文字を変える（documents notes set）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range","text"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/6/properties/author</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/6/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/6/properties/kind</code> | <code>{"const":"set_slide_visibility"}</code> |
+| <code>/properties/operations/items/oneOf/6/properties/kind</code> | <code>{"const":"set_note"}</code> |
+| <code>/properties/operations/items/oneOf/6/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/6/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/6/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7</code> | <code>{"additionalProperties":false,"description":"スライドの図形・画像・コネクター・グループ・表の枠の位置・大きさ・回転・塗り・線・名前を変える","required":["id","kind","slide","reason","shape","properties"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/6/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/6/properties/text</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/7</code> | <code>{"additionalProperties":false,"description":"セル範囲のメモを削除する（documents notes clear）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/7/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/kind</code> | <code>{"const":"update_shape"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","minProperties":1,"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/7/properties/kind</code> | <code>{"const":"clear_notes"}</code> |
+| <code>/properties/operations/items/oneOf/7/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/7/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/7/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8</code> | <code>{"additionalProperties":false,"description":"四角形・角丸四角形・楕円・テキストボックス・線を追加する。文字は適用後に本文で編集できる","required":["id","kind","slide","reason","name","shape_type","properties"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/7/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8</code> | <code>{"additionalProperties":false,"description":"セル範囲に入力規則を付ける（documents validations set）。範囲の既存の入力規則は範囲から外す。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range","rule"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/8/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/kind</code> | <code>{"const":"add_shape"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","required":["left","top","width","height"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/kind</code> | <code>{"const":"set_validation"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/8/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/shape_type</code> | <code>{"enum":["rectangle","rounded_rectangle","ellipse","textbox","line"]}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/8/properties/text</code> | <code>{"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/9</code> | <code>{"additionalProperties":false,"description":"スライドの本文の文字を持たない図形・画像・コネクター・グループを削除する","required":["id","kind","slide","reason","shape"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule</code> | <code>{"additionalProperties":false,"required":["type","formula1"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/allow_blank</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/error</code> | <code>{"maxLength":255,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/error_style</code> | <code>{"enum":["stop","warning","information"]}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/error_title</code> | <code>{"maxLength":32,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/formula1</code> | <code>{"description":"数式（=を付けない）。リストは\"a,b\"のように引用符で囲んだ値の並び、またはセル範囲","maxLength":255,"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/formula2</code> | <code>{"maxLength":255,"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/operator</code> | <code>{"enum":["between","notBetween","equal","notEqual","greaterThan","lessThan","greaterThanOrEqual","lessThanOrEqual"]}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/prompt</code> | <code>{"maxLength":255,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/prompt_title</code> | <code>{"maxLength":32,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/rule/properties/type</code> | <code>{"enum":["list","whole","decimal","date","time","textLength","custom"]}</code> |
+| <code>/properties/operations/items/oneOf/8/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/9</code> | <code>{"additionalProperties":false,"description":"セル範囲の入力規則を外す（documents validations clear）。範囲の外のセルの規則は残す。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/9/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/9/properties/kind</code> | <code>{"const":"delete_shape"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/kind</code> | <code>{"const":"clear_validations"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/9/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/9/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/9/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10</code> | <code>{"additionalProperties":false,"description":"文書フォルダのassetsのPNG画像を追加する","required":["id","kind","slide","reason","name","asset","properties"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/asset</code> | <code>{"pattern":"^assets/[A-Za-z0-9._/-]+\\.[Pp][Nn][Gg]$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/description</code> | <code>{"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/9/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/10</code> | <code>{"additionalProperties":false,"description":"セル範囲に条件付き書式を、ほかの規則より先に評価する規則として足す（documents conditional-formats add）。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range","rule"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/10/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/kind</code> | <code>{"const":"add_picture"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","required":["left","top","width","height"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/kind</code> | <code>{"const":"add_conditional_format"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/10/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/10/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/11</code> | <code>{"additionalProperties":false,"description":"画像の位置・大きさを保ったまま別のPNG画像にする","required":["id","kind","slide","reason","shape","asset"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/11/properties/asset</code> | <code>{"pattern":"^assets/[A-Za-z0-9._/-]+\\.[Pp][Nn][Gg]$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule</code> | <code>{"additionalProperties":false,"required":["type","formulas","format"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format</code> | <code>{"additionalProperties":false,"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format/properties/bold</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format/properties/fill</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format/properties/font_color</code> | <code>{"pattern":"^[0-9A-F]{6}$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format/properties/italic</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format/properties/number_format</code> | <code>{"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/format/properties/strike</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/formulas</code> | <code>{"maxItems":2,"minItems":1,"type":"array"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/formulas/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/operator</code> | <code>{"enum":["between","notBetween","equal","notEqual","greaterThan","lessThan","greaterThanOrEqual","lessThanOrEqual"]}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/stop</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/rule/properties/type</code> | <code>{"enum":["expression","cellIs"]}</code> |
+| <code>/properties/operations/items/oneOf/10/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/11</code> | <code>{"additionalProperties":false,"description":"セル範囲の条件付き書式を外す（documents conditional-formats clear）。範囲の外のセルの規則は残す。範囲はそれより前に記録した行・列の操作の後の番地で、後に記録した行・列の操作ではセルと一緒に移動する。exportの最後に出力へ当てる","required":["id","sheet","reason","kind","range"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/11/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/11/properties/kind</code> | <code>{"const":"replace_picture"}</code> |
+| <code>/properties/operations/items/oneOf/11/properties/kind</code> | <code>{"const":"clear_conditional_formats"}</code> |
+| <code>/properties/operations/items/oneOf/11/properties/range</code> | <code>{"pattern":"^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$","type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/11/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/11/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/11/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12</code> | <code>{"additionalProperties":false,"description":"2つの図形の接続点を結ぶコネクターを追加する","required":["id","kind","slide","reason","name","connector_type","begin","end"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/begin</code> | <code>{"additionalProperties":false,"required":["shape","site"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/begin/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/begin/properties/site</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/connector_type</code> | <code>{"enum":["straight","elbow","curve"]}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/end</code> | <code>{"additionalProperties":false,"required":["shape","site"],"type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/end/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/end/properties/site</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/11/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/12</code> | <code>{"additionalProperties":false,"dependentRequired":{"from":["to"],"to":["from"]},"description":"Excelの図形・画像・グループ・グラフ（グループの外のもの）の位置・大きさ・配置設定を変える（documents drawings place）。セルはそれより前に記録した行・列の操作の後の番地。配置設定は、その後に記録した行・列の操作での動き方を決める","required":["id","sheet","reason","kind","drawing"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/drawing</code> | <code>{"description":"抽出のdrawingsのID（&lt;Drawing部品&gt;#&lt;cNvPr id&gt;）","pattern":"^xl/drawings/[^#]+#[0-9]+$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/from</code> | <code>{"description":"新しい左上の角のセル","pattern":"^[A-Z]{1,3}[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/from_offset</code> | <code>{"additionalProperties":false,"description":"fromの角のセルの中での位置（EMU。col は横、row は縦）。省くとセルの左上","required":["col","row"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/from_offset/properties/col</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/from_offset/properties/row</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/12/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/kind</code> | <code>{"const":"add_connector"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","type":"object"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/kind</code> | <code>{"const":"place_drawing"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/placement</code> | <code>{"description":"twoCellはセルに合わせて移動とサイズ変更、oneCellは移動のみ、absoluteは固定","enum":["twoCell","oneCell","absolute"]}</code> |
 | <code>/properties/operations/items/oneOf/12/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/12/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/13</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/to</code> | <code>{"description":"新しい右下の角のセル","pattern":"^[A-Z]{1,3}[1-9][0-9]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/to_offset</code> | <code>{"additionalProperties":false,"description":"toの角のセルの中での位置（EMU。col は横、row は縦）。省くとセルの左上","required":["col","row"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/to_offset/properties/col</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/12/properties/to_offset/properties/row</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/12/anyOf/0</code> | <code>{"required":["from"]}</code> |
+| <code>/properties/operations/items/oneOf/12/anyOf/1</code> | <code>{"required":["placement"]}</code> |
+| <code>/properties/operations/items/oneOf/13</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count"],"type":"object"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/13/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/operations/items/oneOf/13/properties/kind</code> | <code>{"enum":["insert_rows","delete_rows","insert_columns","delete_columns"]}</code> |
+| <code>/properties/operations/items/oneOf/13/properties/merges</code> | <code>{"const":true,"description":"書式元の行の内側にある結合を、追加した行の各組にも作る（insert_rowsのみ、style_fromが必要）。Excelの「コピーしたセルの挿入」と同じ"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/operations/items/oneOf/13/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/13/properties/style_from</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/13/properties/style_rows</code> | <code>{"description":"style_fromから続けて書式元にする行数（insert_rowsのみ、省略時1）。追加するn番目の行は(n mod style_rows)番目の書式元の行の書式を写す。countはstyle_rowsの倍数","maximum":1048576,"minimum":2,"type":"integer"}</code> |
 | <code>/properties/operations/items/oneOf/13/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
+| <code>/properties/operations/items/oneOf/14</code> | <code>{"additionalProperties":false,"required":["id","reason","kind","from"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/14/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/14/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/14/properties/from</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/14/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/14/properties/kind</code> | <code>{"const":"insert_slide"}</code> |
+| <code>/properties/operations/items/oneOf/14/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/14/oneOf/0</code> | <code>{"required":["after"]}</code> |
+| <code>/properties/operations/items/oneOf/14/oneOf/1</code> | <code>{"required":["before"]}</code> |
+| <code>/properties/operations/items/oneOf/15</code> | <code>{"additionalProperties":false,"description":"スライドレイアウトから新しいスライドを作り、別のスライドの前後へ置く。日付・フッター・スライド番号以外のプレースホルダーを空で持ち、その文字は操作IDの本文ページに書く","required":["id","reason","kind","layout"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/15/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/15/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/15/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/15/properties/kind</code> | <code>{"const":"add_slide"}</code> |
+| <code>/properties/operations/items/oneOf/15/properties/layout</code> | <code>{"description":"新しいスライドの元にするスライドレイアウトの部品（抽出のslide_layoutsのpart）","pattern":"^ppt/slideLayouts/[^/]+\\.xml$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/15/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/15/oneOf/0</code> | <code>{"required":["after"]}</code> |
+| <code>/properties/operations/items/oneOf/15/oneOf/1</code> | <code>{"required":["before"]}</code> |
+| <code>/properties/operations/items/oneOf/16</code> | <code>{"additionalProperties":false,"required":["id","reason","kind","slide"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/16/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/16/properties/kind</code> | <code>{"const":"delete_slide"}</code> |
+| <code>/properties/operations/items/oneOf/16/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/16/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/17</code> | <code>{"additionalProperties":false,"description":"スライドとそのノートを、別のスライドの前後へ移動する。セクションのある文書では移動先のスライドのセクションに入る。目的別スライドショーの順序は変えない","required":["id","reason","kind","slide"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/17/properties/after</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/17/properties/before</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/17/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/17/properties/kind</code> | <code>{"const":"move_slide"}</code> |
+| <code>/properties/operations/items/oneOf/17/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/17/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/17/oneOf/0</code> | <code>{"not":{"required":["before"]},"required":["after"]}</code> |
+| <code>/properties/operations/items/oneOf/17/oneOf/1</code> | <code>{"not":{"required":["after"]},"required":["before"]}</code> |
+| <code>/properties/operations/items/oneOf/18</code> | <code>{"additionalProperties":false,"description":"スライドショーでスライドを非表示にする（hidden: true）、または表示に戻す（hidden: false）","required":["id","reason","kind","slide","hidden"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/18/properties/hidden</code> | <code>{"type":"boolean"}</code> |
+| <code>/properties/operations/items/oneOf/18/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/18/properties/kind</code> | <code>{"const":"set_slide_visibility"}</code> |
+| <code>/properties/operations/items/oneOf/18/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/18/properties/slide</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19</code> | <code>{"additionalProperties":false,"description":"スライドの図形・画像・コネクター・グループ・表の枠の位置・大きさ・回転・塗り・線・名前を変える","required":["id","kind","slide","reason","shape","properties"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/kind</code> | <code>{"const":"update_shape"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","minProperties":1,"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/19/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20</code> | <code>{"additionalProperties":false,"description":"四角形・角丸四角形・楕円・テキストボックス・線を追加する。文字は適用後に本文で編集できる","required":["id","kind","slide","reason","name","shape_type","properties"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/kind</code> | <code>{"const":"add_shape"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","required":["left","top","width","height"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/shape_type</code> | <code>{"enum":["rectangle","rounded_rectangle","ellipse","textbox","line"]}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/20/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/21</code> | <code>{"additionalProperties":false,"description":"スライドの本文の文字を持たない図形・画像・コネクター・グループを削除する","required":["id","kind","slide","reason","shape"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/21/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/21/properties/kind</code> | <code>{"const":"delete_shape"}</code> |
+| <code>/properties/operations/items/oneOf/21/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/21/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/21/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22</code> | <code>{"additionalProperties":false,"description":"文書フォルダのassetsのPNG画像を追加する","required":["id","kind","slide","reason","name","asset","properties"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/asset</code> | <code>{"pattern":"^assets/[A-Za-z0-9._/-]+\\.[Pp][Nn][Gg]$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/description</code> | <code>{"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/kind</code> | <code>{"const":"add_picture"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","required":["left","top","width","height"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/22/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/23</code> | <code>{"additionalProperties":false,"description":"画像の位置・大きさを保ったまま別のPNG画像にする","required":["id","kind","slide","reason","shape","asset"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/23/properties/asset</code> | <code>{"pattern":"^assets/[A-Za-z0-9._/-]+\\.[Pp][Nn][Gg]$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/23/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/23/properties/kind</code> | <code>{"const":"replace_picture"}</code> |
+| <code>/properties/operations/items/oneOf/23/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/23/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/23/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24</code> | <code>{"additionalProperties":false,"description":"2つの図形の接続点を結ぶコネクターを追加する","required":["id","kind","slide","reason","name","connector_type","begin","end"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/begin</code> | <code>{"additionalProperties":false,"required":["shape","site"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/begin/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/begin/properties/site</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/connector_type</code> | <code>{"enum":["straight","elbow","curve"]}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/end</code> | <code>{"additionalProperties":false,"required":["shape","site"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/end/properties/shape</code> | <code>{"description":"図形の抽出ID（&lt;スライド部品&gt;#&lt;cNvPr id&gt;）、または図形を追加した操作のID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/end/properties/site</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/kind</code> | <code>{"const":"add_connector"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties</code> | <code>{"additionalProperties":false,"description":"スライド上の位置・大きさ（ポイント）、回転（度）、塗り・線の色（RRGGBBまたはnone）、線の太さ（ポイント）、名前","type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/fill</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/height</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/left</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/line</code> | <code>{"pattern":"^([0-9A-F]{6}&#124;none)$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/line_weight</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/rotation</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/top</code> | <code>{"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/properties/properties/width</code> | <code>{"minimum":0,"type":"number"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/24/properties/slide</code> | <code>{"description":"slide-N、またはスライド操作が追加したスライドの操作ID","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/25</code> | <code>{"additionalProperties":false,"required":["id","sheet","reason","kind","at","count","to"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/at</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/count</code> | <code>{"maximum":1048576,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/kind</code> | <code>{"const":"move_columns"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/sheet</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/to</code> | <code>{"maximum":16384,"minimum":1,"type":"integer"}</code> |
+| <code>/properties/operations/items/oneOf/25/properties/vba_unchanged</code> | <code>{"const":true,"description":"VBAプロジェクトを持つブックで、VBAコード内のセル番地を書き換えない（Excelも書き換えない）ことを、マクロを確認した人が了承した（documents rows&#124;columns の --vba-unchanged）。VBAプロジェクトを持つブックの行・列操作に必要"}</code> |
+| <code>/properties/operations/items/oneOf/26</code> | <code>{"additionalProperties":false,"description":"Excelの空のワークシートを追加する（documents sheets add）。after・beforeがなければ最後に置く","not":{"required":["after","before"]},"required":["id","reason","kind","name"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/26/properties/after</code> | <code>{"description":"このシートの後に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/26/properties/before</code> | <code>{"description":"このシートの前に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/26/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/26/properties/kind</code> | <code>{"const":"add_sheet"}</code> |
+| <code>/properties/operations/items/oneOf/26/properties/name</code> | <code>{"description":"新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）","maxLength":31,"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/26/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/27</code> | <code>{"additionalProperties":false,"description":"Excelのワークシートを複製する（documents sheets copy）。コピー元を指す数式・入力規則・条件付き書式・名前はコピーを指す","not":{"required":["after","before"]},"required":["id","reason","kind","name","from"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/after</code> | <code>{"description":"このシートの後に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/before</code> | <code>{"description":"このシートの前に置く","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/from</code> | <code>{"description":"コピー元の原本のワークシート","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/kind</code> | <code>{"const":"copy_sheet"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/name</code> | <code>{"description":"新しいシートの名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートと重ならない）","maxLength":31,"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/27/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/28</code> | <code>{"additionalProperties":false,"description":"Excelの原本のワークシートを削除する（documents sheets delete）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は #REF! になる","required":["id","reason","kind","sheet"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/28/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/28/properties/kind</code> | <code>{"const":"delete_sheet"}</code> |
+| <code>/properties/operations/items/oneOf/28/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/28/properties/sheet</code> | <code>{"description":"原本のワークシートの名前","minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/29</code> | <code>{"additionalProperties":false,"description":"Excelの原本のワークシートの名前を変える（documents sheets rename）。exportではほかの編集の後に行い、そのシートを指す数式・入力規則・条件付き書式・グラフの系列・名前は新しい名前を指す。ほかの操作は原本の名前でシートを指す","required":["id","reason","kind","sheet","name"],"type":"object"}</code> |
+| <code>/properties/operations/items/oneOf/29/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/29/properties/kind</code> | <code>{"const":"rename_sheet"}</code> |
+| <code>/properties/operations/items/oneOf/29/properties/name</code> | <code>{"description":"新しい名前（31文字まで、: \\ / ? * [ ] を含まず、ほかのシートや操作が付ける名前と重ならない）","maxLength":31,"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/29/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/operations/items/oneOf/29/properties/sheet</code> | <code>{"description":"原本のワークシートの名前","minLength":1,"type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/value_edits</code> | <code>{"description":"documents valuesで保存した値・フォントの編集要求の記録。保存順に、要求のactor・reasonと、値かフォントを変えたeditを持つ。現在と同じ値・フォントを与えるeditは記録しない。原本へ反映（apply）すると新しい版には引き継がない。Left out when empty.","type":"array"}</code> |
 | <code>/properties/value_edits/items</code> | <code>{"additionalProperties":false,"required":["actor","reason","edits"],"type":"object"}</code> |
@@ -1998,8 +2312,10 @@
 | <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size/anyOf/0</code> | <code>{"type":"number"}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/properties/font/properties/before/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/formula</code> | <code>{"type":"boolean"}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/properties/shape</code> | <code>{"description":"Excel図形の抽出ID（&lt;図形部品&gt;#&lt;cNvPr id&gt;）。図形の文字とフォントを編集する","minLength":1,"type":"string"}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/properties/sheet</code> | <code>{"description":"シート名、Word・PowerPointのページ名（document、slide-N、notes-N、追加したスライドの操作ID）、PDFのページ名（page-N）","minLength":1,"type":"string"}</code> |
+| <code>/properties/value_edits/items/properties/edits/items/properties/written_after</code> | <code>{"description":"数式の参照を、原本の位置ではなく、この行・列・セルの操作（とそれより前の操作）の後のセルの位置で書く（formula: true の新しい数式と、既存の数式の編集）。exportではこれより後の操作だけが参照を動かす（documents cells copy・rows move が記録する）","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/allOf/0</code> | <code>{}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/allOf/0/oneOf/0</code> | <code>{"required":["cell"]}</code> |
 | <code>/properties/value_edits/items/properties/edits/items/allOf/0/oneOf/1</code> | <code>{"required":["shape"]}</code> |
@@ -2183,8 +2499,10 @@
 | <code>/properties/edits/items/properties/font/properties/before/properties/size/anyOf/0</code> | <code>{"type":"number"}</code> |
 | <code>/properties/edits/items/properties/font/properties/before/properties/size/anyOf/1</code> | <code>{"const":"mixed"}</code> |
 | <code>/properties/edits/items/properties/font/properties/before/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
+| <code>/properties/edits/items/properties/formula</code> | <code>{"description":"trueは、Excelの原本で空のセル・挿入した行列のセル・新しく入れた数式のセルに、afterの数式（=から始まる原文）を数式として入れる。値のあるセル・数式の既存セルには使えない（既存の数式はformulaなしで編集する）","type":"boolean"}</code> |
 | <code>/properties/edits/items/properties/shape</code> | <code>{"description":"Excel図形の抽出ID（&lt;図形部品&gt;#&lt;cNvPr id&gt;）。図形の文字とフォントを編集する","minLength":1,"type":"string"}</code> |
 | <code>/properties/edits/items/properties/sheet</code> | <code>{"description":"シート名、Word・PowerPointのページ名（document、slide-N、notes-N、追加したスライドの操作ID）、PDFのページ名（page-N）","minLength":1,"type":"string"}</code> |
+| <code>/properties/edits/items/properties/written_after</code> | <code>{"description":"数式の参照を、原本の位置ではなく、この行・列・セルの操作（とそれより前の操作）の後のセルの位置で書く（formula: true の新しい数式と、既存の数式の編集）。exportではこれより後の操作だけが参照を動かす（documents cells copy・rows move が記録する）","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/edits/items/allOf/0</code> | <code>{}</code> |
 | <code>/properties/edits/items/allOf/0/oneOf/0</code> | <code>{"required":["cell"]}</code> |
 | <code>/properties/edits/items/allOf/0/oneOf/1</code> | <code>{"required":["shape"]}</code> |

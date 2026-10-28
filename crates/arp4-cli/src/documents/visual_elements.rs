@@ -12,8 +12,10 @@ pub(super) fn refresh(
     // drawing refers to one.
     let mut assets: Option<HashMap<&str, &Value>> = None;
     let mut chart_parts: Option<HashSet<&str>> = None;
+    let placements = layout.placements.clone();
     for (si, sheet) in extraction.sheets.iter().enumerate() {
         let mut visuals = json!({});
+        let deleted = deleted_drawings(sheet, operations, &placements)?;
         let operations: Vec<_> = operations
             .iter()
             .filter(|op| op.sheet == sheet["name"].as_str().unwrap_or(""))
@@ -26,6 +28,9 @@ pub(super) fn refresh(
             .enumerate()
         {
             let drawing_id = string(&drawing["id"])?;
+            if deleted.contains(drawing_id) {
+                continue;
+            }
             let id = elements::token("visual", &[drawing_id]);
             let kind = if drawing["kind"] == "picture" {
                 "image"
@@ -112,6 +117,50 @@ pub(super) fn refresh(
         typed["visuals"] = visuals;
     }
     Ok(())
+}
+
+/// The IDs of the drawings of the extraction `sheet` the row and column
+/// `operations` of the workbook delete with the cells holding them, as
+/// Excel does, a drawing `placements` move where they put it, and of the
+/// drawings in a group deleted so.
+pub(super) fn deleted_drawings<'a>(
+    sheet: &'a Sheet,
+    operations: &[excel::StructuralOperation],
+    placements: &[excel::PlaceOperation],
+) -> Result<BTreeSet<&'a str>> {
+    let mut deleted = BTreeSet::new();
+    let name = string(&sheet["name"])?;
+    if !operations
+        .iter()
+        .any(|operation| operation.sheet == name && !operation.insertion())
+    {
+        return Ok(deleted);
+    }
+    let drawings: Vec<&Value> = sheet["drawings"].as_array().into_iter().flatten().collect();
+    for drawing in &drawings {
+        let id = string(&drawing["id"])?;
+        if drawing["group"].is_null()
+            && drawing["anchor"]["kind"] != "slide"
+            && excel::drawing_deleted(name, id, &drawing["anchor"], operations, placements)?
+        {
+            deleted.insert(string(&drawing["id"])?);
+        }
+    }
+    // The members of a deleted group, and of the groups in it.
+    loop {
+        let before = deleted.len();
+        for drawing in &drawings {
+            if drawing["group"]
+                .as_str()
+                .is_some_and(|group| deleted.contains(group))
+            {
+                deleted.insert(string(&drawing["id"])?);
+            }
+        }
+        if deleted.len() == before {
+            return Ok(deleted);
+        }
+    }
 }
 
 pub(super) fn position(visual: &Value) -> (u64, u64) {

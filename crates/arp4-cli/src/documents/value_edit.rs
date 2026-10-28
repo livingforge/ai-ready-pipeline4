@@ -26,6 +26,8 @@ struct PlannedValues {
     /// The document as the edits leave it; none when they change nothing.
     checked: Option<Inspection>,
     verification: Value,
+    /// The edits whose text an estimate shows cut off, or growing a row.
+    layout_warnings: Vec<Value>,
     unchanged: bool,
     new_cells: usize,
 }
@@ -66,6 +68,19 @@ impl Store {
         request: &Value,
         dry_run: bool,
     ) -> Result<Value> {
+        self.edit_values_with(id, proposal, request, dry_run, &[])
+    }
+
+    /// [`Store::edit_values`] recording the sheet `operations` with the
+    /// edits, both checked and written together.
+    pub(super) fn edit_values_with(
+        &self,
+        id: &str,
+        proposal: bool,
+        request: &Value,
+        dry_run: bool,
+        operations: &[Value],
+    ) -> Result<Value> {
         validate("value-edits", request)
             .map_err(|error| rejection("invalid_request", format!("{error:#}")))?;
         let dir = self.structure_dir(id, proposal)?;
@@ -99,7 +114,7 @@ impl Store {
         }
         let edits = array(&request["edits"])?;
         let all: Vec<usize> = (0..edits.len()).collect();
-        let mut plan = match self.plan_values(&dir, &inspected, &book, request, &all) {
+        let mut plan = match self.plan_values(&dir, &inspected, &book, request, &all, operations) {
             Ok(plan) => plan,
             Err(error) => {
                 // Name the edits the writer refuses on their own.
@@ -110,7 +125,7 @@ impl Store {
                         .iter()
                         .copied()
                         .filter(|&index| {
-                            self.plan_values(&dir, &inspected, &book, request, &[index])
+                            self.plan_values(&dir, &inspected, &book, request, &[index], operations)
                                 .is_err()
                         })
                         .collect();
@@ -141,6 +156,9 @@ impl Store {
         if plan.new_cells > 0 {
             result["new_cells"] = json!(plan.new_cells);
         }
+        if !plan.layout_warnings.is_empty() {
+            result["layout_warnings"] = json!(plan.layout_warnings);
+        }
         // The written content was inspected when planned; its status is made
         // from that inspection rather than by inspecting the document again.
         if state == "written"
@@ -163,11 +181,43 @@ impl Store {
         book: &Source,
         request: &Value,
         indices: &[usize],
+        operations: &[Value],
     ) -> Result<PlannedValues> {
         let edits = array(&request["edits"])?;
         let extraction = &inspected.extraction;
         let workbook = identity::is_excel(extraction);
-        let current = identity::load(dir, extraction, &Planned::new())?;
+        let mut current = identity::load(dir, extraction, &Planned::new())?;
+        // Cells past the rows and columns the extraction's cells reach take
+        // values too, given the identities they lack.
+        let mut reached: Vec<(String, String)> = vec![];
+        if workbook {
+            let page_of: BTreeMap<String, String> = current
+                .sheets
+                .iter()
+                .map(|(page, sheet)| Ok((string(&sheet["name"])?.to_owned(), page.clone())))
+                .collect::<Result<_>>()?;
+            for &index in indices {
+                let edit = &edits[index];
+                let (Some(sheet), Some(cell)) = (edit["sheet"].as_str(), edit["cell"].as_str())
+                else {
+                    continue;
+                };
+                let (Some(page), Ok(_)) = (page_of.get(sheet), excel::coordinate(cell)) else {
+                    continue;
+                };
+                let lines = identity::KeyLines::new(current.sheet(page)?);
+                let (column, row) = excel::coordinate(cell)?;
+                if lines.get("rows", &format!("r{row}")).is_some()
+                    && lines.get("columns", &excel::column_name(column)?).is_some()
+                {
+                    continue;
+                }
+                if identity::reach_cell(&mut current, page, cell)? {
+                    reached.push((page.clone(), cell.to_owned()));
+                }
+            }
+        }
+        let current = current;
         let originals: BTreeSet<&str> = extraction
             .sheets
             .iter()
@@ -212,8 +262,17 @@ impl Store {
         let mut emptied = BTreeSet::new();
         let mut written = BTreeSet::new();
         let mut new_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // The formulas given to cells holding none, by page, row and column
+        // identity, and those of them cleared, by page and key.
+        let mut new_formulas: Vec<(String, String, String)> = vec![];
+        let mut dropped_formulas: Vec<(String, String)> = vec![];
+        // The formulas given, by page and key, with the operation each is
+        // written after.
+        let mut framed: Vec<(String, String, Option<String>)> = vec![];
         // The edits changing their value or font, the ones mappings records.
         let mut changing = Vec::new();
+        // Where each edit writes, by page, block, row and column.
+        let mut places = BTreeMap::new();
         // What the edits look up in each page's layout and each sheet's
         // merges, read once for all of them.
         let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::new();
@@ -260,7 +319,7 @@ impl Store {
                     inspected
                         .entry(i)
                         .writeback()
-                        .is_ok_and(|w| matches!(w, "cell" | "formula"))
+                        .is_ok_and(|w| matches!(w, "cell" | "formula" | "new_formula"))
                 });
                 match (editable, found.first()) {
                     (Some(entry), _) => from_entry(entry)?,
@@ -279,12 +338,15 @@ impl Store {
                         let known = lookup.identity("rows", &row).is_some()
                             && lookup.identity("columns", &column).is_some();
                         if !workbook || !originals.contains(sheet) || !known {
-                            return Err(refuse(
-                                "target_not_found",
-                                format!(
-                                    "{sheet}!{cell} holds no value the document can edit: it lies outside the rows and columns of the sheet, an operation deletes it, or the format writes back only the text extracted; name the cells of inserted rows and slides by element, as elements-read gives them"
-                                ),
-                            ));
+                            let mut error = json!({"code":"target_not_found","message":format!(
+                                "{sheet}!{cell} holds no value the document can edit: it lies outside the rows and columns of the sheet, an operation deletes it, or the format writes back only the text extracted; name the cells of inserted rows and slides by element, as elements-read gives them"
+                            ),"edit":index,"target":refusal_target(edit)});
+                            if workbook
+                                && let Some(moved) = moved_cell(sheet, cell, &current.operations)?
+                            {
+                                error["moved"] = moved;
+                            }
+                            return Err(Rejection(error).into());
                         }
                         if !merged.contains_key(sheet) {
                             let merges = extraction
@@ -315,7 +377,7 @@ impl Store {
                 let entry = shaped.get(&(sheet, shape)).copied().ok_or_else(|| {
                     refuse(
                         "target_not_found",
-                        format!("{sheet} has no editable text of shape {shape}"),
+                        format!("{sheet} has no editable text of shape {shape}: it holds no text, or a row or column deletion takes it with the cells holding it, as Excel does"),
                     )
                 })?;
                 from_entry(entry)?
@@ -351,6 +413,114 @@ impl Store {
                     }
                 }
             };
+            // A formula given to a cell holding none: the cell becomes a
+            // formula of the page, written at its place.
+            let mut slot = slot;
+            let written_after = edit["written_after"].as_str();
+            if let Some(frame) = written_after {
+                if edit["formula"] != true && slot.block != "formulas" {
+                    return Err(refuse(
+                        "invalid_request",
+                        "written_after goes with a formula: one given with formula: true, or the edit of an existing formula".into(),
+                    ));
+                }
+                if !current
+                    .operations
+                    .iter()
+                    .any(|operation| operation.id == frame)
+                {
+                    return Err(refuse(
+                        "invalid_request",
+                        format!(
+                            "written_after {frame} names no row, column or cell operation recorded"
+                        ),
+                    ));
+                }
+            }
+            if edit["formula"] == true {
+                if !workbook {
+                    return Err(refuse(
+                        "invalid_request",
+                        "formula applies to the cells of an Excel workbook".into(),
+                    ));
+                }
+                let formula = edit["after"].as_str().filter(|text| text.starts_with('='));
+                let Some(formula) = formula else {
+                    return Err(refuse(
+                        "value_type_mismatch",
+                        "after must be a formula, text starting with =".into(),
+                    ));
+                };
+                if let Err(error) = excel::check_formula(&formula[1..]) {
+                    return Err(refuse("value_type_mismatch", format!("{error:#}")));
+                }
+                if slot.block == "table-1" {
+                    let entry = slot.entry.map(|index| inspected.entry(index));
+                    let original = match entry.map(EntryRef::target).transpose()?.flatten() {
+                        Some(MappingTarget::Cell { sheet, cell }) => {
+                            extracted.contains(&(sheet, cell))
+                        }
+                        Some(MappingTarget::Shape { .. }) => true,
+                        _ => false,
+                    };
+                    if original {
+                        return Err(refuse(
+                            "not_editable",
+                            "a new formula goes into a cell the original leaves empty, or one an operation inserts; replace an existing formula without formula, and give a value cell its formula in Excel".into(),
+                        ));
+                    }
+                    let (Some(row), Some(column)) = (
+                        lookup.identity("rows", &slot.row),
+                        lookup.identity("columns", &slot.column),
+                    ) else {
+                        return Err(refuse(
+                            "target_not_found",
+                            format!("{sheet} has no row or column identity for the cell"),
+                        ));
+                    };
+                    let key = identity::formula_name(page, &slot.row, &slot.column);
+                    new_formulas.push((page.to_owned(), row, column));
+                    if !pages.contains_key(&slot.file) {
+                        pages.insert(
+                            slot.file.clone(),
+                            self.read_content(dir, &slot.file, extraction)?,
+                        );
+                    }
+                    let content = pages.get_mut(&slot.file).unwrap();
+                    // A value given to the cell before goes; the formula takes its place.
+                    if let Some(values) = content
+                        .pointer_mut(&format!("/blocks/table-1/rows/{}", slot.row))
+                        .and_then(Value::as_object_mut)
+                    {
+                        values.remove(&slot.column);
+                    }
+                    if content["blocks"]["formulas"].is_null() {
+                        content["blocks"]["formulas"] = json!({"title":"数式原文","rows":{}});
+                    }
+                    slot.block = "formulas".into();
+                    slot.row = key;
+                    slot.column = "formula".into();
+                    slot.entry = None;
+                }
+            }
+            // A formula edited is written as the cells stand after the
+            // operation it names, or as the original's places give them.
+            if slot.block == "formulas" && edit.get("after").is_some() {
+                framed.push((
+                    slot.page.clone(),
+                    slot.row.clone(),
+                    written_after.map(str::to_owned),
+                ));
+            }
+            places.insert(
+                index,
+                (
+                    slot.page.clone(),
+                    slot.block.clone(),
+                    slot.row.clone(),
+                    slot.column.clone(),
+                ),
+            );
             if !written.insert((
                 slot.page.clone(),
                 slot.block.clone(),
@@ -381,14 +551,22 @@ impl Store {
                 let present =
                     content["blocks"][&slot.block]["rows"][&slot.row][&slot.column].clone();
                 if !same_value(&present, &edit["before"]) {
-                    return Err(Rejection(json!({"code":"before_mismatch","message":"before is not the current value; read the content again","edit":index,"target":refusal_target(edit),"current":present})).into());
+                    let mut error = json!({"code":"before_mismatch","message":"before is not the current value; read the content again","edit":index,"target":refusal_target(edit),"current":present});
+                    if let Some(cell) = edit["cell"].as_str()
+                        && let Some(moved) = moved_cell(sheet, cell, &current.operations)?
+                    {
+                        error["moved"] = moved;
+                    }
+                    return Err(Rejection(error).into());
                 }
                 let after = &edit["after"];
                 if !same_value(&present, after) {
                     changing.push(index);
                 }
                 let expected = match (writeback, entry) {
-                    (Some("formula"), _) => (!after
+                    // A new formula is cleared back to an empty cell.
+                    (Some("new_formula"), _) if after.is_null() => None,
+                    (Some("formula" | "new_formula"), _) => (!after
                         .as_str()
                         .is_some_and(|text| text.starts_with('=')))
                     .then_some(
@@ -419,6 +597,10 @@ impl Store {
                     Some(MappingTarget::Shape { .. }) => false,
                     Some(_) => true,
                 };
+                if after.is_null() && holds_none && slot.block == "formulas" {
+                    // A new formula cleared leaves its cell empty again.
+                    dropped_formulas.push((slot.page.clone(), slot.row.clone()));
+                }
                 if after.is_null() && holds_none {
                     for pointer in [
                         format!("/blocks/{}/rows/{}", slot.block, slot.row),
@@ -432,7 +614,16 @@ impl Store {
                     }
                     emptied.insert((slot.file.clone(), slot.block.clone()));
                 } else {
-                    if slot.entry.is_none() {
+                    if slot.entry.is_none() && slot.block == "formulas" {
+                        let (row, column) = new_formulas
+                            .last()
+                            .map(|(_, row, column)| (row.clone(), column.clone()))
+                            .context("new formula without its cell")?;
+                        new_cells
+                            .entry(slot.page.clone())
+                            .or_default()
+                            .push(elements::cell_id(&row, &column));
+                    } else if slot.entry.is_none() {
                         let id = elements::cell_id(
                             &lookup
                                 .identity("rows", &slot.row)
@@ -509,6 +700,20 @@ impl Store {
             }
         }
         let mut layout = identity::load(dir, extraction, &Planned::new())?;
+        for (page, cell) in &reached {
+            identity::reach_cell(&mut layout, page, cell)?;
+        }
+        for (page, row, column) in &new_formulas {
+            identity::add_formula(&mut layout, page, row, column)?;
+        }
+        for (page, key, written_after) in &framed {
+            if !dropped_formulas.iter().any(|(p, k)| p == page && k == key) {
+                identity::frame_formula(&mut layout, page, key, written_after.as_deref())?;
+            }
+        }
+        for (page, key) in &dropped_formulas {
+            identity::drop_formula(&mut layout, page, key)?;
+        }
         // The groups of the pages that take new cells, by page.
         let mut page_groups = BTreeMap::new();
         for (page, cells) in &new_cells {
@@ -527,29 +732,37 @@ impl Store {
             "layout.yml".into(),
             Some(identity::stored(layout, extraction)?),
         );
-        let unchanged = planned.iter().all(|(name, bytes)| {
-            bytes
-                .as_deref()
-                .is_some_and(|bytes| holds(dir, name, bytes))
-        });
+        let unchanged = operations.is_empty()
+            && planned.iter().all(|(name, bytes)| {
+                bytes
+                    .as_deref()
+                    .is_some_and(|bytes| holds(dir, name, bytes))
+            });
         if unchanged {
             return Ok(PlannedValues {
                 planned,
                 checked: None,
                 verification: json!({}),
+                layout_warnings: vec![],
                 unchanged,
                 new_cells: 0,
             });
         }
         // Edits giving a value or font its current one are not recorded.
-        if !changing.is_empty() {
+        if !changing.is_empty() || !operations.is_empty() {
             let mappings_path = dir.join("mappings.yml");
             let mut mappings = read_mappings(&mappings_path)?;
-            mappings["value_edits"]
+            if !changing.is_empty() {
+                mappings["value_edits"]
+                    .as_array_mut()
+                    .context("value edits record")?
+                    .push(json!({"actor":request["actor"],"reason":request["reason"],
+                        "edits":changing.iter().map(|&i| edits[i].clone()).collect::<Vec<_>>()}));
+            }
+            mappings["operations"]
                 .as_array_mut()
-                .context("value edits record")?
-                .push(json!({"actor":request["actor"],"reason":request["reason"],
-                    "edits":changing.iter().map(|&i| edits[i].clone()).collect::<Vec<_>>()}));
+                .context("operations record")?
+                .extend(operations.iter().cloned());
             planned.insert(
                 "mappings.yml".into(),
                 Some(stored_mappings(&mappings_path, &mappings)?),
@@ -571,10 +784,68 @@ impl Store {
         let verification = book
             .patch(&preview, &writeback.edits(&checked)?)
             .map_err(|error| rejection("writeback_refused", format!("{error:#}")))?;
+        let layout_warnings = if matches!(book, Source::Excel(_)) {
+            // Each changed text at its place in the written workbook: the
+            // edit's value, its entry's field, and the change of that field.
+            let mut fields = HashMap::new();
+            for entry in checked.entries() {
+                if let Some(position) = entry.position()? {
+                    fields.insert(
+                        (entry.page()?, entry.block()?, position.row, position.column),
+                        entry.json()["field"].as_str().map(str::to_owned),
+                    );
+                }
+            }
+            let changes: HashMap<&str, &Value> = writeback
+                .changes
+                .iter()
+                .filter_map(|change| Some((change["field"].as_str()?, change)))
+                .collect();
+            let mut targets = vec![];
+            for &index in &changing {
+                let edit = &edits[index];
+                let (Some(after), Some((page, block, row, column))) =
+                    (edit["after"].as_str(), places.get(&index))
+                else {
+                    continue;
+                };
+                // A formula shows its result, which Excel calculates.
+                if block == "formulas" {
+                    continue;
+                }
+                let Some(change) = fields
+                    .get(&(page.as_str(), block.as_str(), row.as_str(), column.as_str()))
+                    .and_then(|field| field.as_deref())
+                    .and_then(|field| changes.get(field))
+                else {
+                    continue;
+                };
+                let place = match (change["cell"].as_str(), change["shape"].as_str()) {
+                    (Some(cell), _) => excel::Place::Cell(cell),
+                    (None, Some(shape)) => excel::Place::Shape(shape),
+                    (None, None) => continue,
+                };
+                targets.push(excel::FitTarget {
+                    edit: index,
+                    sheet: string(&change["sheet"])?,
+                    place,
+                    before: edit["before"].as_str(),
+                    after,
+                });
+            }
+            if targets.is_empty() {
+                vec![]
+            } else {
+                excel::layout_warnings(&excel::Workbook::open(&preview)?, &targets)?
+            }
+        } else {
+            vec![]
+        };
         Ok(PlannedValues {
             planned,
             checked: Some(checked),
             verification,
+            layout_warnings,
             unchanged,
             new_cells: new_cells.values().map(Vec::len).sum(),
         })
@@ -582,6 +853,34 @@ impl Store {
 }
 
 /// The target an edit names, as a refusal gives it.
+/// Where the original cell `cell` of `sheet` is shown with the pending row,
+/// column and cell `operations`, and which cell is shown at that address,
+/// when either differs: `cell` names the original's address, while export,
+/// `format` and `cells` name the places the operations leave.
+fn moved_cell(
+    sheet: &str,
+    cell: &str,
+    operations: &[excel::StructuralOperation],
+) -> Result<Option<Value>> {
+    if !operations.iter().any(|operation| operation.sheet == sheet) {
+        return Ok(None);
+    }
+    let shown = excel::map_coordinate(sheet, cell, operations)?;
+    let at = match excel::origin_of(sheet, excel::coordinate(cell)?, operations)? {
+        Some(excel::Origin::Original(address)) => json!({"cell":address}),
+        Some(excel::Origin::Inserted {
+            operation, offset, ..
+        }) => json!({"inserted_by":operation,"offset":offset}),
+        None => json!({"inserted":true}),
+    };
+    if shown.as_deref() == Some(cell) && at["cell"] == cell {
+        return Ok(None);
+    }
+    Ok(Some(
+        json!({"shown_at":shown,"address_shows":at,"hint":"cell names the address of the original, as extraction-read gives it; the pending operations show the original cell at shown_at (null: deleted), and the address holds what address_shows names. Name the cell by its original address, or by element as elements-read gives it"}),
+    ))
+}
+
 fn refusal_target(edit: &Value) -> Value {
     let mut target = json!({"sheet":edit["sheet"]});
     for key in ["cell", "shape", "element"] {

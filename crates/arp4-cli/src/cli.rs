@@ -360,6 +360,29 @@ pub(crate) enum RowCommand {
         #[arg(long, default_value_t = 1)]
         count: u32,
     },
+    /// Excel only: move rows of the original sheet to the place --after or
+    /// --before names, as Excel inserts cut rows: recorded as rows inserted
+    /// there with the formats, heights and merges of the rows moved
+    /// (<id>-insert), their values and formulas copied there (<id>-copy),
+    /// their links, notes, validations and drawings set there, and the rows
+    /// deleted (<id>-delete); the formulas reading the rows, there or
+    /// elsewhere, are given the text Excel gives them, and the formats
+    /// recorded on the rows recorded where they go. A move Excel would make
+    /// otherwise is refused: one with names whose ends move, rules over only
+    /// the rows or only the place they go to, or drawings over the rows and
+    /// others.
+    Move {
+        #[command(flatten)]
+        target: EditTarget,
+        #[command(flatten)]
+        place: InsertPlace,
+        /// First row moved: a number of the original sheet (15 or r15).
+        #[arg(long)]
+        from: String,
+        /// Number of rows moved.
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+    },
 }
 #[derive(Subcommand)]
 pub(crate) enum ColumnCommand {
@@ -494,6 +517,381 @@ pub(crate) struct ShapeLook {
     #[arg(long)]
     pub(crate) line_weight: Option<f64>,
 }
+#[derive(clap::Args)]
+pub(crate) struct FormatArgs {
+    /// Adopted document ID of an Excel workbook.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Worksheet of the original.
+    #[arg(long)]
+    pub(crate) sheet: String,
+    /// The cells, such as B3:F10 or B3.
+    #[arg(long)]
+    pub(crate) range: String,
+    /// Cell whose whole format (borders, fill, number format, font,
+    /// alignment) the range takes.
+    #[arg(long)]
+    pub(crate) from: Option<String>,
+    /// Wrap text in the cells (true) or not (false).
+    #[arg(long)]
+    pub(crate) wrap: Option<bool>,
+    /// Shrink text to fit the cells (true) or not (false).
+    #[arg(long)]
+    pub(crate) shrink: Option<bool>,
+    /// Horizontal alignment.
+    #[arg(long, value_parser = ["general", "left", "center", "right", "fill", "justify", "centerContinuous", "distributed"])]
+    pub(crate) horizontal: Option<String>,
+    /// Vertical alignment.
+    #[arg(long, value_parser = ["top", "center", "bottom", "justify", "distributed"])]
+    pub(crate) vertical: Option<String>,
+    /// Make the text bold (true) or not (false).
+    #[arg(long)]
+    pub(crate) bold: Option<bool>,
+    /// Make the text italic (true) or not (false).
+    #[arg(long)]
+    pub(crate) italic: Option<bool>,
+    /// Strike the text through (true) or not (false).
+    #[arg(long)]
+    pub(crate) strike: Option<bool>,
+    /// Underline the text.
+    #[arg(long, value_parser = ["none", "single", "double"])]
+    pub(crate) underline: Option<String>,
+    /// Fill the cells with a solid color, RRGGBB, or none for no fill.
+    #[arg(long)]
+    pub(crate) fill: Option<String>,
+    /// Number format code, such as 0.00, #,##0, yyyy/mm/dd or @ (text).
+    #[arg(long)]
+    pub(crate) number_format: Option<String>,
+    /// Lines to draw, as edges:style[:RRGGBB], applied in the order given:
+    /// edges all, outline, inside, horizontal, vertical, top, bottom, left or
+    /// right of the range; style thin, medium, thick, dashed, dotted, double,
+    /// hair, ... or none to take the lines away. Repeat for more.
+    #[arg(long = "border")]
+    pub(crate) borders: Vec<String>,
+    /// Height of the range's rows in points, or auto for the height Excel
+    /// fits to their text on opening.
+    #[arg(long)]
+    pub(crate) row_height: Option<String>,
+    /// Width of the range's columns in characters, as Excel gives it.
+    #[arg(long)]
+    pub(crate) column_width: Option<f64>,
+    /// Merge the range; its cells other than the top left must be empty.
+    #[arg(long, conflicts_with = "unmerge")]
+    pub(crate) merge: bool,
+    /// Take apart the merged ranges inside the range.
+    #[arg(long)]
+    pub(crate) unmerge: bool,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the format changes; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+/// The document, cells and record of a cell insertion or deletion.
+#[derive(clap::Args)]
+pub(crate) struct CellArgs {
+    /// Adopted document ID of an Excel workbook.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Worksheet of the original.
+    #[arg(long)]
+    pub(crate) sheet: String,
+    /// The cells, such as B5:D5, as the row and column operations recorded
+    /// before leave them, as export writes them.
+    #[arg(long)]
+    pub(crate) range: String,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the cells are inserted or deleted; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+    /// Workbooks with a VBA project: accept that the edit leaves the cell
+    /// addresses in the VBA code as they are, as Excel does. Give it only
+    /// after a person checked the macros against the lines vba_not_updated
+    /// lists; it is recorded with the operation.
+    #[arg(long)]
+    pub(crate) vba_unchanged: bool,
+}
+#[derive(Subcommand)]
+pub(crate) enum CellCommand {
+    /// Insert empty cells over the range, shifting the cells there and below
+    /// it down (--shift down) or right of it right (--shift right) within the
+    /// range's columns or rows. The new cells take the format of the cell
+    /// above or left of them, as in Excel, and take values with documents
+    /// values set or in the content.
+    Insert {
+        #[command(flatten)]
+        cells: CellArgs,
+        #[arg(long, value_parser = ["down", "right"])]
+        shift: String,
+    },
+    /// Delete the cells of the range with their values, shifting the cells
+    /// below it up (--shift up) or right of it left (--shift left) within the
+    /// range's columns or rows.
+    Delete {
+        #[command(flatten)]
+        cells: CellArgs,
+        #[arg(long, value_parser = ["up", "left"])]
+        shift: String,
+    },
+    /// Copy the cells of the range to the place at --to of the same sheet, as
+    /// Excel pastes them: the values and formulas, their relative references
+    /// moved by the distance, as value edits, and the formats and merges as a
+    /// copy_cells operation, written together. The cells pasted over holding
+    /// a value a formula would replace, or a formula, are refused.
+    Copy {
+        #[command(flatten)]
+        cells: CellArgs,
+        /// The top left cell to paste to, as the operations recorded before
+        /// leave it.
+        #[arg(long)]
+        to: String,
+        /// Copy the formats and merges only.
+        #[arg(long, conflicts_with = "values_only")]
+        formats_only: bool,
+        /// Copy the values and formulas only.
+        #[arg(long)]
+        values_only: bool,
+    },
+}
+/// The document, cells and record of a change of what Excel cells carry.
+#[derive(clap::Args)]
+pub(crate) struct ObjectArgs {
+    /// Adopted document ID of an Excel workbook.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Worksheet of the original.
+    #[arg(long)]
+    pub(crate) sheet: String,
+    /// The cells, such as B3:F10 or B3, as the row and column operations
+    /// recorded before leave them, as export writes them.
+    #[arg(long, visible_alias = "cell")]
+    pub(crate) range: String,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the cells change; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+#[derive(Subcommand)]
+pub(crate) enum LinkCommand {
+    /// Link the cells of the range to a place in the workbook (--location,
+    /// Sheet!A1 or a defined name) or to a URL (--url), replacing the links
+    /// there. The cells' values stay: give them a text with documents values.
+    Set {
+        #[command(flatten)]
+        cells: ObjectArgs,
+        #[arg(long, required_unless_present = "url", conflicts_with = "url")]
+        location: Option<String>,
+        #[arg(long)]
+        url: Option<String>,
+        /// Text Excel shows over the link.
+        #[arg(long)]
+        tooltip: Option<String>,
+    },
+    /// Take the links off the cells of the range.
+    Clear {
+        #[command(flatten)]
+        cells: ObjectArgs,
+    },
+}
+#[derive(Subcommand)]
+pub(crate) enum NoteCommand {
+    /// Give the top left cell of the range a note with this text, or change
+    /// the text of its note. Threaded comments are edited in Excel.
+    Set {
+        #[command(flatten)]
+        cells: ObjectArgs,
+        #[arg(long)]
+        text: String,
+        /// The note's author; ARP when omitted.
+        #[arg(long)]
+        author: Option<String>,
+    },
+    /// Delete the notes of the cells of the range.
+    Clear {
+        #[command(flatten)]
+        cells: ObjectArgs,
+    },
+}
+/// A data validation given on the command line.
+#[derive(clap::Args)]
+pub(crate) struct ValidationArgs {
+    #[command(flatten)]
+    pub(crate) cells: ObjectArgs,
+    /// The items of a drop-down list, comma-separated.
+    #[arg(long, conflicts_with_all = ["source", "kind", "formula"])]
+    pub(crate) list: Option<String>,
+    /// The cells listing the items of a drop-down list, such as
+    /// =$J$1:$J$5 or =Codes!$A$2:$A$9.
+    #[arg(long, conflicts_with_all = ["kind", "formula"])]
+    pub(crate) source: Option<String>,
+    /// The values allowed.
+    #[arg(long = "type", value_parser = ["whole", "decimal", "date", "time", "text-length"], requires = "value1")]
+    pub(crate) kind: Option<String>,
+    #[arg(long, value_parser = ["between", "not-between", "equal", "not-equal", "greater", "less", "greater-or-equal", "less-or-equal"], default_value = "between")]
+    pub(crate) operator: String,
+    /// A value or formula the values are compared with.
+    #[arg(long)]
+    pub(crate) value1: Option<String>,
+    /// The second value for between and not-between.
+    #[arg(long)]
+    pub(crate) value2: Option<String>,
+    /// A formula true for the values allowed.
+    #[arg(long)]
+    pub(crate) formula: Option<String>,
+    /// Whether a blank cell passes (default true).
+    #[arg(long)]
+    pub(crate) allow_blank: Option<bool>,
+    /// How a value not allowed is met.
+    #[arg(long, value_parser = ["stop", "warning", "information"])]
+    pub(crate) error_style: Option<String>,
+    #[arg(long)]
+    pub(crate) prompt_title: Option<String>,
+    /// Message Excel shows when the cell is selected.
+    #[arg(long)]
+    pub(crate) prompt: Option<String>,
+    #[arg(long)]
+    pub(crate) error_title: Option<String>,
+    /// Message Excel shows for a value not allowed.
+    #[arg(long)]
+    pub(crate) error: Option<String>,
+}
+#[derive(Subcommand)]
+pub(crate) enum ValidationCommand {
+    /// Give the cells of the range a data validation, taking the range out
+    /// of the validations there: a list (--list a,b,c or --source of the
+    /// cells listing the items), or values of a --type compared by
+    /// --operator with --value1 (and --value2), or a --formula.
+    Set(Box<ValidationArgs>),
+    /// Take the cells of the range out of their data validations.
+    Clear {
+        #[command(flatten)]
+        cells: ObjectArgs,
+    },
+}
+#[derive(Subcommand)]
+pub(crate) enum ConditionalFormatCommand {
+    /// Add a conditional format to the cells of the range, ahead of the
+    /// others: a --formula true for the cells formatted (relative to the top
+    /// left cell, such as =$C5>100), or values compared by --cell-is with
+    /// --value1 (and --value2); the format given by --fill, --font-color,
+    /// --bold, --italic, --strike and --number-format.
+    Add {
+        #[command(flatten)]
+        cells: ObjectArgs,
+        #[arg(long, required_unless_present = "cell_is", conflicts_with = "cell_is")]
+        formula: Option<String>,
+        #[arg(long, value_parser = ["between", "not-between", "equal", "not-equal", "greater", "less", "greater-or-equal", "less-or-equal"], requires = "value1")]
+        cell_is: Option<String>,
+        #[arg(long)]
+        value1: Option<String>,
+        #[arg(long)]
+        value2: Option<String>,
+        /// Fill color, RRGGBB.
+        #[arg(long)]
+        fill: Option<String>,
+        /// Font color, RRGGBB.
+        #[arg(long)]
+        font_color: Option<String>,
+        #[arg(long)]
+        bold: bool,
+        #[arg(long)]
+        italic: bool,
+        #[arg(long)]
+        strike: bool,
+        #[arg(long)]
+        number_format: Option<String>,
+        /// Evaluate no later rule for the cells this one formats.
+        #[arg(long)]
+        stop: bool,
+    },
+    /// Take the cells of the range out of their conditional formats.
+    Clear {
+        #[command(flatten)]
+        cells: ObjectArgs,
+    },
+}
+#[derive(Subcommand)]
+pub(crate) enum DrawingCommand {
+    /// Move or resize a shape, picture, group or chart of an Excel sheet by the
+    /// cells of its corners, or change how later row and column changes move it
+    /// (--placement: twoCell moves and sizes it with the cells, oneCell moves
+    /// it keeping its size, absolute keeps it in place). The cells are named as
+    /// the operations recorded before leave them. Objects inside a group move
+    /// with the group; connectors joined to what moves keep their places and
+    /// are named in joined_connectors.
+    Place {
+        /// Adopted document ID of an Excel workbook.
+        #[arg(required_unless_present = "proposal")]
+        document: Option<String>,
+        /// Edit the proposal of this document ID instead, before record.
+        #[arg(long, conflicts_with = "document")]
+        proposal: Option<String>,
+        /// Worksheet of the original.
+        #[arg(long)]
+        sheet: String,
+        /// The object's ID in the extraction's drawings, such as
+        /// xl/drawings/drawing1.xml#4.
+        #[arg(long)]
+        drawing: String,
+        /// Cell at the object's new top left corner.
+        #[arg(long, requires = "to")]
+        from: Option<String>,
+        /// Cell at the object's new bottom right corner.
+        #[arg(long, requires = "from")]
+        to: Option<String>,
+        /// How later row and column changes move the object.
+        #[arg(long, value_parser = ["twoCell", "oneCell", "absolute"])]
+        placement: Option<String>,
+        /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted.
+        #[arg(long)]
+        id: Option<String>,
+        /// Why the object moves; recorded with the operation.
+        #[arg(long)]
+        reason: String,
+        /// The content hash from check --include-hashes; the edit is refused when the
+        /// document changed since.
+        #[arg(long)]
+        base: Option<String>,
+        /// Validate and report the edit without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
 #[derive(Subcommand)]
 pub(crate) enum ImageCommand {
     /// Add a PNG picture from the document's assets folder, its corners at the
@@ -627,6 +1025,125 @@ pub(crate) enum ShapeCommand {
         #[command(flatten)]
         look: ShapeLook,
     },
+}
+#[derive(Subcommand)]
+pub(crate) enum SheetCommand {
+    /// Add an empty worksheet, as Excel's Insert Sheet does, with the default
+    /// row height of the first sheet.
+    Add {
+        #[command(flatten)]
+        target: SheetTarget,
+        #[command(flatten)]
+        place: SheetPlace,
+    },
+    /// Copy a worksheet of the original, as Excel's Move or Copy with Create a
+    /// copy does: cells, formats, rows and columns, merges, rules, links,
+    /// notes, drawings, charts, tables and print settings. Formulas, rules,
+    /// chart series and names naming the sheet copied name the copy, names of
+    /// the workbook referring to the sheet are given to the copy, and tables
+    /// take new names as Excel gives them. The copy's content page takes the
+    /// sheet's current values, and the formats, placements, pictures and what
+    /// cells carry recorded on the sheet are recorded on the copy too
+    /// (copied_operations). Refused for sheets with pivot tables, threaded
+    /// comments, controls or embedded objects, and for sheets with row, column
+    /// or cell operations recorded: copy the sheet first.
+    Copy {
+        #[command(flatten)]
+        target: SheetTarget,
+        /// Worksheet of the original to copy.
+        #[arg(long)]
+        sheet: String,
+        #[command(flatten)]
+        place: SheetPlace,
+    },
+    /// Delete a worksheet of the original, as Excel deletes a sheet:
+    /// formulas, rules, chart series and names naming it read #REF!, its
+    /// own names go, links are left as they are. Its content page goes with
+    /// the operations and value edits recorded on it (dropped_operations).
+    /// Export deletes it after every other edit. Refused for the last
+    /// visible sheet and a sheet a pivot table reads from.
+    Delete {
+        #[command(flatten)]
+        target: SheetChangeTarget,
+    },
+    /// Rename a worksheet of the original, as Excel renames a sheet:
+    /// formulas, rules, chart series and names naming it name it so, links
+    /// are left as they are. Export renames it after every other edit, so
+    /// the other commands keep naming it by its name in the original.
+    Rename {
+        #[command(flatten)]
+        target: SheetChangeTarget,
+        /// The new name: at most 31 characters, none of : \ / ? * [ ],
+        /// unlike every other sheet's.
+        #[arg(long)]
+        name: String,
+    },
+}
+/// The workbook, sheet and record of a sheet deleted or renamed.
+#[derive(clap::Args)]
+pub(crate) struct SheetChangeTarget {
+    /// Adopted document ID of an Excel workbook.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Worksheet of the original, by its name in the original.
+    #[arg(long)]
+    pub(crate) sheet: String,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the sheet is deleted or renamed; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+/// The workbook, name and record of a sheet added.
+#[derive(clap::Args)]
+pub(crate) struct SheetTarget {
+    /// Adopted document ID of an Excel workbook.
+    #[arg(required_unless_present = "proposal")]
+    pub(crate) document: Option<String>,
+    /// Edit the proposal of this document ID instead, before record.
+    #[arg(long, conflicts_with = "document")]
+    pub(crate) proposal: Option<String>,
+    /// Name of the new sheet: at most 31 characters, none of : \ / ? * [ ],
+    /// unlike the workbook's other sheets.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Operation ID (^[a-zA-Z0-9][a-zA-Z0-9_-]*$); generated when omitted. Give
+    /// one so that repeating the command, e.g. after a timeout, is reported
+    /// unchanged.
+    #[arg(long)]
+    pub(crate) id: Option<String>,
+    /// Why the sheet is added; recorded with the operation.
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// The content hash from check --include-hashes; the edit is refused when the
+    /// document changed since.
+    #[arg(long)]
+    pub(crate) base: Option<String>,
+    /// Validate and report the edit without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+/// Where a new sheet goes; last when neither is given.
+#[derive(clap::Args)]
+#[group(required = false, multiple = false)]
+pub(crate) struct SheetPlace {
+    /// Put it after this sheet.
+    #[arg(long)]
+    pub(crate) after: Option<String>,
+    /// Put it before this sheet.
+    #[arg(long)]
+    pub(crate) before: Option<String>,
 }
 #[derive(Subcommand)]
 pub(crate) enum SlideCommand {
@@ -939,6 +1456,24 @@ pub(crate) enum DocumentCommand {
         #[command(subcommand)]
         command: ColumnCommand,
     },
+    /// Insert or delete a range of Excel cells, shifting the cells beside it
+    /// within its rows or columns, as Excel's Insert and Delete do. The
+    /// insert_cells or delete_cells operation in mappings.yml and the content
+    /// values it moves or removes are written together, after a trial write
+    /// and the same validation as check: a value stays with its cell, shown at
+    /// the row and column the cell ends in.
+    Cells {
+        #[command(subcommand)]
+        command: CellCommand,
+    },
+    /// Add an empty Excel worksheet or a copy of one. The operation in
+    /// mappings.yml, the sheet's content page (content/<name>.yml) and its
+    /// layout are written together, after a trial write and the same
+    /// validation as check.
+    Sheets {
+        #[command(subcommand)]
+        command: SheetCommand,
+    },
     /// Copy, add, delete, move, hide or show PowerPoint slides. The operation in
     /// mappings.yml and the content pages it adds or removes are written
     /// together, after the same validation as check.
@@ -959,6 +1494,53 @@ pub(crate) enum DocumentCommand {
     Images {
         #[command(subcommand)]
         command: ImageCommand,
+    },
+    /// Change the format of a range of Excel cells: copy a cell's whole format
+    /// (--from), alignment (--wrap, --shrink, --horizontal, --vertical), bold,
+    /// italic, strike and underline, fill, borders, number format, row
+    /// heights, column widths, or merge and take apart merges. The range names
+    /// cells as the row and column operations recorded before leave them, as
+    /// export writes them and layout_warnings names them; operations recorded
+    /// after move it with the cells. Values stay. The format_cells operation in
+    /// mappings.yml is written after a trial write and the same validation as
+    /// check.
+    Format(FormatArgs),
+    /// Move, resize or change the placement of Excel drawing objects. The
+    /// place_drawing operation in mappings.yml is written after a trial write
+    /// and the same validation as check.
+    Drawings {
+        #[command(subcommand)]
+        command: DrawingCommand,
+    },
+    /// Link Excel cells to places in the workbook or to URLs, or take their
+    /// links off. The set_link or clear_links operation in mappings.yml names
+    /// the cells as the row and column operations recorded before leave them;
+    /// those recorded after move it with the cells. It is written last on
+    /// export, after a trial write and the same validation as check.
+    Links {
+        #[command(subcommand)]
+        command: Box<LinkCommand>,
+    },
+    /// Give Excel cells notes, change their text or delete them, as set_note
+    /// and clear_notes operations, placed and written like links.
+    Notes {
+        #[command(subcommand)]
+        command: Box<NoteCommand>,
+    },
+    /// Give Excel cells data validations (drop-down lists, allowed values) or
+    /// take them out of theirs, as set_validation and clear_validations
+    /// operations, placed and written like links; rows and columns inserted
+    /// after the cells later take them too, as in Excel.
+    Validations {
+        #[command(subcommand)]
+        command: Box<ValidationCommand>,
+    },
+    /// Add conditional formats to Excel cells or take them out of theirs, as
+    /// add_conditional_format and clear_conditional_formats operations,
+    /// placed and written like validations.
+    ConditionalFormats {
+        #[command(subcommand)]
+        command: Box<ConditionalFormatCommand>,
     },
     /// Record who formed a proposal, with which model and prompt. A folder ID or
     /// --all records every proposal below it that needs a record.
@@ -1054,6 +1636,11 @@ pub(crate) enum DocumentCommand {
         /// New file inside .arp/cache/export, with the original's extension.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Excel: calculate the formulas with desktop Excel (Windows) and write
+        /// their results into the file, which otherwise leaves them out for
+        /// Excel to calculate on opening. Needs --out.
+        #[arg(long, requires = "out")]
+        calculate: bool,
     },
     /// Render a page of an exported candidate to a PNG image, to look at it
     /// before confirm-export: an Excel sheet or range, a Word or PDF page, or

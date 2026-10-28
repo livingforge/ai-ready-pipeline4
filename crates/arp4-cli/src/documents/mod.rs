@@ -1,4 +1,5 @@
 mod mapping;
+mod move_edit;
 use mapping::*;
 mod adoption;
 pub use adoption::Batch;
@@ -16,7 +17,11 @@ mod status_cache;
 pub use sheet_edit::{Axis, EditKind, Position, SheetEdit};
 mod elements;
 pub(crate) use elements::CONTENT_VERSION;
+mod cell_edit;
+mod copy_edit;
+mod drawing_edit;
 mod export_confirmation;
+mod format_edit;
 mod identity;
 mod image_edit;
 mod layout;
@@ -24,16 +29,25 @@ pub(crate) use layout::{
     Layout, LayoutSheet, Line, Lines, Meta, MetaCell, MetaRow, MetaText, metadata_from,
     metadata_value,
 };
+mod object_edit;
 mod operation_edit;
 mod render;
 mod shape_edit;
 mod slide_edit;
 mod value_edit;
 mod visual_elements;
+pub use cell_edit::CellRequest;
+pub use copy_edit::CopyRequest;
+pub use drawing_edit::DrawingRequest;
+pub use format_edit::FormatRequest;
 pub use image_edit::ImageRequest;
+pub use move_edit::MoveRequest;
+mod worksheet_edit;
+pub use object_edit::{ObjectRequest, invalid_rule, list_formula, rule_formula};
 pub use render::RenderPlace;
 pub use shape_edit::ShapeRequest;
 pub use slide_edit::{SlideEdit, SlideEditKind};
+pub use worksheet_edit::{SheetChangeEdit, WorksheetEdit};
 
 use crate::{
     data::*,
@@ -76,7 +90,10 @@ pub struct Store {
 }
 pub struct Inspection {
     pub meta: Value,
+    /// The extraction with the sheets operations add.
     pub extraction: Extraction,
+    /// The extraction as the original gives it, when operations add sheets.
+    original: Option<Extraction>,
     pub mappings: Value,
     /// The extraction as the slide operations of `mappings` leave it, when
     /// they change it: the default entries are of its cells.
@@ -109,6 +126,12 @@ impl Inspection {
     /// The complete mapping entries, as mappings.yml writes them.
     pub fn entries_json(&self) -> Vec<Value> {
         self.entries().map(|e| e.json().into_owned()).collect()
+    }
+
+    /// The extraction as the original gives it, without the sheets
+    /// operations add, which the structure interpretation is of.
+    pub fn original_extraction(&self) -> &Extraction {
+        self.original.as_ref().unwrap_or(&self.extraction)
     }
 
     /// The extraction the default entries are of.
@@ -242,7 +265,7 @@ impl Store {
         let (structure, _) = crate::document_structure::replay_verified_corrections(
             &self.root,
             &inspected.mappings["interpretation"],
-            &inspected.extraction,
+            inspected.original_extraction(),
             string(&inspected.meta["extraction"])?,
             &inspected.axes,
         )?;
@@ -255,8 +278,8 @@ impl Store {
     /// ([`crate::extraction::write_reading`]).
     pub fn write_extraction_view(&self, id: &str, proposal: bool, out: &Path) -> Result<()> {
         let dir = self.structure_dir(id, proposal)?;
-        let extraction = self.inspect_records(&dir, false, false)?.0.extraction;
-        crate::extraction::write_reading(&extraction, out)
+        let inspected = self.inspect_records(&dir, false, false)?.0;
+        crate::extraction::write_reading(inspected.original_extraction(), out)
     }
 
     /// Saves `structure` as the corrections of the adopted document, or of its
@@ -274,14 +297,14 @@ impl Store {
         );
         let journal = crate::document_structure::record_corrections(
             &self.root,
-            &inspected.extraction,
+            inspected.original_extraction(),
             structure,
             &inspected.axes,
         )?;
         let (reconstructed, report) = crate::document_structure::replay_corrections(
             &self.root,
             &journal,
-            &inspected.extraction,
+            inspected.original_extraction(),
             &inspected.axes,
         )?;
         ensure!(
@@ -560,13 +583,53 @@ pub fn element_id(sheet: &Value, block: &str, row: &str, column: &str) -> Result
     elements::Bindings::id(sheet, block, row, column)
 }
 
-/// Replaces the font index of an element or table cell with the font.
-fn resolve_font(sheet: &Value, element: &mut Value) -> Result<()> {
+/// Replaces the font index of an element or table cell with the font: left
+/// out when it is the page's `element_font`, `default`, and null for none on
+/// a page with one.
+fn resolve_font(sheet: &Value, element: &mut Value, default: Option<&Value>) -> Result<()> {
     let font = elements::font(sheet, element)?;
-    if !font.is_null() {
-        element["font"] = font;
+    match default {
+        Some(default) if font == *default => {
+            if let Some(element) = element.as_object_mut() {
+                element.remove("font");
+            }
+        }
+        Some(_) => element["font"] = font,
+        None if !font.is_null() => element["font"] = font,
+        None => {}
     }
     Ok(())
+}
+
+/// The font most of the text and formula elements and table cells of the
+/// page `sheet` have, resolved: its `element_font`. None when most have no
+/// font; of fonts as many have, the first in the page's fonts.
+fn element_font(sheet: &LayoutSheet) -> Result<Option<Value>> {
+    let mut counts: BTreeMap<Option<u64>, usize> = BTreeMap::new();
+    for element in &sheet.metadata {
+        match element {
+            Meta::Table { rows, .. } => {
+                for cell in rows.iter().flat_map(|row| &row.cells) {
+                    let index = cell.font().and_then(|font| font.as_u64());
+                    *counts.entry(index).or_default() += 1;
+                }
+            }
+            Meta::Text(text) => {
+                let index = text.get("font").and_then(Value::as_u64);
+                *counts.entry(index).or_default() += 1;
+            }
+            Meta::Other(_) => {}
+        }
+    }
+    let most = counts.values().copied().max().unwrap_or(0);
+    let Some(Some(index)) = counts
+        .into_iter()
+        .find(|&(_, count)| count == most)
+        .map(|(index, _)| index)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(elements::font(&sheet.fields, &json!({"font":index}))?))
 }
 
 /// The `document-elements` read of `layout`, the interpreted layout of the
@@ -581,18 +644,18 @@ fn elements_view<'a>(
     let mut pages = vec![];
     for (page_id, sheet) in &layout.sheets {
         let found = &interpretation[page_id];
+        let font = element_font(sheet)?;
+        let mut members = vec![("name", Lazy::Borrowed(&sheet["name"]))];
+        if let Some(font) = &font {
+            members.push(("element_font", Lazy::Value(font.clone())));
+        }
         let metadata =
             Lazy::Items(Box::new(sheet.metadata.iter().map(move |element| {
-                resolved_element(&sheet.fields, element, found)
+                resolved_element(&sheet.fields, element, found, font.clone())
             })));
-        pages.push((
-            page_id.as_str(),
-            Lazy::Object(vec![
-                ("name", Lazy::Borrowed(&sheet["name"])),
-                ("visuals", Lazy::Borrowed(&sheet["visuals"])),
-                ("element_metadata", metadata),
-            ]),
-        ));
+        members.push(("visuals", Lazy::Borrowed(&sheet["visuals"])));
+        members.push(("element_metadata", metadata));
+        pages.push((page_id.as_str(), Lazy::Object(members)));
     }
     Ok(Lazy::Object(vec![
         ("schema_version", Lazy::Value(json!("1"))),
@@ -603,15 +666,19 @@ fn elements_view<'a>(
 }
 
 /// The element metadata `element` of the layout `sheet` with its fonts
-/// resolved: those of the cells of each row of a table, made row by row.
+/// resolved, but those that are the page's `element_font`, `default`: those
+/// of the cells of each row of a table, made row by row.
 fn resolved_element<'a>(
     sheet: &'a Value,
     element: &'a Meta,
     found: &'a HashMap<String, (Value, Vec<String>)>,
+    default: Option<Value>,
 ) -> Result<Lazy<'a>> {
     let Some(rows) = element.records() else {
+        // Only a text or formula element has a font.
+        let default = default.filter(|_| matches!(element, Meta::Text(_)));
         let mut element = element.to_value();
-        resolve_font(sheet, &mut element)?;
+        resolve_font(sheet, &mut element, default.as_ref())?;
         return Ok(Lazy::Value(element));
     };
     // The cells of the table, which a cell's headers are among.
@@ -630,7 +697,7 @@ fn resolved_element<'a>(
             let mut row = row.to_value();
             for cell in row["cells"].as_array_mut().context("table cells missing")? {
                 elements::interpret_cell(cell, found, &present)?;
-                resolve_font(sheet, cell)?;
+                resolve_font(sheet, cell, default.as_ref())?;
             }
             Ok(Lazy::Value(row))
         }))),
@@ -661,15 +728,19 @@ fn check_elements(
     for (page_id, typed) in &layout.sheets {
         let sheet = &typed.fields;
         let found = &interpretation[page_id];
+        let font = element_font(typed)?;
         let page = |metadata: Vec<Value>, visuals: Value| {
             let mut page = json!({"name":sheet["name"],"visuals":visuals});
+            if let Some(font) = &font {
+                page["element_font"] = font.clone();
+            }
             page["element_metadata"] = Value::Array(metadata);
             read([(page_id.clone(), page)].into_iter().collect())
         };
         check(&page(vec![], sheet["visuals"].clone()))?;
         let mut batch = vec![];
         for element in &typed.metadata {
-            let members = match resolved_element(sheet, element, found)? {
+            let members = match resolved_element(sheet, element, found, font.clone())? {
                 Lazy::Object(members) => members,
                 other => {
                     batch.push(other.into_value()?);

@@ -227,6 +227,7 @@ mod visual_performance_tests {
                 style_rows: 1,
                 merges: false,
                 vba_unchanged: false,
+                band: None,
             })
             .collect();
         let started = Instant::now();
@@ -1678,6 +1679,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         }];
         let (mut effects, mut moved) = (Effects::new(), 0);
         move_cells(

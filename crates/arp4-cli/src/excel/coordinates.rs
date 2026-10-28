@@ -387,36 +387,47 @@ pub fn column_name(mut column: u32) -> Result<String> {
     Ok(out.chars().rev().collect())
 }
 
+/// Where whole rows or columns put the row or column `position`: cells
+/// shifted within a band move no row or column.
 pub(super) fn transform_index(
     mut position: u32,
     operations: &[StructuralOperation],
     row: bool,
 ) -> Option<u32> {
     for operation in operations {
-        if operation.row_operation() != row {
+        if operation.row_operation() != row || !operation.whole() {
             continue;
         }
-        match operation.kind {
-            OperationKind::MoveColumns { to } => {
-                position = moved_column(position, operation.at, operation.count, to);
+        position = shift_index(position, operation)?;
+    }
+    Some(position)
+}
+
+/// Where one operation puts `position` on its axis; none when it deletes it
+/// or pushes it past the sheet's end.
+pub(super) fn shift_index(position: u32, operation: &StructuralOperation) -> Option<u32> {
+    match operation.kind {
+        OperationKind::MoveColumns { to } => {
+            Some(moved_column(position, operation.at, operation.count, to))
+        }
+        OperationKind::InsertRows | OperationKind::InsertColumns => {
+            if position >= operation.at {
+                position.checked_add(operation.count)
+            } else {
+                Some(position)
             }
-            OperationKind::InsertRows | OperationKind::InsertColumns => {
-                if position >= operation.at {
-                    position = position.checked_add(operation.count)?;
-                }
-            }
-            OperationKind::DeleteRows | OperationKind::DeleteColumns => {
-                let end = operation.at.checked_add(operation.count)?;
-                if (operation.at..end).contains(&position) {
-                    return None;
-                }
-                if position >= end {
-                    position -= operation.count;
-                }
+        }
+        OperationKind::DeleteRows | OperationKind::DeleteColumns => {
+            let end = operation.at.checked_add(operation.count)?;
+            if (operation.at..end).contains(&position) {
+                None
+            } else if position >= end {
+                Some(position - operation.count)
+            } else {
+                Some(position)
             }
         }
     }
-    Some(position)
 }
 
 /// Maps a drawing marker in 1-based row or column `position`. A marker at the
@@ -432,7 +443,7 @@ pub(super) fn map_anchor_index(
 ) -> Result<(u32, bool)> {
     let mut deleted = false;
     for operation in operations {
-        if operation.row_operation() != row {
+        if operation.row_operation() != row || !operation.whole() {
             continue;
         }
         match operation.kind {
@@ -480,39 +491,30 @@ pub fn map_coordinate(
         .iter()
         .filter(|operation| operation.sheet == sheet)
     {
-        if operation.row_operation() {
-            mapped_row = match operation.kind {
-                OperationKind::InsertRows => {
-                    transform_index(mapped_row, std::slice::from_ref(operation), true)
-                        .context("row coordinate overflow")?
-                }
-                OperationKind::DeleteRows => {
-                    let Some(value) =
-                        transform_index(mapped_row, std::slice::from_ref(operation), true)
-                    else {
-                        return Ok(None);
-                    };
-                    value
-                }
-                _ => unreachable!(),
-            };
-        } else {
-            mapped_column = match operation.kind {
-                OperationKind::InsertColumns | OperationKind::MoveColumns { .. } => {
-                    transform_index(mapped_column, std::slice::from_ref(operation), false)
-                        .context("column coordinate overflow")?
-                }
-                OperationKind::DeleteColumns => {
-                    let Some(value) =
-                        transform_index(mapped_column, std::slice::from_ref(operation), false)
-                    else {
-                        return Ok(None);
-                    };
-                    value
-                }
-                _ => unreachable!(),
-            };
+        if !operation.moves_cell(mapped_column, mapped_row) {
+            continue;
         }
+        let rows = operation.row_operation();
+        let position = if rows {
+            &mut mapped_row
+        } else {
+            &mut mapped_column
+        };
+        *position = match shift_index(*position, operation) {
+            Some(mapped) => mapped,
+            None if !matches!(
+                operation.kind,
+                OperationKind::DeleteRows | OperationKind::DeleteColumns
+            ) =>
+            {
+                bail!(if rows {
+                    "row coordinate overflow"
+                } else {
+                    "column coordinate overflow"
+                })
+            }
+            None => return Ok(None),
+        };
     }
     Ok(Some(format!(
         "{}{}",
@@ -527,6 +529,8 @@ pub fn map_coordinate(
 /// which grew with the cells times the pending operations.
 pub struct CoordinateMap<'a> {
     operations: &'a [StructuralOperation],
+    /// The sheets with cells shifted within a band, found once.
+    shifted: std::collections::HashSet<&'a str>,
     /// Each axis's mapped positions, by sheet; none for a deleted one.
     rows: std::cell::RefCell<
         std::collections::HashMap<String, std::collections::HashMap<u32, Option<u32>>>,
@@ -540,6 +544,11 @@ impl<'a> CoordinateMap<'a> {
     pub fn new(operations: &'a [StructuralOperation]) -> Self {
         Self {
             operations,
+            shifted: operations
+                .iter()
+                .filter(|operation| !operation.whole())
+                .map(|operation| operation.sheet.as_str())
+                .collect(),
             rows: Default::default(),
             columns: Default::default(),
         }
@@ -555,6 +564,13 @@ impl<'a> CoordinateMap<'a> {
 
     /// [`CoordinateMap::map`] as a (column, row) point.
     pub fn map_point(&self, sheet: &str, address: &str) -> Result<Option<(u32, u32)>> {
+        // Cells shifted in a band move by both coordinates, so the axes are
+        // not mapped apart.
+        if self.shifted.contains(sheet) {
+            return map_coordinate(sheet, address, self.operations)?
+                .map(|mapped| coordinate(&mapped))
+                .transpose();
+        }
         let (column, row) = coordinate(address)?;
         let Some(row) = self.axis(sheet, row, true)? else {
             return Ok(None);
@@ -581,7 +597,7 @@ impl<'a> CoordinateMap<'a> {
             .filter(|operation| operation.sheet == sheet && operation.row_operation() == rows)
         {
             let Some(current) = mapped else { break };
-            let next = transform_index(current, std::slice::from_ref(operation), rows);
+            let next = shift_index(current, operation);
             mapped = if matches!(
                 operation.kind,
                 OperationKind::DeleteRows | OperationKind::DeleteColumns
@@ -613,7 +629,7 @@ pub(crate) fn axis_deleted(
     row: bool,
 ) -> Result<bool> {
     for operation in operations {
-        if operation.row_operation() != row {
+        if operation.row_operation() != row || !operation.whole() {
             continue;
         }
         if let OperationKind::MoveColumns { to } = operation.kind {
@@ -637,6 +653,178 @@ pub(crate) fn axis_deleted(
         }
     }
     Ok(false)
+}
+
+/// The final position of the row (`row`) or column of `sheet` with `key`, as
+/// [`axis_key`] names it; none for one an operation deletes or no row or
+/// column of the sheet has.
+pub fn key_position(
+    sheet: &str,
+    key: &str,
+    operations: &[StructuralOperation],
+    row: bool,
+) -> Result<Option<u32>> {
+    let whole: Vec<StructuralOperation> = operations
+        .iter()
+        .filter(|o| o.sheet == sheet && o.row_operation() == row && o.whole())
+        .cloned()
+        .collect();
+    let original = if row {
+        key.strip_prefix('r')
+            .and_then(|number| number.parse::<u32>().ok())
+            .filter(|number| *number > 0 && format!("r{number}") == key)
+            .map(|number| format!("A{number}"))
+    } else {
+        column_number(key).ok().map(|_| format!("{key}1"))
+    };
+    let mapped = match original {
+        Some(address) => map_coordinate(sheet, &address, &whole)?,
+        None => {
+            let Some((id, number)) = key.rsplit_once('-') else {
+                return Ok(None);
+            };
+            let Ok(number) = number.parse::<u32>() else {
+                return Ok(None);
+            };
+            if number == 0 || !whole.iter().any(|o| o.id == id && o.insertion()) {
+                return Ok(None);
+            }
+            resolve_insertion(
+                sheet,
+                id,
+                number - 1,
+                row.then_some("A"),
+                (!row).then_some(1),
+                &whole,
+            )
+            .ok()
+        }
+    };
+    mapped
+        .map(|address| coordinate(&address).map(|(column, r)| if row { r } else { column }))
+        .transpose()
+}
+
+/// The key of the row or column at final `position` on its axis: `r<n>` or
+/// the column letters of the original row or column it was, or `<operation
+/// ID>-<n>` for the n-th one an operation inserted. Whole rows and columns
+/// set it; cells shifted within a band move no row or column.
+pub fn axis_key(position: u32, operations: &[StructuralOperation], row: bool) -> Result<String> {
+    let mut position = position;
+    for operation in operations
+        .iter()
+        .rev()
+        .filter(|o| o.row_operation() == row && o.whole())
+    {
+        let end = operation.at + operation.count;
+        if let OperationKind::MoveColumns { to } = operation.kind {
+            position = (1..=MAX_COLUMN.max(position))
+                .find(|&column| moved_column(column, operation.at, operation.count, to) == position)
+                .context("moved column without an origin")?;
+            continue;
+        }
+        if operation.insertion() {
+            if (operation.at..end).contains(&position) {
+                return Ok(format!("{}-{}", operation.id, position - operation.at + 1));
+            }
+            if position >= end {
+                position -= operation.count;
+            }
+        } else if position >= operation.at {
+            position += operation.count;
+        }
+    }
+    Ok(if row {
+        format!("r{position}")
+    } else {
+        column_name(position)?
+    })
+}
+
+/// Where a cell the operations leave came from: a cell of the original, or
+/// one an operation shifting cells within a band inserted.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The original cell, by address.
+    Original(String),
+    /// The `offset`-th row or column of cells `operation` inserts, at the
+    /// column (for rows) or row (for columns) `across` of the original sheet.
+    Inserted {
+        operation: String,
+        offset: u32,
+        across: u32,
+    },
+}
+
+/// Where the cell at final (`column`, `row`) of `sheet` comes from, going
+/// back through `operations`; none for a cell of a whole row or column an
+/// operation inserted, which its key names already.
+pub fn origin_of(
+    sheet: &str,
+    (column, row): (u32, u32),
+    operations: &[StructuralOperation],
+) -> Result<Option<Origin>> {
+    let own: Vec<&StructuralOperation> = operations
+        .iter()
+        .filter(|operation| operation.sheet == sheet)
+        .collect();
+    let (mut column, mut row) = (column, row);
+    for (index, operation) in own.iter().enumerate().rev() {
+        if !operation.moves_cell(column, row) {
+            continue;
+        }
+        let rows = operation.row_operation();
+        let position = if rows { &mut row } else { &mut column };
+        if let OperationKind::MoveColumns { to } = operation.kind {
+            *position = (1..=MAX_COLUMN.max(*position))
+                .find(|&c| moved_column(c, operation.at, operation.count, to) == *position)
+                .context("moved column without an origin")?;
+            continue;
+        }
+        let end = operation.at + operation.count;
+        if operation.insertion() {
+            if (operation.at..end).contains(position) {
+                if operation.whole() {
+                    return Ok(None);
+                }
+                let offset = *position - operation.at;
+                // The other coordinate, back to the original sheet through
+                // the whole rows or columns before.
+                let mut across = if rows { column } else { row };
+                for earlier in own[..index]
+                    .iter()
+                    .rev()
+                    .filter(|o| o.row_operation() != rows && o.whole())
+                {
+                    let earlier_end = earlier.at + earlier.count;
+                    if earlier.insertion() {
+                        if (earlier.at..earlier_end).contains(&across) {
+                            return Ok(None);
+                        }
+                        if across >= earlier_end {
+                            across -= earlier.count;
+                        }
+                    } else if across >= earlier.at {
+                        across += earlier.count;
+                    }
+                }
+                return Ok(Some(Origin::Inserted {
+                    operation: operation.id.clone(),
+                    offset,
+                    across,
+                }));
+            }
+            if *position >= end {
+                *position -= operation.count;
+            }
+        } else if *position >= operation.at {
+            *position += operation.count;
+        }
+    }
+    Ok(Some(Origin::Original(format!(
+        "{}{row}",
+        column_name(column)?
+    ))))
 }
 
 pub fn resolve_insertion(
@@ -682,6 +870,12 @@ pub fn resolve_insertion(
         .filter(|candidate| candidate.sheet == sheet)
     {
         if candidate.id == insertion {
+            // Cells inserted in a band exist in its columns or rows only.
+            ensure!(
+                candidate.moves_cell(mapped_column, mapped_row),
+                "{} inserts no cell there: it shifts cells within its band only",
+                candidate.id
+            );
             if target_row {
                 mapped_row = mapped_row
                     .checked_add(offset)
@@ -695,17 +889,30 @@ pub fn resolve_insertion(
             continue;
         }
         // `at` already counts the operations listed before it on the same
-        // axis; the other axis is given before any operation.
-        if !activated && candidate.row_operation() == target_row {
+        // axis; the other axis is given before any operation, which cells
+        // shifted in a band do not move as whole rows or columns.
+        if !activated {
+            if candidate.row_operation() != target_row && candidate.whole() {
+                let position = if target_row {
+                    &mut mapped_column
+                } else {
+                    &mut mapped_row
+                };
+                *position = shift_index(*position, candidate)
+                    .context("insertion target was deleted or overflowed")?;
+            }
             continue;
         }
-        if candidate.row_operation() {
-            mapped_row = transform_index(mapped_row, std::slice::from_ref(candidate), true)
-                .context("insertion target was deleted or overflowed")?;
-        } else {
-            mapped_column = transform_index(mapped_column, std::slice::from_ref(candidate), false)
-                .context("insertion target was deleted or overflowed")?;
+        if !candidate.moves_cell(mapped_column, mapped_row) {
+            continue;
         }
+        let position = if candidate.row_operation() {
+            &mut mapped_row
+        } else {
+            &mut mapped_column
+        };
+        *position = shift_index(*position, candidate)
+            .context("insertion target was deleted or overflowed")?;
     }
     ensure!(activated, "insertion operation not found");
     Ok(format!("{}{}", column_name(mapped_column)?, mapped_row))
@@ -736,6 +943,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         })
         .collect();
         let mut state = MergeState::new(&sheet).unwrap();
@@ -763,6 +971,7 @@ mod tests {
             style_rows,
             merges,
             vba_unchanged: false,
+            band: None,
         };
         let copy = operation("copy", 5, 4, Some(3), 2, true);
         // A later insertion above moves the copies with the originals.
@@ -818,6 +1027,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         })
         .collect::<Vec<_>>();
         for row in 1..20 {
@@ -854,6 +1064,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         })
         .collect::<Vec<_>>();
         let map = CoordinateMap::new(&operations);

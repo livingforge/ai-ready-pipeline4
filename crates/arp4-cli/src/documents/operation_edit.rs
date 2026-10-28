@@ -7,15 +7,29 @@ use super::sheet_edit::rejection;
 use super::*;
 use crate::document_source::{is_presentation_operation, slide_order};
 
-/// The kinds of operation that place rows, columns and pictures on a sheet
-/// by positions the operations before them leave.
-const POSITIONED: [&str; 6] = [
+/// The kinds of operation that place rows, columns, pictures, formats,
+/// links, notes and rules on a sheet by positions the operations before them
+/// leave.
+const POSITIONED: [&str; 19] = [
+    "copy_cells",
+    "set_link",
+    "clear_links",
+    "set_note",
+    "clear_notes",
+    "set_validation",
+    "clear_validations",
+    "add_conditional_format",
+    "clear_conditional_formats",
     "insert_rows",
     "delete_rows",
+    "insert_cells",
+    "delete_cells",
     "insert_columns",
     "delete_columns",
     "move_columns",
     "add_image",
+    "format_cells",
+    "place_drawing",
 ];
 
 /// The IDs of the operations of `recorded` that depend on the one at
@@ -24,7 +38,13 @@ const POSITIONED: [&str; 6] = [
 fn dependents(recorded: &[Value], index: usize) -> Vec<String> {
     let operation = &recorded[index];
     let id = operation["id"].as_str().unwrap_or_default();
-    let names = [id.to_owned(), format!("notes-{id}")];
+    let mut names = vec![id.to_owned(), format!("notes-{id}")];
+    // A sheet added is named by its name.
+    if excel::is_sheet_operation(operation)
+        && let Some(name) = operation["name"].as_str()
+    {
+        names.push(name.to_owned());
+    }
     let positioned = |o: &Value| {
         o["kind"]
             .as_str()
@@ -109,6 +129,18 @@ impl Store {
         let mut remaining = recorded.clone();
         remaining.remove(index);
         mappings["operations"] = Value::Array(remaining.clone());
+        // A sheet taken back leaves the sheets of the extraction.
+        let without;
+        let extraction = if excel::is_sheet_operation(&removed) {
+            without = operated_extraction(
+                inspected.original_extraction(),
+                &Value::Array(remaining.clone()),
+            )?
+            .into_owned();
+            &without
+        } else {
+            extraction
+        };
         let kind = string(&removed["kind"])?;
         // The value edits of what the operation added go with it.
         let pages = [operation.to_owned(), format!("notes-{operation}")];
@@ -116,6 +148,7 @@ impl Store {
             let sheet = edit["sheet"].as_str().unwrap_or_default();
             match kind {
                 "insert_slide" | "add_slide" => pages.iter().any(|page| page == sheet),
+                "add_sheet" | "copy_sheet" => removed["name"] == sheet,
                 "insert_rows" | "insert_columns" => {
                     removed["sheet"] == sheet
                         && edit["element"]
@@ -155,11 +188,54 @@ impl Store {
         if let Some(history) = stored.get_mut("history").and_then(Value::as_array_mut) {
             history.retain(|record| record["id"] != operation);
         }
+        // The formulas given to the cells an insertion added go with them.
+        if matches!(kind, "insert_rows" | "insert_columns") {
+            let prefix = format!("{operation}-");
+            let added = |identity: &Value| {
+                identity
+                    .as_str()
+                    .and_then(|id| id.strip_prefix(&prefix))
+                    .is_some_and(|n| n.parse::<u32>().is_ok())
+            };
+            for sheet in stored["sheets"]
+                .as_object_mut()
+                .into_iter()
+                .flat_map(|sheets| sheets.values_mut())
+            {
+                if let Some(formulas) = sheet.get_mut("formulas").and_then(Value::as_object_mut) {
+                    formulas
+                        .retain(|_, target| !added(&target["row"]) && !added(&target["column"]));
+                }
+            }
+        }
+        // A formula written as the cells stand after an operation recorded
+        // after this one would read other cells without it; those written
+        // after this one are taken back with it, below.
+        let position = |name: &str| recorded.iter().position(|o| o["id"] == name);
+        for (page, sheet) in stored["sheets"].as_object().into_iter().flatten() {
+            let frames = sheet["formulas"]
+                .as_object()
+                .into_iter()
+                .flat_map(|f| f.values())
+                .filter_map(|target| target["written_after"].as_str());
+            for frame in frames {
+                if position(frame).is_some_and(|at| at > index) {
+                    return Err(Rejection(json!({"code":"operation_has_dependents","message":format!("formulas of {page} copied or moved after {operation} are written as the cells stand after {frame}; clear them with documents values first"),"dependents":[frame]})).into());
+                }
+            }
+        }
         let mut planned = Planned::new();
         let mut removed_pages = vec![];
         let mut restored_pages = vec![];
-        if matches!(kind, "insert_slide" | "add_slide") {
-            for name in [operation.to_owned(), format!("notes-{operation}")] {
+        let added_pages = match kind {
+            "insert_slide" | "add_slide" => {
+                vec![operation.to_owned(), format!("notes-{operation}")]
+            }
+            "add_sheet" | "copy_sheet" => vec![string(&removed["name"])?.to_owned()],
+            _ => vec![],
+        };
+        if !added_pages.is_empty() {
+            for name in added_pages {
                 let Some((_, page)) = page_of(&before, &name)? else {
                     continue;
                 };
@@ -183,7 +259,7 @@ impl Store {
         );
         // A deleted slide's pages are not in the stored layout, which is read
         // as it stands and given them.
-        let mut layout = if kind == "delete_slide" {
+        let mut layout = if matches!(kind, "delete_slide" | "delete_sheet") {
             identity::load(&dir, extraction, &Planned::new())?
         } else {
             identity::load(&dir, extraction, &planned)?
@@ -191,6 +267,17 @@ impl Store {
         // The pages of a deleted slide and its notes come back as import makes
         // them, by their names and the places of their pages.
         let mut slide_pages = vec![];
+        if kind == "delete_sheet" {
+            let name = string(&removed["sheet"])?;
+            if let Some((index, page)) = page_of(&after, name)? {
+                layout
+                    .sheets
+                    .insert(page.clone(), identity::initial_sheet(&after.sheets[index])?);
+                slide_pages.push((name.to_owned(), index, page));
+            }
+            let operations = excel::parse_operations(&remaining, &after.sheets)?;
+            elements::geometry(&mut layout, &after, &operations)?;
+        }
         if kind == "delete_slide" {
             let slide = string(&removed["slide"])?;
             let order = slide_order(
@@ -247,6 +334,25 @@ impl Store {
                         key.strip_prefix(&prefix)
                             .is_some_and(|n| n.parse::<u32>().is_ok())
                     };
+                    // The formulas given to the cells it inserted leave with them.
+                    let places = identity::formula_places(&identity::load(
+                        &dir,
+                        extraction,
+                        &Planned::new(),
+                    )?)?;
+                    if let Some(formulas) = content
+                        .pointer_mut("/blocks/formulas/rows")
+                        .and_then(Value::as_object_mut)
+                    {
+                        let before = formulas.len();
+                        formulas.retain(|key, _| {
+                            !places
+                                .get(&page)
+                                .and_then(|places| places.get(key))
+                                .is_some_and(|(row, column, _)| inserted(row) || inserted(column))
+                        });
+                        removed_values += before - formulas.len();
+                    }
                     // The values and their fonts, by row then column.
                     for (pointer, counted) in
                         [("/blocks/table-1/rows", true), ("/fonts/table-1", false)]
@@ -379,6 +485,37 @@ impl Store {
                         cells.push((row, column));
                         restored_values += 1;
                     }
+                    // The texts of the drawings it deleted with their cells.
+                    let placed_with = excel::parse_place_operations(&recorded, &before.sheets)?;
+                    let placed_without = excel::parse_place_operations(&remaining, &after.sheets)?;
+                    let deleted_with =
+                        super::visual_elements::deleted_drawings(source, &with, &placed_with)?;
+                    let deleted_without = super::visual_elements::deleted_drawings(
+                        source,
+                        &without,
+                        &placed_without,
+                    )?;
+                    for (key, drawing) in super::mapping::shape_texts(&source.fields)? {
+                        let id = string(&drawing["id"])?;
+                        if !deleted_with.contains(id) || deleted_without.contains(id) {
+                            continue;
+                        }
+                        content["blocks"]["shapes"]["rows"][&key]["text"] = drawing["text"].clone();
+                        if content["blocks"]["shapes"]["title"].is_null() {
+                            content["blocks"]["shapes"]["title"] = json!("図形の文字");
+                        }
+                        if let Some(font) = drawing.get("font") {
+                            elements::set_grid_font(
+                                &mut content,
+                                "shapes",
+                                &key,
+                                "text",
+                                font.clone(),
+                            );
+                        }
+                        slots.insert(("shapes".to_owned(), key, "text".to_owned()));
+                        restored_values += 1;
+                    }
                     let ids: Vec<String> = cells
                         .iter()
                         .filter_map(|(row, column)| {
@@ -403,7 +540,83 @@ impl Store {
                 }
                 pages.insert(file, content);
             }
-            "delete_slide" => {
+            // The cells come back: those it moved where they were, and those
+            // it deleted from the extraction.
+            "insert_cells" | "delete_cells" => {
+                let sheet = string(&removed["sheet"])?;
+                let (index, page) = page_of(&before, sheet)?.context("operation sheet missing")?;
+                let file = inspected
+                    .page_files
+                    .get(&page)
+                    .context("operation sheet has no content page")?
+                    .clone();
+                let with = excel::parse_operations(&recorded, &before.sheets)?;
+                let without = excel::parse_operations(&remaining, &after.sheets)?;
+                let shifted = with
+                    .iter()
+                    .find(|o| o.id == operation)
+                    .context("operation missing")?;
+                let current = identity::load(&dir, extraction, &Planned::new())?;
+                let mut grid = self.read_content_grid_with(&dir, &file, extraction, &current)?;
+                let undone = cell_edit::inverse(shifted);
+                let (moves, gone) = cell_edit::shift_values(
+                    &mut grid,
+                    sheet,
+                    &page,
+                    (current.sheet(&page)?, layout.sheet_mut(&page)?),
+                    (&with, &without),
+                    &undone,
+                )?;
+                removed_values += gone.len();
+                let mut back: Vec<(String, String)> =
+                    moves.iter().map(|(_, to)| to.clone()).collect();
+                if kind == "delete_cells" {
+                    let slots = cell_edit::restore_cells(
+                        &mut grid,
+                        sheet,
+                        &page,
+                        &before.sheets[index],
+                        layout.sheet_mut(&page)?,
+                        &without,
+                        &undone,
+                    )?;
+                    let cells = slots
+                        .iter()
+                        .filter(|(block, _, _)| block == "table-1")
+                        .map(|(_, row, column)| (row.clone(), column.clone()));
+                    let before = back.len();
+                    back.extend(cells);
+                    restored_values += back.len() - before;
+                    restored.push(Restored {
+                        file: file.clone(),
+                        sheet: sheet.to_owned(),
+                        page: page.clone(),
+                        slots: Some(slots),
+                    });
+                }
+                let layout_sheet = layout.sheet(&page)?;
+                let mut groups = elements::metadata_groups(&layout_sheet.metadata)?;
+                cell_edit::carry_tables(&mut groups, (current.sheet(&page)?, layout_sheet), &moves);
+                // The cells back where they were are in the tables the
+                // interpretation puts them in.
+                if let Some(classified) = interpreted.as_ref().and_then(|c| c.get(&page)) {
+                    let identities = ["rows", "columns"]
+                        .map(|axis| identity::key_identities(layout_sheet, axis));
+                    let ids: Vec<String> = back
+                        .iter()
+                        .filter_map(|(row, column)| {
+                            Some(elements::cell_id(
+                                identities[0].get(row)?,
+                                identities[1].get(column)?,
+                            ))
+                        })
+                        .collect();
+                    elements::restore_groups(&mut groups, classified, &ids);
+                }
+                page_groups.insert(page.clone(), groups);
+                pages.insert(file, grid.to_value());
+            }
+            "delete_slide" | "delete_sheet" => {
                 let note = array(&extraction["findings"])?
                     .iter()
                     .find(|f| f["code"] == "R001")
@@ -432,14 +645,33 @@ impl Store {
             // The other operations change the original alone.
             _ => {}
         }
-        // The value and font edits made to what comes back are made again.
-        let reapplied = reapply(
-            &mappings["value_edits"],
-            &restored,
+        // The formulas written as the cells stand after it go back to what
+        // they were before.
+        let reverted = revert_framed(
+            &mut mappings["value_edits"],
+            operation,
             &mut pages,
-            &layout,
-            &before,
+            &mut layout,
+            |file| self.read_content(&dir, file, extraction),
+            &inspected.page_files,
+            extraction,
         )?;
+        if reverted > 0 {
+            planned.insert(
+                "mappings.yml".into(),
+                Some(stored_mappings(&mappings_path, &mappings)?),
+            );
+        }
+        // The value and font edits made to what comes back are made again,
+        // and the formulas given to its empty cells given again.
+        let reapplied =
+            reapply(
+                &mappings["value_edits"],
+                &restored,
+                &mut pages,
+                &layout,
+                &before,
+            )? + restore_formulas(&mappings["value_edits"], &restored, &mut pages, &mut layout)?;
         for (name, page) in pages {
             let groups = page_groups.remove(string(&page["page_id"])?);
             let body = elements::encode(page, &mut layout, groups)?;
@@ -461,6 +693,9 @@ impl Store {
         }
         if reapplied > 0 {
             report["reapplied_edits"] = json!(reapplied);
+        }
+        if reverted > 0 {
+            report["reverted_formulas"] = json!(reverted);
         }
         if !removed_pages.is_empty() {
             report["removed_pages"] = json!(removed_pages);
@@ -490,6 +725,202 @@ struct Restored {
     sheet: String,
     page: String,
     slots: Option<BTreeSet<(String, String, String)>>,
+}
+
+/// Takes back the formula edits of `records` (the `value_edits` of
+/// mappings) written as the cells stand after the operation `operation`,
+/// the last first: each formula gets back its text before the edit, written
+/// as the edit before it on the cell was, or as the original's places give
+/// them; a formula the edit gave a cell holding none goes. The edits leave
+/// the records. Returns how many.
+fn revert_framed(
+    records: &mut Value,
+    operation: &str,
+    pages: &mut BTreeMap<String, Value>,
+    layout: &mut Layout,
+    read: impl Fn(&str) -> Result<Value>,
+    page_files: &BTreeMap<String, String>,
+    extraction: &Extraction,
+) -> Result<usize> {
+    let Some(list) = records.as_array_mut() else {
+        return Ok(0);
+    };
+    // Each edit by record and place, in order.
+    let edits: Vec<(usize, usize, Value)> = list
+        .iter()
+        .enumerate()
+        .flat_map(|(r, record)| {
+            record["edits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(move |(e, edit)| (r, e, edit.clone()))
+        })
+        .collect();
+    // The page and formula key an edit names.
+    let place = |layout: &Layout, edit: &Value| -> Result<Option<(String, String)>> {
+        let sheet = edit["sheet"].as_str().unwrap_or_default();
+        let Some((index, source)) = extraction
+            .sheets
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s["name"] == sheet)
+        else {
+            return Ok(None);
+        };
+        let page = identity::page_id(&source.fields, index);
+        let keys = if let Some(cell) = edit["cell"].as_str() {
+            let (column, row) = excel::coordinate(cell)?;
+            Some((format!("r{row}"), excel::column_name(column)?))
+        } else if let Some((row, column)) = edit["element"].as_str().and_then(elements::cell_axes) {
+            identity::keys_at(layout, &page, &row, &column)?
+        } else {
+            None
+        };
+        Ok(keys.map(|(row, column)| {
+            let key = identity::formula_name(&page, &row, &column);
+            (page, key)
+        }))
+    };
+    let mut gone = vec![];
+    for (at, (r, e, edit)) in edits.iter().enumerate().rev() {
+        if edit["written_after"] != operation {
+            continue;
+        }
+        let Some((page, key)) = place(layout, edit)? else {
+            continue;
+        };
+        let Some(file) = page_files.get(&page) else {
+            continue;
+        };
+        if !pages.contains_key(file) {
+            pages.insert(file.clone(), read(file)?);
+        }
+        let content = pages.get_mut(file).context("content page missing")?;
+        // The frame of the edit before it on the cell, if any.
+        let mut earlier = None;
+        for (r2, e2, other) in edits[..at].iter().rev() {
+            if !gone.contains(&(*r2, *e2))
+                && other.get("after").is_some()
+                && place(layout, other)? == Some((page.clone(), key.clone()))
+            {
+                earlier = Some(other.clone());
+                break;
+            }
+        }
+        if edit["before"].is_null() {
+            if let Some(rows) = content
+                .pointer_mut("/blocks/formulas/rows")
+                .and_then(Value::as_object_mut)
+            {
+                rows.remove(&key);
+            }
+            identity::drop_formula(layout, &page, &key)?;
+        } else {
+            content["blocks"]["formulas"]["rows"][&key]["formula"] = edit["before"].clone();
+            let frame = earlier
+                .as_ref()
+                .and_then(|other| other["written_after"].as_str())
+                .map(str::to_owned);
+            identity::frame_formula(layout, &page, &key, frame.as_deref())?;
+        }
+        gone.push((*r, *e));
+    }
+    for (r, e) in &gone {
+        if let Some(edits) = list[*r]["edits"].as_array_mut() {
+            edits[*e] = Value::Null;
+        }
+    }
+    for record in list.iter_mut() {
+        if let Some(edits) = record["edits"].as_array_mut() {
+            edits.retain(|edit| !edit.is_null());
+        }
+    }
+    list.retain(|record| record["edits"].as_array().is_some_and(|e| !e.is_empty()));
+    Ok(gone.len())
+}
+
+/// Gives the formulas the edits of `records` (the `value_edits` of
+/// mappings) gave to cells holding none back to those of them that come
+/// back: the last formula each such cell was given, unless it was cleared
+/// after, where the cell holds no value or formula now. Returns how many.
+fn restore_formulas(
+    records: &Value,
+    restored: &[Restored],
+    pages: &mut BTreeMap<String, Value>,
+    layout: &mut Layout,
+) -> Result<usize> {
+    // The last formula of each cell, by page and row and column identity.
+    let mut given: BTreeMap<(String, String, String), (usize, Option<Value>)> = BTreeMap::new();
+    let mut order = 0;
+    for edit in records
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|record| record["edits"].as_array().into_iter().flatten())
+    {
+        let sheet = edit["sheet"].as_str().unwrap_or_default();
+        let Some(target) = restored.iter().find(|r| r.sheet == sheet) else {
+            continue;
+        };
+        let identities = if let Some(cell) = edit["cell"].as_str() {
+            let (column, row) = excel::coordinate(cell)?;
+            identity::identities_at(
+                layout,
+                &target.page,
+                &format!("r{row}"),
+                &excel::column_name(column)?,
+            )?
+        } else {
+            edit["element"].as_str().and_then(elements::cell_axes)
+        };
+        let Some((row, column)) = identities else {
+            continue;
+        };
+        let place = (target.page.clone(), row, column);
+        if edit["formula"] == true {
+            order += 1;
+            given.insert(place, (order, Some(edit.clone())));
+        } else if edit["after"].is_null() && given.contains_key(&place) {
+            order += 1;
+            given.insert(place, (order, None));
+        }
+    }
+    let mut count = 0;
+    let mut given: Vec<_> = given.into_iter().collect();
+    given.sort_by_key(|(_, (order, _))| *order);
+    for ((page, row, column), (_, edit)) in given {
+        let Some(edit) = edit else {
+            continue;
+        };
+        let Some(formula) = edit["after"].as_str() else {
+            continue;
+        };
+        let Some(target) = restored.iter().find(|r| r.page == page) else {
+            continue;
+        };
+        let Some((row_key, column_key)) = identity::keys_at(layout, &page, &row, &column)? else {
+            continue;
+        };
+        let Some(content) = pages.get_mut(&target.file) else {
+            continue;
+        };
+        let key = identity::formula_name(&page, &row_key, &column_key);
+        let holds = !content["blocks"]["table-1"]["rows"][&row_key][&column_key].is_null()
+            || !content["blocks"]["formulas"]["rows"][&key]["formula"].is_null();
+        if holds {
+            continue;
+        }
+        identity::add_formula(layout, &page, &row, &column)?;
+        identity::frame_formula(layout, &page, &key, edit["written_after"].as_str())?;
+        if content["blocks"]["formulas"].is_null() {
+            content["blocks"]["formulas"] = json!({"title":"数式原文","rows":{}});
+        }
+        content["blocks"]["formulas"]["rows"][&key] = json!({"formula":formula});
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Makes the value and font edits of `records` (the `value_edits` of
@@ -547,6 +978,14 @@ fn reapply(
                     ))
                 }
             }
+        } else if let Some(shape) = edit["shape"].as_str() {
+            shape.rsplit_once('#').map(|(_, raw)| {
+                (
+                    "shapes".to_owned(),
+                    format!("shape-{raw}"),
+                    "text".to_owned(),
+                )
+            })
         } else if let Some(element) = edit["element"].as_str() {
             let Ok((block, row, column)) = lookup.binding(element)? else {
                 continue;

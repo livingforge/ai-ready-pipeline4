@@ -29,10 +29,16 @@ pub(super) const LAYOUT_VERSION: &str = "14";
 /// metadata is stored without what [`load`] gives back ([`LAYOUT_VERSION`]),
 /// with the digest of what is stored. The layout is turned into its stored
 /// form in place, as its element metadata has an entry per cell.
-pub(super) fn stored(layout: Layout, extraction: &Extraction) -> Result<Vec<u8>> {
+pub(super) fn stored(mut layout: Layout, extraction: &Extraction) -> Result<Vec<u8>> {
+    // Formulas are stored where their cells are under the whole rows and
+    // columns; cells shifted within a band are placed as they are read.
+    let placed = layout.operations.clone();
+    place_formulas(&mut layout, &placed, false)?;
     let Layout {
         fields: mut layout,
         sheets: typed,
+        operations,
+        ..
     } = layout;
     if layout["history"].as_array().is_some_and(Vec::is_empty) {
         layout
@@ -44,7 +50,7 @@ pub(super) fn stored(layout: Layout, extraction: &Extraction) -> Result<Vec<u8>>
     for (page, mut typed) in typed {
         // Compared below with what the stored form reads back as.
         let current = cfg!(debug_assertions).then(|| typed.clone());
-        let inherited = inherited_fonts(&typed, extraction)?;
+        let inherited = inherited_fonts(&typed, extraction, &operations)?;
         table_cells(&mut typed, |cell| {
             for derived in ["column", "row_span", "column_span"] {
                 cell.remove(derived);
@@ -678,7 +684,11 @@ fn font_holders(
 /// it names by the keys of its row and column, by element ID: the font import
 /// gives it. A sheet the extraction does not hold once under its name, such
 /// as a copied slide, has none, nor does a row or column an insertion adds.
-fn inherited_fonts<'e>(sheet: &LayoutSheet, extraction: &'e Extraction) -> Result<Inherited<'e>> {
+fn inherited_fonts<'e>(
+    sheet: &LayoutSheet,
+    extraction: &'e Extraction,
+    operations: &[excel::StructuralOperation],
+) -> Result<Inherited<'e>> {
     let sources: Vec<_> = extraction
         .sheets
         .iter()
@@ -702,12 +712,26 @@ fn inherited_fonts<'e>(sheet: &LayoutSheet, extraction: &'e Extraction) -> Resul
             .collect()
     };
     let mut cells = vec![];
+    // A cell shifted within a band is at the row and column it ends in.
+    let name = string(&source["name"])?;
+    let shifted = shifts_cells(name, operations);
+    let own = sheet_operations(name, operations);
     for (at, cell) in source.cells.iter().enumerate() {
         let font = crate::extraction::font(source, cell)?;
         if font.is_null() {
             continue;
         }
-        let (column, row) = excel::coordinate(cell.address())?;
+        let (column, row) = if shifted {
+            let Some((row, column)) = shifted_place(name, cell.address(), &own)? else {
+                continue;
+            };
+            let (Some(row), Some(column)) = (numbered(&row, true), numbered(&column, false)) else {
+                continue;
+            };
+            (column, row)
+        } else {
+            excel::coordinate(cell.address())?
+        };
         cells.push((place_key(row, column), at as u32, font));
     }
     cells.sort_unstable_by_key(|&(key, at, _)| (key, at));
@@ -870,6 +894,8 @@ fn expand(mut layout: Value) -> Result<Layout> {
     Ok(Layout {
         fields: layout,
         sheets,
+        operations: Default::default(),
+        placements: Default::default(),
     })
 }
 
@@ -895,17 +921,39 @@ fn place(
     inherit: bool,
 ) -> Result<()> {
     let operated = operated_extraction(extraction, operations)?;
+    layout.placements = std::sync::Arc::new(excel::parse_place_operations(
+        array(operations)?,
+        &operated.sheets,
+    )?);
     let operations = excel::parse_operations(array(operations)?, &operated.sheets)?;
-    update(layout, &operations)?;
-    elements::geometry(layout, &operated, &operations)?;
+    arrange(layout, &operated, &operations)?;
     for sheet in layout.sheets.values_mut() {
         let inherited = if inherit {
-            inherited_fonts(sheet, extraction)?
+            inherited_fonts(sheet, extraction, &layout.operations)?
         } else {
             Inherited::default()
         };
         restore_metadata(sheet, &inherited)?;
     }
+    Ok(())
+}
+
+/// Places the rows and columns of `layout` under the pending `operations`
+/// ([`update`]), with the rows and columns cells shifted within a band reach
+/// ([`shifted_identities`]), and the merges and visuals the `operated`
+/// extraction gives under them.
+pub(super) fn arrange(
+    layout: &mut Layout,
+    operated: &Extraction,
+    operations: &[excel::StructuralOperation],
+) -> Result<()> {
+    let placed = layout.operations.clone();
+    place_formulas(layout, &placed, false)?;
+    update(layout, operations)?;
+    shifted_identities(layout, operated, operations)?;
+    place_formulas(layout, operations, true)?;
+    elements::geometry(layout, operated, operations)?;
+    layout.operations = std::sync::Arc::new(operations.to_vec());
     Ok(())
 }
 
@@ -930,6 +978,8 @@ pub(super) fn initial(extraction: &Extraction) -> Result<Layout> {
     let layout = Layout {
         fields: json!({"schema_version":LAYOUT_VERSION,"history":[]}),
         sheets,
+        operations: Default::default(),
+        placements: Default::default(),
     };
     check_axes(&layout)?;
     Ok(layout)
@@ -1044,6 +1094,163 @@ fn axis_keys(sheet: &LayoutSheet, axis: &str, to_runtime: bool) -> Result<BTreeM
         .collect())
 }
 
+/// The row and column keys of the formulas of each page, by page and by the
+/// key a runtime grid names each formula by, with the operation each is
+/// written after, if any.
+pub(super) type FormulaPlaces =
+    BTreeMap<String, BTreeMap<String, (String, String, Option<String>)>>;
+
+/// The row and column keys of each formula of each page of `layout`, by the
+/// key a runtime grid names the formula by ([`formula_name`]): where a
+/// formula given to a cell the original leaves empty, or to one an
+/// operation inserts, is written.
+pub(super) fn formula_places(layout: &Layout) -> Result<FormulaPlaces> {
+    let mut places = BTreeMap::new();
+    for (page, sheet) in &layout.sheets {
+        let Some(formulas) = sheet["formulas"].as_object().filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        let rows = axis_keys(sheet, "rows", true)?;
+        let columns = axis_keys(sheet, "columns", true)?;
+        let mut keyed = BTreeMap::new();
+        for target in formulas.values() {
+            let (Some(row), Some(column)) = (
+                rows.get(string(&target["row"])?),
+                columns.get(string(&target["column"])?),
+            ) else {
+                continue;
+            };
+            keyed.insert(
+                formula_name(page, row, column),
+                (
+                    row.to_string(),
+                    column.to_string(),
+                    target["written_after"].as_str().map(str::to_owned),
+                ),
+            );
+        }
+        places.insert(page.clone(), keyed);
+    }
+    Ok(places)
+}
+
+/// Makes the cell at the row and column identities `row` and `column` of
+/// the page `page` a formula of the page: one given to a cell the original
+/// leaves empty, or to one an operation inserts.
+pub(super) fn add_formula(layout: &mut Layout, page: &str, row: &str, column: &str) -> Result<()> {
+    let sheet = layout.sheet_mut(page)?;
+    let formulas = sheet["formulas"]
+        .as_object_mut()
+        .context("layout formulas missing")?;
+    if formulas
+        .values()
+        .any(|target| target["row"] == row && target["column"] == column)
+    {
+        return Ok(());
+    }
+    let mut id = elements::token("formula", &[row, column]);
+    let mut n = 2;
+    while formulas.contains_key(&id) {
+        id = format!("{}-{n}", elements::token("formula", &[row, column]));
+        n += 1;
+    }
+    formulas.insert(id, json!({"row":row,"column":column}));
+    Ok(())
+}
+
+/// Records that the formula a page names by the key `key` is written as the
+/// cells stand after the operation `written_after`, or, with none, as the
+/// original's places give them.
+pub(super) fn frame_formula(
+    layout: &mut Layout,
+    page: &str,
+    key: &str,
+    written_after: Option<&str>,
+) -> Result<()> {
+    let keys = formula_keys(layout.sheet(page)?, page, false)?;
+    let Some(id) = keys.get(key).map(|id| id.to_string()) else {
+        ensure!(
+            written_after.is_none(),
+            "formula {key} of {page} has no identity to keep its operation by"
+        );
+        return Ok(());
+    };
+    let target = layout.sheet_mut(page)?["formulas"]
+        .get_mut(&id)
+        .and_then(Value::as_object_mut)
+        .context("layout formula missing")?;
+    match written_after {
+        Some(operation) => {
+            target.insert("written_after".into(), json!(operation));
+        }
+        None => {
+            target.remove("written_after");
+        }
+    }
+    Ok(())
+}
+
+/// The row and column identities of the page `page` at the keys `row` and
+/// `column`, when it has both.
+pub(super) fn identities_at(
+    layout: &Layout,
+    page: &str,
+    row: &str,
+    column: &str,
+) -> Result<Option<(String, String)>> {
+    let sheet = layout.sheet(page)?;
+    let (rows, columns) = (
+        axis_keys(sheet, "rows", false)?,
+        axis_keys(sheet, "columns", false)?,
+    );
+    Ok(rows
+        .get(row)
+        .zip(columns.get(column))
+        .map(|(row, column)| (row.to_string(), column.to_string())))
+}
+
+/// The row and column keys of the page `page` at the identities `row` and
+/// `column`, when it has both.
+pub(super) fn keys_at(
+    layout: &Layout,
+    page: &str,
+    row: &str,
+    column: &str,
+) -> Result<Option<(String, String)>> {
+    let sheet = layout.sheet(page)?;
+    let (rows, columns) = (
+        axis_keys(sheet, "rows", true)?,
+        axis_keys(sheet, "columns", true)?,
+    );
+    Ok(rows
+        .get(row)
+        .zip(columns.get(column))
+        .map(|(row, column)| (row.to_string(), column.to_string())))
+}
+
+/// Takes the formula a page names by the key `key` back to an empty cell.
+pub(super) fn drop_formula(layout: &mut Layout, page: &str, key: &str) -> Result<()> {
+    let keys = formula_keys(layout.sheet(page)?, page, false)?;
+    let Some(id) = keys.get(key).map(|id| id.to_string()) else {
+        return Ok(());
+    };
+    layout.sheet_mut(page)?["formulas"]
+        .as_object_mut()
+        .context("layout formulas missing")?
+        .remove(&id);
+    Ok(())
+}
+
+/// The key a page names the formula at the row and column keys `row` and
+/// `column` of the page `page` by.
+pub(super) fn formula_name(page: &str, row: &str, column: &str) -> String {
+    format!(
+        "c-{}-{column}{}",
+        page.trim_start_matches("sheet-"),
+        row.trim_start_matches('r')
+    )
+}
+
 fn formula_keys(
     sheet: &LayoutSheet,
     page: &str,
@@ -1062,12 +1269,7 @@ fn formula_keys(
             let col = columns
                 .get(string(&target["column"])?)
                 .context("formula column identity missing")?;
-            let key = format!(
-                "c-{}-{}{}",
-                page.trim_start_matches("sheet-"),
-                col,
-                row.trim_start_matches('r')
-            );
+            let key = formula_name(page, row, col);
             Ok(if to_runtime {
                 (id.clone(), key.into())
             } else {
@@ -1314,10 +1516,12 @@ pub(super) fn runtime_grid(
     }
     grid.order();
     if is_excel(extraction) {
-        let index: usize = page_id.trim_start_matches("sheet-").parse()?;
         let source = extraction
             .sheets
-            .get(index - 1)
+            .iter()
+            .enumerate()
+            .find(|(index, sheet)| self::page_id(&sheet.fields, *index) == page_id)
+            .map(|(_, sheet)| sheet)
             .context("missing layout sheet")?;
         // A set, looked up once per cell: a sheet may hold thousands of formulas.
         let fields: BTreeSet<Name> = formula_keys(layout.sheet(&page_id)?, &page_id, true)?
@@ -1325,11 +1529,30 @@ pub(super) fn runtime_grid(
             .collect();
         let mut caches = vec![];
         let body: Name = "table-1".into();
-        for cell in &source.cells {
-            if cell.kind() == CellKind::Formula && fields.contains(cell.id()) {
+        let sheet_name = string(&source["name"])?;
+        // A cell shifted within a band holds its formula where it ends.
+        let shifted = shifts_cells(sheet_name, &layout.operations);
+        let own = sheet_operations(sheet_name, &layout.operations);
+        for cell in source
+            .cells
+            .iter()
+            .filter(|c| c.kind() == CellKind::Formula)
+        {
+            let (row, column) = if shifted {
+                match shifted_place(sheet_name, cell.address(), &own)? {
+                    Some(place) => place,
+                    None => continue,
+                }
+            } else {
                 let (column, row) = excel::coordinate(cell.address())?;
-                let row = format!("r{row}");
-                let column = excel::column_name(column)?;
+                (format!("r{row}"), excel::column_name(column)?)
+            };
+            let key = if shifted {
+                formula_name(&page_id, &row, &column)
+            } else {
+                cell.id().to_owned()
+            };
+            if fields.contains(key.as_str()) {
                 ensure!(
                     grid.block("table-1")
                         .binary_search_by(|v| (&*v.row, &*v.column).cmp(&(&*row, &*column)))
@@ -1396,6 +1619,279 @@ impl Store {
     }
 }
 
+/// The operations of `operations` on `sheet`, found once for the many cells
+/// of it [`shifted_place`] places.
+pub(super) fn sheet_operations(
+    sheet: &str,
+    operations: &[excel::StructuralOperation],
+) -> Vec<excel::StructuralOperation> {
+    operations
+        .iter()
+        .filter(|operation| operation.sheet == sheet)
+        .cloned()
+        .collect()
+}
+
+/// The keys of the place (row, column) the cell `address` of `sheet` ends in
+/// under `own`, the operations on the sheet ([`sheet_operations`]), none
+/// when one deletes it: the keys of the row and column there, as
+/// [`excel::axis_key`] names them.
+pub(super) fn shifted_place(
+    sheet: &str,
+    address: &str,
+    own: &[excel::StructuralOperation],
+) -> Result<Option<(String, String)>> {
+    let Some(mapped) = excel::map_coordinate(sheet, address, own)? else {
+        return Ok(None);
+    };
+    let (column, row) = excel::coordinate(&mapped)?;
+    Ok(Some((
+        excel::axis_key(row, own, true)?,
+        excel::axis_key(column, own, false)?,
+    )))
+}
+
+/// Whether `sheet` has operations shifting cells within a band.
+pub(super) fn shifts_cells(sheet: &str, operations: &[excel::StructuralOperation]) -> bool {
+    operations
+        .iter()
+        .any(|operation| operation.sheet == sheet && !operation.whole())
+}
+
+/// Gives each sheet whose cells shift within a band the identities of the
+/// rows and columns of the original its cells reach that it has none for:
+/// a shift down or right may push a cell past the last row or column. The
+/// formulas of shifted cells take the keys of where they end.
+fn shifted_identities(
+    layout: &mut Layout,
+    extraction: &Extraction,
+    operations: &[excel::StructuralOperation],
+) -> Result<()> {
+    for sheet in &extraction.sheets {
+        let name = string(&sheet["name"])?;
+        if !shifts_cells(name, operations) {
+            continue;
+        }
+        let Some(layout_sheet) = layout.sheets.values_mut().find(|s| s["name"] == name) else {
+            continue;
+        };
+        let own: Vec<excel::StructuralOperation> = operations
+            .iter()
+            .filter(|operation| operation.sheet == name)
+            .cloned()
+            .collect();
+        let mut lines = KeyLines::new(layout_sheet);
+        for cell in &sheet.cells {
+            let Some(mapped) = excel::map_coordinate(name, cell.address(), &own)? else {
+                continue;
+            };
+            let (column, row) = excel::coordinate(&mapped)?;
+            lines.line(
+                layout_sheet,
+                "rows",
+                &excel::axis_key(row, &own, true)?,
+                row,
+            );
+            lines.line(
+                layout_sheet,
+                "columns",
+                &excel::axis_key(column, &own, false)?,
+                column,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Places the formulas of each sheet whose cells `operations` shift within a
+/// band: with `shift`, from the rows and columns of their cells under the
+/// whole rows and columns, as layout.yml stores them, to where the cells end,
+/// those of the cells deleted set aside; without, back, those set aside
+/// returned. A formula keeps its identity either way.
+fn place_formulas(
+    layout: &mut Layout,
+    operations: &[excel::StructuralOperation],
+    shift: bool,
+) -> Result<()> {
+    for sheet in layout.sheets.values_mut() {
+        let name = string(&sheet["name"])?.to_owned();
+        if !shifts_cells(&name, operations) {
+            continue;
+        }
+        let own: Vec<excel::StructuralOperation> = operations
+            .iter()
+            .filter(|operation| operation.sheet == name)
+            .cloned()
+            .collect();
+        let formulas = sheet["formulas"]
+            .as_object()
+            .context("layout formulas missing")?
+            .clone();
+        let mut lines = KeyLines::new(sheet);
+        let mut placed = serde_json::Map::new();
+        let mut aside = serde_json::Map::new();
+        for (id, target) in formulas {
+            let (Some(row), Some(column)) = (
+                sheet.rows.key(string(&target["row"])?).map(str::to_owned),
+                sheet
+                    .columns
+                    .key(string(&target["column"])?)
+                    .map(str::to_owned),
+            ) else {
+                placed.insert(id, target);
+                continue;
+            };
+            let place = if shift {
+                let (Some(number), Ok(_)) = (numbered(&row, true), excel::column_number(&column))
+                else {
+                    placed.insert(id, target);
+                    continue;
+                };
+                let Some(mapped) =
+                    excel::map_coordinate(&name, &format!("{column}{number}"), &own)?
+                else {
+                    aside.insert(id, target);
+                    continue;
+                };
+                let (x, y) = excel::coordinate(&mapped)?;
+                let row = lines.line(sheet, "rows", &excel::axis_key(y, &own, true)?, y);
+                let column = lines.line(sheet, "columns", &excel::axis_key(x, &own, false)?, x);
+                (row, column)
+            } else {
+                let (Some(y), Some(x)) = (
+                    excel::key_position(&name, &row, &own, true)?,
+                    excel::key_position(&name, &column, &own, false)?,
+                ) else {
+                    placed.insert(id, target);
+                    continue;
+                };
+                let Some(excel::Origin::Original(address)) = excel::origin_of(&name, (x, y), &own)?
+                else {
+                    placed.insert(id, target);
+                    continue;
+                };
+                let (x, y) = excel::coordinate(&address)?;
+                let (Some(row), Some(column)) = (
+                    lines.get("rows", &format!("r{y}")),
+                    lines.get("columns", &excel::column_name(x)?),
+                ) else {
+                    placed.insert(id, target);
+                    continue;
+                };
+                (row.clone(), column.clone())
+            };
+            placed.insert(id, json!({"row":place.0,"column":place.1}));
+        }
+        if !shift {
+            if let Some(set) = sheet
+                .fields
+                .get_mut(WITHDRAWN)
+                .and_then(Value::as_object_mut)
+                .and_then(|withdrawn| withdrawn.remove("formulas"))
+                .and_then(|set| set.as_object().cloned())
+            {
+                placed.extend(set);
+            }
+        } else if !aside.is_empty() {
+            sheet[WITHDRAWN]["formulas"] = Value::Object(aside);
+        }
+        sheet["formulas"] = Value::Object(placed);
+    }
+    Ok(())
+}
+
+/// The identities of the rows and columns of a layout sheet by key, the
+/// first in order with each, found once for the many cells that look them up
+/// and kept as [`KeyLines::line`] adds rows and columns.
+/// Gives the original cell `address` of the sheet of page `page` the row
+/// and column identities it lacks when it lies past the rows and columns the
+/// extraction's cells reach, so that a value or formula can be given to it,
+/// as Excel takes one in any cell. False when an operation deletes it.
+pub(super) fn reach_cell(layout: &mut Layout, page: &str, address: &str) -> Result<bool> {
+    let operations = layout.operations.clone();
+    let sheet = layout.sheet_mut(page)?;
+    let name = string(&sheet["name"])?.to_owned();
+    let own = sheet_operations(&name, &operations);
+    let Some(mapped) = excel::map_coordinate(&name, address, &own)? else {
+        return Ok(false);
+    };
+    let (column, row) = excel::coordinate(&mapped)?;
+    let (original_column, original_row) = excel::coordinate(address)?;
+    let mut lines = KeyLines::new(sheet);
+    lines.line(sheet, "rows", &format!("r{original_row}"), row);
+    lines.line(
+        sheet,
+        "columns",
+        &excel::column_name(original_column)?,
+        column,
+    );
+    Ok(true)
+}
+
+pub(super) struct KeyLines([HashMap<String, String>; 2]);
+
+impl KeyLines {
+    pub(super) fn new(sheet: &LayoutSheet) -> Self {
+        Self(["rows", "columns"].map(|axis| key_identities(sheet, axis)))
+    }
+
+    /// The identity of the row (`axis` "rows") or column with `key`, none
+    /// for one the sheet has none for.
+    pub(super) fn get(&self, axis: &str, key: &str) -> Option<&String> {
+        self.0[usize::from(axis != "rows")].get(key)
+    }
+
+    /// The identity of the row (`axis` "rows") or column of `sheet` with
+    /// `key`, given a new one at `position` when it has none: a row or
+    /// column of the original no cell reached before cells shifted within a
+    /// band.
+    pub(super) fn line(
+        &mut self,
+        sheet: &mut LayoutSheet,
+        axis: &str,
+        key: &str,
+        position: u32,
+    ) -> String {
+        let keys = &mut self.0[usize::from(axis != "rows")];
+        if let Some(id) = keys.get(key) {
+            return id.clone();
+        }
+        let entries = sheet.axis_mut(axis);
+        let id = fresh_identity(entries, key);
+        entries.insert(
+            id.clone(),
+            Line {
+                key: key.to_owned(),
+                position: Some(u64::from(position)),
+            },
+        );
+        keys.insert(key.to_owned(), id.clone());
+        id
+    }
+}
+
+/// The key each formula of the layout sheet `before` of `page` has in
+/// `after`, by its key in `before`; one `after` has none of is left out.
+pub(super) fn formula_renames(
+    before: &LayoutSheet,
+    after: &LayoutSheet,
+    page: &str,
+) -> Result<HashMap<String, String>> {
+    let after = formula_keys(after, page, true)?;
+    Ok(formula_keys(before, page, true)?
+        .into_iter()
+        .filter_map(|(id, key)| Some((key.to_string(), after.get(&id)?.to_string())))
+        .collect())
+}
+
+/// The key the formula of the cell `id` has in the layout `sheet` of `page`,
+/// none when it has no place there.
+pub(super) fn formula_key(sheet: &LayoutSheet, page: &str, id: &str) -> Result<Option<String>> {
+    Ok(formula_keys(sheet, page, true)?
+        .get(id)
+        .map(ToString::to_string))
+}
+
 /// Refresh placements without renaming existing identities or body keys.
 pub(super) fn update(layout: &mut Layout, operations: &[excel::StructuralOperation]) -> Result<()> {
     let history = layout["history"]
@@ -1417,7 +1913,45 @@ pub(super) fn update(layout: &mut Layout, operations: &[excel::StructuralOperati
                 excel::OperationKind::DeleteColumns => "delete_columns",
                 excel::OperationKind::MoveColumns { .. } => "move_columns",
             };
-            let mut record = json!({"id":operation.id,"sheet":operation.sheet,"kind":kind,"at":operation.at,"count":operation.count,"reason":"ARP recorded structural operation"});
+            let mut record = match operation.band {
+                None => {
+                    json!({"id":operation.id,"sheet":operation.sheet,"kind":kind,"at":operation.at,"count":operation.count,"reason":"ARP recorded structural operation"})
+                }
+                // Cells shifted within a band, as the operation names them.
+                Some((first, last)) => {
+                    let end = operation.at + operation.count - 1;
+                    let (range, shift) = if operation.row_operation() {
+                        (
+                            format!(
+                                "{}{}:{}{end}",
+                                excel::column_name(first)?,
+                                operation.at,
+                                excel::column_name(last)?
+                            ),
+                            if operation.insertion() { "down" } else { "up" },
+                        )
+                    } else {
+                        (
+                            format!(
+                                "{}{first}:{}{last}",
+                                excel::column_name(operation.at)?,
+                                excel::column_name(end)?
+                            ),
+                            if operation.insertion() {
+                                "right"
+                            } else {
+                                "left"
+                            },
+                        )
+                    };
+                    let kind = if operation.insertion() {
+                        "insert_cells"
+                    } else {
+                        "delete_cells"
+                    };
+                    json!({"id":operation.id,"sheet":operation.sheet,"kind":kind,"range":range,"shift":shift,"reason":"ARP recorded structural operation"})
+                }
+            };
             if let excel::OperationKind::MoveColumns { to } = operation.kind {
                 record["to"] = json!(to);
             }
@@ -1444,10 +1978,11 @@ pub(super) fn update(layout: &mut Layout, operations: &[excel::StructuralOperati
     for sheet in layout.sheets.values_mut() {
         let name = string(&sheet["name"])?.to_owned();
         for (axis, rows) in [("rows", true), ("columns", false)] {
-            // Only this sheet's operations move its rows and columns.
+            // Only this sheet's operations move its rows and columns; cells
+            // shifted within a band move no row or column.
             let axis_operations: Vec<_> = operations
                 .iter()
-                .filter(|op| op.sheet == name && op.row_operation() == rows)
+                .filter(|op| op.sheet == name && op.row_operation() == rows && op.whole())
                 .cloned()
                 .collect();
             let entries = sheet.axis_mut(axis);
@@ -1480,10 +2015,9 @@ pub(super) fn update(layout: &mut Layout, operations: &[excel::StructuralOperati
                 sheet[WITHDRAWN][axis][id] = json!({ "key": key });
             }
             let entries = sheet.axis_mut(axis);
-            for op in operations
-                .iter()
-                .filter(|o| o.sheet == name && o.row_operation() == rows && o.insertion())
-            {
+            for op in operations.iter().filter(|o| {
+                o.sheet == name && o.row_operation() == rows && o.insertion() && o.whole()
+            }) {
                 for offset in 0..op.count {
                     let id = format!("{}-{}", op.id, offset + 1);
                     let resolved = excel::resolve_insertion(
@@ -1722,6 +2256,8 @@ pub(super) fn reimport(dir: &Path, extraction: &Extraction, trusted: bool) -> Re
             formulas.insert(id, json!({"row":row,"column":column}));
         }
     }
+    // The operations are applied: the cells are where they placed them.
+    layout.operations = Default::default();
     check_axes(&layout)?;
     Ok(layout)
 }

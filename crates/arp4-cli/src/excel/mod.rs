@@ -1,15 +1,30 @@
 pub use coordinates::{
-    ComputedRanges, CoordinateMap, Merges, column_name, column_number, coordinate, map_coordinate,
-    merges_after, resolve_insertion,
+    ComputedRanges, CoordinateMap, Merges, Origin, axis_key, column_name, column_number,
+    coordinate, key_position, map_coordinate, merges_after, origin_of, resolve_insertion,
 };
 mod coordinates;
 pub(crate) use coordinates::MergeState;
 pub(crate) use coordinates::axis_deleted;
+pub(crate) use coordinates::copied_merges;
 use coordinates::*;
-pub use operations::{parse_image_operations, parse_operations};
+pub use operations::{
+    parse_format_operations, parse_image_operations, parse_operations, parse_place_operations,
+    recorded_on_rows,
+};
+pub(crate) use references::{
+    moved_row, moved_rows_formula, referenced, rename_sheet, rename_tables, rewrite_formula,
+    shift_relative,
+};
 mod operations;
-pub(crate) use drawings::project_anchor;
+pub use cell_objects::{CellObjectKind, CellObjectOperation, parse_cell_object_operations};
+mod sheet_add;
 pub use drawings::validate_image_asset;
+pub(crate) use drawings::{drawing_deleted, project_anchor};
+pub use sheet_add::{
+    SheetChange, SheetOperation, copied_charts, copied_drawing_part, copied_formula, copied_tables,
+    is_sheet_operation, parse_sheet_changes, parse_sheet_operations, sheet_name_problem,
+    sheet_order, sheet_page, sheet_view,
+};
 mod drawings;
 use drawings::*;
 pub use formula_edit::check_formula;
@@ -35,16 +50,27 @@ pub(crate) use package::{
 };
 use relocation::*;
 use sheet_objects::*;
+mod calculation;
+pub use calculation::calculate;
+mod fit;
+pub use fit::{FitTarget, Place, layout_warnings};
+mod cell_objects;
 mod column_move;
+mod formatting;
+mod placing;
 mod render;
 #[cfg(windows)]
 mod render_native;
+mod rules;
+mod shifted;
 mod text_edit;
 use text_edit::SharedStrings;
 mod vba;
 pub use vba::VbaNotUpdated;
 mod writeback;
 pub use render::render;
+#[cfg(windows)]
+pub use render_native::calculation_worker;
 #[cfg(windows)]
 pub use render_native::worker as render_worker;
 pub use table_labels::{ensure_table_label_edit, ensure_unique_table_headers, table_label};
@@ -298,7 +324,7 @@ pub enum OperationKind {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StructuralOperation {
     pub id: String,
     pub sheet: String,
@@ -315,6 +341,11 @@ pub struct StructuralOperation {
     /// Whether the person editing accepted that the workbook's VBA code keeps
     /// the cell addresses it holds: ARP, like Excel, does not rewrite them.
     pub vba_unchanged: bool,
+    /// For cells shifted within a band rather than whole rows or columns: the
+    /// first and last column of rows shifted down or up, or the first and
+    /// last row of columns shifted right or left, as the operations before
+    /// leave them.
+    pub band: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -331,8 +362,107 @@ pub struct ImageOperation {
     pub sheet: String,
     pub asset: String,
     pub name: Option<String>,
+    /// The corners in the cells the row and column operations recorded
+    /// before the picture leave; the ones recorded after it move it.
     pub from: AnchorPoint,
     pub to: AnchorPoint,
+    /// How many row and column operations were recorded before the picture.
+    pub preceding: usize,
+}
+
+/// A change of the format of a range of cells (`format_cells`), in the
+/// cells the row and column operations recorded before it leave.
+#[derive(Clone, Debug)]
+pub struct FormatOperation {
+    pub id: String,
+    pub sheet: String,
+    pub range: String,
+    /// The cell whose whole format the range takes.
+    pub from: Option<String>,
+    pub alignment: Alignment,
+    /// The font emphasis, fill and number format the cells take.
+    pub look: CellLook,
+    /// The lines drawn or taken away, in the order given.
+    pub borders: Vec<BorderLine>,
+    /// Points, or none for the height Excel fits to the text.
+    pub row_height: Option<Option<f64>>,
+    pub column_width: Option<f64>,
+    /// Merge the range, or take apart the merges inside it.
+    pub merge: Option<bool>,
+    /// For a `copy_cells`, the top left cell the formats and merges of the
+    /// range are copied to.
+    pub copy_to: Option<String>,
+    /// How many row and column operations were recorded before it.
+    pub preceding: usize,
+}
+
+/// A drawing object moved, resized or given another placement
+/// (`place_drawing`), in the cells the row and column operations recorded
+/// before it leave.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaceOperation {
+    pub id: String,
+    pub sheet: String,
+    /// The extraction ID of the object anchored: `<drawing part>#<cNvPr id>`.
+    pub drawing: String,
+    /// The cells of the object's top left and bottom right corners.
+    pub from: Option<(u32, u32)>,
+    pub to: Option<(u32, u32)>,
+    /// Where in those cells the corners are, across and down (EMU); the
+    /// cells' top left when none.
+    pub offsets: Option<[(u64, u64); 2]>,
+    /// How later row and column changes move it: `twoCell` (move and
+    /// size), `oneCell` (move) or `absolute` (stay).
+    pub placement: Option<String>,
+    /// How many row and column operations were recorded before it.
+    pub preceding: usize,
+}
+
+/// Alignment settings a format operation changes; unset ones stay.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Alignment {
+    pub wrap: Option<bool>,
+    pub shrink: Option<bool>,
+    pub horizontal: Option<String>,
+    pub vertical: Option<String>,
+}
+
+impl Alignment {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// What a format operation sets of the cells' fonts, fill and number format;
+/// none leaves it as it is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CellLook {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub strike: Option<bool>,
+    /// `none`, `single` or `double`.
+    pub underline: Option<String>,
+    /// `RRGGBB`, or `none` for no fill.
+    pub fill: Option<String>,
+    pub number_format: Option<String>,
+}
+
+impl CellLook {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A line a format operation draws on edges of its range, or takes away
+/// (`style` none).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BorderLine {
+    /// `all`, `outline`, `inside`, `horizontal`, `vertical`, `top`,
+    /// `bottom`, `left` or `right`.
+    pub edges: String,
+    pub style: String,
+    /// `RRGGBB`; none for the automatic color.
+    pub color: Option<String>,
 }
 
 impl StructuralOperation {
@@ -347,6 +477,20 @@ impl StructuralOperation {
             self.kind,
             OperationKind::InsertRows | OperationKind::InsertColumns
         )
+    }
+
+    /// Whether whole rows or columns move, rather than the cells of a band.
+    pub fn whole(&self) -> bool {
+        self.band.is_none()
+    }
+
+    /// Whether the operation moves the cell at (`column`, `row`) along its
+    /// axis: every cell for whole rows or columns, the cells whose other
+    /// coordinate lies in the band for shifted cells.
+    pub fn moves_cell(&self, column: u32, row: u32) -> bool {
+        let across = if self.row_operation() { column } else { row };
+        self.band
+            .is_none_or(|(first, last)| (first..=last).contains(&across))
     }
 }
 

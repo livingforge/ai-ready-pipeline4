@@ -25,7 +25,14 @@ pub(crate) struct Entries {
     /// formulas (`<cell ID>-formula`) and of shape texts
     /// (`shape-<drawing ID>-text`), whose rows they begin with.
     names: String,
+    /// The places default entries of cells shifted within a band moved to,
+    /// by number: where the row key begins in [`Entries::names`], where it
+    /// ends and the column key begins, and where that ends.
+    moved: Vec<[u32; 3]>,
 }
+
+/// The [`DefaultEntry::moved`] of an entry at the place its cell names.
+const NOT_MOVED: u32 = u32::MAX;
 
 /// The page and name of a sheet of the extraction.
 struct SheetNames {
@@ -59,6 +66,9 @@ struct DefaultEntry {
     block: Text,
     reason: Text,
     writeback: Text,
+    /// The place a cell shifted within a band moved to, by its number in
+    /// [`Entries::moved`]; [`NOT_MOVED`] for one at its own.
+    moved: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -274,6 +284,18 @@ impl<'a> EntryRef<'a> {
             }
             Slot::Default(d) => d,
         };
+        if d.moved != NOT_MOVED {
+            let [start, middle, end] = self.entries.moved[d.moved as usize];
+            let names = &self.entries.names;
+            return Ok(Some(EntryPosition {
+                row: &names[start as usize..middle as usize],
+                column: &names[middle as usize..end as usize],
+                kind: match d.kind {
+                    DefaultKind::Cell => self.cell(d).value().kind(),
+                    _ => "string",
+                },
+            }));
+        }
         Ok(match d.kind {
             DefaultKind::Cell => {
                 let cell = self.cell(d);
@@ -511,6 +533,7 @@ pub(super) fn default_entries(extraction: &Extraction, more: usize) -> Result<En
                 block: Text::of(block),
                 reason: Text::of(reason),
                 writeback: Text::of(writeback),
+                moved: NOT_MOVED,
             })
         };
         // The names of the rows of the cells, each written once.
@@ -641,6 +664,7 @@ pub(super) fn default_entries(extraction: &Extraction, more: usize) -> Result<En
         json: vec![],
         sheets,
         names: crate::data::exact_text(names),
+        moved: vec![],
     })
 }
 
@@ -718,6 +742,68 @@ pub(super) fn with_default_entries(
     Ok((mappings, entries))
 }
 
+/// On a sheet whose cells shift within a band, a cell is shown where it ends,
+/// not at the row and column of its address: the default entry of each cell
+/// and formula such an operation moves takes the place it ends in, and that
+/// of one it deletes is dropped with it.
+pub(super) fn shift_entries(
+    entries: &mut Entries,
+    extraction: &Extraction,
+    operations: &[excel::StructuralOperation],
+) -> Result<()> {
+    if operations.iter().all(excel::StructuralOperation::whole) {
+        return Ok(());
+    }
+    let mut dropped = vec![false; entries.len()];
+    // The operations on each sheet whose cells they shift, by its number.
+    let mut sheets: HashMap<u32, Option<Vec<excel::StructuralOperation>>> = HashMap::new();
+    for (at, gone) in dropped.iter_mut().enumerate() {
+        let Slot::Default(d) = entries.order[at] else {
+            continue;
+        };
+        if !matches!(d.kind, DefaultKind::Cell | DefaultKind::Formula) {
+            continue;
+        }
+        let entry = entries.get(at, extraction);
+        let sheet = &*entry.sheet(d).name;
+        let own = sheets.entry(d.sheet).or_insert_with(|| {
+            identity::shifts_cells(sheet, operations)
+                .then(|| identity::sheet_operations(sheet, operations))
+        });
+        let Some(own) = own else {
+            continue;
+        };
+        let cell = entry.cell(d);
+        let Some((row, column)) = identity::shifted_place(sheet, cell.address(), own)? else {
+            *gone = true;
+            continue;
+        };
+        let place = match d.kind {
+            DefaultKind::Cell => (row, column),
+            _ => (
+                identity::formula_name(&entry.sheet(d).page, &row, &column),
+                "formula".to_owned(),
+            ),
+        };
+        let position = entry.position()?.context("a cell entry has a position")?;
+        if (position.row, position.column) == (place.0.as_str(), place.1.as_str()) {
+            continue;
+        }
+        let (start, middle) = written(&mut entries.names, format_args!("{}", place.0))?;
+        let (_, end) = written(&mut entries.names, format_args!("{}", place.1))?;
+        entries.order[at] = Slot::Default(DefaultEntry {
+            moved: u32::try_from(entries.moved.len())?,
+            ..d
+        });
+        entries.moved.push([start, middle, end]);
+    }
+    let mut dropped = dropped.into_iter();
+    entries
+        .order
+        .retain(|_| !dropped.next().expect("whether each entry is dropped"));
+    Ok(())
+}
+
 fn entry_key(entry: &Value) -> Result<(&str, &str, &str)> {
     Ok((
         string(&entry["page"])?,
@@ -738,6 +824,7 @@ pub(super) fn regenerate_mappings(
     extraction: &Extraction,
     pages: &[super::elements::GridPage],
     operations: &[excel::StructuralOperation],
+    formula_places: &identity::FormulaPlaces,
 ) -> Result<(Value, Entries)> {
     // The pages by ID, each with whether each of its values is an entry's:
     // its values are in order, which a value is found in by halves, as a
@@ -818,50 +905,88 @@ pub(super) fn regenerate_mappings(
             .zip(mapped)
             .filter(|(_, mapped)| !**mapped)
         {
-            let (block, row, column) = (&*value.block, &*value.row, &*value.column);
+            let (block, key, column_key) = (&*value.block, &*value.row, &*value.column);
             let value = &value.value;
             ensure!(
                 value.is_null() || kind(value) != "object",
                 "new table references require explicit mapping"
             );
-            let target = match (
-                inserted_position(operations, &sheet, row, true)?,
-                inserted_position(operations, &sheet, column, false)?,
-            ) {
-                (Some((insertion, offset)), None) => {
-                    excel::column_number(column).with_context(|| {
+            // A formula given to a cell holding none is written at its cell.
+            let new_formula = workbook && block == "formulas";
+            let (row, column, written_after) = if new_formula {
+                let (row, column, written_after) = formula_places
+                    .get(page)
+                    .and_then(|places| places.get(key))
+                    .with_context(|| format!("formula {key} of {page} names no cell"))?;
+                (row.as_str(), column.as_str(), written_after.as_deref())
+            } else {
+                (key, column_key, None)
+            };
+            let origin = match (workbook && matches!(block, "table-1" | "formulas"))
+                .then(|| shifted_origin(&sheet, row, column, operations))
+            {
+                Some(origin) => origin?,
+                None => None,
+            };
+            let target = match origin {
+                Some(excel::Origin::Original(cell)) => json!({"sheet":sheet,"cell":cell}),
+                Some(excel::Origin::Inserted {
+                    operation,
+                    offset,
+                    across,
+                }) => {
+                    let rows = operations
+                        .iter()
+                        .find(|o| o.sheet == sheet && o.id == operation)
+                        .context("inserting operation missing")?
+                        .row_operation();
+                    if rows {
+                        json!({"sheet":sheet,"insertion":operation,"offset":offset,"column":excel::column_name(across)?})
+                    } else {
+                        json!({"sheet":sheet,"insertion":operation,"offset":offset,"row":across})
+                    }
+                }
+                None => match (
+                    inserted_position(operations, &sheet, row, true)?,
+                    inserted_position(operations, &sheet, column, false)?,
+                ) {
+                    (Some((insertion, offset)), None) => {
+                        excel::column_number(column).with_context(|| {
                         format!("{row}/{column}: an inserted row takes values in original columns (A, B, ...)")
                     })?;
-                    json!({"sheet":sheet,"insertion":insertion,"offset":offset,"column":column})
-                }
-                (None, Some((insertion, offset))) => {
-                    let row_number = row
+                        json!({"sheet":sheet,"insertion":insertion,"offset":offset,"column":column})
+                    }
+                    (None, Some((insertion, offset))) => {
+                        let row_number = row
                         .strip_prefix('r')
                         .and_then(|number| number.parse::<u32>().ok())
                         .filter(|number| *number > 0)
                         .with_context(|| {
                             format!("{row}/{column}: an inserted column takes values in original rows (r1, r2, ...)")
                         })?;
-                    json!({"sheet":sheet,"insertion":insertion,"offset":offset,"row":row_number})
-                }
-                (Some(_), Some(_)) => bail!(
-                    "{row}/{column}: a cell in both an inserted row and an inserted column cannot be written"
-                ),
-                // A value given to a cell of the workbook that holds none.
-                (None, None)
-                    if workbook
-                        && block == "table-1"
-                        && excel::column_number(column).is_ok()
-                        && row
-                            .strip_prefix('r')
-                            .and_then(|number| number.parse::<u32>().ok())
-                            .is_some_and(|number| number > 0 && format!("r{number}") == row) =>
-                {
-                    json!({"sheet":sheet,"cell":format!("{column}{}", &row[1..])})
-                }
-                (None, None) => bail!(
-                    "{row}/{column} is not a cell of the original: edit only cells that hold a value, and name new rows and columns <operation ID>-<n> after the insert_rows or insert_columns operation that adds them"
-                ),
+                        json!({"sheet":sheet,"insertion":insertion,"offset":offset,"row":row_number})
+                    }
+                    (Some(_), Some(_)) => bail!(
+                        "{row}/{column}: a cell in both an inserted row and an inserted column cannot be written"
+                    ),
+                    // A value given to a cell of the workbook that holds none.
+                    (None, None)
+                        if workbook
+                            && matches!(block, "table-1" | "formulas")
+                            && excel::column_number(column).is_ok()
+                            && row
+                                .strip_prefix('r')
+                                .and_then(|number| number.parse::<u32>().ok())
+                                .is_some_and(|number| {
+                                    number > 0 && format!("r{number}") == row
+                                }) =>
+                    {
+                        json!({"sheet":sheet,"cell":format!("{column}{}", &row[1..])})
+                    }
+                    (None, None) => bail!(
+                        "{row}/{column} is not a cell of the original: edit only cells that hold a value, and name new rows and columns <operation ID>-<n> after the insert_rows or insert_columns operation that adds them"
+                    ),
+                },
             };
             let used_fields = match &mut used_fields {
                 Some(used) => used,
@@ -874,7 +999,11 @@ pub(super) fn regenerate_mappings(
                         .collect::<Result<_>>()?,
                 ),
             };
-            let field_prefix = format!("generated-{row}-{column}");
+            let field_prefix = if new_formula {
+                format!("generated-{row}-{column}-formula")
+            } else {
+                format!("generated-{row}-{column}")
+            };
             let mut field = field_prefix.clone();
             let mut suffix = 2;
             while used_fields.contains(field.as_str()) || generated_fields.contains(&field) {
@@ -882,20 +1011,46 @@ pub(super) fn regenerate_mappings(
                 suffix += 1;
             }
             generated_fields.insert(field.clone());
-            let reason = if target.get("cell").is_some() {
+            let reason = if new_formula {
+                "formula of a cell the original leaves empty or an operation inserts"
+            } else if target.get("cell").is_some() {
                 "value of a cell the original leaves empty"
             } else {
                 "structural content generated mapping"
             };
-            generated.push(json!({
+            let mut entry = json!({
                 "page":page,
                 "block":block,
                 "field":field,
                 "reason":reason,
                 "target":target,
-                "writeback":"cell",
-                "position":{"row":row,"column":column,"type":kind(value)}
-            }));
+                "writeback":if new_formula { "new_formula" } else { "cell" },
+                "position":{"row":key,"column":column_key,"type":kind(value)}
+            });
+            if let Some(operation) = written_after {
+                entry["written_after"] = json!(operation);
+            }
+            generated.push(entry);
+        }
+    }
+    // A page given its first formulas or values, as a sheet an operation
+    // adds empty, has their block, which an entry names as it names the
+    // blocks of the extraction.
+    let named_blocks: BTreeSet<(&str, &str)> = entries
+        .iter(extraction)
+        .zip(&keep)
+        .filter(|(entry, kept)| **kept && entry.field_is_null())
+        .map(|(entry, _)| Ok((entry.page()?, entry.block()?)))
+        .collect::<Result<_>>()?;
+    for (page, (grid, _)) in &by_id {
+        for block in ["formulas", "table-1"] {
+            if workbook
+                && grid.titles.contains_key(block)
+                && !named_blocks.contains(&(*page, block))
+            {
+                generated.push(json!({"page":page,"block":block,"field":null,
+                    "reason":"表の構造","target":null,"writeback":"excluded"}));
+            }
         }
     }
     let mut keep = keep.into_iter();
@@ -906,6 +1061,29 @@ pub(super) fn regenerate_mappings(
         entries.push_json(entry)?;
     }
     Ok((regenerated, entries))
+}
+
+/// Where the place (`row`, `column`) of `sheet` comes from when its cells
+/// shift within a band: the original cell there, or a cell an operation
+/// inserts in its band. None on a sheet with no such operation, for a place
+/// of a whole row or column an operation inserts, and for one the sheet has
+/// no row or column for.
+fn shifted_origin(
+    sheet: &str,
+    row: &str,
+    column: &str,
+    operations: &[excel::StructuralOperation],
+) -> Result<Option<excel::Origin>> {
+    if !identity::shifts_cells(sheet, operations) {
+        return Ok(None);
+    }
+    let (Some(row), Some(column)) = (
+        excel::key_position(sheet, row, operations, true)?,
+        excel::key_position(sheet, column, operations, false)?,
+    ) else {
+        return Ok(None);
+    };
+    excel::origin_of(sheet, (column, row), operations)
 }
 
 /// The lists of mappings.yml, left out when empty.
@@ -946,14 +1124,56 @@ pub(super) fn stored_mappings(path: &Path, mappings: &Value) -> Result<Vec<u8>> 
     serialized(path, &stored)
 }
 
-/// The extraction as the slide operations of `operations` leave it (see
-/// [`slide_view`]): the pages deleted slides leave out, and the copies inserted
-/// slides add. The extraction itself when there are none.
+/// The extraction as the slide and sheet operations of `operations` leave
+/// it (see [`slide_view`] and [`excel::sheet_view`]): the pages deleted
+/// slides leave out, and the copies inserted slides and the sheets added
+/// add. The extraction itself when there are none, or when it has the
+/// sheets added already.
 pub(super) fn operated_extraction<'a>(
     extraction: &'a Extraction,
     operations: &Value,
 ) -> Result<Cow<'a, Extraction>> {
     let operations = array(operations)?;
+    if operations.iter().any(excel::is_sheet_operation) {
+        let parsed = excel::parse_sheet_operations(operations, &extraction.sheets)?;
+        let deleted: BTreeSet<String> = excel::parse_sheet_changes(operations, &extraction.sheets)?
+            .into_iter()
+            .filter(|change| change.name.is_none())
+            .map(|change| change.sheet)
+            .collect();
+        let added = |operation: &excel::SheetOperation| {
+            let page = excel::sheet_page(&operation.id);
+            extraction
+                .sheets
+                .iter()
+                .any(|sheet| sheet["page"] == page.as_str())
+        };
+        let original_deleted = |sheet: &Sheet| {
+            sheet["added_by"].is_null()
+                && sheet["name"].as_str().is_some_and(|n| deleted.contains(n))
+        };
+        if parsed.iter().all(added) && !extraction.sheets.iter().any(original_deleted) {
+            return Ok(Cow::Borrowed(extraction));
+        }
+        let mut fields = extraction.fields.clone();
+        let charts = excel::copied_charts(
+            fields["chart_parts"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice),
+            &extraction.sheets,
+            &parsed,
+        )?;
+        if !charts.is_empty() {
+            let list = fields["chart_parts"]
+                .as_array_mut()
+                .context("chart parts missing")?;
+            list.retain(|chart| !charts.iter().any(|added| added["part"] == chart["part"]));
+            list.extend(charts);
+        }
+        let mut sheets = excel::sheet_view(&extraction.sheets, &parsed)?;
+        sheets.retain(|sheet| !original_deleted(sheet));
+        return Ok(Cow::Owned(Extraction { fields, sheets }));
+    }
     if !operations.iter().any(is_slide_operation) {
         return Ok(Cow::Borrowed(extraction));
     }
@@ -966,6 +1186,20 @@ pub(super) fn operated_extraction<'a>(
         fields: extraction.fields.clone(),
         sheets: slide_view(&extraction.sheets, layouts, &parsed)?,
     }))
+}
+
+/// `extraction` with the sheets the sheet operations of `operations` add,
+/// which the edits of a workbook read as its other sheets, and the
+/// extraction itself when they add any.
+pub(super) fn with_added_sheets(
+    extraction: Extraction,
+    operations: &Value,
+) -> Result<(Extraction, Option<Extraction>)> {
+    if !array(operations)?.iter().any(excel::is_sheet_operation) {
+        return Ok((extraction, None));
+    }
+    let view = operated_extraction(&extraction, operations)?.into_owned();
+    Ok((view, Some(extraction)))
 }
 
 #[cfg(test)]

@@ -100,6 +100,13 @@ impl Store {
                 if !has_deletions {
                     continue;
                 }
+                // Cells deleted in a band go by cell, not by row or column.
+                if own_operations.iter().any(|operation| !operation.whole()) {
+                    if excel::map_coordinate(sheet_name, address, own_operations)?.is_none() {
+                        deleted_cells.push(json!({"sheet":sheet_name,"cell":address}));
+                    }
+                    continue;
+                }
                 let (column, row) = excel::coordinate(address)?;
                 let row_deleted = match deleted_rows.get(&row) {
                     Some(deleted) => *deleted,
@@ -132,6 +139,8 @@ impl Store {
                 );
             }
         }
+        // The layout, read when a formula edit needs its frame.
+        let mut layout: Option<identity::FormulaPlaces> = None;
         for (index, e) in result.entries().enumerate() {
             let e = e.json();
             let e = &*e;
@@ -194,6 +203,67 @@ impl Store {
                         }
                     }
                 }
+                // A formula given to a cell holding none is written as one.
+                "new_formula" => {
+                    let new = &result.content[index].value;
+                    let target = mapping_target(&e["target"])?
+                        .context("formula writeback requires a target")?;
+                    let (sheet, cell, source) = match target {
+                        MappingTarget::Cell { sheet, cell } => (
+                            sheet,
+                            excel::map_coordinate(sheet, cell, sheet_operations(sheet))?
+                                .with_context(|| {
+                                    format!("{sheet}!{cell} takes a formula, but an operation deletes the cell")
+                                })?,
+                            Some(cell),
+                        ),
+                        MappingTarget::InsertionRow {
+                            sheet,
+                            insertion,
+                            offset,
+                            column,
+                        } => (
+                            sheet,
+                            excel::resolve_insertion(
+                                sheet,
+                                insertion,
+                                offset,
+                                Some(column),
+                                None,
+                                &operations,
+                            )?,
+                            None,
+                        ),
+                        MappingTarget::InsertionColumn {
+                            sheet,
+                            insertion,
+                            offset,
+                            row,
+                        } => (
+                            sheet,
+                            excel::resolve_insertion(
+                                sheet,
+                                insertion,
+                                offset,
+                                None,
+                                Some(row),
+                                &operations,
+                            )?,
+                            None,
+                        ),
+                        MappingTarget::Shape { .. } => {
+                            bail!("the text of a shape is written back with shape writeback")
+                        }
+                    };
+                    let mut change = json!({"sheet":sheet,"cell":cell,"before":Value::Null,"after":new,"field":e["field"],"formula":true});
+                    if let Some(source) = source {
+                        change["source_cell"] = json!(source);
+                    }
+                    if let Some(frame) = e["written_after"].as_str() {
+                        change["written_after"] = json!(frame);
+                    }
+                    changes.push(change);
+                }
                 "shape" => {
                     let new = &result.content[index].value;
                     let Some(MappingTarget::Shape { sheet, shape }) = mapping_target(&e["target"])?
@@ -223,7 +293,24 @@ impl Store {
                     );
                     if *new != before {
                         let mapped = excel::map_coordinate(sheet, cell, sheet_operations(sheet))?;
-                        formulas.push(json!({"sheet":sheet,"cell":cell,"final_cell":mapped,"before":before,"after":new,"field":e["field"]}));
+                        let mut edit = json!({"sheet":sheet,"cell":cell,"final_cell":mapped,"before":before,"after":new,"field":e["field"]});
+                        // A formula written as the cells stand after an operation.
+                        let layout = match &layout {
+                            Some(layout) => layout,
+                            None => layout.insert(identity::formula_places(&identity::load(
+                                dir,
+                                &result.extraction,
+                                &Planned::new(),
+                            )?)?),
+                        };
+                        if let (Some(page), Some(key)) =
+                            (e["page"].as_str(), e["position"]["row"].as_str())
+                            && let Some((_, _, Some(frame))) =
+                                layout.get(page).and_then(|p| p.get(key))
+                        {
+                            edit["written_after"] = json!(frame);
+                        }
+                        formulas.push(edit);
                     }
                 }
                 other => bail!("unsupported writeback: {other}"),
@@ -252,7 +339,10 @@ impl Store {
         })
     }
 
-    pub fn export(&self, id: &str, output: Option<&Path>) -> Result<Value> {
+    /// Plans the export of the document `id`, or with `output` writes it
+    /// there; with `calculate` desktop Excel calculates the formulas of a
+    /// workbook and their results are written in.
+    pub fn export(&self, id: &str, output: Option<&Path>, calculate: bool) -> Result<Value> {
         let dir = self.document(id)?;
         let result = self.inspect(&dir, true)?;
         ensure!(
@@ -264,6 +354,17 @@ impl Store {
         ensure!(
             book.parser() != "native-text/1",
             "text documents use direct editing; edit the original and re-import with the same document ID (export/apply is not supported)"
+        );
+        ensure!(
+            !calculate
+                || crate::document_source::is_excel(
+                    &source
+                        .extension()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                ),
+            "--calculate applies to Excel workbooks"
         );
         let plan = self.writeback(&dir, &result, &book)?;
         let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":plan.changes,"formula_changes":plan.formulas,"font_changes":plan.fonts,"unreflected":plan.pending,"excluded":plan.excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"value_edits":result.mappings["value_edits"],"deleted_cells":plan.deleted_cells,"engine":book.engine(),"complete":plan.pending.is_empty(),"written":false});
@@ -311,6 +412,19 @@ impl Store {
         let info = book.patch(&staged, &plan.edits(&result)?)?;
         for (k, v) in info.as_object().unwrap() {
             report[k] = v.clone()
+        }
+        if calculate {
+            report["calculation"] = if report["requires_excel_recalculation"] == true {
+                let mut calculation = excel::calculate(&staged, &source)?;
+                if calculation["missing"] == 0 {
+                    report["requires_excel_recalculation"] = json!(false);
+                }
+                report["changed_parts"] = calculation["changed_parts"].take();
+                calculation.as_object_mut().unwrap().remove("changed_parts");
+                calculation
+            } else {
+                json!({"state":"not_needed"})
+            };
         }
         report["written"] = json!(true);
         report["output_sha256"] = json!(hash(&fs::read(&staged)?));
@@ -360,6 +474,7 @@ mod efficiency_tests {
                 style_rows: 1,
                 merges: false,
                 vba_unchanged: false,
+                band: None,
             })
             .collect();
         let addresses: Vec<_> = (1..=1000)

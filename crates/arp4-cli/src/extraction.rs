@@ -166,6 +166,10 @@ pub trait Fields: Clone {
     /// The sheet with `fields` and the `cells` given as JSON with their fonts
     /// and styles in place, as a slide made from a layout starts.
     fn with_cells(fields: Value, cells: &Value) -> Result<Self>;
+    /// A copy of the sheet whose cells are named for the page `page` of an
+    /// Excel workbook (`c-<page>-<address>`, the page without `sheet-`) and
+    /// hold the formulas `formula` makes of theirs.
+    fn copied(&self, page: &str, formula: &dyn Fn(&str) -> Result<String>) -> Result<Self>;
 }
 
 impl Fields for Value {
@@ -179,6 +183,17 @@ impl Fields for Value {
         fields["cells"] = cells.clone();
         Ok(fields)
     }
+    fn copied(&self, page: &str, formula: &dyn Fn(&str) -> Result<String>) -> Result<Self> {
+        let mut copy = self.clone();
+        for cell in copy["cells"].as_array_mut().into_iter().flatten() {
+            let address = cell["address"].as_str().context("cell without address")?;
+            cell["id"] = json!(excel_page_cell_id(page, address));
+            if let Some(text) = cell["formula"].as_str() {
+                cell["formula"] = json!(formula(text)?);
+            }
+        }
+        Ok(copy)
+    }
 }
 
 impl Fields for Sheet {
@@ -190,6 +205,31 @@ impl Fields for Sheet {
     }
     fn with_cells(fields: Value, cells: &Value) -> Result<Self> {
         Sheet::from_value(Value::with_cells(fields, cells)?, 0)
+    }
+    fn copied(&self, page: &str, formula: &dyn Fn(&str) -> Result<String>) -> Result<Self> {
+        let mut builder = CellsBuilder::default();
+        for cell in self.cells.iter() {
+            let id = excel_page_cell_id(page, cell.address());
+            let value = cell.value().to_json();
+            let text = cell.formula().map(formula).transpose()?;
+            builder.push(NewCell {
+                id: &id,
+                address: cell.address(),
+                kind: cell.kind(),
+                value: &value,
+                formula: text.as_deref(),
+                number_format: cell.number_format(),
+                font: cell.font(),
+                style: cell.style(),
+                position: cell.position().cloned(),
+            })?;
+        }
+        Ok(Sheet {
+            fields: self.fields.clone(),
+            cells: builder.finish(),
+            fonts: self.fonts.clone(),
+            styles: self.styles.clone(),
+        })
     }
 }
 
@@ -673,6 +713,11 @@ fn excel_cell_id(index: usize, address: &str) -> String {
     format!("c-{}-{address}", index + 1)
 }
 
+/// The ID of the cell at `address` of a sheet the operation `page` adds.
+fn excel_page_cell_id(page: &str, address: &str) -> String {
+    format!("c-{page}-{address}")
+}
+
 /// The findings of an extraction, left out when they are the note alone.
 const FINDINGS: &str = "findings";
 
@@ -866,12 +911,15 @@ fn expand_drawing(drawing: &mut Map<String, Value>) -> Result<()> {
 }
 
 /// The lists every sheet of an Excel extraction has, left out when empty.
-const SHEET_LISTS: [&str; 6] = [
+const SHEET_LISTS: [&str; 9] = [
     "hidden_rows",
     "hidden_columns",
     "drawings",
     "tables",
     "comments",
+    "links",
+    "validations",
+    "conditional_formats",
     "computed",
 ];
 

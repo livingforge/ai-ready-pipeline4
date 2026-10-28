@@ -1996,6 +1996,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         };
         let error = layout
             .restructure(&body, &[&delete], &InsertedText::new())
@@ -2050,6 +2051,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         };
         let body = document(&format!(
             "{}<w:tbl><w:tr>{}</w:tr><w:tr>{}</w:tr></w:tbl>{}",

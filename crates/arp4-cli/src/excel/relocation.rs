@@ -121,11 +121,13 @@ pub(super) fn removed_table_columns(
                 continue;
             };
             let area = Area::parse(root.attribute("ref").context("table without ref")?)?;
+            let met = operations_meeting(area, &own, &format!("table {name}"))?;
+            let met: Vec<&StructuralOperation> = met.iter().collect();
             let first = area.first_column();
             let columns = child(root, "tableColumns").context("table without tableColumns")?;
             for (offset, column) in columns.children().filter(Node::is_element).enumerate() {
                 let index = first + offset as u32;
-                if map_span(index, index, &own, false)?.is_none()
+                if map_span(index, index, &met, false)?.is_none()
                     && let Some(column_name) = column.attribute("name")
                 {
                     removed
@@ -208,6 +210,11 @@ fn relocate_table(
     else {
         bail!("table {name} must cover a cell range");
     };
+    // Cells shifted in a band move a table as whole rows or columns when the
+    // band holds it across; Excel refuses to move part of one.
+    let met = operations_meeting(area, own, &format!("table {name}"))?;
+    let own: Vec<&StructuralOperation> = met.iter().collect();
+    let own = own.as_slice();
     let header_rows: u32 = root.attribute("headerRowCount").unwrap_or("1").parse()?;
     let totals_rows: u32 = root.attribute("totalsRowCount").unwrap_or("0").parse()?;
     let mapped = map_area(area, own)?.with_context(|| {
@@ -467,6 +474,7 @@ pub(super) fn relocate_pivots(
                     .context("pivot location without ref")?,
             )?;
             let pivot = root.attribute("name").unwrap_or(&part);
+            operations_meeting(area, &own, &format!("pivot table {pivot}"))?;
             let mapped = map_area(area, &own)?
                 .filter(|mapped| same_size(area, *mapped))
                 .with_context(|| {

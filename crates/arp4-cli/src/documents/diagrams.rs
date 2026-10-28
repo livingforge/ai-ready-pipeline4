@@ -555,9 +555,20 @@ pub(super) fn derive(
     typed: &LayoutSheet,
     operations: &[excel::StructuralOperation],
 ) -> Result<Vec<Diagram<String>>> {
-    let Some(list) = sheet["drawings"].as_array().filter(|d| !d.is_empty()) else {
+    // The drawings the page shows: not those deleted with their cells.
+    let list: Vec<&Value> = sheet["drawings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|drawing| {
+            drawing["id"]
+                .as_str()
+                .is_some_and(|id| visuals.get(elements::token("visual", &[id])).is_some())
+        })
+        .collect();
+    if list.is_empty() {
         return Ok(vec![]);
-    };
+    }
     let grid = Grid::of(sheet)?;
     let mut drawings = Vec::with_capacity(list.len());
     let mut by_id = HashMap::new();

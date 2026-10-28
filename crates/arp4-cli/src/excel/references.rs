@@ -68,56 +68,75 @@ fn map_span_with(
     row: bool,
     formatting: bool,
 ) -> Result<Option<(u32, u32)>> {
-    let max = if row { MAX_ROW } else { MAX_COLUMN };
     let (mut start, mut end) = (start.min(end), start.max(end));
-    for operation in operations.iter().filter(|o| o.row_operation() == row) {
-        let (at, count) = (operation.at, operation.count);
-        if let OperationKind::MoveColumns { to } = operation.kind {
-            let mapped: Vec<_> = (start..=end)
-                .map(|column| moved_column(column, at, count, to))
-                .collect();
-            let first = *mapped.first().context("empty moved range")?;
-            let last = *mapped.last().context("empty moved range")?;
-            ensure!(
-                mapped.windows(2).all(|pair| pair[1] == pair[0] + 1)
-                    && last.checked_sub(first) == Some(end - start),
-                "column move makes a reference non-contiguous or changes its element order; edit in Excel"
-            );
-            (start, end) = (first, last);
-            continue;
+    // Cells shifted in a band move no whole row or column.
+    for operation in operations
+        .iter()
+        .filter(|o| o.row_operation() == row && o.whole())
+    {
+        match span_through(start, end, operation, formatting)? {
+            Some(span) => (start, end) = span,
+            None => return Ok(None),
         }
-        if operation.insertion() {
-            if at <= start {
-                start = start.saturating_add(count);
-                end = end.saturating_add(count).min(max);
-            } else if at <= end || (formatting && at == end.saturating_add(1)) {
-                end = end.saturating_add(count).min(max);
-            }
-            ensure!(
-                start <= max,
-                "row/column insertion moves a reference beyond the sheet"
-            );
+    }
+    Ok(Some((start, end)))
+}
+
+/// Maps an inclusive span on the axis of one operation, as [`map_span`].
+fn span_through(
+    start: u32,
+    end: u32,
+    operation: &StructuralOperation,
+    formatting: bool,
+) -> Result<Option<(u32, u32)>> {
+    let row = operation.row_operation();
+    let max = if row { MAX_ROW } else { MAX_COLUMN };
+    let (mut start, mut end) = (start, end);
+    let (at, count) = (operation.at, operation.count);
+    if let OperationKind::MoveColumns { to } = operation.kind {
+        let mapped: Vec<_> = (start..=end)
+            .map(|column| moved_column(column, at, count, to))
+            .collect();
+        let first = *mapped.first().context("empty moved range")?;
+        let last = *mapped.last().context("empty moved range")?;
+        ensure!(
+            mapped.windows(2).all(|pair| pair[1] == pair[0] + 1)
+                && last.checked_sub(first) == Some(end - start),
+            "column move makes a reference non-contiguous or changes its element order; edit in Excel"
+        );
+        return Ok(Some((first, last)));
+    }
+    if operation.insertion() {
+        if at <= start {
+            start = start.saturating_add(count);
+            end = end.saturating_add(count).min(max);
+        } else if at <= end || (formatting && at == end.saturating_add(1)) {
+            end = end.saturating_add(count).min(max);
+        }
+        ensure!(
+            start <= max,
+            "row/column insertion moves a reference beyond the sheet"
+        );
+    } else {
+        let last = at + count - 1;
+        if start >= at && end <= last {
+            return Ok(None);
+        }
+        let new_start = if start < at {
+            start
+        } else if start > last {
+            start - count
         } else {
-            let last = at + count - 1;
-            if start >= at && end <= last {
-                return Ok(None);
-            }
-            let new_start = if start < at {
-                start
-            } else if start > last {
-                start - count
-            } else {
-                at
-            };
-            let new_end = if end < at {
-                end
-            } else if end > last {
-                end - count
-            } else {
-                at - 1
-            };
-            (start, end) = (new_start, new_end);
-        }
+            at
+        };
+        let new_end = if end < at {
+            end
+        } else if end > last {
+            end - count
+        } else {
+            at - 1
+        };
+        (start, end) = (new_start, new_end);
     }
     Ok(Some((start, end)))
 }
@@ -173,11 +192,39 @@ pub(super) fn map_area(area: Area, operations: &[&StructuralOperation]) -> Resul
 }
 
 /// Maps a merged range; `None` when it is deleted or shrinks to one cell,
-/// which Excel no longer keeps as a merge.
+/// which Excel no longer keeps as a merge. Cells shifted in a band through
+/// part of a merge are refused: Excel would take the merge apart.
 pub(super) fn map_merge(area: Area, operations: &[&StructuralOperation]) -> Result<Option<Area>> {
-    Ok(map_area(area, operations)?.filter(|mapped| {
+    let mut areas = vec![area];
+    for operation in operations {
+        areas = areas_through(areas, operation, false, Straddle::Refuse)?;
+    }
+    Ok(areas.pop().filter(|mapped| {
         !(mapped.columns.is_some_and(|(a, b)| a == b) && mapped.rows.is_some_and(|(a, b)| a == b))
     }))
+}
+
+/// The ranges the cells of the format range `area` take after `operations`:
+/// one, or the parts cells shifted within a band split it into, as Excel
+/// moves their formats with them. A `merge` such a shift reaches only part of
+/// is refused: Excel would take it apart.
+pub(super) fn map_format_area(
+    area: Area,
+    operations: &[&StructuralOperation],
+    merge: bool,
+) -> Result<Vec<Area>> {
+    let straddle = || {
+        if merge {
+            Straddle::Refuse
+        } else {
+            Straddle::Split
+        }
+    };
+    let mut areas = vec![area];
+    for operation in operations {
+        areas = areas_through(areas, operation, false, straddle())?;
+    }
+    Ok(areas)
 }
 
 fn map_area_with(
@@ -185,26 +232,17 @@ fn map_area_with(
     operations: &[&StructuralOperation],
     formatting: bool,
 ) -> Result<Option<Area>> {
-    let columns = match area.columns {
-        Some((start, end)) => match map_span_with(start, end, operations, false, formatting)? {
-            Some(span) => Some(span),
-            None => return Ok(None),
-        },
-        None => None,
-    };
-    let rows = match area.rows {
-        Some((start, end)) => match map_span_with(start, end, operations, true, formatting)? {
-            Some(span) => Some(span),
-            None => return Ok(None),
-        },
-        None => None,
-    };
-    Ok(Some(Area { columns, rows }))
+    let mut areas = vec![area];
+    for operation in operations {
+        areas = areas_through(areas, operation, formatting, Straddle::Keep)?;
+    }
+    Ok(areas.pop())
 }
 
 /// Maps a space-separated `sqref` list; fully deleted ranges are dropped.
 /// `formatting` ranges (conditional formats, validations) grow into rows and
-/// columns inserted directly after them, as Excel formats them alike.
+/// columns inserted directly after them, as Excel formats them alike. A range
+/// cells shifted in a band reach part of is split, as Excel splits it.
 pub(super) fn map_sqref(
     text: &str,
     operations: &[&StructuralOperation],
@@ -212,11 +250,195 @@ pub(super) fn map_sqref(
 ) -> Result<Option<String>> {
     let mut mapped = vec![];
     for part in text.split_whitespace() {
-        if let Some(area) = map_area_with(Area::parse(part)?, operations, formatting)? {
+        let mut areas = vec![Area::parse(part)?];
+        for operation in operations {
+            areas = areas_through(areas, operation, formatting, Straddle::Split)?;
+        }
+        for area in areas {
             mapped.push(area.render()?);
         }
     }
     Ok((!mapped.is_empty()).then(|| mapped.join(" ")))
+}
+
+/// The operations as the range `area` meets them, in order: whole rows and
+/// columns as they are, cells shifted in a band that holds the range across
+/// as whole rows or columns, and those that miss it or end before it left
+/// out. A band reaching only part of the range is refused, as Excel refuses
+/// to move part of `what`.
+pub(super) fn operations_meeting(
+    area: Area,
+    operations: &[&StructuralOperation],
+    what: &str,
+) -> Result<Vec<StructuralOperation>> {
+    let mut current = area;
+    let mut met = vec![];
+    for operation in operations {
+        let whole = match operation.band {
+            None => Some((*operation).clone()),
+            Some((first, last)) => {
+                let rows = operation.row_operation();
+                let along = if rows { current.rows } else { current.columns };
+                let across = if rows { current.columns } else { current.rows };
+                let max = if rows { MAX_COLUMN } else { MAX_ROW };
+                let (low, high) = across.unwrap_or((1, max));
+                let reached = along.is_some_and(|(_, end)| end >= operation.at);
+                if !reached || high < first || low > last {
+                    None
+                } else {
+                    ensure!(
+                        first <= low && high <= last,
+                        "the cells {} shifts reach only part of {what} {}; Excel does not move part of it, so shift cells across all of it",
+                        operation.id,
+                        current.render()?
+                    );
+                    Some(StructuralOperation {
+                        band: None,
+                        ..(*operation).clone()
+                    })
+                }
+            }
+        };
+        if let Some(whole) = whole {
+            current = map_area(current, &[&whole])?.unwrap_or(current);
+            met.push(whole);
+        }
+    }
+    Ok(met)
+}
+
+/// The operations moving the range `area` as whole rows or columns, in
+/// order: whole ones, and cells shifted in a band holding it across. Bands
+/// missing it, ending before it or holding only part of it are left out.
+pub(super) fn operations_holding(
+    area: Area,
+    operations: &[&StructuralOperation],
+) -> Result<Vec<StructuralOperation>> {
+    let mut current = area;
+    let mut held = vec![];
+    for operation in operations {
+        let whole = match operation.band {
+            None => Some((*operation).clone()),
+            Some((first, last)) => {
+                let rows = operation.row_operation();
+                let across = if rows { current.columns } else { current.rows };
+                let max = if rows { MAX_COLUMN } else { MAX_ROW };
+                let (low, high) = across.unwrap_or((1, max));
+                (first <= low && high <= last).then(|| StructuralOperation {
+                    band: None,
+                    ..(*operation).clone()
+                })
+            }
+        };
+        if let Some(whole) = whole {
+            if let Some(moved) = map_area(current, &[&whole])? {
+                current = moved;
+            }
+            held.push(whole);
+        }
+    }
+    Ok(held)
+}
+
+/// What becomes of a range that cells shifted in a band reach only part of.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Straddle {
+    /// A reference stays as written, as Excel keeps it.
+    Keep,
+    /// Formatting ranges split into what stays and what moves.
+    Split,
+    /// A merge is refused: Excel takes it apart.
+    Refuse,
+}
+
+/// Maps `areas` through one operation. Whole rows or columns map each area
+/// on the operation's axis. Cells shifted in a band move an area the band
+/// holds across, leave alone one it misses or that ends before them, and
+/// treat one it holds only part of by `straddle`.
+fn areas_through(
+    areas: Vec<Area>,
+    operation: &StructuralOperation,
+    formatting: bool,
+    straddle: Straddle,
+) -> Result<Vec<Area>> {
+    let rows = operation.row_operation();
+    let along = |area: &Area| if rows { area.rows } else { area.columns };
+    let across = |area: &Area| if rows { area.columns } else { area.rows };
+    let with = |along: (u32, u32), across: Option<(u32, u32)>| {
+        if rows {
+            Area {
+                rows: Some(along),
+                columns: across,
+            }
+        } else {
+            Area {
+                columns: Some(along),
+                rows: across,
+            }
+        }
+    };
+    let mut mapped = Vec::with_capacity(areas.len());
+    for area in areas {
+        let Some((start, end)) = along(&area) else {
+            mapped.push(area);
+            continue;
+        };
+        let Some((first, last)) = operation.band else {
+            if let Some(span) = span_through(start, end, operation, formatting)? {
+                mapped.push(with(span, across(&area)));
+            }
+            continue;
+        };
+        let max = if rows { MAX_COLUMN } else { MAX_ROW };
+        let (low, high) = across(&area).unwrap_or((1, max));
+        let reached = end >= operation.at
+            || formatting && operation.insertion() && end.saturating_add(1) == operation.at;
+        if !reached || high < first || low > last {
+            mapped.push(area);
+            continue;
+        }
+        if first <= low && high <= last {
+            if let Some(span) = span_through(start, end, operation, formatting)? {
+                mapped.push(with(span, across(&area)));
+            }
+            continue;
+        }
+        match straddle {
+            Straddle::Refuse => bail!(
+                "the cells {} shifts reach only part of the merged range {}, which Excel would take apart; take the merge apart first (documents format --unmerge), or shift cells across the whole merge",
+                operation.id,
+                area.render()?
+            ),
+            Straddle::Split => {
+                // The parts outside the band stay; the part in it moves.
+                if low < first {
+                    mapped.push(with((start, end), Some((low, first - 1))));
+                }
+                if high > last {
+                    mapped.push(with((start, end), Some((last + 1, high))));
+                }
+                let inside = (low.max(first), high.min(last));
+                if let Some(span) = span_through(start, end, operation, formatting)? {
+                    mapped.push(with(span, Some(inside)));
+                }
+            }
+            Straddle::Keep => {
+                // A reference whose cells in the band are all deleted loses
+                // them when they lie at its edge, as Excel shrinks it.
+                let deleted = !operation.insertion()
+                    && start >= operation.at
+                    && end < operation.at + operation.count;
+                if deleted && low < first && high <= last {
+                    mapped.push(with((start, end), Some((low, first - 1))));
+                } else if deleted && first <= low && high > last {
+                    mapped.push(with((start, end), Some((last + 1, high))));
+                } else {
+                    mapped.push(area);
+                }
+            }
+        }
+    }
+    Ok(mapped)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +535,13 @@ fn coordinate_part(text: &str, row: bool) -> Option<Coordinate> {
 }
 
 /// Parses a reference at the start of `text`, returning it and its length.
+/// Whether all of `text` reads as a cell, range, row or column reference,
+/// in any case.
+pub(super) fn reads_as_reference(text: &str) -> bool {
+    let text = text.to_uppercase();
+    parse_reference(&text).is_some_and(|(_, length)| length == text.len())
+}
+
 fn parse_reference(text: &str) -> Option<(Reference, usize)> {
     let captures = REFERENCE.captures(text)?;
     let part = |name: &str, row: bool| {
@@ -369,6 +598,10 @@ fn reference_ends(rest: &str) -> bool {
 enum Replacement {
     Keep,
     Text(String),
+    /// The reference as it is, after another sheet prefix.
+    Prefixed(String),
+    /// Another text in place of the reference and its sheet prefix.
+    Whole(String),
     Deleted,
 }
 
@@ -399,6 +632,8 @@ fn transform(
         match visit(target, reference)? {
             Replacement::Keep => output.push_str(&format!("{prefix}{raw}")),
             Replacement::Text(text) => output.push_str(&format!("{prefix}{text}")),
+            Replacement::Prefixed(other) => output.push_str(&format!("{other}{raw}")),
+            Replacement::Whole(text) => output.push_str(&text),
             Replacement::Deleted => output.push_str(&format!("{prefix}#REF!")),
         }
         Ok(())
@@ -512,6 +747,201 @@ fn transform(
         }
     }
     Ok(output)
+}
+
+/// The prefix a reference to the sheet `name` is written with, `name!`,
+/// quoted as Excel quotes it when it holds more than letters, digits,
+/// underscores and periods, starts with a digit, or reads as a reference.
+pub(super) fn sheet_prefix(name: &str) -> String {
+    let plain = name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && !reads_as_reference(name)
+        && !name.eq_ignore_ascii_case("R")
+        && !name.eq_ignore_ascii_case("C");
+    if plain {
+        format!("{name}!")
+    } else {
+        format!("'{}'!", name.replace('\'', "''"))
+    }
+}
+
+/// `formula` with its references to the sheet `from` naming the sheet `to`,
+/// as Excel writes the formulas of a sheet it copies.
+pub(crate) fn rename_sheet(formula: &str, from: &str, to: &str) -> Result<String> {
+    let from = from.to_lowercase();
+    transform(formula, |target, _| {
+        Ok(match target {
+            Target::Sheet(sheet) if sheet.to_lowercase() == from => {
+                Replacement::Prefixed(sheet_prefix(to))
+            }
+            _ => Replacement::Keep,
+        })
+    })
+}
+
+/// Where the rows `first` to `last` moved before the row `at` put the row
+/// `row`, as Excel moves cut rows it inserts: the rows between follow them
+/// up or down.
+pub(crate) fn moved_row(row: u32, (first, last): (u32, u32), at: u32) -> u32 {
+    let count = last - first + 1;
+    if (first..=last).contains(&row) {
+        if at > last {
+            at - count + row - first
+        } else {
+            at + row - first
+        }
+    } else if at > last && row > last && row < at {
+        row - count
+    } else if at < first && row >= at && row < first {
+        row + count
+    } else {
+        row
+    }
+}
+
+/// `formula`, of a cell of the sheet `own`, with its references to the rows
+/// `first` to `last` of the sheet `sheet` moved before the row `at`, as Excel
+/// moves cut rows it inserts: a cell follows its row; a range keeps its ends
+/// when the rows and their new place are both inside it, its ends follow
+/// theirs otherwise, and where an end would pass the other the range keeps
+/// the rows of it that stay.
+pub(crate) fn moved_rows_formula(
+    formula: &str,
+    own: &str,
+    sheet: &str,
+    rows: (u32, u32),
+    at: u32,
+) -> Result<String> {
+    let (first, last) = rows;
+    transform(formula, |target, reference| {
+        let ours = match target {
+            Target::Local => own == sheet,
+            Target::Sheet(name) => name.to_lowercase() == sheet.to_lowercase(),
+            Target::Opaque => false,
+        };
+        let area = reference.area();
+        let Some((a, b)) = area.rows.filter(|_| ours) else {
+            return Ok(Replacement::Keep);
+        };
+        let inside = a < b && a <= first && last <= b && a < at && at <= b;
+        if inside {
+            return Ok(Replacement::Keep);
+        }
+        let (x, y) = (moved_row(a, rows, at), moved_row(b, rows, at));
+        let span = if x <= y {
+            (x, y)
+        } else {
+            // The rows of the range that stay where they are, moved.
+            let start = if (first..=last).contains(&a) {
+                last + 1
+            } else {
+                a
+            };
+            let end = if (first..=last).contains(&b) {
+                first - 1
+            } else {
+                b
+            };
+            (moved_row(start, rows, at), moved_row(end, rows, at))
+        };
+        let moved = Area {
+            rows: Some(span),
+            ..area
+        };
+        if moved == area {
+            return Ok(Replacement::Keep);
+        }
+        Ok(Replacement::Text(reference.with_area(moved).render()?))
+    })
+}
+
+/// `formula` with its references to the sheet `sheet`, and to the tables
+/// `tables` (by their names in lowercase) it holds, read `#REF!`, as Excel
+/// writes the formulas of the other sheets when it deletes a sheet.
+pub(crate) fn delete_sheet_references(
+    formula: &str,
+    sheet: &str,
+    tables: &BTreeSet<String>,
+) -> Result<String> {
+    let sheet = sheet.to_lowercase();
+    let formula = transform(formula, |target, _| {
+        Ok(match target {
+            Target::Sheet(name) if name.to_lowercase() == sheet => {
+                Replacement::Whole("#REF!".to_owned())
+            }
+            _ => Replacement::Keep,
+        })
+    })?;
+    if tables.is_empty() {
+        return Ok(formula);
+    }
+    Ok(map_structured_references(&formula, |table, _| {
+        tables.contains(table).then(|| "#REF!".to_owned())
+    }))
+}
+
+/// `formula` with the tables `renamed` (by their names in lowercase) named
+/// by their new names, outside string literals and sheet names.
+pub(crate) fn rename_tables(formula: &str, renamed: &BTreeMap<String, String>) -> String {
+    if renamed.is_empty() {
+        return formula.to_owned();
+    }
+    let mut output = String::with_capacity(formula.len());
+    let mut index = 0;
+    while index < formula.len() {
+        let rest = &formula[index..];
+        let c = rest.chars().next().unwrap();
+        if c == '"' || c == '\'' {
+            // A string literal, or a quoted sheet name, as written.
+            let mut end = index + 1;
+            loop {
+                match formula[end..].find(c) {
+                    Some(offset) if formula[end + offset + 1..].starts_with(c) => end += offset + 2,
+                    Some(offset) => {
+                        end += offset + 1;
+                        break;
+                    }
+                    None => {
+                        end = formula.len();
+                        break;
+                    }
+                }
+            }
+            output.push_str(&formula[index..end]);
+            index = end;
+            continue;
+        }
+        let previous_is_name = formula[..index].chars().next_back().is_some_and(name_char);
+        if name_char(c) && !previous_is_name {
+            let length = rest
+                .char_indices()
+                .find(|(_, ch)| !name_char(*ch))
+                .map_or(rest.len(), |(offset, _)| offset);
+            let word = &rest[..length];
+            let next = rest[length..].chars().next();
+            match renamed.get(&word.to_lowercase()) {
+                Some(new) if !matches!(next, Some('(' | '!')) => output.push_str(new),
+                _ => output.push_str(word),
+            }
+            index += length;
+            continue;
+        }
+        output.push(c);
+        index += c.len_utf8();
+    }
+    output
+}
+
+/// `formula`, of a cell of `sheet`, with its references moved as
+/// `operations` move the cells they name.
+pub(crate) fn rewrite_formula(
+    formula: &str,
+    sheet: &str,
+    operations: &[StructuralOperation],
+) -> Result<String> {
+    rewrite_references(formula, Some(sheet), operations)
 }
 
 /// Rewrites references for row/column operations. `current_sheet` resolves
@@ -843,9 +1273,36 @@ fn map_structured_references(
     output
 }
 
+/// A cell, range, row or column a formula refers to: its sheet (none for
+/// the formula's own, `*` for a 3D or external one) and its rows (none for
+/// whole columns).
+pub(crate) struct Referenced {
+    pub(crate) sheet: Option<String>,
+    pub(crate) rows: Option<(u32, u32)>,
+}
+
+/// The references of `formula`, outside string literals, structured
+/// references and error values.
+pub(crate) fn referenced(formula: &str) -> Result<Vec<Referenced>> {
+    let mut found = vec![];
+    transform(formula, |target, reference| {
+        let area = reference.area();
+        found.push(Referenced {
+            sheet: match target {
+                Target::Local => None,
+                Target::Sheet(sheet) => Some(sheet.clone()),
+                Target::Opaque => Some("*".to_owned()),
+            },
+            rows: area.rows,
+        });
+        Ok(Replacement::Keep)
+    })?;
+    Ok(found)
+}
+
 /// Moves relative references by the given offsets, as Excel derives each
 /// cell of a shared formula from its master cell.
-pub(super) fn shift_relative(formula: &str, rows: i64, columns: i64) -> Result<String> {
+pub(crate) fn shift_relative(formula: &str, rows: i64, columns: i64) -> Result<String> {
     transform(formula, |_, reference| {
         let shift = |coordinate: Option<Coordinate>, delta: i64, max: u32| {
             coordinate.map(|c| {
@@ -885,6 +1342,70 @@ pub(super) fn shift_relative(formula: &str, rows: i64, columns: i64) -> Result<S
 mod tests {
     use super::*;
 
+    /// The cases measured against Excel's cut and insert of rows, with
+    /// `=SUM(A5:A10)`, `=A5` and `=A10` on another row.
+    #[test]
+    fn moved_rows_follow_excel() {
+        let cases = [
+            ((10, 10), 7, "SUM(A5:A10)", "A5", "A7"),
+            ((5, 5), 9, "SUM(A5:A10)", "A8", "A10"),
+            ((7, 7), 13, "SUM(A5:A9)", "A5", "A9"),
+            ((12, 12), 7, "SUM(A5:A11)", "A5", "A11"),
+            ((5, 10), 13, "SUM(A7:A12)", "A7", "A12"),
+            ((9, 10), 13, "SUM(A5:A12)", "A5", "A12"),
+            ((4, 5), 9, "SUM(A8:A10)", "A8", "A10"),
+            ((12, 12), 5, "SUM(A6:A11)", "A6", "A11"),
+            ((3, 3), 11, "SUM(A4:A9)", "A4", "A9"),
+            ((3, 3), 6, "SUM(A4:A10)", "A4", "A10"),
+            ((5, 5), 2, "SUM(A2:A10)", "A2", "A10"),
+            ((5, 5), 8, "SUM(A5:A10)", "A7", "A10"),
+            ((5, 5), 14, "SUM(A5:A9)", "A13", "A9"),
+            ((10, 10), 2, "SUM(A6:A10)", "A6", "A2"),
+            ((10, 10), 8, "SUM(A5:A10)", "A5", "A8"),
+            ((10, 10), 14, "SUM(A5:A13)", "A5", "A13"),
+            ((7, 7), 2, "SUM(A6:A10)", "A6", "A10"),
+            ((7, 8), 2, "SUM(A7:A10)", "A7", "A10"),
+            ((7, 8), 14, "SUM(A5:A8)", "A5", "A8"),
+            ((4, 5), 2, "SUM(A3:A10)", "A3", "A10"),
+            ((4, 5), 8, "SUM(A7:A10)", "A7", "A10"),
+            ((4, 5), 14, "SUM(A4:A8)", "A13", "A8"),
+            ((10, 11), 2, "SUM(A7:A11)", "A7", "A2"),
+            ((10, 11), 8, "SUM(A5:A8)", "A5", "A8"),
+            ((10, 11), 14, "SUM(A5:A12)", "A5", "A12"),
+            ((5, 10), 2, "SUM(A2:A7)", "A2", "A7"),
+            ((5, 10), 14, "SUM(A8:A13)", "A8", "A13"),
+            ((4, 11), 2, "SUM(A3:A8)", "A3", "A8"),
+            ((4, 11), 14, "SUM(A7:A12)", "A7", "A12"),
+            ((3, 4), 2, "SUM(A5:A10)", "A5", "A10"),
+            ((3, 4), 8, "SUM(A3:A10)", "A3", "A10"),
+            ((3, 4), 14, "SUM(A3:A8)", "A3", "A8"),
+            ((11, 12), 2, "SUM(A7:A12)", "A7", "A12"),
+            ((11, 12), 8, "SUM(A5:A12)", "A5", "A12"),
+            ((11, 12), 14, "SUM(A5:A10)", "A5", "A10"),
+            ((7, 7), 5, "SUM(A6:A10)", "A6", "A10"),
+            ((7, 7), 11, "SUM(A5:A9)", "A5", "A9"),
+            ((7, 7), 6, "SUM(A5:A10)", "A5", "A10"),
+            ((3, 3), 5, "SUM(A5:A10)", "A5", "A10"),
+            ((12, 12), 11, "SUM(A5:A10)", "A5", "A10"),
+            ((5, 5), 11, "SUM(A5:A9)", "A10", "A9"),
+            ((5, 5), 10, "SUM(A5:A10)", "A9", "A10"),
+            ((10, 10), 5, "SUM(A6:A10)", "A6", "A5"),
+            ((10, 10), 6, "SUM(A5:A10)", "A5", "A6"),
+            ((6, 7), 5, "SUM(A7:A10)", "A7", "A10"),
+            ((8, 9), 11, "SUM(A5:A8)", "A5", "A8"),
+        ];
+        for (rows, at, sum, start, end) in cases {
+            let moved = |formula| moved_rows_formula(formula, "S", "S", rows, at).unwrap();
+            assert_eq!(moved("SUM(A5:A10)"), sum, "{rows:?} before {at}");
+            assert_eq!(moved("A5"), start, "{rows:?} before {at}");
+            assert_eq!(moved("A10"), end, "{rows:?} before {at}");
+        }
+        assert_eq!(
+            moved_rows_formula("S!$A$7+T!A7+A7", "T", "S", (7, 7), 14).unwrap(),
+            "S!$A$13+T!A7+A7"
+        );
+    }
+
     fn operation(sheet: &str, kind: OperationKind, at: u32, count: u32) -> StructuralOperation {
         StructuralOperation {
             id: "op".into(),
@@ -896,6 +1417,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         }
     }
 

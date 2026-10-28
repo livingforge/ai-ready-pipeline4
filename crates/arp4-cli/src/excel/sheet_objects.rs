@@ -326,6 +326,7 @@ mod tests {
             style_rows: 1,
             merges: false,
             vba_unchanged: false,
+            band: None,
         }];
         let moves = Moves::new(&operations, BTreeMap::new());
         let shape = |id: &str, data: &str| format!(r#"<v:shape id="{id}">{data}</v:shape>"#);

@@ -350,7 +350,7 @@ pub(super) fn build(
         crate::document_structure::replay_earlier_corrections(
             &store.root,
             &inspected.mappings["interpretation"],
-            &inspected.extraction,
+            inspected.original_extraction(),
             string(&inspected.meta["extraction"])?,
             &inspected.axes,
         )?
@@ -367,8 +367,8 @@ pub(super) fn build(
     // What each cell shows is read once; its source is made when a passage
     // takes it, as the sources of every cell together held several times
     // the memory of the extraction.
-    let date1904 = inspected.extraction["date1904"] == true;
-    let sheets = &inspected.extraction.sheets;
+    let date1904 = inspected.original_extraction()["date1904"] == true;
+    let sheets = &inspected.original_extraction().sheets;
     let mut shown: Vec<Vec<String>> = Vec::with_capacity(sheets.len());
     let mut by_sheet: BTreeMap<&str, HashMap<&str, (usize, usize)>> = BTreeMap::new();
     let mut uncalculated = BTreeSet::new();
@@ -622,7 +622,7 @@ pub(super) fn build(
             )?;
         }
     }
-    for (si, sheet) in inspected.extraction.sheets.iter().enumerate() {
+    for (si, sheet) in inspected.original_extraction().sheets.iter().enumerate() {
         let name = string(&sheet["name"])?;
         let mut rows: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
         for cell in &sheet.cells {
@@ -696,7 +696,10 @@ pub(super) fn build(
             }
         }
     }
-    for (i, asset) in array(&inspected.extraction["assets"])?.iter().enumerate() {
+    for (i, asset) in array(&inspected.original_extraction()["assets"])?
+        .iter()
+        .enumerate()
+    {
         if asset["ocr"]["text"].is_string() {
             corpus.add(
                 "ocr",

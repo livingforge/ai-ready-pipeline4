@@ -80,7 +80,7 @@ pub(super) fn validate_source(source: &Path) -> Result<Vec<u8>> {
         let name = entry.name().to_ascii_lowercase();
         ensure!(
             !name.starts_with("xl/macrosheets/") && name != "xl/connections.xml",
-            "rendering workbooks with Excel 4.0 macros or data connections is unsupported"
+            "opening workbooks with Excel 4.0 macros or data connections in Excel is unsupported"
         );
     }
     Ok(original)

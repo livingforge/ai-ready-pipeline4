@@ -108,9 +108,13 @@ enum TextBackend {
     Office(BTreeMap<String, Vec<u8>>),
     /// `unparsed` lists pages whose content stream could not be read to its end;
     /// their text after that point is missing and they are not written back.
+    /// `left_out` lists pages with text in fonts whose codes cannot be read
+    /// as characters, with those fonts; that text is missing, and kept as it
+    /// is when the page is written back.
     Pdf {
         doc: Box<Pdf>,
         unparsed: Vec<u32>,
+        left_out: Vec<(u32, BTreeSet<String>)>,
     },
     Native,
 }
@@ -399,6 +403,7 @@ impl Source {
             );
             let mut sheets = vec![];
             let mut unparsed = vec![];
+            let mut left_out = vec![];
             ensure!(
                 doc.get_pages().len() <= 10000,
                 "PDF page count exceeds budget"
@@ -420,6 +425,9 @@ impl Source {
                     .into_iter()
                     .map(|(text, font)| (text, Some(font)))
                     .collect();
+                if !read.left_out.is_empty() {
+                    left_out.push((page, std::mem::take(&mut read.left_out)));
+                }
                 sheets.push(crate::extraction::Sheet::from_value(
                     text_sheet(&format!("page-{page}"), &format!("pdf:{page}"), values),
                     sheets.len(),
@@ -429,6 +437,7 @@ impl Source {
                 TextBackend::Pdf {
                     doc: Box::new(doc),
                     unparsed,
+                    left_out,
                 },
                 sheets,
             )
@@ -622,6 +631,24 @@ impl Source {
                 .collect::<Vec<_>>()
                 .join("、");
             note.push_str(&format!("次のページは描画命令を途中までしか解析できず、それ以降の文字を抽出していません。書き戻しもできません: {pages}ページ。"));
+        }
+        if let Self::Text(TextSource {
+            backend: TextBackend::Pdf { left_out, .. },
+            ..
+        }) = self
+            && !left_out.is_empty()
+        {
+            let pages = left_out
+                .iter()
+                .map(|(page, fonts)| {
+                    format!(
+                        "{page}ページ（{}）",
+                        fonts.iter().cloned().collect::<Vec<_>>().join("、")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            note.push_str(&format!("次のページは、文字コードをUnicodeに変換できない複合フォント（対応するUnicode CMapでも2バイトの文字コードのToUnicodeマップでもないもの）で描かれた文字を抽出していません。ページのほかの文字は抽出し、書き戻しではその文字を元のまま残します: {pages}。この文字を抽出するには、ToUnicodeマップを含めて出力し直したPDFか、OCRで文字を付けたPDFを取り込んでください。"));
         }
         note
     }
@@ -2541,6 +2568,7 @@ impl TextSource {
             TextBackend::Pdf {
                 doc: original,
                 unparsed,
+                ..
             } => {
                 // lopdf decrypts a PDF that opens without a password (one with only
                 // an editing or printing restriction) and would save it unprotected.
@@ -2963,6 +2991,101 @@ enum PdfEncoding<'a> {
     Unicode {
         ucs2: bool,
     },
+    /// A composite font whose codes say no text ARP can read: neither a
+    /// Unicode CMap nor a ToUnicode map gives their characters. Its strings
+    /// are left out of the page's text and kept as they are.
+    Unreadable,
+}
+
+/// Whether the predefined CMap `name` has Unicode character codes, big-endian
+/// without a BOM: `Some(true)` for UCS-2, `Some(false)` for UTF-16. The
+/// half-width (`HW`) and proportional (`Pro`) forms map the same codes to
+/// other glyphs. Identity-H/V are CID codes, not Unicode; they need a
+/// ToUnicode map.
+fn unicode_cmap(name: &[u8]) -> Option<bool> {
+    match name {
+        b"UniJIS-UCS2-H"
+        | b"UniJIS-UCS2-V"
+        | b"UniJIS-UCS2-HW-H"
+        | b"UniJIS-UCS2-HW-V"
+        | b"UniJISPro-UCS2-V"
+        | b"UniJISPro-UCS2-HW-V"
+        | b"UniGB-UCS2-H"
+        | b"UniGB-UCS2-V"
+        | b"UniCNS-UCS2-H"
+        | b"UniCNS-UCS2-V"
+        | b"UniKS-UCS2-H"
+        | b"UniKS-UCS2-V" => Some(true),
+        b"UniJIS-UTF16-H"
+        | b"UniJIS-UTF16-V"
+        | b"UniJIS2004-UTF16-H"
+        | b"UniJIS2004-UTF16-V"
+        | b"UniGB-UTF16-H"
+        | b"UniGB-UTF16-V"
+        | b"UniCNS-UTF16-H"
+        | b"UniCNS-UTF16-V"
+        | b"UniKS-UTF16-H"
+        | b"UniKS-UTF16-V"
+        | b"UniAKR-UTF16-H" => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether every code space of the ToUnicode map of `font` has two-byte
+/// codes, as ARP reads the codes of a composite font.
+fn two_byte_to_unicode(font: &lopdf::Dictionary, doc: &Pdf) -> bool {
+    let Ok(stream) = font
+        .get_deref(b"ToUnicode", doc)
+        .and_then(Object::as_stream)
+    else {
+        return false;
+    };
+    let Ok(map) = stream.get_plain_content_with_limit(MAX_PAGE) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&map);
+    let mut spaces = text
+        .split("begincodespacerange")
+        .skip(1)
+        .filter_map(|block| block.split("endcodespacerange").next())
+        .flat_map(|block| block.split('<').skip(1))
+        .map(|code| code.split('>').next().unwrap_or_default().trim().len())
+        .peekable();
+    spaces.peek().is_some() && spaces.all(|digits| digits == 4)
+}
+
+/// The font `resource` of a page names, as the note on text ARP leaves out
+/// gives it: its BaseFont, its Encoding (a CMap name, or the name of an
+/// embedded CMap), whether it has a ToUnicode map, and its object number.
+fn unreadable_font(doc: &Pdf, resource: &[u8], font: &lopdf::Dictionary) -> String {
+    let text = |name: &[u8]| String::from_utf8_lossy(name).into_owned();
+    let base = font
+        .get(b"BaseFont")
+        .and_then(Object::as_name)
+        .map_or_else(|_| "なし".to_owned(), text);
+    let encoding = match font.get_deref(b"Encoding", doc) {
+        Ok(Object::Name(name)) => text(name),
+        Ok(Object::Stream(cmap)) => match cmap.dict.get(b"CMapName").and_then(Object::as_name) {
+            Ok(name) => format!("埋め込みCMap {}", text(name)),
+            Err(_) => "埋め込みCMap".to_owned(),
+        },
+        _ => "なし".to_owned(),
+    };
+    let to_unicode = if font.has(b"ToUnicode") {
+        "ToUnicodeあり（2バイトの文字コードでない）"
+    } else {
+        "ToUnicodeなし"
+    };
+    let object = doc
+        .objects
+        .iter()
+        .find(|(_, object)| object.as_dict().is_ok_and(|d| std::ptr::eq(d, font)))
+        .map(|((number, generation), _)| format!("、オブジェクト {number} {generation} R"))
+        .unwrap_or_default();
+    format!(
+        "{}（BaseFont {base}、Encoding {encoding}、{to_unicode}{object}）",
+        text(resource)
+    )
 }
 
 impl<'a> PdfEncoding<'a> {
@@ -2971,44 +3094,17 @@ impl<'a> PdfEncoding<'a> {
             .get_deref(b"Encoding", doc)
             .and_then(Object::as_name)
             .unwrap_or(b"");
-        // Predefined Unicode CMaps use big-endian character codes without a BOM.
-        // Identity-H/V are CID codes, NOT Unicode; they require a ToUnicode map.
-        if matches!(
-            name,
-            b"UniJIS-UCS2-H"
-                | b"UniJIS-UCS2-V"
-                | b"UniGB-UCS2-H"
-                | b"UniGB-UCS2-V"
-                | b"UniCNS-UCS2-H"
-                | b"UniCNS-UCS2-V"
-                | b"UniKS-UCS2-H"
-                | b"UniKS-UCS2-V"
-        ) {
-            return Ok(Self::Unicode { ucs2: true });
-        }
-        if matches!(
-            name,
-            b"UniJIS-UTF16-H"
-                | b"UniJIS-UTF16-V"
-                | b"UniGB-UTF16-H"
-                | b"UniGB-UTF16-V"
-                | b"UniCNS-UTF16-H"
-                | b"UniCNS-UTF16-V"
-                | b"UniKS-UTF16-H"
-                | b"UniKS-UTF16-V"
-        ) {
-            return Ok(Self::Unicode { ucs2: false });
+        if let Some(ucs2) = unicode_cmap(name) {
+            return Ok(Self::Unicode { ucs2 });
         }
         let encoding = font.get_font_encoding_with_limit(doc, MAX_PAGE)?;
         if font
             .get(b"Subtype")
             .and_then(Object::as_name)
             .is_ok_and(|n| n == b"Type0")
+            && !matches!(encoding, lopdf::Encoding::UnicodeMapEncoding(_))
         {
-            ensure!(
-                matches!(encoding, lopdf::Encoding::UnicodeMapEncoding(_)),
-                "PDF composite font requires a supported Unicode CMap or valid ToUnicode map"
-            );
+            return Ok(Self::Unreadable);
         }
         Ok(Self::Mapped {
             encoding,
@@ -3028,6 +3124,7 @@ impl<'a> PdfEncoding<'a> {
                 .map(|code| Ok(Pdf::decode_text(encoding, code)?))
                 .collect(),
             Self::Mapped { encoding, .. } => Ok(Pdf::decode_text(encoding, bytes)?),
+            Self::Unreadable => bail!("PDF font codes cannot be read as text"),
             Self::Unicode { ucs2 } => {
                 ensure!(
                     bytes.len().is_multiple_of(2),
@@ -3051,6 +3148,7 @@ impl<'a> PdfEncoding<'a> {
     fn encode(&self, text: &str) -> Result<Vec<u8>> {
         match self {
             Self::Mapped { encoding, .. } => Ok(Pdf::encode_text(encoding, text)),
+            Self::Unreadable => bail!("PDF font codes cannot be written from text"),
             Self::Unicode { ucs2 } => {
                 ensure!(
                     !ucs2 || text.chars().all(|c| c as u32 <= 0xffff),
@@ -3211,12 +3309,14 @@ fn pdf_font_name(font: &lopdf::Dictionary) -> Option<String> {
 /// `changes` replaces the strings at those indexes. `glyphs` (from
 /// [`subset_glyphs`]) limits a replacement drawn with an embedded subset font
 /// to the codes that subset is known to hold.
-/// The simple fonts of the pages of `doc` naming both an /Encoding and a
-/// ToUnicode map, without their /Encoding, by font dictionary: the ToUnicode
-/// map says what their codes mean, where lopdf would otherwise use the
-/// /Encoding alone (and replace it by StandardEncoding when it cannot read its
-/// glyph names). A page whose fonts cannot be read adds none; reading its text
-/// reports why.
+/// The fonts of the pages of `doc` naming both an /Encoding and a ToUnicode
+/// map, without their /Encoding, by font dictionary: the ToUnicode map says
+/// what their codes mean, where lopdf would otherwise use the /Encoding alone
+/// (and replace it by StandardEncoding when it cannot read its glyph names).
+/// These are the simple fonts, and the composite fonts whose CMap is neither
+/// Identity nor a Unicode CMap ARP reads, when their ToUnicode map has
+/// two-byte codes as ARP reads those of a composite font. A page whose fonts
+/// cannot be read adds none; reading its text reports why.
 fn pdf_mapped_fonts(doc: &Pdf) -> BTreeMap<usize, lopdf::Dictionary> {
     let mut mapped = BTreeMap::new();
     for id in doc.get_pages().into_values() {
@@ -3225,7 +3325,19 @@ fn pdf_mapped_fonts(doc: &Pdf) -> BTreeMap<usize, lopdf::Dictionary> {
             .into_iter()
             .flat_map(BTreeMap::into_values)
         {
-            if code_width(font) == 1 && font.has(b"ToUnicode") && font.has(b"Encoding") {
+            let composite = code_width(font) == 2
+                && font
+                    .get_deref(b"Encoding", doc)
+                    .and_then(Object::as_name)
+                    .map_or(true, |name| {
+                        !matches!(name, b"Identity-H" | b"Identity-V")
+                            && unicode_cmap(name).is_none()
+                    })
+                && two_byte_to_unicode(font, doc);
+            if (code_width(font) == 1 || composite)
+                && font.has(b"ToUnicode")
+                && font.has(b"Encoding")
+            {
                 mapped.entry(font_key(font)).or_insert_with(|| {
                     let mut font = font.clone();
                     font.remove(b"Encoding");
@@ -3243,6 +3355,12 @@ fn pdf_mapped_fonts(doc: &Pdf) -> BTreeMap<usize, lopdf::Dictionary> {
 struct PdfFonts<'a> {
     mapped: &'a BTreeMap<usize, lopdf::Dictionary>,
     encodings: BTreeMap<usize, PdfEncoding<'a>>,
+    /// The fonts whose codes cannot be read, as [`unreadable_font`] names
+    /// them, by font dictionary.
+    unreadable: BTreeMap<usize, String>,
+    /// The fonts whose strings [`pdf_text`] left out since this was last
+    /// taken.
+    left_out: BTreeSet<String>,
 }
 
 impl<'a> PdfFonts<'a> {
@@ -3250,6 +3368,8 @@ impl<'a> PdfFonts<'a> {
         Self {
             mapped,
             encodings: BTreeMap::new(),
+            unreadable: BTreeMap::new(),
+            left_out: BTreeSet::new(),
         }
     }
 }
@@ -3366,7 +3486,17 @@ fn pdf_text<'a>(
                         read.mapped.get(&key).unwrap_or(font_dictionary),
                         doc,
                     )?;
+                    if matches!(encoding, PdfEncoding::Unreadable) {
+                        read.unreadable
+                            .insert(key, unreadable_font(doc, &font, font_dictionary));
+                    }
                     read.encodings.insert(key, encoding);
+                }
+                // Text in a font whose codes say no characters is left out,
+                // and kept as it is when the page is written.
+                if let Some(name) = read.unreadable.get(&key) {
+                    read.left_out.insert(name.clone());
+                    continue;
                 }
                 let encoding = &read.encodings[&key];
                 // The size on the page: the font size scaled by the text and

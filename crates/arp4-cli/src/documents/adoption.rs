@@ -316,7 +316,10 @@ impl Store {
         );
         ensure!(source_current, "source changed; re-import before adoption");
         if self.fingerprint(&current)?.as_deref() == Some(fingerprint) {
-            fs::remove_dir_all(proposal)?;
+            remove_folder(
+                proposal,
+                "remove the proposal holding what the document holds",
+            )?;
             remove_empty_directories(proposal.parent().unwrap(), &self.arp);
             return Ok(
                 json!({"state":"skipped","reason":"no_changes","document_id":doc_id,"document":current}),
@@ -331,7 +334,13 @@ impl Store {
             if ["proposal.json", "review.json"].contains(&name.as_str()) {
                 continue;
             }
-            immutable(&under(&ready, &name)?, &fs::read(path)?)?;
+            immutable(&under(&ready, &name)?, &fs::read(&path)?).with_context(|| {
+                format!(
+                    "copy {} of the proposal to adopt it in {}",
+                    path.display(),
+                    ready.display()
+                )
+            })?;
         }
         ensure!(
             self.fingerprint(&current)? == plan["base"].as_str().map(str::to_owned)
@@ -340,22 +349,24 @@ impl Store {
         );
         let backup = stage.path().join("previous");
         if dest.exists() {
-            fs::rename(&dest, &backup)?;
+            move_path(&dest, &backup, "set the adopted document aside")?;
         }
-        if let Err(error) = fs::rename(&ready, &dest) {
+        if let Err(error) = move_path(&ready, &dest, "put the proposal in place of the document") {
             if backup.exists()
-                && let Err(restore) = fs::rename(&backup, &dest)
+                && let Err(restore) = move_path(&backup, &dest, "put the adopted document back")
             {
                 let recovery = stage.keep();
                 anyhow::bail!(
-                    "adoption failed: {error}; rollback failed: {restore}; recovery data: {}",
+                    "adoption failed: {error:#}; rollback failed: {restore:#}; recovery data: {}",
                     recovery.display()
                 );
             }
-            return Err(error.into());
+            return Err(error);
         }
         // Only the adopted current document survives. Git owns its prior versions.
-        fs::remove_dir_all(proposal)?;
+        remove_folder(proposal, "remove the proposal").with_context(|| {
+            format!("{doc_id} was adopted, but what remains of its proposal is to be discarded")
+        })?;
         remove_empty_directories(proposal.parent().unwrap(), &self.arp);
         Ok(json!({"document_id":doc_id,"document":dest}))
     }
