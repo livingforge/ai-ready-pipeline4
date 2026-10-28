@@ -116,7 +116,7 @@ impl<'a> Merges<'a> {
     }
 
     /// [`Merges::hiding`] the cell at `column` and `row`.
-    fn hiding_at(&self, column: u32, row: u32) -> Option<&'a str> {
+    pub fn hiding_at(&self, column: u32, row: u32) -> Option<&'a str> {
         self.0
             .containing(column, row)
             .filter(|merge| (column, row) != (merge.columns.0, merge.rows.0))

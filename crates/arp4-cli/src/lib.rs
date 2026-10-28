@@ -153,6 +153,7 @@ pub fn capabilities() -> serde_json::Value {
             "excel_element_body_version": documents::CONTENT_VERSION,
             "excel_body_model": "reading-order elements, each table the tree of its records keyed by its headings; identities, topology, formula kinds and physical bindings in layout.yml",
             "document_diagram_bodies": "Excel and PowerPoint drawings joined by lines as one diagram element: shapes with their kind, place and editable text; lines written A → B by their arrowheads, joining the recorded connections, else what an end touches or lies on within the structure policy distance (an Excel cell holding text too), marked as inferred",
+            "excel_checkbox_bodies": "an Excel form-control check box no line joins as one checkbox element: its editable label with the state the original saved and the cell it is linked to",
             "excel_external_reimport": "unchanged grid with at most one changed cell; ambiguous structural or multi-cell correspondence is refused",
             "excel_column_move_scope": "plain worksheets and ordinary contiguous A1 formulas; positional objects, defined names and mixed structural operations are refused",
             "excel_row_column_commands": ["rows insert", "rows delete", "rows move", "columns insert", "columns delete", "columns move"],

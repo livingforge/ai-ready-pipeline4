@@ -326,7 +326,7 @@
   },
   "content": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "All source formats use document elements (version 7). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it.",
+    "description": "All source formats use document elements (version 8). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it. A check box no line joins is written as one checkbox element, with its label, its saved state and the cell it is linked to.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -338,7 +338,7 @@
         "type": "string"
       },
       "schema_version": {
-        "const": "7"
+        "const": "8"
       },
       "elements": {
         "type": "array",
@@ -600,6 +600,49 @@
                           }
                         ]
                       }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "checkbox"
+              ],
+              "properties": {
+                "checkbox": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "checked"
+                  ],
+                  "description": "フォームコントロールのチェックボックス。状態・リンク先セル・位置は原本のコントロールから決まり、編集できるのは text だけ",
+                  "properties": {
+                    "text": {
+                      "description": "チェックボックスのラベル。編集できるのはこの値だけ",
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "checked": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "原本に保存された状態。true はオン、false はオフ、null はどちらでもない（灰色）"
+                    },
+                    "linked_cell": {
+                      "type": "string",
+                      "description": "リンク先セル。同じシートのセルは未適用の行列操作後の番地、ほかのシートのセルや名前は原本の表記"
+                    },
+                    "at": {
+                      "type": "string",
+                      "description": "チェックボックスが占めるセル範囲"
                     }
                   }
                 }

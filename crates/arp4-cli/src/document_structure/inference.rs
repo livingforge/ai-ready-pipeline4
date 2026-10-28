@@ -3012,7 +3012,19 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
             });
         }
         cells.sort_by_key(|c| (c.top, c.left));
-        let mut assigned = BTreeSet::new();
+        // A cell a merge hides is not shown, whatever it holds (such as a
+        // calculation kept under a merged heading): it joins no table, where
+        // it would read as a record or a heading, and is left unassigned.
+        let mut hidden = BTreeSet::new();
+        if !spans.is_empty() {
+            let merges = crate::excel::Merges::new(&sheet["merges"])?;
+            for (i, cell) in cells.iter().enumerate() {
+                if merges.hiding_at(cell.left, cell.top).is_some() {
+                    hidden.insert(i);
+                }
+            }
+        }
+        let mut assigned = hidden.clone();
         let mut groups: Vec<Candidate> = vec![];
         // Explicit table boundaries have precedence over layout heuristics. A
         // table nested in another claims its cells first; the outer table
@@ -3021,7 +3033,9 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
             let mut rows: BTreeMap<u32, Vec<(u32, usize)>> = BTreeMap::new();
             if !tables.is_empty() {
                 for (i, cell) in cells.iter().enumerate() {
-                    rows.entry(cell.top).or_default().push((cell.left, i));
+                    if !hidden.contains(&i) {
+                        rows.entry(cell.top).or_default().push((cell.left, i));
+                    }
                 }
             }
             let within = |row: &[(u32, usize)], first: u32, last: u32| -> Vec<usize> {
@@ -3103,6 +3117,7 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
             }
         }
         let mut leftovers = side_annotations(&cells, &assigned);
+        leftovers.extend(hidden);
         assigned.extend(leftovers.iter().copied());
         let prose = prose_bullets(&cells, &assigned);
         leftovers.extend(prose);
@@ -3650,6 +3665,44 @@ mod tests {
                 assert_ne!(found[record], "column_header", "{scored_from}: {found:?}");
             }
         }
+    }
+    #[test]
+    fn a_cell_a_merge_hides_joins_no_table() {
+        // Group-A merged over three records, with a calculation kept in A2
+        // under the merge: Excel shows only Group-A.
+        let mut cells = vec![cell("A1", "Group-A")];
+        for row in 1..=3 {
+            cells.push(cell(&format!("B{row}"), &format!("Detail-{row}")));
+            cells.push(cell(
+                &format!("C{row}"),
+                if row == 3 { "Yes" } else { "No" },
+            ));
+        }
+        let shown = element_values(&crate::extraction::sample(
+            json!({"sheets":[{"name":"S","cells":cells.clone(),"merges":["A1:A3"]}]}),
+        ))
+        .unwrap();
+        cells.push(json!({"address":"A2","formula":"MAX(C1:C3)","value":0}));
+        let found = element_values(&crate::extraction::sample(
+            json!({"sheets":[{"name":"S","cells":cells,"merges":["A1:A3"]}]}),
+        ))
+        .unwrap();
+        let tables = |elements: &[Value]| -> Vec<Value> {
+            elements
+                .iter()
+                .filter(|e| e["kind"] == "table")
+                .cloned()
+                .collect()
+        };
+        assert_eq!(tables(&found), tables(&shown), "{found:?}");
+        let apart: Vec<_> = found
+            .iter()
+            .filter(|e| e["kind"] == "text")
+            .flat_map(|e| e["cells"].as_array().unwrap().clone())
+            .collect();
+        assert_eq!(apart.len(), 1, "{found:?}");
+        assert_eq!(apart[0]["address"], "A2");
+        assert_eq!(apart[0]["role"], "unassigned");
     }
     #[test]
     fn rows_and_covering_cells_are_those_a_scan_finds() {

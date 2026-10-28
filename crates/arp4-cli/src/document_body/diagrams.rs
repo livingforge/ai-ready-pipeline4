@@ -1,11 +1,24 @@
 //! Diagrams of a content page: drawings joined by lines, written as one
 //! `diagram` element at the place of the first of their elements. The texts
 //! of its shapes and lines are its only values; its shapes, where they are and
-//! what each line joins follow the original's drawings.
+//! what each line joins follow the original's drawings. A check box is
+//! written the same way as one `checkbox` element: its label, the only value
+//! it holds, with its state and the cell it is linked to.
 use super::*;
 
 /// The kind of the element a diagram is written as.
 pub(crate) const DIAGRAM: &str = "diagram";
+/// The kind of the element a check box is written as.
+pub(crate) const CHECKBOX: &str = "checkbox";
+
+/// What a check box shows besides its label: whether the original saved it
+/// checked (`None` when mixed, neither on nor off), and the cell it is
+/// linked to, as the original names it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CheckBox {
+    pub(crate) checked: Option<bool>,
+    pub(crate) linked_cell: Option<String>,
+}
 
 /// A shape of a diagram: its key, the name of its geometry, where it is on
 /// the page, the shape holding it, and the elements of its text, by their
@@ -51,6 +64,9 @@ pub(crate) struct Diagram<T = usize> {
     pub(crate) at: Option<String>,
     pub(crate) shapes: Vec<DiagramShape<T>>,
     pub(crate) lines: Vec<DiagramLine<T>>,
+    /// Set for a check box, written alone as a `checkbox` element: its one
+    /// shape is the box and holds the label, and it has no lines.
+    pub(crate) check_box: Option<CheckBox>,
     /// Its elements: its drawings, and for a page the texts of its shapes
     /// and lines too.
     pub(crate) members: Vec<T>,
@@ -94,6 +110,7 @@ pub(crate) enum Ordered<'v> {
     Map(Vec<(&'static str, Ordered<'v>)>),
     List(Vec<Ordered<'v>>),
     Text(String),
+    Flag(Option<bool>),
     Value(&'v Value),
 }
 
@@ -108,6 +125,7 @@ impl Ordered<'_> {
             ),
             Self::List(items) => Value::Array(items.iter().map(Ordered::to_json).collect()),
             Self::Text(text) => Value::String(text.clone()),
+            Self::Flag(flag) => json!(flag),
             Self::Value(value) => (*value).clone(),
         }
     }
@@ -131,6 +149,7 @@ impl Serialize for Ordered<'_> {
                 seq.end()
             }
             Self::Text(text) => s.serialize_str(text),
+            Self::Flag(flag) => flag.serialize(s),
             Self::Value(value) => value.serialize(s),
         }
     }
@@ -147,12 +166,35 @@ fn shown(value: &Value) -> String {
 }
 
 impl Diagram {
+    /// The kind of the element it is written as.
+    pub(crate) fn kind(&self) -> &'static str {
+        if self.check_box.is_some() {
+            CHECKBOX
+        } else {
+            DIAGRAM
+        }
+    }
+
+    /// Why an element of it may not be written apart from it.
+    pub(crate) fn written_apart(&self) -> &'static str {
+        if self.check_box.is_some() {
+            "a check box is written as one checkbox element with its label; edit the label there"
+        } else {
+            "the drawings lines join are written as one diagram; edit their texts there"
+        }
+    }
+
     /// Where the diagram is, as messages name it.
     fn name(&self) -> String {
+        let kind = if self.check_box.is_some() {
+            "check box"
+        } else {
+            "diagram"
+        };
         match (&self.at, self.shapes.first()) {
-            (Some(at), _) => format!("diagram at {at}"),
-            (None, Some(shape)) => format!("diagram of {}", shape.key),
-            (None, None) => "diagram".into(),
+            (Some(at), _) => format!("{kind} at {at}"),
+            (None, Some(shape)) => format!("{kind} of {}", shape.key),
+            (None, None) => kind.into(),
         }
     }
 
@@ -174,6 +216,20 @@ impl Diagram {
                 )),
             })
         };
+        if let Some(check_box) = &self.check_box {
+            let mut members = vec![];
+            if let Some(text) = texts(self.shapes.first().map_or(&[], |s| &s.texts))? {
+                members.push(("text", text));
+            }
+            members.push(("checked", Ordered::Flag(check_box.checked)));
+            if let Some(cell) = &check_box.linked_cell {
+                members.push(("linked_cell", Ordered::Text(cell.clone())));
+            }
+            if let Some(at) = &self.at {
+                members.push(("at", Ordered::Text(at.clone())));
+            }
+            return Ok(Ordered::Map(members));
+        }
         // A shape by its text, or by its key when it has none or another
         // shape shows the same.
         let mut labels: HashMap<&str, String> = HashMap::new();
@@ -272,7 +328,12 @@ impl Diagram {
         };
         ensure!(
             value.is_object(),
-            "{name} must be a map of its shapes and lines"
+            "{name} must be a map of {}",
+            if self.check_box.is_some() {
+                "its label and state"
+            } else {
+                "its shapes and lines"
+            }
         );
         let mut texts: HashMap<usize, Value> = HashMap::new();
         let mut take = |item: &Value, places: &[usize], owner: &str| -> Result<()> {
@@ -308,6 +369,21 @@ impl Diagram {
             }
             Ok(())
         };
+        if self.check_box.is_some() {
+            take(&value, self.shapes.first().map_or(&[], |s| &s.texts), &name)?;
+            let expected = self
+                .body(&|place| texts.get(&place).context("check box label missing"))?
+                .to_json();
+            ensure!(
+                expected == value,
+                "{name}: its state, linked cell and place follow the original's check box; edit only its text"
+            );
+            return Ok(self
+                .members
+                .iter()
+                .map(|place| (*place, texts.remove(place).unwrap_or(Value::Null)))
+                .collect());
+        }
         let shapes = value["shapes"]
             .as_array()
             .map(Vec::as_slice)
@@ -363,7 +439,11 @@ pub(crate) fn expand(
     metadata: &[Meta],
     diagrams: &Diagrams,
 ) -> Result<Vec<BodyElement>> {
-    if diagrams.is_empty() && elements.iter().all(|e| e.kind != DIAGRAM) {
+    if diagrams.is_empty()
+        && elements
+            .iter()
+            .all(|e| !matches!(e.kind, DIAGRAM | CHECKBOX))
+    {
         return Ok(elements);
     }
     let mut written = elements.into_iter();
@@ -376,19 +456,24 @@ pub(crate) fn expand(
             continue;
         }
         let element = written.next().context("element count changed")?;
-        if element.kind == DIAGRAM {
-            let (diagram, first) = diagrams
-                .of(place)
-                .context("a diagram is written where the original's drawings make none")?;
-            ensure!(first, "element count changed");
+        if matches!(element.kind, DIAGRAM | CHECKBOX) {
+            let (diagram, first) = diagrams.of(place).with_context(|| {
+                format!(
+                    "a {} is written where the original's drawings make none",
+                    element.kind
+                )
+            })?;
+            ensure!(
+                first && diagram.kind() == element.kind,
+                "element count changed"
+            );
             pending.extend(diagram.values(element.value)?);
             let value = pending.remove(&place).context("diagram element missing")?;
             out.push(BodyElement { kind, value });
         } else {
-            ensure!(
-                diagrams.of(place).is_none(),
-                "the drawings lines join are written as one diagram; edit their texts there"
-            );
+            if let Some((diagram, _)) = diagrams.of(place) {
+                bail!(diagram.written_apart());
+            }
             out.push(element);
         }
     }

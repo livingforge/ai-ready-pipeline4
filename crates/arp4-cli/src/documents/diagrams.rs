@@ -6,7 +6,9 @@
 //! holding text on an Excel sheet. These are facts of the drawings; what a
 //! diagram means is for the structure interpretation.
 use super::*;
-use crate::document_body::{Arrow, Diagram, DiagramLine, DiagramShape, LineEnd};
+use crate::document_body::{
+    Arrow, CHECKBOX, CheckBox, Diagram, DiagramLine, DiagramShape, LineEnd,
+};
 use std::sync::OnceLock;
 
 const EMU_PER_POINT: f64 = 12_700.0;
@@ -947,10 +949,12 @@ pub(super) fn derive(
             .unwrap_or((column, row))
     };
     let mut diagrams = vec![];
+    let mut joined = BTreeSet::new();
     for members in groups.into_values() {
         if !members.iter().any(|&i| drawings[i].role == Role::Line) {
             continue;
         }
+        joined.extend(members.iter().copied());
         let top_left = |i: &usize| {
             let rect = drawings[*i]
                 .rect
@@ -1086,7 +1090,44 @@ pub(super) fn derive(
             at,
             shapes,
             lines,
+            check_box: None,
             members,
+        });
+    }
+    // A check box no line joins is written alone: its label with its state
+    // and the cell it is linked to, which the label's place on the page
+    // alone does not tell.
+    for (index, drawing) in drawings.iter().enumerate() {
+        let control = &drawing.value["control"];
+        if control["kind"] != "CheckBox" || joined.contains(&index) {
+            continue;
+        }
+        let linked_cell = control["linked_cell"].as_str().map(|cell| {
+            // A cell of the sheet moves with the pending operations; a cell
+            // of another sheet or a name is as the original writes it.
+            excel::coordinate(&cell.replace('$', ""))
+                .ok()
+                .and_then(|(column, row)| {
+                    let (c, r) = moved(u64::from(column) - 1, u64::from(row) - 1);
+                    range((c, r), (c, r)).ok()
+                })
+                .unwrap_or_else(|| cell.to_owned())
+        });
+        diagrams.push(Diagram {
+            at: place_of(index)?,
+            shapes: vec![DiagramShape {
+                key: drawing.key.clone(),
+                name: CHECKBOX.into(),
+                at: None,
+                inside: None,
+                texts: text_elements(drawing),
+            }],
+            lines: vec![],
+            check_box: Some(CheckBox {
+                checked: control["checked"].as_bool(),
+                linked_cell,
+            }),
+            members: vec![drawing.visual.clone()],
         });
     }
     Ok(diagrams)
@@ -1156,6 +1197,7 @@ pub(super) fn of(sheet: &LayoutSheet) -> Result<crate::document_body::Diagrams> 
             at: diagram.at.clone(),
             shapes,
             lines,
+            check_box: diagram.check_box.clone(),
             members,
         });
     }

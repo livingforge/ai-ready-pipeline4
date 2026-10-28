@@ -1950,7 +1950,7 @@ pub(super) fn complete(sheet: &LayoutSheet, metadata: &mut [Meta]) -> Result<()>
 
 /// The version of content pages: tables as the trees of their records and
 /// categories.
-pub(crate) const CONTENT_VERSION: &str = "7";
+pub(crate) const CONTENT_VERSION: &str = "8";
 
 /// The YAML of the content `page` of `layout` as a file holds it, each
 /// diagram written together, as [`crate::document_body::yaml`] orders it.
@@ -2475,8 +2475,29 @@ pub(super) fn encode_grid(
             Meta::Other(json!({"id":reference,"type":visual["kind"],"ref":reference})),
         ));
     }
+    // Of the elements at one cell, the drawings anchored in it come first,
+    // from the top of the cell down, then from its left: several check
+    // boxes stacked in one cell are read as they are shown, not as the
+    // original happens to list them. Each drawing is followed by its text.
+    fn within<'v>(visuals: &'v Value, element: &'v Meta) -> Option<(u64, u64, &'v str)> {
+        let reference = element
+            .get("ref")
+            .or_else(|| element.get("visual"))?
+            .as_str()?;
+        let from = &visuals[reference]["anchor"]["from"];
+        Some((
+            from["rowOff"].as_u64().unwrap_or(0),
+            from["colOff"].as_u64().unwrap_or(0),
+            reference,
+        ))
+    }
+    let visuals = &sheet["visuals"];
     placed.sort_by(|a, b| {
         a.0.cmp(&b.0)
+            .then_with(|| match (within(visuals, &a.2), within(visuals, &b.2)) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                (a, b) => b.is_some().cmp(&a.is_some()),
+            })
             .then_with(|| b.2.get("ref").is_some().cmp(&a.2.get("ref").is_some()))
             .then_with(|| a.2["id"].as_str().cmp(&b.2["id"].as_str()))
     });

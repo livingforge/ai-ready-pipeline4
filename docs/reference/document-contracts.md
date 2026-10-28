@@ -22,7 +22,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 7). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 8). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it. A check box no line joins is written as one checkbox element, with its label, its saved state and the cell it is linked to.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
 | <code>/properties/elements</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items</code> | <code>{}</code> |
 | <code>/properties/elements/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["text"],"type":"object"}</code> |
@@ -69,8 +69,14 @@
 | <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text/anyOf/0</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text/anyOf/1</code> | <code>{"minItems":2,"type":"array"}</code> |
 | <code>/properties/elements/items/oneOf/7/properties/diagram/properties/shapes/items/properties/text/anyOf/1/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/8</code> | <code>{"additionalProperties":false,"required":["checkbox"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/8/properties/checkbox</code> | <code>{"additionalProperties":false,"description":"フォームコントロールのチェックボックス。状態・リンク先セル・位置は原本のコントロールから決まり、編集できるのは text だけ","required":["checked"],"type":"object"}</code> |
+| <code>/properties/elements/items/oneOf/8/properties/checkbox/properties/at</code> | <code>{"description":"チェックボックスが占めるセル範囲","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/8/properties/checkbox/properties/checked</code> | <code>{"description":"原本に保存された状態。true はオン、false はオフ、null はどちらでもない（灰色）","type":["boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/8/properties/checkbox/properties/linked_cell</code> | <code>{"description":"リンク先セル。同じシートのセルは未適用の行列操作後の番地、ほかのシートのセルや名前は原本の表記","type":"string"}</code> |
+| <code>/properties/elements/items/oneOf/8/properties/checkbox/properties/text</code> | <code>{"description":"チェックボックスのラベル。編集できるのはこの値だけ","type":["string","number","boolean","null"]}</code> |
 | <code>/properties/page_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"7"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"8"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/node</code> | <code>{"description":"表の1記録、または区分。記録のキーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。区分は、縦に結合するか先頭の記録の行だけに書いて複数の記録の見出しとなるセルで、記録と同じ規則のキーでその値を持ち、範囲の記録を children に持つ。区分のセルは先頭の記録のノードに置かず、区分の下の空のセルはどのノードにも置かない。値はセルの値で、キーと木の形は編集しない","type":"object"}</code> |
 | <code>/$defs/node/properties/blank_records</code> | <code>{"description":"何も書かないノード（値が上のノードの fill_down の数式だけの記録など）が同じ並びで続く数。このメンバーだけを持つノードは、その数の空のノード {} を表す。2ノード以上続くときに使う","minimum":2,"type":"integer"}</code> |

@@ -16,7 +16,8 @@ use std::rc::Rc;
 mod diagrams;
 use diagrams::Ordered;
 pub(crate) use diagrams::{
-    Arrow, DIAGRAM, Diagram, DiagramLine, DiagramShape, Diagrams, LineEnd, expand,
+    Arrow, CHECKBOX, CheckBox, DIAGRAM, Diagram, DiagramLine, DiagramShape, Diagrams, LineEnd,
+    expand,
 };
 
 /// The member of a node holding the values of its record's cells that head
@@ -694,9 +695,10 @@ impl BodyElement {
     }
 
     /// The kind of element `name` names in a page as written, where the
-    /// elements of each diagram are written together as one.
+    /// elements of each diagram and of each check box are written together
+    /// as one.
     fn written_kind(name: &str) -> Option<&'static str> {
-        Self::kind_named(name).or((name == DIAGRAM).then_some(DIAGRAM))
+        Self::kind_named(name).or([DIAGRAM, CHECKBOX].into_iter().find(|kind| *kind == name))
     }
 }
 
@@ -1670,20 +1672,19 @@ pub(crate) fn read_each_element<'a>(
             let kind = BodyElement::written_kind(&kind).context("unknown element type")?;
             let e = metadata.get(place).context("element count changed")?;
             let node = reader.node(3)?;
-            if kind == DIAGRAM {
-                let (diagram, first) = diagrams
-                    .of(place)
-                    .context("a diagram is written where the original's drawings make none")?;
-                ensure!(first, "element count changed");
+            if matches!(kind, DIAGRAM | CHECKBOX) {
+                let (diagram, first) = diagrams.of(place).with_context(|| {
+                    format!("a {kind} is written where the original's drawings make none")
+                })?;
+                ensure!(first && diagram.kind() == kind, "element count changed");
                 pending.extend(diagram.values(reader.value(node, 3)?)?);
                 placed(&mut place, &mut pending, &mut visit)?;
                 ensure!(reader.key()?.is_none(), "body element must have one member");
                 continue;
             }
-            ensure!(
-                diagrams.of(place).is_none(),
-                "the drawings lines join are written as one diagram; edit their texts there"
-            );
+            if let Some((diagram, _)) = diagrams.of(place) {
+                bail!(diagram.written_apart());
+            }
             ensure!(string(&e["type"])? == kind, "element kind changed");
             place += 1;
             if kind == "table" {
@@ -1862,7 +1863,7 @@ pub(crate) fn encoded_yaml_to(
     for (place, (element, e)) in page.elements.iter().zip(metadata).enumerate() {
         if let Some((diagram, first)) = diagrams.of(place) {
             if first {
-                elements.push(Out::Diagram(diagram.body(&text)?));
+                elements.push(Out::Diagram(diagram.kind(), diagram.body(&text)?));
             }
             continue;
         }
@@ -1891,7 +1892,7 @@ fn page_yaml(
     for (place, (&(kind, value), e)) in elements.iter().zip(metadata).enumerate() {
         if let Some((diagram, first)) = diagrams.of(place) {
             if first {
-                outs.push(Out::Diagram(diagram.body(&text)?));
+                outs.push(Out::Diagram(diagram.kind(), diagram.body(&text)?));
             }
             continue;
         }
@@ -1920,8 +1921,9 @@ fn write_page_yaml(
 enum Out<'a> {
     Value(&'a str, &'a Value),
     Cells(Box<CellsBody<'a>>),
-    /// The elements of a diagram, written together.
-    Diagram(Ordered<'a>),
+    /// The elements of a diagram or of a check box, written together as one
+    /// element of the kind given.
+    Diagram(&'static str, Ordered<'a>),
 }
 
 /// The values of the cells of a table by their places: held by an encoded
@@ -2137,7 +2139,7 @@ impl Serialize for Element<'_> {
         match self.0 {
             Out::Value(kind, value) => map.serialize_entry(kind, value)?,
             Out::Cells(body) => map.serialize_entry("table", body)?,
-            Out::Diagram(body) => map.serialize_entry(DIAGRAM, body)?,
+            Out::Diagram(kind, body) => map.serialize_entry(kind, body)?,
         }
         map.end()
     }
@@ -2392,7 +2394,7 @@ mod tests {
                 {"マシン名":"Y","フォルダ構成":"/"}]})
         );
         assert_eq!(join_json(&body, &metadata).unwrap(), elements);
-        let page = json!({"elements":body,"page_id":"p","schema_version":"7","title":"t"});
+        let page = json!({"elements":body,"page_id":"p","schema_version":"8","title":"t"});
         // Values in the order of the columns, then marks, then children.
         let typed = crate::documents::metadata_from(metadata.clone()).unwrap();
         let text = String::from_utf8(yaml(&page, &typed, &Diagrams::default()).unwrap()).unwrap();
@@ -2421,7 +2423,7 @@ mod tests {
     - マシン名: "Y"
       フォルダ構成: /
 page_id: p
-schema_version: "7"
+schema_version: "8"
 title: t
 "#
         );
@@ -2469,7 +2471,7 @@ title: t
         let elements = json!([{"id":"t","type":"table","headings":1,
             "labels":labels,"columns":ids,"rows":rows}]);
         let (body, metadata) = split_json(elements).unwrap();
-        let page = json!({"elements":body,"page_id":"p","schema_version":"7","title":"t"});
+        let page = json!({"elements":body,"page_id":"p","schema_version":"8","title":"t"});
         let typed = crate::documents::metadata_from(metadata).unwrap();
         let text = String::from_utf8(yaml(&page, &typed, &Diagrams::default()).unwrap()).unwrap();
         (body, typed, text)
@@ -2548,7 +2550,7 @@ title: t
     - 数: 7
     - 数: 8
 page_id: p
-schema_version: "7"
+schema_version: "8"
 title: t
 "#
         );
@@ -2607,7 +2609,7 @@ title: t
     - 名: n9
     - blank_records: 3
 page_id: p
-schema_version: "7"
+schema_version: "8"
 title: t
 "#
         );
