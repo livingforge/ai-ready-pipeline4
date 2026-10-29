@@ -54,6 +54,11 @@ mod calculation;
 pub use calculation::calculate;
 mod fit;
 pub use fit::{FitTarget, Place, layout_warnings};
+mod look;
+pub use look::{
+    BorderSide, DrawingLook, FormatLook, Paint, SheetLook, blank_sheet_look, drawing_looks,
+    sheet_looks,
+};
 mod cell_objects;
 mod column_move;
 mod formatting;

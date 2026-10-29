@@ -536,6 +536,11 @@ fn run(cli: Cli) -> Result<bool> {
                     let pages = store.write_elements(&document, proposal, &out)?;
                     json!({"state":"saved","elements":out,"document_id":document,"pages":pages})
                 }
+                DocumentCommand::View { document, proposal } => {
+                    let mut result = store.view(&document, proposal)?;
+                    result["view"] = relative(&root, &result["view"])?;
+                    result
+                }
                 DocumentCommand::ExtractionRead {
                     document,
                     out,

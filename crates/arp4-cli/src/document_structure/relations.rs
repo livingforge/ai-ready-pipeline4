@@ -40,6 +40,47 @@ impl Node for Element {
     }
 }
 
+/// Keeps each table's descriptions only to text elements still on its sheet,
+/// and drops the list when none is left. Returns the IDs of the tables that
+/// lost one.
+pub(super) fn prune_descriptions<T: Node>(elements: &mut [T]) -> Vec<String> {
+    let texts: BTreeSet<(String, String)> = elements
+        .iter()
+        .map(Node::members)
+        .filter(|e| e["kind"] == "text")
+        .filter_map(|e| {
+            Some((
+                e["sheet"].as_str()?.to_owned(),
+                e["id"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut pruned = vec![];
+    for element in elements.iter_mut() {
+        let element = element.members_mut();
+        let sheet = element["sheet"].as_str().unwrap_or_default().to_owned();
+        let Some(descriptions) = element
+            .get_mut("descriptions")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        let before = descriptions.len();
+        descriptions.retain(|id| {
+            id.as_str()
+                .is_some_and(|id| texts.contains(&(sheet.clone(), id.to_owned())))
+        });
+        let (after, empty) = (descriptions.len(), descriptions.is_empty());
+        if empty {
+            element.as_object_mut().unwrap().remove("descriptions");
+        }
+        if after != before {
+            pruned.push(element["id"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+    pruned
+}
+
 /// Keeps each table's parent only while it is still a table on the same sheet,
 /// and its context only to cells that table still holds. Returns the IDs of the
 /// elements whose parent was dropped.

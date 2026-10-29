@@ -405,6 +405,7 @@ fn stored_tables(metadata: Vec<Meta>) -> Result<Value> {
         let mut lines = vec![];
         let mut marked = serde_json::Map::new();
         let mut parents = serde_json::Map::new();
+        let mut notes = vec![];
         let mut record_rows = HashMap::new();
         for row in &rows {
             let first = row
@@ -417,6 +418,21 @@ fn stored_tables(metadata: Vec<Meta>) -> Result<Value> {
             }
         }
         for row in rows {
+            // Its title and notes, by the IDs of their cells.
+            if let Some(description) = elements::Description::of(&row) {
+                for mut cell in row.cells {
+                    let id = cell.remove("id").context("table cell ID missing")?;
+                    let id = string(&id)?.to_owned();
+                    match description {
+                        elements::Description::Title => element["title"] = json!(id),
+                        elements::Description::Note => notes.push(json!(id)),
+                    }
+                    if !cell.is_empty() {
+                        marked.insert(id, Value::Object(cell.into_map()));
+                    }
+                }
+                continue;
+            }
             let mut record = None;
             let mut columns = vec![];
             let parent = row.get("parent").cloned();
@@ -466,6 +482,9 @@ fn stored_tables(metadata: Vec<Meta>) -> Result<Value> {
             }
         }
         element["rows"] = json!(lines);
+        if !notes.is_empty() {
+            element["notes"] = Value::Array(notes);
+        }
         if !marked.is_empty() {
             element["cells"] = Value::Object(marked);
         }
@@ -540,6 +559,16 @@ fn expand_tables(metadata: Value) -> Result<Vec<Meta>> {
             Some(_) => bail!("table categories must be a map"),
             None => BTreeSet::new(),
         };
+        // The title and notes follow the records, the title first.
+        let mut written = vec![];
+        if let Some(title) = element.remove("title") {
+            written.push((elements::Description::Title, title));
+        }
+        if let Some(notes) = element.remove("notes") {
+            for note in array(&notes)? {
+                written.push((elements::Description::Note, note.clone()));
+            }
+        }
         let lines = element.remove("rows").context("table rows missing")?;
         let mut rows = vec![];
         for line in array(&lines)? {
@@ -581,6 +610,18 @@ fn expand_tables(metadata: Value) -> Result<Vec<Meta>> {
                     json!(elements::token("record", &[parent]))
                 };
             }
+            rows.push(row);
+        }
+        for (description, id) in written {
+            let id = string(&id)?;
+            let mut cell = match marked.remove(id) {
+                Some(cell) => MetaCell::from_value(cell)?,
+                None => MetaCell::default(),
+            };
+            cell.set_id(id);
+            let mut row = MetaRow::new(vec![cell]);
+            row["id"] = json!(elements::token(description.name(), &[id]));
+            row["description"] = json!(description.name());
             rows.push(row);
         }
         if let Some(id) = marked.keys().next() {

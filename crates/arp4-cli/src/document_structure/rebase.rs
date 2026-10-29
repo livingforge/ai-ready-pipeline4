@@ -163,6 +163,21 @@ pub(super) fn rebase(
         }
     }
     let mut transferable: BTreeSet<String> = candidates.keys().cloned().collect();
+    // Text the parser writes against a table, which a corrected table may
+    // keep as its description: there while a cell of it is no correction's.
+    let inferred_texts: BTreeSet<String> = result
+        .elements
+        .iter()
+        .filter(|element| {
+            element["kind"] == "text"
+                && element.cells.iter().any(|cell| {
+                    element["sheet"].as_str().is_none_or(|sheet| {
+                        !claimed.contains(&(sheet.to_owned(), cell.address.to_string()))
+                    })
+                })
+        })
+        .filter_map(|element| element["id"].as_str().map(str::to_owned))
+        .collect();
     loop {
         let removed: Vec<_> = candidates
             .iter()
@@ -171,7 +186,10 @@ pub(super) fn rebase(
                     && element.get("descriptions").is_some_and(|descriptions| {
                         descriptions.as_array().is_some_and(|references| {
                             references.iter().any(|reference| {
-                                !transferable.contains(reference.as_str().unwrap_or(""))
+                                let reference = reference.as_str().unwrap_or("");
+                                !transferable.contains(reference)
+                                    && (candidates.contains_key(reference)
+                                        || !inferred_texts.contains(reference))
                             })
                         })
                     })
@@ -240,12 +258,23 @@ pub(super) fn rebase(
         renamed.insert(inferred_id, element["id"].clone());
         fresh.push(element);
     }
-    // A parser table nested in another parser table follows that table's new ID.
+    // A parser table nested in another parser table follows that table's new
+    // ID, and so do its descriptions.
     for element in &mut fresh {
         if let Some(parent) = element.get_mut("parent")
             && let Some(id) = parent["element"].as_str().and_then(|id| renamed.get(id))
         {
             parent["element"] = id.clone();
+        }
+        if let Some(descriptions) = element
+            .get_mut("descriptions")
+            .and_then(Value::as_array_mut)
+        {
+            for reference in descriptions {
+                if let Some(id) = reference.as_str().and_then(|id| renamed.get(id)) {
+                    *reference = id.clone();
+                }
+            }
         }
     }
     let corrected: BTreeSet<String> = retained
@@ -254,6 +283,12 @@ pub(super) fn rebase(
         .collect();
     let carried_elements = retained.len();
     let mut elements: Vec<Element> = retained.into_iter().chain(fresh).collect();
+    for id in relations::prune_descriptions(&mut elements) {
+        if corrected.contains(&id) {
+            conflicts
+                .push(json!({"kind":"element","id":id,"reason":"description_dependency_changed"}));
+        }
+    }
     for id in relations::prune_parents(&mut elements) {
         if corrected.contains(&id) {
             conflicts.push(json!({"kind":"element","id":id,"reason":"parent_dependency_changed"}));

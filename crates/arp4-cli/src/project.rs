@@ -74,7 +74,10 @@ pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
             &json!({"schema_version":"1", "sources":sources, "agent_read_format":AgentFormat::default()}),
         )?;
     }
-    ensure_lines(&under(&root, ".arp/.gitignore")?, &["/work/", "/cache/"])?;
+    ensure_lines(
+        &under(&root, ".arp/.gitignore")?,
+        &["/work/", "/cache/", "/view/"],
+    )?;
     // Originals and records are verified byte for byte, so Git must not convert
     // their line endings. These deeper files override the repository's own settings.
     for folder in [".arp", sources] {
@@ -87,7 +90,7 @@ pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
 }
 
 /// Appends the lines a file lacks, keeping what the user already wrote.
-fn ensure_lines(path: &Path, lines: &[&str]) -> Result<()> {
+pub(crate) fn ensure_lines(path: &Path, lines: &[&str]) -> Result<()> {
     let mut contents = if path.exists() {
         fs::read_to_string(path)?
     } else {

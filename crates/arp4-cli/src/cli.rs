@@ -1424,6 +1424,19 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         proposal: bool,
     },
+    /// Write a page that shows the content laid out as the original lays it
+    /// out, for a person to read: values where the original shows them, with
+    /// its sizes, merges, fills, borders, fonts, shapes and pictures, and the
+    /// values and fonts the content changes marked with the original's, and
+    /// a structure view of how the content YAML reads each table cell.
+    /// Saved to .arp/view/<document>.html, which is not tracked; the
+    /// content and the original are not changed.
+    View {
+        document: String,
+        /// Show the proposal instead of the adopted document.
+        #[arg(long)]
+        proposal: bool,
+    },
     /// Write the extraction for reading (the extraction-view contract): as
     /// extraction.json stores it, one cell per line, with each font and style
     /// written out where extraction.json has its index; a sheet gives the font

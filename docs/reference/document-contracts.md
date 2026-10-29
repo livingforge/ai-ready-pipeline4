@@ -22,7 +22,7 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 8). A table is the tree of its records: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it. A check box no line joins is written as one checkbox element, with its label, its saved state and the cell it is linked to.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"All source formats use document elements (version 9). A table is the tree of its records, with the text the structure interpretation sets against it alone as its title and notes: its heading records as columns and each other record as a node under the record whose names head it, or under a category: the cells of the first record of a group that head the records of the group, shown as a node of their own. Identities, table topology and source bindings live only in document-layout. Drawings joined by lines are written as one diagram element at the place of the first of their elements, with the texts of their shapes and lines in it. A check box no line joins is written as one checkbox element, with its label, its saved state and the cell it is linked to.","required":["schema_version","page_id","title","elements"],"type":"object"}</code> |
 | <code>/properties/elements</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items</code> | <code>{}</code> |
 | <code>/properties/elements/items/oneOf/0</code> | <code>{"additionalProperties":false,"required":["text"],"type":"object"}</code> |
@@ -37,8 +37,11 @@
 | <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/1</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/1/items</code> | <code>{"type":"array"}</code> |
 | <code>/properties/elements/items/oneOf/2/properties/table/properties/columns/anyOf/1/items/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/notes</code> | <code>{"description":"注記。構造解釈がこの表だけに結び付けた文字のうち表題以外のもの（表題の右の単位、表の右隣の記録の行の注記、表の直下の注記）。上から、左から順。値は編集でき、元のセルへ書き戻す","minItems":1,"type":"array"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/notes/items</code> | <code>{"type":["string","number","boolean","null"]}</code> |
 | <code>/properties/elements/items/oneOf/2/properties/table/properties/rows</code> | <code>{"description":"見出し以外の記録の木","type":"array"}</code> |
 | <code>/properties/elements/items/oneOf/2/properties/table/properties/rows/items</code> | <code>{"$ref":"#/$defs/node"}</code> |
+| <code>/properties/elements/items/oneOf/2/properties/table/properties/title</code> | <code>{"description":"表題。構造解釈がこの表だけに結び付けた、表の直上（1列左からでもよい）か全列にまたがる直上・1行上の文字のうち最初のもの。値は編集でき、元のセルへ書き戻す","type":["string","number","boolean","null"]}</code> |
 | <code>/properties/elements/items/oneOf/3</code> | <code>{"additionalProperties":false,"required":["blank"],"type":"object"}</code> |
 | <code>/properties/elements/items/oneOf/3/properties/blank</code> | <code>{"type":"null"}</code> |
 | <code>/properties/elements/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["image"],"type":"object"}</code> |
@@ -76,7 +79,7 @@
 | <code>/properties/elements/items/oneOf/8/properties/checkbox/properties/linked_cell</code> | <code>{"description":"リンク先セル。同じシートのセルは未適用の行列操作後の番地、ほかのシートのセルや名前は原本の表記","type":"string"}</code> |
 | <code>/properties/elements/items/oneOf/8/properties/checkbox/properties/text</code> | <code>{"description":"チェックボックスのラベル。編集できるのはこの値だけ","type":["string","number","boolean","null"]}</code> |
 | <code>/properties/page_id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"8"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"9"}</code> |
 | <code>/properties/title</code> | <code>{"type":"string"}</code> |
 | <code>/$defs/node</code> | <code>{"description":"表の1記録、または区分。記録のキーは列の見出しの文字（見出しのない列、見出しが空の列は列名。1つの記録で同じ見出しの列が2つあるときは「見出し(列名)」）。区分は、縦に結合するか先頭の記録の行だけに書いて複数の記録の見出しとなるセルで、記録と同じ規則のキーでその値を持ち、範囲の記録を children に持つ。区分のセルは先頭の記録のノードに置かず、区分の下の空のセルはどのノードにも置かない。値はセルの値で、キーと木の形は編集しない","type":"object"}</code> |
 | <code>/$defs/node/properties/blank_records</code> | <code>{"description":"何も書かないノード（値が上のノードの fill_down の数式だけの記録など）が同じ並びで続く数。このメンバーだけを持つノードは、その数の空のノード {} を表す。2ノード以上続くときに使う","minimum":2,"type":"integer"}</code> |
@@ -242,6 +245,7 @@
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/mark</code> | <code>{"const":true,"description":"本文の木で、記録の marks に置くセル"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/role</code> | <code>{"type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/cells/items/properties/row_span</code> | <code>{"minimum":2,"type":"integer"}</code> |
+| <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/description</code> | <code>{"description":"表の記録の後に置く、表題（title）か注記（note）のセル1つの記録。本文の表の title・notes になる","enum":["title","note"]}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items/properties/parent</code> | <code>{"description":"本文の木でこの記録の親となる記録のID、または区分のキー","pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/pages/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |
@@ -353,10 +357,13 @@
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/headings</code> | <code>{"description":"表の先頭にある見出しの記録の数。本文の columns に置く。0なら保存しない","minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/labels</code> | <code>{"description":"論理列のIDごとに、本文のキーとなる見出しのセルID。見出しの記録のセルを指す。見出しのない列は保存しない","type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/labels/additionalProperties</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/notes</code> | <code>{"description":"本文の表の notes とするセルのID。上から、左から順","minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/notes/items</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/parents</code> | <code>{"description":"記録の行の識別IDごとに、本文の木でその記録の親となる記録の行の識別ID、または区分のキー（categories のキー）。最上位の記録は保存しない","type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/parents/additionalProperties</code> | <code>{"pattern":"^([a-zA-Z0-9][a-zA-Z0-9_-]*&#124;[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*)$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows</code> | <code>{"description":"記録行ごとに、行の識別IDとその行のセルの列の識別IDを空白で区切って並べたもの（r7 B..J、r8 B C ins-1）。セルIDは cell_&lt;行&gt;_&lt;列&gt;。A..Z は列 A から Z までの識別IDを順に並べたもの","type":"array"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/rows/items</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*( [a-zA-Z0-9][a-zA-Z0-9_-]*(\\.\\.[A-Z]+)?)+$","type":"string"}</code> |
+| <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/title</code> | <code>{"description":"本文の表の title とするセルのID。構造解釈がこの表だけに結び付けた表題","pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/3/properties/type</code> | <code>{"const":"table"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4</code> | <code>{"additionalProperties":false,"required":["id","type","ref"],"type":"object"}</code> |
 | <code>/properties/sheets/additionalProperties/properties/element_metadata/items/oneOf/4/properties/id</code> | <code>{"pattern":"^[a-z]+_([A-Za-z0-9./#_-]&#124;%[0-9A-F]{2})*$","type":"string"}</code> |

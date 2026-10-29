@@ -321,6 +321,7 @@ impl Store {
                 "remove the proposal holding what the document holds",
             )?;
             remove_empty_directories(proposal.parent().unwrap(), &self.arp);
+            self.remove_views(doc_id, false)?;
             return Ok(
                 json!({"state":"skipped","reason":"no_changes","document_id":doc_id,"document":current}),
             );
@@ -368,6 +369,7 @@ impl Store {
             format!("{doc_id} was adopted, but what remains of its proposal is to be discarded")
         })?;
         remove_empty_directories(proposal.parent().unwrap(), &self.arp);
+        self.remove_views(doc_id, false)?;
         Ok(json!({"document_id":doc_id,"document":dest}))
     }
 }

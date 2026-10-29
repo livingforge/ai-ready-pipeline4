@@ -5,7 +5,7 @@
 //! editing slots, not identities: moving values by hand is an ordinary value
 //! edit, and the tree's shape and keys follow from the metadata.
 use crate::data::{YamlNode, YamlReader, array, string};
-use crate::documents::{Meta, MetaCell};
+use crate::documents::{Description, Meta, MetaCell};
 use anyhow::{Context, Result, bail, ensure};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde_json::{Value, json};
@@ -107,12 +107,17 @@ struct Category<'a> {
 }
 
 /// The records of a table element of the metadata: its first `headings`
-/// records are its column headings and the rest its tree, each record under
-/// its `parent`, a record or one of its `categories`.
+/// records are its column headings and the rest up to `records` its tree,
+/// each record under its `parent`, a record or one of its `categories`. The
+/// records after those hold one text each, written against the table: its
+/// `title`, the first if any, and its `notes`.
 struct Table<'a> {
     element: &'a Value,
     rows: &'a [crate::documents::MetaRow],
     headings: usize,
+    records: usize,
+    title: Option<usize>,
+    notes: Vec<usize>,
     roots: Vec<Slot>,
     children: Vec<Vec<Slot>>,
     categories: Vec<Category<'a>>,
@@ -128,10 +133,26 @@ impl<'a> Table<'a> {
             Value::Null => 0,
             n => usize::try_from(n.as_u64().context("table headings must be a count")?)?,
         };
-        ensure!(
-            headings <= rows.len(),
-            "table has fewer records than headings"
-        );
+        let records = rows
+            .iter()
+            .position(|row| Description::of(row).is_some())
+            .unwrap_or(rows.len());
+        ensure!(headings <= records, "table has fewer records than headings");
+        let mut title = None;
+        let mut notes = vec![];
+        for (i, row) in rows.iter().enumerate().skip(records) {
+            ensure!(
+                row.cells.len() == 1,
+                "a title or a note of a table is one cell"
+            );
+            match Description::of(row) {
+                Some(Description::Title) if title.is_none() && notes.is_empty() => {
+                    title = Some(i);
+                }
+                Some(Description::Note) => notes.push(i),
+                _ => bail!("a table's title and notes follow its records, the title first"),
+            }
+        }
         let mut index = HashMap::new();
         for (i, row) in rows.iter().enumerate() {
             if let Some(id) = row["id"].as_str() {
@@ -198,7 +219,7 @@ impl<'a> Table<'a> {
         let mut roots = vec![];
         let mut children = vec![vec![]; rows.len()];
         let mut placed = vec![false; categories.len()];
-        for (i, row) in rows.iter().enumerate() {
+        for (i, row) in rows.iter().enumerate().take(records) {
             match row["parent"].as_str() {
                 None => {
                     if i >= headings {
@@ -261,6 +282,9 @@ impl<'a> Table<'a> {
             element,
             rows,
             headings,
+            records,
+            title,
+            notes,
             roots,
             children,
             categories,
@@ -363,7 +387,7 @@ impl<'a> Table<'a> {
         // them names a member of a node.
         let mut headed: BTreeSet<&str> = BTreeSet::new();
         let mut qualified: BTreeSet<&str> = BTreeSet::new();
-        for record in self.headings..self.rows.len() {
+        for record in self.headings..self.records {
             for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
                 let column = cell.column()?;
                 let head = heading(cell)?;
@@ -399,7 +423,7 @@ impl<'a> Table<'a> {
         };
         loop {
             let mut clashing = BTreeSet::new();
-            for record in self.headings..self.rows.len() {
+            for record in self.headings..self.records {
                 let mut seen: HashMap<Rc<str>, &str> = HashMap::new();
                 for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
                     let column = cell.column()?;
@@ -422,7 +446,7 @@ impl<'a> Table<'a> {
             );
         }
         let mut keys = PerCell::new(self.rows);
-        for record in self.headings..self.rows.len() {
+        for record in self.headings..self.records {
             for (j, cell) in self.cells(record)?.iter().enumerate() {
                 if keyed(cell) {
                     let column = cell.column()?;
@@ -448,7 +472,7 @@ impl<'a> Table<'a> {
             .filter_map(|(i, c)| Some((c["id"].as_str()?, i)))
             .collect();
         let mut first: HashMap<&str, usize> = HashMap::new();
-        for record in self.headings..self.rows.len() {
+        for record in self.headings..self.records {
             for (j, cell) in self.cells(record)?.iter().enumerate() {
                 if !keyed(cell) {
                     continue;
@@ -807,6 +831,159 @@ impl Content {
     }
 }
 
+/// How a reader of the body takes a cell of a table: as a heading (under
+/// `columns`), as the value of a key of a node, as a mark, or as a value of a
+/// category's node; and the nodes it is under, outer first, its own node
+/// last, each named by what it adds to the nodes above it: the keys and
+/// values of its cells that head others (else of its first other cell) that
+/// none above it holds. A cell the body does not show, such as a blank cell
+/// under a category, has none.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CellReading {
+    pub id: String,
+    pub heading: bool,
+    pub key: Option<String>,
+    pub mark: bool,
+    pub category: bool,
+    /// The table's title or a note on it, which the body holds before the
+    /// table's headings and records.
+    pub description: Option<Description>,
+    pub nodes: Vec<String>,
+}
+
+/// The longest value a node is named by, in characters.
+const NODE_NAME: usize = 24;
+
+/// How the body of the table `element` of the metadata, whose cells hold
+/// what `value_of` gives by cell ID, is read: each cell it shows, as
+/// [`table_body`] arranges them.
+pub(crate) fn table_reading(
+    element: &Meta,
+    value_of: &dyn Fn(&str) -> Value,
+) -> Result<Vec<CellReading>> {
+    let table = Table::of(element)?;
+    let mut values = PerCell::new(table.rows);
+    for (i, row) in table.rows.iter().enumerate() {
+        for (j, cell) in row.cells.iter().enumerate() {
+            values.set(i, j, value_of(cell.id()?));
+        }
+    }
+    let keys = table.keys(|i, j| values.get(i, j))?;
+    let mut read = vec![];
+    for record in 0..table.headings {
+        for cell in table.cells(record)? {
+            read.push(CellReading {
+                id: cell.id()?.to_owned(),
+                heading: true,
+                key: None,
+                mark: false,
+                category: false,
+                description: None,
+                nodes: vec![],
+            });
+        }
+    }
+    /// The nodes above, as their names and the key and value pairs they hold.
+    struct Path {
+        names: Vec<String>,
+        held: Vec<Vec<(String, String)>>,
+    }
+    fn walk(
+        slots: &[Slot],
+        table: &Table,
+        keys: &PerCell<Rc<str>>,
+        values: &PerCell<Value>,
+        path: &mut Path,
+        read: &mut Vec<CellReading>,
+    ) -> Result<()> {
+        for &slot in slots {
+            let cells = table.node_cells(slot)?;
+            // Each key and value of the node, and whether its cell heads others.
+            let mut pairs = vec![];
+            for &(record, j, cell) in &cells {
+                if is_mark(cell) {
+                    continue;
+                }
+                let value = match values.get(record, j) {
+                    Some(Value::String(text)) => text.clone(),
+                    Some(Value::Null) | None => continue,
+                    Some(other) => other.to_string(),
+                };
+                let value: String = value.replace('\n', " ").chars().take(NODE_NAME).collect();
+                let heads = matches!(cell["role"].as_str(), Some("row_header" | "column_header"));
+                pairs.push((Table::key(keys, record, j)?.to_owned(), value, heads));
+            }
+            let above = |pair: &(String, String, bool)| {
+                path.held
+                    .iter()
+                    .flatten()
+                    .any(|(k, v)| *k == pair.0 && *v == pair.1)
+            };
+            let new: Vec<&(String, String, bool)> = pairs.iter().filter(|p| !above(p)).collect();
+            let named: Vec<&&(String, String, bool)> = new.iter().filter(|p| p.2).collect();
+            let name = if !named.is_empty() {
+                named
+                    .iter()
+                    .map(|(k, v, _)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            } else if let Some((k, v, _)) = new.first().or(pairs.first().as_ref()) {
+                format!("{k}: {v}")
+            } else {
+                "{}".to_owned()
+            };
+            path.names.push(name);
+            path.held.push(
+                pairs
+                    .iter()
+                    .map(|(k, v, _)| (k.clone(), v.clone()))
+                    .collect(),
+            );
+            for &(record, j, cell) in &cells {
+                read.push(CellReading {
+                    id: cell.id()?.to_owned(),
+                    heading: false,
+                    key: if is_mark(cell) {
+                        None
+                    } else {
+                        Some(Table::key(keys, record, j)?.to_owned())
+                    },
+                    mark: is_mark(cell),
+                    category: matches!(slot, Slot::Category(_)),
+                    description: None,
+                    nodes: path.names.clone(),
+                });
+            }
+            walk(table.under(slot), table, keys, values, path, read)?;
+            path.names.pop();
+            path.held.pop();
+        }
+        Ok(())
+    }
+    let mut path = Path {
+        names: vec![],
+        held: vec![],
+    };
+    walk(&table.roots, &table, &keys, &values, &mut path, &mut read)?;
+    for (records, description) in [
+        (table.title.as_slice(), Description::Title),
+        (&table.notes, Description::Note),
+    ] {
+        for &record in records {
+            read.push(CellReading {
+                id: table.rows[record].cells[0].id()?.to_owned(),
+                heading: false,
+                key: None,
+                mark: false,
+                category: false,
+                description: Some(description),
+                nodes: vec![],
+            });
+        }
+    }
+    Ok(read)
+}
+
 /// The body of the table `element` of the metadata holding `values` by the
 /// places of its cells: the values of its headings as `columns`, one list for
 /// one heading record and a list of lists for more, and its tree as `rows`.
@@ -839,6 +1016,20 @@ fn table_body(element: &Meta, mut values: PerCell<Value>) -> Result<Value> {
         _ => {
             body.insert("columns".into(), json!(headings));
         }
+    }
+    if let Some(record) = table.title {
+        body.insert(
+            "title".into(),
+            value(record, 0, &table.rows[record].cells[0])?,
+        );
+    }
+    if !table.notes.is_empty() {
+        let notes = table
+            .notes
+            .iter()
+            .map(|&record| value(record, 0, &table.rows[record].cells[0]))
+            .collect::<Result<Vec<_>>>()?;
+        body.insert("notes".into(), Value::Array(notes));
     }
     let mut node = |slot: Slot| -> Result<serde_json::Map<String, Value>> {
         let mut node = serde_json::Map::new();
@@ -889,15 +1080,23 @@ fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
         .context("table body must have columns and rows")?;
     if let Some(key) = members
         .keys()
-        .find(|k| !matches!(k.as_str(), "columns" | "rows"))
+        .find(|k| !matches!(k.as_str(), "title" | "notes" | "columns" | "rows"))
     {
         bail!("table body has unknown member {key}; edit values only");
     }
+    ensure!(
+        members.contains_key("title") == table.title.is_some()
+            && members.contains_key("notes") == !table.notes.is_empty(),
+        "table title or notes changed; use structure-save to change them"
+    );
     ensure!(
         members.contains_key("columns") == (table.headings > 0),
         "table headings changed; use structure-save to change headings"
     );
     let mut values = PerCell::new(table.rows);
+    let title = body.take("title");
+    let notes = body.take("notes");
+    set_descriptions(&table, &mut values, title, notes)?;
     let columns = body.take("columns");
     set_headings(&table, &mut values, columns)?;
     let keys = table.keys(|i, j| values.get(i, j).map(Body::value))?;
@@ -1025,6 +1224,30 @@ fn table_values<V: Body>(element: &Meta, value: V) -> Result<PerCell<V>> {
     Ok(values)
 }
 
+/// Gives the title and the notes of `table` the `title` and the list of
+/// `notes` of its body.
+fn set_descriptions<V: Body>(
+    table: &Table,
+    values: &mut PerCell<V>,
+    title: Option<V>,
+    notes: Option<V>,
+) -> Result<()> {
+    let changed = || "table title or notes changed; use structure-save to change them";
+    if let (Some(record), Some(title)) = (table.title, title) {
+        ensure!(scalar(title.value()), "table title must be a text");
+        values.set(record, 0, title);
+    }
+    if let Some(notes) = notes {
+        let notes = notes.items().context(changed())?;
+        ensure!(notes.len() == table.notes.len(), changed());
+        for (&record, note) in table.notes.iter().zip(notes) {
+            ensure!(scalar(note.value()), "table notes must be texts");
+            values.set(record, 0, note);
+        }
+    }
+    Ok(())
+}
+
 /// Gives the cells of the heading records of `table` the values of the
 /// `columns` of its body: one list for one heading record, and a list of
 /// lists for more.
@@ -1060,10 +1283,26 @@ fn set_headings<V: Body>(table: &Table, values: &mut PerCell<V>, columns: Option
 fn read_table(reader: &mut YamlReader<'_>, element: &Meta, depth: usize) -> Result<PerCell<Value>> {
     let table = Table::of(element)?;
     let mut values = PerCell::new(table.rows);
+    let (mut title, mut notes) = (false, false);
     let (mut columns, mut rows) = (false, false);
     while let Some(key) = reader.key()? {
         let node = reader.node(depth + 1)?;
         match &*key {
+            "title" if !title && !notes && !columns && !rows => {
+                title = true;
+                ensure!(
+                    table.title.is_some(),
+                    "table title changed; use structure-save to change it"
+                );
+                let value = reader.value(node, depth + 1)?;
+                set_descriptions(&table, &mut values, Some(value), None)?;
+            }
+            "notes" if !notes && !columns && !rows => {
+                notes = true;
+                // The notes are few, and read whole.
+                let value = reader.value(node, depth + 1)?;
+                set_descriptions(&table, &mut values, None, Some(value))?;
+            }
             "columns" if !columns && !rows => {
                 columns = true;
                 // The headings are few, and read whole.
@@ -1084,6 +1323,10 @@ fn read_table(reader: &mut YamlReader<'_>, element: &Meta, depth: usize) -> Resu
         }
     }
     ensure!(rows, "table rows missing");
+    ensure!(
+        title == table.title.is_some() && notes == !table.notes.is_empty(),
+        "table title or notes changed; use structure-save to change them"
+    );
     for value in values.items.iter().flatten() {
         ensure!(scalar(value), "table value is a list or a map");
     }
@@ -1868,6 +2111,12 @@ pub(crate) fn encoded_yaml_to(
             continue;
         }
         elements.push(match element {
+            // A table of a tree made whole writes its members in the order a
+            // table written by its cells does.
+            Encoding::Element(element) if element.kind == "table" => {
+                let values = table_values(e, Cow::Borrowed(&element.value))?;
+                Out::Cells(Box::new(CellsBody::new(e, Values::Borrowed(values))?))
+            }
             Encoding::Element(element) => Out::Value(element.kind, &element.value),
             Encoding::Cells(values) => {
                 Out::Cells(Box::new(CellsBody::new(e, Values::Held(values))?))
@@ -2160,6 +2409,20 @@ impl Serialize for CellsBody<'_> {
                 .map_err(serde::ser::Error::custom)?;
             (0..cells.len()).map(|j| value(record, j)).collect()
         };
+        // Its title and notes come before its headings, as a reader reads
+        // them before the table.
+        if let Some(record) = self.table.title {
+            map.serialize_entry("title", value(record, 0)?)?;
+        }
+        if !self.table.notes.is_empty() {
+            let notes = self
+                .table
+                .notes
+                .iter()
+                .map(|&record| value(record, 0))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            map.serialize_entry("notes", &notes)?;
+        }
         match self.table.headings {
             0 => {}
             1 => map.serialize_entry("columns", &heading(0)?)?,
@@ -2336,6 +2599,39 @@ mod tests {
     }
 
     #[test]
+    fn a_reading_gives_each_cell_its_key_and_the_nodes_it_is_under() {
+        let elements = json!([{"id":"t1","type":"table","headings":1,
+            "labels":{"a":"h1","b":"h2"},"columns":[{"id":"a"},{"id":"b"}],"rows":[
+            {"id":"r1","cells":[{"id":"h1","column":"a"},{"id":"h2","column":"b"}]},
+            {"id":"r2","cells":[{"id":"x","column":"a","role":"row_header"},{"id":"y","column":"b"}]},
+            {"id":"r3","parent":"r2","cells":[{"id":"z","column":"b"},{"id":"m","column":"a","mark":true}]}
+        ]}]);
+        let typed = crate::documents::metadata_from(elements).unwrap();
+        let value_of = |id: &str| {
+            json!(match id {
+                "h1" => "機能",
+                "h2" => "画面",
+                "x" => "受注",
+                "y" => "一覧",
+                "z" => "詳細",
+                _ => "+",
+            })
+        };
+        let read: BTreeMap<String, CellReading> = table_reading(&typed[0], &value_of)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+        assert!(read["h1"].heading && read["h1"].key.is_none());
+        assert_eq!(read["y"].key.as_deref(), Some("画面"));
+        // A node is named by the cells heading others that the nodes above
+        // do not hold.
+        assert_eq!(read["y"].nodes, vec!["機能: 受注"]);
+        assert_eq!(read["z"].nodes, vec!["機能: 受注", "画面: 詳細"]);
+        assert!(read["m"].mark && read["m"].key.is_none());
+    }
+
+    #[test]
     fn sparse_merged_table_preserves_slots_types_and_formula_identity() {
         let elements = json!([{"id":"t1","type":"table","headings":1,"labels":{"a":"h","c":"lit"},
             "columns":[{"id":"a"},{"id":"b"},{"id":"c"}],"rows":[
@@ -2394,7 +2690,7 @@ mod tests {
                 {"マシン名":"Y","フォルダ構成":"/"}]})
         );
         assert_eq!(join_json(&body, &metadata).unwrap(), elements);
-        let page = json!({"elements":body,"page_id":"p","schema_version":"8","title":"t"});
+        let page = json!({"elements":body,"page_id":"p","schema_version":"9","title":"t"});
         // Values in the order of the columns, then marks, then children.
         let typed = crate::documents::metadata_from(metadata.clone()).unwrap();
         let text = String::from_utf8(yaml(&page, &typed, &Diagrams::default()).unwrap()).unwrap();
@@ -2423,7 +2719,7 @@ mod tests {
     - マシン名: "Y"
       フォルダ構成: /
 page_id: p
-schema_version: "8"
+schema_version: "9"
 title: t
 "#
         );
@@ -2471,7 +2767,7 @@ title: t
         let elements = json!([{"id":"t","type":"table","headings":1,
             "labels":labels,"columns":ids,"rows":rows}]);
         let (body, metadata) = split_json(elements).unwrap();
-        let page = json!({"elements":body,"page_id":"p","schema_version":"8","title":"t"});
+        let page = json!({"elements":body,"page_id":"p","schema_version":"9","title":"t"});
         let typed = crate::documents::metadata_from(metadata).unwrap();
         let text = String::from_utf8(yaml(&page, &typed, &Diagrams::default()).unwrap()).unwrap();
         (body, typed, text)
@@ -2550,7 +2846,7 @@ title: t
     - 数: 7
     - 数: 8
 page_id: p
-schema_version: "8"
+schema_version: "9"
 title: t
 "#
         );
@@ -2609,7 +2905,7 @@ title: t
     - 名: n9
     - blank_records: 3
 page_id: p
-schema_version: "8"
+schema_version: "9"
 title: t
 "#
         );

@@ -82,7 +82,7 @@ impl Palette {
     }
 
     /// An Excel colour element (`color`) as the colour it shows.
-    fn color(&self, node: Node<'_, '_>) -> Option<Color> {
+    pub(super) fn color(&self, node: Node<'_, '_>) -> Option<Color> {
         if matches!(node.attribute("auto"), Some("1" | "true")) {
             return Some(Color::Auto);
         }

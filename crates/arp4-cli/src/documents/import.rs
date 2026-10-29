@@ -328,6 +328,9 @@ impl Store {
                 }
             }
         }
+        for id in &ids {
+            self.remove_views(id, true)?;
+        }
         Ok(json!({"removed":ids}))
     }
 
@@ -336,6 +339,7 @@ impl Store {
         let proposal = self.proposal(id)?;
         remove_folder(&proposal, "discard the proposal")?;
         remove_empty_directories(proposal.parent().unwrap(), &self.arp);
+        self.remove_views(id, false)?;
         Ok(json!({"state":"discarded","document_id":id}))
     }
 

@@ -423,7 +423,7 @@ impl Source {
                 };
                 let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
                     .into_iter()
-                    .map(|(text, font)| (text, Some(font)))
+                    .map(|(text, font, _)| (text, Some(font)))
                     .collect();
                 if !read.left_out.is_empty() {
                     left_out.push((page, std::mem::take(&mut read.left_out)));
@@ -563,6 +563,87 @@ impl Source {
             Self::Excel(book) => &book.raw,
             Self::Text(doc) => &doc.raw,
         }
+    }
+
+    /// The format of the original, as its extension names it (`xlsx`,
+    /// `docx`, `pdf`, …).
+    pub fn format(&self) -> &str {
+        match self {
+            Self::Excel(_) => "xlsx",
+            Self::Text(doc) => &doc.format,
+        }
+    }
+
+    /// The text of the XML part `name` of a Word or PowerPoint original, none
+    /// for a part it lacks or another format.
+    pub fn office_part(&self, name: &str) -> Option<Cow<'_, str>> {
+        match self {
+            Self::Text(TextSource {
+                backend: TextBackend::Office(parts),
+                ..
+            }) => xml_part(parts, name).ok(),
+            _ => None,
+        }
+    }
+
+    /// The part the first internal relationship of `part` whose type ends
+    /// with `kind` (such as `/slideLayout`) names, in a Word or PowerPoint
+    /// original.
+    pub fn office_related(&self, part: &str, kind: &str) -> Option<String> {
+        let Self::Text(TextSource {
+            backend: TextBackend::Office(parts),
+            ..
+        }) = self
+        else {
+            return None;
+        };
+        let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+        let text = xml_part(parts, &format!("{directory}/_rels/{filename}.rels")).ok()?;
+        let xml = Document::parse(&text).ok()?;
+        let rel = xml.descendants().find(|n| {
+            n.has_tag_name((PACKAGE_REL, "Relationship"))
+                && n.attribute("Type").is_some_and(|t| t.ends_with(kind))
+        })?;
+        relationship_target(parts, part, rel).ok()
+    }
+
+    /// Each page of a PDF original: its size in points (the crop box, else
+    /// the media box), the lines and areas it paints, and where each string
+    /// of its text starts and how wide it runs, in points from its top left
+    /// corner, in the order of the extraction's cells of the page. None for
+    /// another format.
+    pub fn pdf_pages(&self) -> Result<Option<Vec<PdfPage>>> {
+        let Self::Text(TextSource {
+            backend: TextBackend::Pdf { doc, .. },
+            ..
+        }) = self
+        else {
+            return Ok(None);
+        };
+        let mapped = pdf_mapped_fonts(doc);
+        let mut read = PdfFonts::new(&mapped);
+        let mut pages = vec![];
+        for (_, id) in doc.get_pages() {
+            let [x0, y0, x1, y1] = pdf_page_box(doc, id);
+            let raw = doc.get_page_content_with_limit(id, MAX_PAGE)?;
+            let mut content = match Content::decode_strict(&raw) {
+                Ok(content) => content,
+                Err(_) => Content::decode(&raw)?,
+            };
+            let paths = pdf_paths(&content, [x0, y1]);
+            let places = pdf_text(doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
+                .into_iter()
+                .map(|(_, _, [x, y, width])| [x - x0, y1 - y, width])
+                .collect();
+            read.left_out.clear();
+            pages.push(PdfPage {
+                width: x1 - x0,
+                height: y1 - y0,
+                paths,
+                places,
+            });
+        }
+        Ok(Some(pages))
     }
 
     /// The sheets of an extraction of the original, their cells typed, and
@@ -3241,6 +3322,13 @@ struct PdfLook {
     fill_space: Vec<u8>,
     stroke_space: Vec<u8>,
     size: f64,
+    /// The text state that moves the text as it is shown: character and
+    /// word spacing (Tc, Tw), horizontal scaling as a fraction (Tz) and the
+    /// leading between lines (TL).
+    char_spacing: f64,
+    word_spacing: f64,
+    scale: f64,
+    leading: f64,
 }
 
 impl Default for PdfLook {
@@ -3253,6 +3341,10 @@ impl Default for PdfLook {
             fill_space: b"DeviceGray".to_vec(),
             stroke_space: b"DeviceGray".to_vec(),
             size: 0.0,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            scale: 1.0,
+            leading: 0.0,
         }
     }
 }
@@ -3361,6 +3453,8 @@ struct PdfFonts<'a> {
     /// The fonts whose strings [`pdf_text`] left out since this was last
     /// taken.
     left_out: BTreeSet<String>,
+    /// The widths of the glyphs of each font, by font dictionary.
+    widths: BTreeMap<usize, PdfWidths>,
 }
 
 impl<'a> PdfFonts<'a> {
@@ -3370,10 +3464,346 @@ impl<'a> PdfFonts<'a> {
             encodings: BTreeMap::new(),
             unreadable: BTreeMap::new(),
             left_out: BTreeSet::new(),
+            widths: BTreeMap::new(),
         }
     }
 }
 
+/// A page of a PDF original as [`Source::pdf_pages`] gives it.
+pub struct PdfPage {
+    pub width: f64,
+    pub height: f64,
+    /// The lines and areas the page paints, in the order it paints them.
+    pub paths: Vec<PdfPath>,
+    /// Where each string starts, and the width it runs along its line,
+    /// `[x, y, width]` in points from the top left.
+    pub places: Vec<[f64; 3]>,
+}
+
+/// A path a PDF page paints: its outline as SVG path data in points from
+/// the page's top left, the colour that fills it and the colour and width
+/// of the line drawn along it, each `RRGGBB`; none for what is not painted.
+pub struct PdfPath {
+    pub outline: String,
+    pub fill: Option<String>,
+    pub even_odd: bool,
+    pub stroke: Option<String>,
+    pub width: f64,
+}
+
+/// The colour of `components` in the colour space `space`: a device space,
+/// else one of its number of components (a calibrated or ICC space of gray,
+/// RGB or CMYK); a pattern or other space is not resolved.
+fn pdf_any_color(space: &[u8], components: &[f64]) -> Option<String> {
+    pdf_color(space, components).or_else(|| match components.len() {
+        1 => pdf_color(b"DeviceGray", components),
+        3 => pdf_color(b"DeviceRGB", components),
+        4 => pdf_color(b"DeviceCMYK", components),
+        _ => None,
+    })
+}
+
+/// The graphics state that decides how a path is painted.
+#[derive(Clone)]
+struct PdfPaint {
+    matrix: [f64; 6],
+    fill: Option<String>,
+    stroke: Option<String>,
+    fill_space: Vec<u8>,
+    stroke_space: Vec<u8>,
+    width: f64,
+}
+
+/// The paths `content` paints, its points taken from default user space to
+/// the top left corner `[x0, y1]` of the page's box. Clipping, shadings and
+/// images are left out.
+fn pdf_paths(content: &Content, [x0, y1]: [f64; 2]) -> Vec<PdfPath> {
+    let mut state = PdfPaint {
+        matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        fill: Some("000000".into()),
+        stroke: Some("000000".into()),
+        fill_space: b"DeviceGray".to_vec(),
+        stroke_space: b"DeviceGray".to_vec(),
+        width: 1.0,
+    };
+    let mut stack = vec![];
+    let mut outline = String::new();
+    let mut current = (0.0, 0.0);
+    let mut paths = vec![];
+    // Appends `command` with `points`, each on the page.
+    let add = |outline: &mut String, matrix: &[f64; 6], command: char, points: &[(f64, f64)]| {
+        outline.push(command);
+        for (i, (x, y)) in points.iter().enumerate() {
+            let px = matrix[0] * x + matrix[2] * y + matrix[4] - x0;
+            let py = y1 - (matrix[1] * x + matrix[3] * y + matrix[5]);
+            if i > 0 {
+                outline.push(' ');
+            }
+            outline.push_str(&format!("{px:.2},{py:.2}"));
+        }
+    };
+    for operation in &content.operations {
+        let n = pdf_numbers(&operation.operands);
+        let m = state.matrix;
+        match (operation.operator.as_str(), n.as_slice()) {
+            ("q", _) => stack.push(state.clone()),
+            ("Q", _) => {
+                if let Some(saved) = stack.pop() {
+                    state = saved;
+                }
+            }
+            ("cm", [a, b, c, d, e, f]) => {
+                state.matrix = pdf_multiply([*a, *b, *c, *d, *e, *f], state.matrix);
+            }
+            ("w", [width]) => state.width = *width,
+            ("g" | "rg" | "k", components) => {
+                state.fill_space = match operation.operator.as_str() {
+                    "g" => b"DeviceGray".to_vec(),
+                    "rg" => b"DeviceRGB".to_vec(),
+                    _ => b"DeviceCMYK".to_vec(),
+                };
+                state.fill = pdf_color(&state.fill_space, components);
+            }
+            ("G" | "RG" | "K", components) => {
+                state.stroke_space = match operation.operator.as_str() {
+                    "G" => b"DeviceGray".to_vec(),
+                    "RG" => b"DeviceRGB".to_vec(),
+                    _ => b"DeviceCMYK".to_vec(),
+                };
+                state.stroke = pdf_color(&state.stroke_space, components);
+            }
+            ("cs" | "CS", _) => {
+                let space = operation
+                    .operands
+                    .first()
+                    .and_then(|o| o.as_name().ok())
+                    .unwrap_or(b"")
+                    .to_vec();
+                if operation.operator == "cs" {
+                    state.fill_space = space;
+                } else {
+                    state.stroke_space = space;
+                }
+            }
+            ("sc" | "scn", components) if !components.is_empty() => {
+                state.fill = pdf_any_color(&state.fill_space, components);
+            }
+            ("SC" | "SCN", components) if !components.is_empty() => {
+                state.stroke = pdf_any_color(&state.stroke_space, components);
+            }
+            ("m", [x, y]) => {
+                add(&mut outline, &m, 'M', &[(*x, *y)]);
+                current = (*x, *y);
+            }
+            ("l", [x, y]) => {
+                add(&mut outline, &m, 'L', &[(*x, *y)]);
+                current = (*x, *y);
+            }
+            ("c", [a, b, c, d, x, y]) => {
+                add(&mut outline, &m, 'C', &[(*a, *b), (*c, *d), (*x, *y)]);
+                current = (*x, *y);
+            }
+            ("v", [c, d, x, y]) => {
+                add(&mut outline, &m, 'C', &[current, (*c, *d), (*x, *y)]);
+                current = (*x, *y);
+            }
+            ("y", [a, b, x, y]) => {
+                add(&mut outline, &m, 'C', &[(*a, *b), (*x, *y), (*x, *y)]);
+                current = (*x, *y);
+            }
+            ("h", _) => outline.push('Z'),
+            ("re", [x, y, w, h]) => {
+                add(&mut outline, &m, 'M', &[(*x, *y)]);
+                add(
+                    &mut outline,
+                    &m,
+                    'L',
+                    &[(x + w, *y), (x + w, y + h), (*x, y + h)],
+                );
+                outline.push('Z');
+                current = (*x, *y);
+            }
+            (paint @ ("S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n"), _) => {
+                if matches!(paint, "s" | "b" | "b*") {
+                    outline.push('Z');
+                }
+                let fills = matches!(paint, "f" | "F" | "f*" | "B" | "B*" | "b" | "b*");
+                let strokes = matches!(paint, "S" | "s" | "B" | "B*" | "b" | "b*");
+                if (fills || strokes) && !outline.is_empty() {
+                    // The line width scales with the transformation; a width
+                    // of 0 is the thinnest line a device draws.
+                    let scale = (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
+                    paths.push(PdfPath {
+                        outline: std::mem::take(&mut outline),
+                        fill: fills.then(|| state.fill.clone()).flatten(),
+                        even_odd: paint.ends_with('*'),
+                        stroke: strokes.then(|| state.stroke.clone()).flatten(),
+                        width: (state.width * scale).max(0.25),
+                    });
+                }
+                outline.clear();
+            }
+            _ => {}
+        }
+    }
+    paths
+}
+
+/// The box of the page `id` that a viewer shows, `[x0, y0, x1, y1]`: its
+/// crop box, else its media box, either inherited from the page tree; US
+/// Letter when it has neither.
+fn pdf_page_box(doc: &Pdf, id: lopdf::ObjectId) -> [f64; 4] {
+    let rectangle = |dictionary: &lopdf::Dictionary, key: &[u8]| {
+        let corners: Vec<f64> = dictionary
+            .get_deref(key, doc)
+            .and_then(Object::as_array)
+            .ok()?
+            .iter()
+            .filter_map(|o| doc.dereference(o).ok()?.1.as_float().ok().map(f64::from))
+            .collect();
+        let [a, b, c, d] = corners[..] else {
+            return None;
+        };
+        Some([a.min(c), b.min(d), a.max(c), b.max(d)])
+    };
+    for key in [b"CropBox".as_slice(), b"MediaBox"] {
+        let mut node = doc.get_dictionary(id).ok();
+        // A page tree is shallow; the bound keeps a cycle from looping.
+        for _ in 0..64 {
+            let Some(dictionary) = node else { break };
+            if let Some(found) = rectangle(dictionary, key) {
+                return found;
+            }
+            node = dictionary
+                .get(b"Parent")
+                .and_then(Object::as_reference)
+                .and_then(|parent| doc.get_dictionary(parent))
+                .ok();
+        }
+    }
+    [0.0, 0.0, 612.0, 792.0]
+}
+
+/// The advance widths of a font's glyphs, in thousandths of the text size,
+/// by character code: how far showing a string moves the text position.
+/// A simple font lists them from its first code (/FirstChar, /Widths), a
+/// composite font by CID ranges (/W) with a default (/DW); a code without a
+/// width takes the font's missing width, or half the size for a standard
+/// font, which lists none.
+struct PdfWidths {
+    /// The bytes of a code: 2 for a composite font.
+    code: usize,
+    first: i64,
+    simple: Vec<f64>,
+    composite: BTreeMap<u32, f64>,
+    default: f64,
+}
+
+impl PdfWidths {
+    fn for_font(font: &lopdf::Dictionary, doc: &Pdf) -> Self {
+        let number = |object: &Object| {
+            doc.dereference(object)
+                .ok()
+                .and_then(|(_, o)| o.as_float().ok())
+                .map(f64::from)
+        };
+        let array = |dictionary: &lopdf::Dictionary, key: &[u8]| {
+            dictionary
+                .get_deref(key, doc)
+                .and_then(Object::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let code = code_width(font);
+        let mut widths = Self {
+            code,
+            first: 0,
+            simple: vec![],
+            composite: BTreeMap::new(),
+            default: 500.0,
+        };
+        if code == 2 {
+            let Some(descendant) = font
+                .get_deref(b"DescendantFonts", doc)
+                .and_then(Object::as_array)
+                .ok()
+                .and_then(|fonts| fonts.first())
+                .and_then(|f| doc.dereference(f).ok())
+                .and_then(|(_, f)| f.as_dict().ok())
+            else {
+                widths.default = 1000.0;
+                return widths;
+            };
+            widths.default = descendant
+                .get(b"DW")
+                .ok()
+                .and_then(number)
+                .unwrap_or(1000.0);
+            // Entries are `c [w1 w2 …]` or `first last w`.
+            let entries = array(descendant, b"W");
+            let mut index = 0;
+            while index + 1 < entries.len() {
+                let Some(first) = number(&entries[index]) else {
+                    break;
+                };
+                let first = first as u32;
+                match doc.dereference(&entries[index + 1]).map(|(_, o)| o) {
+                    Ok(Object::Array(list)) => {
+                        for (offset, width) in list.iter().enumerate() {
+                            if let Some(width) = number(width) {
+                                widths.composite.insert(first + offset as u32, width);
+                            }
+                        }
+                        index += 2;
+                    }
+                    _ => {
+                        let (Some(last), Some(width)) = (
+                            number(&entries[index + 1]),
+                            entries.get(index + 2).and_then(number),
+                        ) else {
+                            break;
+                        };
+                        for cid in first..=(last as u32).min(first.saturating_add(65_535)) {
+                            widths.composite.insert(cid, width);
+                        }
+                        index += 3;
+                    }
+                }
+            }
+        } else {
+            widths.first = font.get(b"FirstChar").ok().and_then(number).unwrap_or(0.0) as i64;
+            widths.simple = array(font, b"Widths").iter().filter_map(number).collect();
+            if let Some(missing) = font
+                .get_deref(b"FontDescriptor", doc)
+                .and_then(Object::as_dict)
+                .ok()
+                .and_then(|d| d.get(b"MissingWidth").ok())
+                .and_then(number)
+                .filter(|w| *w > 0.0)
+            {
+                widths.default = missing;
+            }
+        }
+        widths
+    }
+
+    fn advance(&self, code: &[u8]) -> f64 {
+        if self.code == 2 {
+            let cid = code.iter().fold(0u32, |cid, b| cid << 8 | u32::from(*b));
+            return self.composite.get(&cid).copied().unwrap_or(self.default);
+        }
+        let index = i64::from(code[0]) - self.first;
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.simple.get(i))
+            .copied()
+            .unwrap_or(self.default)
+    }
+}
+
+/// The strings of the text a page shows, in the order it shows them, each
+/// with its font, where it starts on the page (in default user space) and
+/// how far along its line it runs.
 fn pdf_text<'a>(
     doc: &'a Pdf,
     page: lopdf::ObjectId,
@@ -3381,18 +3811,26 @@ fn pdf_text<'a>(
     changes: &BTreeMap<usize, String>,
     glyphs: Option<&BTreeMap<usize, BTreeSet<Vec<u8>>>>,
     read: &mut PdfFonts<'a>,
-) -> Result<Vec<(String, Value)>> {
+) -> Result<Vec<(String, Value, [f64; 3])>> {
+    const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let fonts = doc.get_page_fonts(page)?;
     let mut font = Vec::new();
     // Text render mode (Tr): 3 draws nothing and 7 only clips, as in the OCR
     // layer of a scanned page.
     let mut render = 0;
     let mut look = PdfLook::default();
-    let mut text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut text_matrix = IDENTITY;
+    // The start of the current line, which Td, TD and T* move from.
+    let mut line_matrix = IDENTITY;
     let mut stack = vec![];
     let mut values = vec![];
     for operation in &mut content.operations {
         let numbers = pdf_numbers(&operation.operands);
+        // ' and " move to the next line before they show their string.
+        let next_line = |look: &PdfLook, line_matrix: &mut [f64; 6]| {
+            *line_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, 0.0, -look.leading], *line_matrix);
+            *line_matrix
+        };
         match operation.operator.as_str() {
             "cm" if numbers.len() == 6 => {
                 let m = [
@@ -3400,12 +3838,26 @@ fn pdf_text<'a>(
                 ];
                 look.matrix = pdf_multiply(m, look.matrix);
             }
-            "BT" => text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "BT" => (text_matrix, line_matrix) = (IDENTITY, IDENTITY),
             "Tm" if numbers.len() == 6 => {
                 text_matrix = [
                     numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
                 ];
+                line_matrix = text_matrix;
             }
+            "Td" | "TD" if numbers.len() == 2 => {
+                if operation.operator == "TD" {
+                    look.leading = -numbers[1];
+                }
+                line_matrix =
+                    pdf_multiply([1.0, 0.0, 0.0, 1.0, numbers[0], numbers[1]], line_matrix);
+                text_matrix = line_matrix;
+            }
+            "T*" => text_matrix = next_line(&look, &mut line_matrix),
+            "Tc" if numbers.len() == 1 => look.char_spacing = numbers[0],
+            "Tw" if numbers.len() == 1 => look.word_spacing = numbers[0],
+            "Tz" if numbers.len() == 1 => look.scale = numbers[0] / 100.0,
+            "TL" if numbers.len() == 1 => look.leading = numbers[0],
             "g" | "rg" | "k" => {
                 look.fill_space = match operation.operator.as_str() {
                     "g" => b"DeviceGray".to_vec(),
@@ -3467,14 +3919,22 @@ fn pdf_text<'a>(
                 (font, render, look) = stack.pop().context("unbalanced PDF graphics state")?;
             }
             "Tj" | "TJ" | "'" | "\"" => {
+                if operation.operator == "\"" && numbers.len() >= 2 {
+                    look.word_spacing = numbers[0];
+                    look.char_spacing = numbers[1];
+                }
+                if matches!(operation.operator.as_str(), "'" | "\"") {
+                    text_matrix = next_line(&look, &mut line_matrix);
+                }
                 let operand = operation
                     .operands
                     .last_mut()
                     .context("missing PDF text operand")?;
+                // The strings and the adjustments between them (TJ), in order.
                 let strings: Vec<&mut Object> = match operand {
                     Object::Array(items) => items
                         .iter_mut()
-                        .filter(|o| matches!(o, Object::String(..)))
+                        .filter(|o| matches!(o, Object::String(..)) || o.as_float().is_ok())
                         .collect(),
                     Object::String(..) => vec![operand],
                     _ => bail!("invalid PDF text operand"),
@@ -3519,10 +3979,32 @@ fn pdf_text<'a>(
                     }],
                     &crate::fonts::RunFont::default(),
                 );
+                let widths = read
+                    .widths
+                    .entry(key)
+                    .or_insert_with(|| PdfWidths::for_font(font_dictionary, doc));
                 for object in strings {
                     let Object::String(bytes, _) = object else {
-                        unreachable!()
+                        // A number of a TJ array moves the next string back
+                        // by thousandths of the text size.
+                        let adjustment = f64::from(object.as_float()?);
+                        let tx = -adjustment / 1000.0 * look.size * look.scale;
+                        text_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, tx, 0.0], text_matrix);
+                        continue;
                     };
+                    let start = pdf_multiply(text_matrix, look.matrix);
+                    // Each code moves the text by its glyph's width, with the
+                    // character spacing and, for a single-byte space, the word spacing.
+                    let tx: f64 = bytes
+                        .chunks(widths.code)
+                        .map(|code| {
+                            let space = if code == b" " { look.word_spacing } else { 0.0 };
+                            (widths.advance(code) / 1000.0 * look.size + look.char_spacing + space)
+                                * look.scale
+                        })
+                        .sum();
+                    text_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, tx, 0.0], text_matrix);
+                    let origin = [start[4], start[5], tx * start[0].hypot(start[1])];
                     let value = encoding
                         .decode(bytes)
                         .context("PDF font encoding cannot be decoded")?;
@@ -3561,7 +4043,7 @@ fn pdf_text<'a>(
                         }
                         *bytes = encoded;
                     }
-                    values.push((value, look_of.clone()));
+                    values.push((value, look_of.clone(), origin));
                 }
             }
             _ => {}

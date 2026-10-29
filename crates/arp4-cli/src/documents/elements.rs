@@ -262,16 +262,54 @@ pub(super) fn first_id(row: &MetaRow) -> Result<&str> {
     }
 }
 
+/// What a text written against a table is to it: its title, written above
+/// it, or a note on it, written beside or under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum Description {
+    Title,
+    Note,
+}
+
+impl Description {
+    /// The name a record of the table metadata gives it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Note => "note",
+        }
+    }
+
+    /// The description `name` names, none for none.
+    pub(crate) fn named(name: &str) -> Option<Self> {
+        match name {
+            "title" => Some(Self::Title),
+            "note" => Some(Self::Note),
+            _ => None,
+        }
+    }
+
+    /// What the record `row` of a table holds as text written against the
+    /// table, none for a record of the table's own.
+    pub(crate) fn of(row: &MetaRow) -> Option<Self> {
+        row.get("description")
+            .and_then(Value::as_str)
+            .and_then(Self::named)
+    }
+}
+
 /// What a table cell of a page takes from the interpretation, and what
 /// [`encode`] arranges the table with: its table, whether it is a cell of a
 /// heading record (`heading`) or a mark (`mark`), the heading its column's
 /// key is from (`label`), the row of its record's parent (`parent`: none when
 /// the group places no record, null when the record has no parent), the
 /// category it is a cell of or a blank cell under (`category`) and the
-/// categories around it, outer first (`within`).
+/// categories around it, outer first (`within`). A text written against the
+/// table, which the table holds apart from its records, has only its table
+/// and what it is to it (`description`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) struct Group {
     pub(super) table: Option<Arc<str>>,
+    pub(super) description: Option<Description>,
     pub(super) heading: bool,
     pub(super) mark: bool,
     pub(super) label: Option<Arc<str>>,
@@ -387,7 +425,8 @@ fn group_of<'a>(groups: &'a Groups, cell: &MetaCell) -> Result<&'a Group> {
 /// its `parent`, null for none (for the first record of a category, the
 /// parent it has without the category), a cell of a category or a blank one
 /// under it the category as its `category`, and the categories its record is
-/// in, or a category's cell those around it, as its `within`.
+/// in, or a category's cell those around it, as its `within`. A text the
+/// table holds as its title or a note has only its table and `description`.
 pub(super) fn metadata_groups(metadata: &[Meta]) -> Result<Groups> {
     let mut groups = Groups::default();
     let mut shared = Shared::default();
@@ -417,6 +456,17 @@ pub(super) fn metadata_groups(metadata: &[Meta]) -> Result<Groups> {
         // The categories around each record, outer first, by its ID.
         let mut within: HashMap<&str, Vec<&str>> = HashMap::new();
         for (i, row) in (0..).zip(rows) {
+            if let Some(description) = Description::of(row) {
+                for cell in &row.cells {
+                    let group = Group {
+                        table: table.clone(),
+                        description: Some(description),
+                        ..Group::default()
+                    };
+                    groups.insert(cell.id()?, group);
+                }
+                continue;
+            }
             // The parent the record would have without the categories its
             // cells hold: that of the outermost of them.
             let mut parent = row["parent"].as_str();
@@ -578,6 +628,7 @@ fn arrange(sheet: &LayoutSheet, groups: &Groups, metadata: &mut [Meta]) -> Resul
         else {
             bail!("table rows missing");
         };
+        let texts = split_descriptions(rows);
         let group = |cell: &MetaCell| group_of(groups, cell);
         let mut headings = 0;
         for row in rows.iter() {
@@ -751,8 +802,19 @@ fn arrange(sheet: &LayoutSheet, groups: &Groups, metadata: &mut [Meta]) -> Resul
             }
             element["categories"] = Value::Object(categories);
         }
+        rows.extend(texts);
     }
     Ok(())
+}
+
+/// Takes the title and notes of a table off the end of its `rows`, where
+/// they follow its records.
+pub(super) fn split_descriptions(rows: &mut Vec<MetaRow>) -> Vec<MetaRow> {
+    let records = rows
+        .iter()
+        .position(|row| Description::of(row).is_some())
+        .unwrap_or(rows.len());
+    rows.split_off(records)
 }
 
 /// A node of the tree of a table as [`arrange`] builds it: a record, by its
@@ -1072,11 +1134,10 @@ pub(super) fn interpret(layout: &Layout, structure: &[Element]) -> Result<Interp
                 }
             }
         }
+        // The cells of text elements too: a table holds the text written
+        // against it as its title and notes.
         let mut found: HashMap<String, (Value, Vec<String>)> = HashMap::new();
-        for element in structure
-            .iter()
-            .filter(|e| e["sheet"] == sheet["name"] && e["kind"] == "table")
-        {
+        for element in structure.iter().filter(|e| e["sheet"] == sheet["name"]) {
             for cell in &element.cells {
                 if let Some(id) = ids.get(&*cell.id) {
                     let headers = cell
@@ -1225,6 +1286,21 @@ pub(super) fn interpreted_groups<'e>(
         }
         ids.sort_by(|a, b| a.0.cmp(b.0));
         let ids = Keyed(ids);
+        // The tables each text element explains, by its ID: a text that
+        // explains one table goes in it as its title or a note, and one that
+        // explains several, as a title over tables side by side, stays apart.
+        let mut explaining: HashMap<&str, usize> = HashMap::new();
+        for element in on_page().filter(|e| e["kind"] == "table") {
+            for id in element
+                .get("descriptions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                *explaining.entry(id).or_default() += 1;
+            }
+        }
         for element in structure
             .iter()
             .filter(|e| e["sheet"] == sheet["name"] && e["kind"] == "table")
@@ -1371,6 +1447,48 @@ pub(super) fn interpreted_groups<'e>(
                     }
                 });
             }
+            // The text it alone is explained by: the first written above its
+            // first row is its title, and the rest are notes on it.
+            let mut top = None;
+            for cell in cells {
+                let y = excel::coordinate(&cell.address)?.1;
+                top = Some(top.map_or(y, |t: u32| t.min(y)));
+            }
+            let mut written = vec![];
+            for id in element
+                .get("descriptions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|id| explaining.get(id) == Some(&1))
+            {
+                for text in on_page().filter(|e| e["kind"] == "text" && e["id"] == id) {
+                    for cell in &text.cells {
+                        let (x, y) = excel::coordinate(&cell.address)?;
+                        written.push(((y, x), &*cell.id));
+                    }
+                }
+            }
+            written.sort_unstable();
+            let mut titled = false;
+            for ((y, _), id) in written {
+                let Some((row, column)) = ids.get(id).map(lines) else {
+                    continue;
+                };
+                let description = if !titled && top.is_some_and(|top| y < top) {
+                    titled = true;
+                    Description::Title
+                } else {
+                    Description::Note
+                };
+                let group = Group {
+                    table: table.clone(),
+                    description: Some(description),
+                    ..Group::default()
+                };
+                groups.insert_at(row, column, group);
+            }
         }
         groups.shrink_to_fit();
         classified.insert(page.clone(), groups);
@@ -1459,7 +1577,11 @@ pub(super) fn adopt_cells(
     // The cells of each record, by table and row, as the cells adopted join.
     let mut records: HashMap<String, HashMap<String, Record>> = HashMap::new();
     for (id, group) in groups.iter() {
-        let Some(table) = group.table.as_deref() else {
+        let Some(table) = group
+            .table
+            .as_deref()
+            .filter(|_| group.description.is_none())
+        else {
             continue;
         };
         if let Some((row, _)) = cell_axes(&id) {
@@ -1875,6 +1997,8 @@ pub(super) fn complete(sheet: &LayoutSheet, metadata: &mut [Meta]) -> Result<()>
         else {
             bail!("table rows missing");
         };
+        // Its title and notes take no part in its records' rows and columns.
+        let mut texts = split_descriptions(rows);
         // The place of each cell, in the order of the records: a large table
         // has a cell for each of its values, and the list is made as large
         // as that at once.
@@ -1929,6 +2053,15 @@ pub(super) fn complete(sheet: &LayoutSheet, metadata: &mut [Meta]) -> Result<()>
         }
         .to_owned();
         element["id"] = json!(token("table", &[&first]));
+        for cell in texts.iter_mut().flat_map(|row| row.cells.iter_mut()) {
+            let id = cell.id()?;
+            let (_, column) =
+                cell_axes(id).with_context(|| format!("table cell {id} names no cell"))?;
+            cell.set_column(Name::from(token("column", &[&column])));
+            cell.remove("row_span");
+            cell.remove("column_span");
+        }
+        rows.extend(texts);
     }
     for at in 0..elements.len() {
         if elements[at]["type"] == "blank" {
@@ -1949,8 +2082,8 @@ pub(super) fn complete(sheet: &LayoutSheet, metadata: &mut [Meta]) -> Result<()>
 }
 
 /// The version of content pages: tables as the trees of their records and
-/// categories.
-pub(crate) const CONTENT_VERSION: &str = "8";
+/// categories, with the text written against each as its title and notes.
+pub(crate) const CONTENT_VERSION: &str = "9";
 
 /// The YAML of the content `page` of `layout` as a file holds it, each
 /// diagram written together, as [`crate::document_body::yaml`] orders it.
@@ -2189,6 +2322,32 @@ impl GridPage {
     }
 }
 
+/// A text a table holds as its title or a note, as [`encode_grid`] finds
+/// it: what it is to the table, its row and column, its last row and the
+/// text element it would be on its own.
+type Described = (Description, (u64, u64), u64, MetaText);
+
+/// The record of a table holding the text element `text` as its title or a
+/// note (`description`): one cell, with the text's ID, value and font, and
+/// an ID of the record that no record of the table's own has.
+fn description_record(description: Description, text: MetaText) -> Result<MetaRow> {
+    let mut text = Meta::Text(text);
+    let id = string(&text["id"])?.to_owned();
+    let mut cell = MetaCell::with_id(id.clone());
+    if let Some(font) = text.remove("font") {
+        cell.insert("font", font);
+    }
+    match (text.remove("formula"), text.remove("text")) {
+        (Some(formula), _) => cell.insert("formula", formula),
+        (None, Some(value)) => cell.insert("value", value),
+        (None, None) => bail!("text of {id} missing"),
+    };
+    let mut row = MetaRow::new(vec![cell]);
+    row["id"] = json!(token(description.name(), &[&id]));
+    row["description"] = json!(description.name());
+    Ok(row)
+}
+
 /// [`encode`] of a grid page given typed, as import makes it of an extraction.
 pub(super) fn encode_grid(
     grid: GridPage,
@@ -2242,8 +2401,10 @@ pub(super) fn encode_grid(
             .columns
             .position(column)
             .context("column position missing")?;
+        // A title or a note of a table is no part of its records' range.
         if let Some(table) = groups
             .get_at(row, column)
+            .filter(|group| group.description.is_none())
             .and_then(|group| group.table.as_deref())
         {
             let b = bounds.entry(table.to_owned()).or_insert((y, x, y, x));
@@ -2331,6 +2492,9 @@ pub(super) fn encode_grid(
     // half as much again as their cells.
     type TableRows = BTreeMap<u64, Vec<(u64, MetaCell)>>;
     let mut tables: BTreeMap<String, (TableRows, usize)> = BTreeMap::new();
+    // The titles and notes of each table, with their places and last rows,
+    // held as text elements until their table is made.
+    let mut described: BTreeMap<String, Vec<Described>> = BTreeMap::new();
     // The values are taken in order from the end of the list reversed, which
     // is let go as it empties: a large sheet's took as much room as the cells
     // made of them.
@@ -2377,14 +2541,18 @@ pub(super) fn encode_grid(
             y = position.0;
             x = position.1;
         }
-        let table = groups.get(&id).and_then(|group| group.table.as_deref());
+        let group = groups.get(&id);
+        let table = group.and_then(|group| group.table.as_deref());
+        let description = group.and_then(|group| group.description);
         let font = indexed_font(&font_table, font)?;
         let field = if block == "formulas" {
             "formula"
         } else {
             "value"
         };
-        if let Some(table) = table {
+        if let Some(table) = table
+            && description.is_none()
+        {
             let mut cell = MetaCell::with_id(id);
             if !font.is_null() {
                 cell.insert("font", fonts.add(font));
@@ -2410,14 +2578,17 @@ pub(super) fn encode_grid(
             if !font.is_null() {
                 element.insert("font", fonts.add(font));
             }
-            placed.push((
-                (y, x),
-                spans.get(&(y, x)).map_or(y, |s| s.0),
-                Meta::Text(element),
-            ));
+            let end = spans.get(&(y, x)).map_or(y, |s| s.0);
+            match (table, description) {
+                (Some(table), Some(description)) => described
+                    .entry(table.to_owned())
+                    .or_default()
+                    .push((description, (y, x), end, element)),
+                _ => placed.push(((y, x), end, Meta::Text(element))),
+            }
         }
     }
-    for (rows, _) in tables.into_values() {
+    for (key, (rows, _)) in tables {
         let mut first = None;
         let mut end = 0;
         let mut records = Vec::with_capacity(rows.len());
@@ -2435,9 +2606,24 @@ pub(super) fn encode_grid(
                 cells.into_iter().map(|(_, cell)| cell).collect(),
             ));
         }
-        let (first, id) = first.context("table without cells")?;
+        let ((mut top, left), id) = first.context("table without cells")?;
+        // Its title and notes follow its records, the title first: the table
+        // starts on its title's row, and ends on the last row of any.
+        let mut texts = described.remove(&key).unwrap_or_default();
+        texts.sort_by_key(|(description, at, ..)| (*description, *at));
+        for (description, (y, _), last, text) in texts {
+            top = top.min(y);
+            end = end.max(last);
+            records.push(description_record(description, text)?);
+        }
         let table = Meta::table(json!({"id":id,"type":"table"}), records);
-        placed.push((first, end, table));
+        placed.push(((top, left), end, table));
+    }
+    // A title or a note of a table that holds no cell any more is a text.
+    for (_, texts) in described {
+        for (_, at, end, text) in texts {
+            placed.push((at, end, Meta::Text(text)));
+        }
     }
     // Each place is bound once: checked by the IDs of the elements and cells
     // made, in order, rather than by a set of copies of them made as each is
@@ -2815,6 +3001,9 @@ mod tests {
             .map(|(id, g)| {
                 let group = Group {
                     table: g["table"].as_str().map(Into::into),
+                    description: g["description"]
+                        .as_str()
+                        .and_then(super::Description::named),
                     heading: g["heading"] == true,
                     mark: g["mark"] == true,
                     label: g["label"].as_str().map(Into::into),

@@ -25,6 +25,7 @@ pub mod skills;
 pub mod source_impact;
 pub mod specification_ids;
 pub mod specifications;
+mod view;
 pub mod workflow;
 
 pub fn schemas() -> serde_json::Value {
@@ -106,6 +107,7 @@ pub fn capabilities() -> serde_json::Value {
             "documents_typed_value_edits": "Office/PDF cells and text of adopted documents and proposals, named by extraction address or element ID, including rows and slides pending operations insert; Excel scalar values, existing formulas, table labels, shape text and values for empty cells; exact base and old value; refusals name the edit; requests recorded in mappings",
             "documents_operation_removal": "documents operations list|remove takes back a pending row, column, slide, shape or image operation with its content changes; refused while later operations depend on it",
             "documents_candidate_rendering": "documents render draws an export candidate to PNG: Excel sheets and ranges by Excel, Word and PowerPoint pages through PDF saved by Office, PDF pages by Windows",
+            "documents_view": "documents view writes .arp/view/<document>.html (untracked): the content drawn as the original lays it out (Excel grids with column widths, row heights, merges, fills, borders, alignment, fonts and drawings; Word paper, paragraphs and tables; PowerPoint slides with shapes, pictures, connectors and tables in place; PDF lines, fills and strings where and as wide as the page shows them; text as rows), values and fonts the content changes marked with the original's; a structure view paints each table cell's role and gives a chosen cell's element, key, heading cells and nodes as the content YAML holds them, and each diagram's lines; nothing else is written",
             "documents_apply_formation": "apply records the re-extracted proposal as formed by apply, ready to adopt",
             "document_fonts": "effective latin and East Asian font names, size in points and RRGGBB color per cell, paragraph and shape text, resolved through styles and themes; mixed when runs differ, with the value of each run; emphasis every run shows, and as partial what only some do; PDF strings read-only (font name without subset prefix, size on the page, device colors)",
             "documents_font_edits": "Excel cells (one font name for latin and East Asian text) and shape text, Word paragraphs and table cells (sizes in half points), PowerPoint paragraphs and table cells (RRGGBB colors) through documents values; exact base and old font properties",

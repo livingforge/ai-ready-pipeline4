@@ -895,11 +895,32 @@ pub(super) fn outline(
                 .collect()
         };
         // Names with a field or a note on their row head it, as names with
-        // children head theirs.
-        let owners: HashSet<usize> = group
+        // children head theirs. Leaves head theirs only when they name
+        // records: when a column describes them, holding a value beside most
+        // of them, as the kinds of files do; then a note beside a few of them
+        // is about each too. Otherwise a leaf is one of its row's values, as
+        // the last folders of a list under a machine are, and the folders
+        // above it head the values beside it.
+        let fields: Vec<&&Cell<'_>> = group
             .iter()
             .filter(|c| c.nonempty() && field(c) && !keyed(c) && !grouped(c))
-            .filter_map(|c| row_name(c.top))
+            .collect();
+        let leaves = (0..names.len())
+            .filter(|k| !tree.parents.contains(k))
+            .count();
+        let mut described: HashMap<u32, HashSet<usize>> = HashMap::new();
+        for c in &fields {
+            if let Some(k) = row_name(c.top).filter(|k| !tree.parents.contains(k)) {
+                described.entry(c.left).or_default().insert(k);
+            }
+        }
+        let records = described
+            .values()
+            .any(|leaves_beside| leaves_beside.len() * 2 >= leaves);
+        let owns = |k: usize| records || tree.parents.contains(&k);
+        let owners: HashSet<usize> = fields
+            .iter()
+            .filter_map(|c| row_name(c.top).filter(|&k| owns(k)))
             .collect();
         group
             .iter()
@@ -912,10 +933,15 @@ pub(super) fn outline(
                 } else if keyed(c) || grouped(c) {
                     (Role::RowHeader, headed)
                 } else if field(c) && c.nonempty() {
+                    // The names over the field's row: the name on the row
+                    // itself only when it heads the field.
                     let owner = row_name(c.top);
-                    let lineage = owner
-                        .into_iter()
-                        .flat_map(|k| tree.ancestors[k].iter().copied().chain([k]));
+                    let lineage = owner.into_iter().flat_map(|k| {
+                        tree.ancestors[k]
+                            .iter()
+                            .copied()
+                            .chain(Some(k).filter(|&k| owns(k)))
+                    });
                     // A note stands under the heading over its column, if any,
                     // not the nearest one on its left.
                     let headed = if span.is_some() {

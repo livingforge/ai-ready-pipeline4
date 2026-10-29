@@ -84,6 +84,7 @@ crates/arp4-cli/src/documents/shape_edit.rs
 crates/arp4-cli/src/documents/slide_edit.rs
 crates/arp4-cli/src/documents/status_cache.rs
 crates/arp4-cli/src/documents/value_edit.rs
+crates/arp4-cli/src/documents/view.rs
 crates/arp4-cli/src/documents/visual_elements.rs
 crates/arp4-cli/src/documents/worksheet_edit.rs
 crates/arp4-cli/src/excel/calculation.rs
@@ -96,6 +97,7 @@ crates/arp4-cli/src/excel/fonts.rs
 crates/arp4-cli/src/excel/formatting.rs
 crates/arp4-cli/src/excel/formula_edit.rs
 crates/arp4-cli/src/excel/import.rs
+crates/arp4-cli/src/excel/look.rs
 crates/arp4-cli/src/excel/mod.rs
 crates/arp4-cli/src/excel/number_format.rs
 crates/arp4-cli/src/excel/operations.rs
@@ -150,6 +152,14 @@ crates/arp4-cli/src/specifications/capture.rs
 crates/arp4-cli/src/specifications/mod.rs
 crates/arp4-cli/src/specifications/render.rs
 crates/arp4-cli/src/specifications/validation.rs
+crates/arp4-cli/src/view/drawings.rs
+crates/arp4-cli/src/view/mod.rs
+crates/arp4-cli/src/view/pdf.rs
+crates/arp4-cli/src/view/sheet.rs
+crates/arp4-cli/src/view/shell.rs
+crates/arp4-cli/src/view/slides.rs
+crates/arp4-cli/src/view/text.rs
+crates/arp4-cli/src/view/word.rs
 crates/arp4-cli/src/workflow/artifacts.rs
 crates/arp4-cli/src/workflow/confirmation.rs
 crates/arp4-cli/src/workflow/command.rs

@@ -122,15 +122,15 @@ fn line_height(font: &str) -> f64 {
 
 /// The cell formats of a workbook: font and alignment, and the width of a
 /// digit of its normal font, which column widths count.
-struct Styles {
-    formats: Vec<Format>,
-    digit: f64,
+pub(super) struct Styles {
+    pub(super) formats: Vec<Format>,
+    pub(super) digit: f64,
     /// The default height of a row, in points.
-    row: f64,
+    pub(super) row: f64,
 }
 
 #[derive(Clone, Default)]
-struct Format {
+pub(super) struct Format {
     size: f64,
     font: String,
     wrap: bool,
@@ -140,7 +140,7 @@ struct Format {
 }
 
 impl Styles {
-    fn read(book: &Workbook) -> Result<Self> {
+    pub(super) fn read(book: &Workbook) -> Result<Self> {
         let Some(bytes) = book.parts.get("xl/styles.xml") else {
             return Ok(Self {
                 formats: vec![],
