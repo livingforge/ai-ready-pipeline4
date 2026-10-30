@@ -57,10 +57,11 @@ use crate::{
     extraction::{Cell, CellKind, CellValue, Extraction, Sheet},
 };
 use anyhow::{Context, Result, bail, ensure};
+use foldhash::HashMap;
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -683,7 +684,7 @@ fn resolved_element<'a>(
         return Ok(Lazy::Value(element));
     };
     // The cells of the table, which a cell's headers are among.
-    let present: std::collections::HashSet<&str> = rows
+    let present: foldhash::HashSet<&str> = rows
         .iter()
         .flat_map(|row| &row.cells)
         .map(|cell| cell.id())

@@ -238,7 +238,7 @@ fn semantic_changes(
             Some(contents) => contents.get(page.as_str()).cloned().unwrap_or_default(),
             None => names.iter().copied().collect(),
         };
-        let mut by_page: HashMap<String, Vec<&String>> = HashMap::new();
+        let mut by_page: HashMap<String, Vec<&String>> = HashMap::default();
         for name in on_page {
             let (x, y) = (value(before, name)?, value(after, name)?);
             if contents.is_none()

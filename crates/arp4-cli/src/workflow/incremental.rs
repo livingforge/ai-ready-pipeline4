@@ -1,6 +1,6 @@
 //! Reuse decisions only when source topology and shared context are unchanged.
 use super::*;
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
 
 fn references(item: &Value) -> BTreeSet<String> {
     let mut selectors: Vec<&Value> = item["evidence"].as_array().into_iter().flatten().collect();
@@ -84,7 +84,7 @@ pub(super) fn review_regions(packet: &Value) -> Result<Vec<Value>> {
     let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     // The rows with each reference: a group's parents are those of every row
     // with one of its references.
-    let mut by_ref = HashMap::<String, Vec<usize>>::new();
+    let mut by_ref = HashMap::<String, Vec<usize>>::default();
     for (i, key) in shape.keys.iter().enumerate() {
         groups.entry(key).or_default().push(i);
         by_ref
@@ -186,9 +186,9 @@ pub(super) fn plan(old: &Value, new: &Value, base: &Value) -> Result<Option<Valu
     // those of the sources an item cites along with a source of a group.
     // Visiting each group and item once reaches what repeating both rules
     // until nothing changes reaches.
-    let mut members = HashMap::<&str, Vec<usize>>::new();
-    let mut children = HashMap::<&str, Vec<usize>>::new();
-    let mut by_alias = HashMap::<&str, Vec<usize>>::new();
+    let mut members = HashMap::<&str, Vec<usize>>::default();
+    let mut children = HashMap::<&str, Vec<usize>>::default();
+    let mut by_alias = HashMap::<&str, Vec<usize>>::default();
     for (i, row) in rows.iter().enumerate() {
         members.entry(&shape.keys[i]).or_default().push(i);
         for parent in &shape.ancestors[i] {
@@ -196,7 +196,7 @@ pub(super) fn plan(old: &Value, new: &Value, base: &Value) -> Result<Option<Valu
         }
         by_alias.entry(s(&row[0])?).or_default().push(i);
     }
-    let mut citing = HashMap::<&str, Vec<usize>>::new();
+    let mut citing = HashMap::<&str, Vec<usize>>::default();
     for (j, refs) in references.iter().enumerate() {
         for reference in refs {
             citing.entry(reference).or_default().push(j);

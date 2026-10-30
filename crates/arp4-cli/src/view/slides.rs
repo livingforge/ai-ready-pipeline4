@@ -5,8 +5,8 @@ use super::drawings::{Defaults, Rect};
 use super::*;
 use crate::excel::{column_name, coordinate};
 use crate::extraction::Sheet;
+use foldhash::HashMap;
 use roxmltree::Document as Xml;
-use std::collections::HashMap;
 
 const PRESENTATION: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";

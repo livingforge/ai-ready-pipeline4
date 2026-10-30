@@ -121,8 +121,8 @@ pub fn apply_reviews(
     let mut replies = Vec::new();
     // The sources of each reviewed document, and the IDs of those on each
     // sheet, made once for all the reviews of that document or sheet.
-    let mut documents = HashMap::<String, Vec<&Source>>::new();
-    let mut sheets = HashMap::<(String, String), HashSet<&str>>::new();
+    let mut documents = HashMap::<String, Vec<&Source>>::default();
+    let mut sheets = HashMap::<(String, String), HashSet<&str>>::default();
     for (review, reviewer) in combined {
         let basis = match &basis {
             Ok(basis) => basis,

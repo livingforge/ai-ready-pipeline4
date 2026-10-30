@@ -2,7 +2,7 @@
 //! which a layout keeps while rows and columns move, and as ranges of the
 //! cells of an extraction.
 use super::*;
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 /// A cell position: its column and row number, as [`crate::excel::coordinate`]
 /// gives them.

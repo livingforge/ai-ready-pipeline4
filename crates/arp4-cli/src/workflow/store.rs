@@ -34,7 +34,7 @@ pub struct Store {
     /// Artifacts already parsed in this process with their source sizes. A digest
     /// names its content, so the value is the one a new parse would return; one
     /// command otherwise parses the same input, packet and replies many times.
-    parsed: std::cell::RefCell<(usize, std::collections::HashMap<String, Value>)>,
+    parsed: std::cell::RefCell<(usize, foldhash::HashMap<String, Value>)>,
     /// The names in `archive.zip`, read once in this process instead of for
     /// every artifact put; compaction replaces them.
     archived: std::cell::RefCell<Option<std::collections::BTreeSet<String>>>,

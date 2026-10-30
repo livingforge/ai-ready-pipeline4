@@ -35,8 +35,8 @@
 //! place.
 use crate::data::{self, array};
 use anyhow::{Context, Result, bail, ensure};
+use foldhash::HashMap;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 use std::path::Path;
 
@@ -981,7 +981,7 @@ fn reading_cell(sheet: &Sheet, cell: Cell<'_>, defaults: Defaults) -> Result<Val
 /// have none: when as many have one as another, the earlier in its table.
 fn most_used(sheet: &Sheet) -> (Option<usize>, Option<usize>) {
     let most = |of: &dyn Fn(Cell<'_>) -> Option<usize>| {
-        let mut counts: HashMap<Option<usize>, usize> = HashMap::new();
+        let mut counts: HashMap<Option<usize>, usize> = HashMap::default();
         for c in sheet.cells.iter() {
             *counts.entry(of(c)).or_default() += 1;
         }

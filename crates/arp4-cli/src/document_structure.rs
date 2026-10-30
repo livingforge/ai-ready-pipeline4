@@ -3,9 +3,10 @@ use crate::data::{array, encoded, hash, immutable, read, string, under, write};
 use crate::extraction::{Cell, CellKind, Extraction, Sheet};
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Subcommand, ValueEnum};
+use foldhash::{HashMap, HashSet};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -539,12 +540,13 @@ fn verify(
     // ordered one took.
     let elements = &value.elements;
     let cell_count: usize = elements.iter().map(|e| e.cells.len()).sum();
-    let mut ids = HashSet::with_capacity(elements.len() + cell_count);
+    let mut ids =
+        HashSet::with_capacity_and_hasher(elements.len() + cell_count, Default::default());
     for entry in policy::validate_visuals(extraction, &value.fields)? {
         unresolved.push(|| entry);
     }
     // Built once per sheet: a sheet holds many elements, each looking up its cells.
-    let mut sheet_cells: HashMap<&str, SheetCells<'_>> = HashMap::new();
+    let mut sheet_cells: HashMap<&str, SheetCells<'_>> = HashMap::default();
     for element in elements {
         ensure!(
             ids.insert(string(&element["id"])?),
@@ -739,7 +741,7 @@ impl<'a> SheetCells<'a> {
             places,
             addresses,
             owned: vec![false; cells.len()],
-            others: HashSet::new(),
+            others: HashSet::default(),
         }
     }
 
@@ -1013,7 +1015,7 @@ pub fn apply(
     // The extractions read so far, by the first of each document: each is
     // read in order once while looking for one, rather than again for each
     // structure, and only the one found is kept.
-    let mut documents: HashMap<String, usize> = HashMap::new();
+    let mut documents: HashMap<String, usize> = HashMap::default();
     let mut read_up_to = 0;
     for path in paths {
         let value = read(path, None)?;

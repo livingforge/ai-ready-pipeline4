@@ -1,7 +1,7 @@
 use super::corrections::SourceCell;
 use super::grid::Axes;
 use super::*;
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 pub(super) fn fresh_id(used: &mut BTreeSet<String>, preferred: &str) -> String {
     if used.insert(preferred.to_owned()) {
@@ -77,7 +77,7 @@ pub(super) fn rebase(
     let sheets = if corrected {
         corrections::sheets(current)?
     } else {
-        HashMap::new()
+        HashMap::default()
     };
     // What the parser gives each cell, read only to replay corrections of
     // elements: a large sheet has a default per cell.
@@ -91,7 +91,7 @@ pub(super) fn rebase(
         .map(|region| string(&region["id"]).map(str::to_owned))
         .collect::<Result<_>>()?;
     // The IDs the corrections give cells, which the context of a parent names.
-    let mut ids = HashMap::new();
+    let mut ids = HashMap::default();
     for correction in array(&journal["elements"])? {
         let name = string(&correction["element"]["sheet"])?;
         for change in correction["changes"].as_array().into_iter().flatten() {
@@ -215,7 +215,7 @@ pub(super) fn rebase(
         .map(|(_, element)| element)
         .collect();
     // The addresses the corrected elements hold, by sheet.
-    let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut owned: HashMap<String, BTreeSet<String>> = HashMap::default();
     for element in &retained {
         owned
             .entry(string(&element["sheet"])?.to_owned())

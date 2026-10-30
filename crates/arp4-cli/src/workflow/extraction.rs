@@ -1,6 +1,7 @@
 //! Source-preserving extraction partitions. Shared context never counts as disposed text.
 use super::*;
-use std::{cell::OnceCell, collections::HashMap};
+use foldhash::HashMap;
+use std::cell::OnceCell;
 
 pub fn reply_schema() -> Value {
     reply_schema_for(false)
@@ -211,7 +212,7 @@ impl<'a> Scoper<'a> {
             .collect();
         let all = arr(&packet["sources"]["rows"])?;
         let by_ref = self.rows.get_or_init(|| {
-            let mut by_ref = HashMap::<&str, Vec<usize>>::new();
+            let mut by_ref = HashMap::<&str, Vec<usize>>::default();
             for (i, row) in all.iter().enumerate() {
                 by_ref
                     .entry(row[0].as_str().unwrap_or(""))
@@ -346,8 +347,8 @@ impl<'a> Structure<'a> {
             elements,
             headers: BTreeMap::new(),
             contexts: BTreeMap::new(),
-            at: HashMap::new(),
-            with_id: HashMap::new(),
+            at: HashMap::default(),
+            with_id: HashMap::default(),
         };
         for (e, element) in elements.iter().enumerate() {
             let sheet = s(&element["sheet"])?;

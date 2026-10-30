@@ -48,7 +48,7 @@ pub(crate) fn expand_item(input: spec::Indexed, item: &mut Value, rows: &[&Sourc
     }
     let mut evidence = Vec::new();
     // The spans kept so far, so that a table's cells are not compared with each other.
-    let mut kept = HashSet::new();
+    let mut kept = HashSet::default();
     for span in selectors
         .iter()
         .map(|e| span_in(input, e, rows))

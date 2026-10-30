@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
 
 /// Sheet types that carry no cell grid for extraction. Their parts are kept
 /// byte-for-byte on writeback because only patched parts are rewritten.
@@ -532,8 +532,10 @@ impl Workbook {
     pub fn open(path: &Path) -> Result<Self> {
         Self::from_bytes(fs::read(path)?)
     }
-    pub fn from_bytes(raw: Vec<u8>) -> Result<Self> {
-        let package = crate::document_source::office_package(&raw)?;
+    /// The parts of the workbook package `raw`, by name, checked as
+    /// [`Workbook::from_bytes`] checks them, without reading the sheets.
+    pub fn parts_of(raw: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+        let package = crate::document_source::office_package(raw)?;
         let mut archive = ZipArchive::new(Cursor::new(&*package))?;
         ensure!(
             archive.len() <= 10000
@@ -579,6 +581,10 @@ impl Workbook {
                 "duplicate Excel ZIP members"
             );
         }
+        Ok(parts)
+    }
+    pub fn from_bytes(raw: Vec<u8>) -> Result<Self> {
+        let parts = Self::parts_of(&raw)?;
         let styles = parts
             .get("xl/styles.xml")
             .map(|bytes| xml(bytes))
@@ -784,8 +790,8 @@ impl Workbook {
                 date1904,
                 rich_values: &mut rich_values,
                 cells: vec![],
-                places: HashSet::new(),
-                sides: HashMap::new(),
+                places: HashSet::default(),
+                sides: HashMap::default(),
                 blanks: vec![],
                 filled: vec![],
                 hidden_rows: vec![],
@@ -997,8 +1003,8 @@ fn bordered_blanks(
 ) -> Result<Vec<String>> {
     let side =
         |position: (u32, u32), index: usize| sides.get(&position).is_some_and(|drawn| drawn[index]);
-    let mut merged: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
-    let mut covered = HashSet::new();
+    let mut merged: HashMap<(u32, u32), (u32, u32)> = HashMap::default();
+    let mut covered = HashSet::default();
     for range in merges {
         let (a, b) = range.split_once(':').context("invalid merge range")?;
         let (start, end) = (coordinate(a)?, coordinate(b)?);
@@ -1019,7 +1025,7 @@ fn bordered_blanks(
     // The box of each written cell: the rows of its column written one under
     // another with no line between them, as a record drawn over two rows with
     // no line across it.
-    let mut boxes: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
+    let mut boxes: HashMap<(u32, u32), (u32, u32)> = HashMap::default();
     let mut cells: Vec<(u32, u32)> = written.iter().copied().collect();
     cells.sort_unstable();
     let mut start = 0;
@@ -1109,7 +1115,7 @@ fn bordered_blanks(
             && ruled(p)
     };
     // The cells of the bands walked: every cell of a band walks to the same ends.
-    let mut walked = HashSet::new();
+    let mut walked = HashSet::default();
     for &(column, row) in filled {
         if walked.contains(&(column, row)) || !along((column, row)) {
             continue;

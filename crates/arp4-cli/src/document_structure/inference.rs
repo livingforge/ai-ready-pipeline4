@@ -5,7 +5,7 @@
 //! layout also supports prose, but does not assign table roles from words alone.
 use super::*;
 use crate::excel::coordinate;
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
 
 mod outline;
 
@@ -143,7 +143,7 @@ fn fields(
     free: &[usize],
     boxes: &[(Extent, bool)],
 ) -> Vec<(u32, u32, u32, u32)> {
-    let mut at: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut at: HashMap<(u32, u32), usize> = HashMap::default();
     for (k, &((left, top, right, bottom), _)) in boxes.iter().enumerate() {
         for y in top..=bottom {
             for x in left..=right {
@@ -210,7 +210,7 @@ fn components(
         .chain(cells.len()..cells.len() + boxes.len())
         .collect();
     let mut parent: Vec<_> = (0..cells.len() + boxes.len()).collect();
-    let mut occupied: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut occupied: HashMap<(u32, u32), usize> = HashMap::default();
     let mut exhausted = false;
     for &i in &nodes {
         let (left, top, right, bottom) = extent(i);
@@ -290,8 +290,8 @@ fn components(
 /// bordered cell in that column (typically its header) keeps it in the grid.
 /// So is sparse plain text in the margin left of a bordered grid.
 fn side_annotations(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
-    let mut columns = HashMap::<u32, Vec<&Cell<'_>>>::new();
-    let mut bordered_rows = HashMap::<u32, Vec<u32>>::new();
+    let mut columns = HashMap::<u32, Vec<&Cell<'_>>>::default();
+    let mut bordered_rows = HashMap::<u32, Vec<u32>>::default();
     for cell in cells.iter().filter(|c| c.nonempty()) {
         columns.entry(cell.left).or_default().push(cell);
         if cell.bordered() {
@@ -300,7 +300,7 @@ fn side_annotations(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize
     }
     // A column may host another table farther down the sheet. Only the
     // contiguous bordered run next to the annotation defines its context.
-    let mut bordered_runs = HashMap::<(u32, u32), (u32, u32)>::new();
+    let mut bordered_runs = HashMap::<(u32, u32), (u32, u32)>::default();
     for (column, rows) in &mut bordered_rows {
         rows.sort_unstable();
         rows.dedup();
@@ -331,13 +331,13 @@ fn side_annotations(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize
     // few of its records but not its first row.
     let plain = |c: &Cell<'_>| c.string() && !c.bordered() && c.fill() == 0 && !c.bold();
     // The cells ending in each column, in row order.
-    let mut ending = HashMap::<u32, Vec<&Cell<'_>>>::new();
+    let mut ending = HashMap::<u32, Vec<&Cell<'_>>>::default();
     for cell in cells.iter().filter(|c| c.nonempty()) {
         ending.entry(cell.right).or_default().push(cell);
     }
     // Whether the cells of a margin column beside a bordered run are a few
     // plain ones below its first row, by column and run.
-    let mut sparse = HashMap::<(u32, u32, u32), bool>::new();
+    let mut sparse = HashMap::<(u32, u32, u32), bool>::default();
     let mut margins = vec![];
     for (i, c) in cells.iter().enumerate() {
         if assigned.contains(&i) || !c.nonempty() || !plain(c) {
@@ -405,9 +405,9 @@ fn prose_bullets(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
                 Some('・' | '●' | '○' | '•')
             )
     };
-    let mut row_counts = HashMap::<u32, (usize, usize, usize)>::new();
-    let mut bordered_left = HashMap::<u32, BTreeSet<u32>>::new();
-    let mut bullet_rows = HashMap::<u32, Vec<u32>>::new();
+    let mut row_counts = HashMap::<u32, (usize, usize, usize)>::default();
+    let mut bordered_left = HashMap::<u32, BTreeSet<u32>>::default();
+    let mut bullet_rows = HashMap::<u32, Vec<u32>>::default();
     for c in cells.iter().filter(|c| c.nonempty()) {
         let counts = row_counts.entry(c.top).or_default();
         counts.0 += 1;
@@ -423,7 +423,7 @@ fn prose_bullets(cells: &[Cell<'_>], assigned: &BTreeSet<usize>) -> Vec<usize> {
     // Whether each run of bullets on consecutive rows of a column lies beside
     // bordered records, decided once for the run rather than for every bullet
     // in it, by (column, row).
-    let mut beside = HashMap::<(u32, u32), bool>::new();
+    let mut beside = HashMap::<(u32, u32), bool>::default();
     for (&column, rows) in &mut bullet_rows {
         rows.sort_unstable();
         rows.dedup();
@@ -485,7 +485,7 @@ struct ByEdge(HashMap<(u32, u32, u32), Vec<usize>>);
 
 impl ByEdge {
     fn new(extents: &[Option<Extent>], keep: impl Fn(usize) -> bool) -> Self {
-        let mut index: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::new();
+        let mut index: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::default();
         for (i, extent) in extents.iter().enumerate() {
             if let Some((left, top, right, _)) = extent
                 && keep(i)
@@ -620,7 +620,7 @@ fn join_columns(cells: &[Cell<'_>], remaining: &mut [Group]) {
         .collect();
     loop {
         // Groups by their first column and their first and last rows, in order.
-        let mut by_edge: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::new();
+        let mut by_edge: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::default();
         for (b, found) in shapes.iter().enumerate() {
             if let Some(((left, top, _, bottom), ..)) = found {
                 by_edge.entry((*left, *top, *bottom)).or_default().push(b);
@@ -1282,7 +1282,7 @@ fn refine(
     if !children.is_empty() {
         // The children over each row, so a cell is checked against those
         // only rather than against every child.
-        let mut over: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut over: HashMap<u32, Vec<usize>> = HashMap::default();
         for (k, &(_, top, _, bottom)) in children.iter().enumerate() {
             for y in top..=bottom {
                 over.entry(y).or_default().push(k);
@@ -1492,7 +1492,7 @@ struct Boxes {
 
 impl Boxes {
     fn new(all: Vec<Extent>) -> Self {
-        let mut by_top: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut by_top: HashMap<u32, Vec<usize>> = HashMap::default();
         for (k, &(_, top, _, _)) in all.iter().enumerate() {
             by_top.entry(top).or_default().push(k);
         }
@@ -1877,7 +1877,7 @@ fn stub_labels(
     // record, so that the columns of a wide table, tried pair by pair, are
     // told apart at their first record rather than by all of its cells.
     let tree = |left: u32, right: u32| {
-        let mut lefts = HashSet::new();
+        let mut lefts = HashSet::default();
         starts.values().all(|line| {
             let from = line.partition_point(|c| c.left < left);
             let mut names = line[from..]
@@ -2038,13 +2038,44 @@ fn merged_levels(
     for c in group.iter().filter(|c| body(c) && c.nonempty()) {
         columns.entry(c.left).or_default().push(c);
     }
-    let records: BTreeSet<u32> = columns.values().flatten().map(|c| c.top).collect();
-    // One value of the column in every record, the column alone.
+    let records: Vec<u32> = columns
+        .values()
+        .flatten()
+        .map(|c| c.top)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // The records from the first `c` reaches to the one after its last.
+    let reached = |c: &Cell<'_>| {
+        (
+            records.partition_point(|&y| y < c.top),
+            records.partition_point(|&y| y <= c.bottom),
+        )
+    };
+    // One value of the column in every record, the column alone: each record
+    // counted by the cells reaching it, where they start and after they end.
     let one_each = |cells: &[&Cell<'_>]| {
-        cells.iter().all(|c| c.right == c.left)
-            && records
-                .iter()
-                .all(|&y| cells.iter().filter(|c| c.top <= y && y <= c.bottom).count() == 1)
+        if !cells.iter().all(|c| c.right == c.left) {
+            return false;
+        }
+        let mut changes = vec![0i64; records.len() + 1];
+        for c in cells {
+            let (from, to) = reached(c);
+            changes[from] += 1;
+            changes[to] -= 1;
+        }
+        let mut reaching = 0;
+        changes[..records.len()].iter().all(|change| {
+            reaching += change;
+            reaching == 1
+        })
+    };
+    // The cell of a level holding `c`. A level's cells come by their tops and
+    // reach each record once, and `c` starts at a record, so only the last
+    // cell starting at or above `c` can hold it.
+    let holder = |level: &[&Cell<'_>], c: &Cell<'_>| {
+        let at = level.partition_point(|o| o.top <= c.top).checked_sub(1)?;
+        (c.bottom <= level[at].bottom).then_some(at)
     };
     let mut x = label_left;
     while let Some(cells) = columns.get(&x)
@@ -2058,27 +2089,21 @@ fn merged_levels(
         && headed(x)
         && one_each(cells)
         && cells.iter().all(|c| c.string() && !number_mark(c))
-        && levels.iter().all(|outer| {
-            cells
-                .iter()
-                .all(|c| outer.iter().any(|o| o.top <= c.top && c.bottom <= o.bottom))
-        })
-    {
-        if cells
+        && levels
             .iter()
-            .any(|c| records.range(c.top..=c.bottom).nth(1).is_some())
-        {
+            .all(|outer| cells.iter().all(|c| holder(outer, c).is_some()))
+    {
+        if cells.iter().any(|c| {
+            let (from, to) = reached(c);
+            to - from >= 2
+        }) {
             levels.push(cells);
             x += 1;
             continue;
         }
         // Names, each once within the innermost category.
         let innermost = levels.last()?;
-        let owner = |c: &Cell<'_>| {
-            innermost
-                .iter()
-                .position(|o| o.top <= c.top && c.bottom <= o.bottom)
-        };
+        let owner = |c: &Cell<'_>| holder(innermost, c);
         let distinct = cells
             .iter()
             .map(|c| (owner(c), c.text()))
@@ -2365,7 +2390,7 @@ fn interpret(
     let columns: BTreeSet<_> = group.iter().filter(|c| body(c)).map(|c| c.left).collect();
     // The written body cells starting in each column, in the group's order,
     // gathered once for the tests of every column.
-    let mut written: HashMap<u32, Vec<&Cell<'_>>> = HashMap::new();
+    let mut written: HashMap<u32, Vec<&Cell<'_>>> = HashMap::default();
     for c in group.iter().filter(|c| body(c) && c.nonempty()) {
         written.entry(c.left).or_default().push(c);
     }
@@ -2538,7 +2563,7 @@ fn interpret(
         .filter(|c| body(c) && c.nonempty() && in_labels(c))
         .map(|c| c.bottom)
         .max();
-    let mut total_labels: HashSet<(u32, u32)> = HashSet::new();
+    let mut total_labels: HashSet<(u32, u32)> = HashSet::default();
     let mut total_rows: BTreeSet<u32> = BTreeSet::new();
     for f in group
         .iter()
@@ -2572,7 +2597,7 @@ fn interpret(
     // only header cells are searched, not the whole table per cell.
     let mut header_rows: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     let mut bands = vec![];
-    let mut label_rows: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut label_rows: HashMap<u32, Vec<usize>> = HashMap::default();
     let mut label_columns: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for (i, c) in group.iter().enumerate() {
         match roles[i] {
@@ -2590,7 +2615,7 @@ fn interpret(
     // Bands of different looks nest: a look first seen after another is a
     // level below it, as the band of a job under the band of its job net.
     let mut looks: Vec<(bool, u64)> = vec![];
-    let mut band_parents: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut band_parents: HashMap<usize, Vec<usize>> = HashMap::default();
     let mut open_bands: Vec<(usize, usize)> = vec![];
     for &i in &bands {
         let look = (group[i].bold(), group[i].fill());
@@ -2646,7 +2671,7 @@ fn interpret(
             areas.entry(area(group[i])).or_default().push(i);
         }
     }
-    let mut parents: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut parents: HashMap<usize, Vec<usize>> = HashMap::default();
     for column in areas.values_mut() {
         column.sort_by_key(|&i| (group[i].top, group[i].left));
         let mut open: Vec<usize> = vec![];
@@ -2678,7 +2703,7 @@ fn interpret(
     // theirs, as 区分 over a major category and a minor one beside it, the
     // major one merged across both where it has no minor one. A blank
     // heading it reaches over heads nothing.
-    let mut reaches: HashMap<usize, u32> = HashMap::new();
+    let mut reaches: HashMap<usize, u32> = HashMap::default();
     for headers in header_rows.values() {
         for &i in headers.iter().filter(|&&i| group[i].nonempty()) {
             let h = group[i];
@@ -2702,7 +2727,7 @@ fn interpret(
         }
     }
     let reach_of = |i: usize| reaches.get(&i).copied().unwrap_or(group[i].right);
-    let mut reached: HashSet<usize> = HashSet::new();
+    let mut reached: HashSet<usize> = HashSet::default();
     for headers in header_rows.values() {
         for &j in headers.iter().filter(|&&j| !group[j].nonempty()) {
             let under = headers.iter().any(|i| {
@@ -2766,7 +2791,7 @@ fn interpret(
         }
         // Of a header cell written again, the last repeat linked
         // stands in for the copies above it.
-        let mut last_repeat: HashMap<((u32, u32), &str), u32> = HashMap::new();
+        let mut last_repeat: HashMap<((u32, u32), &str), u32> = HashMap::default();
         for &i in links.iter().filter(|i| repeats.contains(i)) {
             let top = last_repeat
                 .entry((group[i].span(), group[i].text()))
@@ -2853,7 +2878,7 @@ fn interpret(
             }
         }
     };
-    let mut alike: HashMap<(usize, u32, u32), Vec<usize>> = HashMap::new();
+    let mut alike: HashMap<(usize, u32, u32), Vec<usize>> = HashMap::default();
     let interpreted = group
         .iter()
         .enumerate()
@@ -3305,7 +3330,7 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
             };
             let mut order: Vec<usize> = (0..tables.len()).collect();
             order.sort_by_key(|&t| std::cmp::Reverse(ancestors(t).len()));
-            let mut owner: HashMap<usize, usize> = HashMap::new();
+            let mut owner: HashMap<usize, usize> = HashMap::default();
             let mut found = vec![];
             for t in order {
                 let bounds = range(string(&tables[t]["range"])?)?;
@@ -3586,7 +3611,7 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
             };
             if free(a) && free(&b) && bt == gap + 1 && (bl > al || sibling()) && br <= ar {
                 let spans = spans.get_or_insert_with(|| {
-                    let mut spans: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+                    let mut spans: HashMap<u32, Vec<(u32, u32)>> = HashMap::default();
                     for c in &cells {
                         for y in c.top..=c.bottom {
                             spans.entry(y).or_default().push((c.left, c.right));
@@ -3623,7 +3648,7 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
         );
         let mut preceding: Option<PrecedingTable> = None;
         // Output index of each interpreted candidate, by key.
-        let mut interpreted_tables: HashMap<usize, usize> = HashMap::new();
+        let mut interpreted_tables: HashMap<usize, usize> = HashMap::default();
         let mut nested = vec![];
         // Attaching labels may have dropped candidates nested in others.
         let holding: HashSet<usize> = groups.iter().filter_map(|c| c.parent).collect();
@@ -3721,7 +3746,7 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
         let mut contexts = vec![];
         {
             // Each parent's cells are read once for all the tables nested in it.
-            let mut parents: HashMap<usize, Members<'_, '_, '_>> = HashMap::new();
+            let mut parents: HashMap<usize, Members<'_, '_, '_>> = HashMap::default();
             for (child, parent, rectangle) in nested {
                 if let Some(&parent) = interpreted_tables.get(&parent) {
                     let members = match parents.entry(parent) {

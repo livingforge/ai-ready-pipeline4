@@ -143,6 +143,7 @@ dependencies = [
  "dunce",
  "encoding_rs",
  "flate2",
+ "foldhash 0.2.0",
  "jsonschema",
  "lopdf",
  "mimalloc",

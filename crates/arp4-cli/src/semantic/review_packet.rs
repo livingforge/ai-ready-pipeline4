@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 pub(super) fn compact_span<'s>(span: &mut Value, alias: &impl Fn(&str) -> Option<&'s String>) {
     if let Some(source) = span["source"].as_str().and_then(alias) {
@@ -169,13 +169,13 @@ impl<'a> ReviewBasis<'a> {
             }
             documents.insert(doc, (rows, aliases));
         }
-        let mut items_citing: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut items_citing: HashMap<String, Vec<usize>> = HashMap::default();
         for (k, item) in model.items.iter().enumerate() {
             for source in item_source_ids(item) {
                 items_citing.entry(source).or_default().push(k);
             }
         }
-        let mut exclusions_of: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut exclusions_of: HashMap<&str, Vec<usize>> = HashMap::default();
         for (k, exclusion) in model.exclusions.iter().enumerate() {
             exclusions_of
                 .entry(exclusion.evidence.source.as_str())

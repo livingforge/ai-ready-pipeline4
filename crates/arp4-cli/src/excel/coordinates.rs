@@ -530,14 +530,10 @@ pub fn map_coordinate(
 pub struct CoordinateMap<'a> {
     operations: &'a [StructuralOperation],
     /// The sheets with cells shifted within a band, found once.
-    shifted: std::collections::HashSet<&'a str>,
+    shifted: foldhash::HashSet<&'a str>,
     /// Each axis's mapped positions, by sheet; none for a deleted one.
-    rows: std::cell::RefCell<
-        std::collections::HashMap<String, std::collections::HashMap<u32, Option<u32>>>,
-    >,
-    columns: std::cell::RefCell<
-        std::collections::HashMap<String, std::collections::HashMap<u32, Option<u32>>>,
-    >,
+    rows: std::cell::RefCell<foldhash::HashMap<String, foldhash::HashMap<u32, Option<u32>>>>,
+    columns: std::cell::RefCell<foldhash::HashMap<String, foldhash::HashMap<u32, Option<u32>>>>,
 }
 
 impl<'a> CoordinateMap<'a> {

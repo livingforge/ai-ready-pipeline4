@@ -1,7 +1,7 @@
 use super::sheet_edit::rejection;
 use super::*;
 use crate::fonts::FontEdit;
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 /// The most edits of a refused request tried one at a time, to name those
 /// the original's writer refuses.
@@ -84,7 +84,7 @@ impl Store {
         validate("value-edits", request)
             .map_err(|error| rejection("invalid_request", format!("{error:#}")))?;
         let dir = self.structure_dir(id, proposal)?;
-        let inspected = self.inspect(&dir, false).map_err(|error| {
+        let mut inspected = self.inspect(&dir, false).map_err(|error| {
             rejection(
                 "invalid_document",
                 format!("the document fails check before the edit; fix that first: {error:#}"),
@@ -114,19 +114,38 @@ impl Store {
         }
         let edits = array(&request["edits"])?;
         let all: Vec<usize> = (0..edits.len()).collect();
-        let mut plan = match self.plan_values(&dir, &inspected, &book, request, &all, operations) {
+        let planned = self.plan_values(
+            &dir,
+            &mut inspected,
+            false,
+            &book,
+            request,
+            &all,
+            operations,
+        );
+        let mut plan = match planned {
             Ok(plan) => plan,
             Err(error) => {
                 // Name the edits the writer refuses on their own.
                 let refused = crate::data::rejection(&error)
                     .is_some_and(|payload| payload["code"] == "writeback_refused");
                 if refused && edits.len() > 1 && edits.len() <= ISOLATED_EDITS {
+                    // Planning let the content go: it is read again for these.
+                    let mut whole = self.inspect(&dir, false)?;
                     let failing: Vec<usize> = all
                         .iter()
                         .copied()
                         .filter(|&index| {
-                            self.plan_values(&dir, &inspected, &book, request, &[index], operations)
-                                .is_err()
+                            self.plan_values(
+                                &dir,
+                                &mut whole,
+                                true,
+                                &book,
+                                request,
+                                &[index],
+                                operations,
+                            )
+                            .is_err()
                         })
                         .collect();
                     let mut payload = crate::data::rejection(&error).unwrap().clone();
@@ -173,11 +192,16 @@ impl Store {
     /// Plans the edits at `indices` of `request` on the document in `dir`:
     /// the content pages, layout and mappings they leave, checked like
     /// `check`, and written by the original's writer to a scratch file with
-    /// every other pending change, as export writes them.
+    /// every other pending change, as export writes them. Unless `keep`, the
+    /// content of `inspected` is let go once the edits are planned, before
+    /// the document they leave is inspected: the two together took most of
+    /// the room a large sheet's edit takes.
+    #[allow(clippy::too_many_arguments)]
     fn plan_values(
         &self,
         dir: &Path,
-        inspected: &Inspection,
+        inspected: &mut Inspection,
+        keep: bool,
         book: &Source,
         request: &Value,
         indices: &[usize],
@@ -228,9 +252,9 @@ impl Store {
         for (page, sheet) in &current.sheets {
             pages_by_name.insert(string(&sheet["name"])?, page.as_str());
         }
-        let mut positioned: HashMap<(&str, &str, &str, &str), usize> = HashMap::new();
-        let mut targeted: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
-        let mut shaped: HashMap<(&str, &str), usize> = HashMap::new();
+        let mut positioned: HashMap<(&str, &str, &str, &str), usize> = HashMap::default();
+        let mut targeted: HashMap<(&str, &str), Vec<usize>> = HashMap::default();
+        let mut shaped: HashMap<(&str, &str), usize> = HashMap::default();
         for (index, entry) in inspected.entries().enumerate() {
             if let Some(position) = entry.position()? {
                 positioned.insert(
@@ -248,7 +272,7 @@ impl Store {
                 _ => {}
             }
         }
-        let extracted: std::collections::HashSet<(&str, &str)> = extraction
+        let extracted: foldhash::HashSet<(&str, &str)> = extraction
             .sheets
             .iter()
             .flat_map(|sheet| {
@@ -275,8 +299,8 @@ impl Store {
         let mut places = BTreeMap::new();
         // What the edits look up in each page's layout and each sheet's
         // merges, read once for all of them.
-        let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::new();
-        let mut merged: HashMap<&str, Option<excel::Merges<'_>>> = HashMap::new();
+        let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::default();
+        let mut merged: HashMap<&str, Option<excel::Merges<'_>>> = HashMap::default();
         for &index in indices {
             let edit = &edits[index];
             let sheet = string(&edit["sheet"])?;
@@ -768,6 +792,9 @@ impl Store {
                 Some(stored_mappings(&mappings_path, &mappings)?),
             );
         }
+        if !keep {
+            inspected.release_content();
+        }
         let checked = self
             .inspect_with(dir, false, &planned)
             .map_err(|error| rejection("validation_failed", format!("{error:#}")))?;
@@ -787,7 +814,7 @@ impl Store {
         let layout_warnings = if matches!(book, Source::Excel(_)) {
             // Each changed text at its place in the written workbook: the
             // edit's value, its entry's field, and the change of that field.
-            let mut fields = HashMap::new();
+            let mut fields = HashMap::default();
             for entry in checked.entries() {
                 if let Some(position) = entry.position()? {
                     fields.insert(
@@ -836,7 +863,8 @@ impl Store {
             if targets.is_empty() {
                 vec![]
             } else {
-                excel::layout_warnings(&excel::Workbook::open(&preview)?, &targets)?
+                // The estimate reads the written package, not its cells.
+                excel::layout_warnings(&excel::Workbook::parts_of(&fs::read(&preview)?)?, &targets)?
             }
         } else {
             vec![]

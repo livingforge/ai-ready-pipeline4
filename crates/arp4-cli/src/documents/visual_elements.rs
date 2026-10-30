@@ -1,7 +1,7 @@
 //! Body references to captured visual objects. Facts, assets and interpretation
 //! remain outside the body; no picture or chart data is duplicated into text.
 use super::*;
-use std::collections::HashSet;
+use foldhash::HashSet;
 
 pub(super) fn refresh(
     layout: &mut Layout,
@@ -54,7 +54,7 @@ pub(super) fn refresh(
             let mut reference = json!({"kind":kind,"source":format!("/sheets/{si}/drawings/{di}"),"drawing_id":drawing_id,"anchor":anchor,"order_basis":order_basis});
             if let Some(asset) = drawing["image"]["asset"].as_str() {
                 if assets.is_none() {
-                    let mut by_path = HashMap::new();
+                    let mut by_path = HashMap::default();
                     for metadata in array(&extraction["assets"])? {
                         if let Some(path) = metadata["path"].as_str() {
                             // The first of a path, as a search finds it.

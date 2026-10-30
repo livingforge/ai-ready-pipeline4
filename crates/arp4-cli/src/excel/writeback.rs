@@ -293,26 +293,30 @@ impl Workbook {
                     .into_iter()
                     .flat_map(|v| v.keys().map(String::as_str))
                     .collect();
+                // Compared by their digests, so that one copy of the sheet is
+                // held at a time.
+                let invariants = |text: &[u8]| -> Result<String> {
+                    Ok(crate::data::hash(
+                        worksheet_invariants(
+                            std::str::from_utf8(text)?,
+                            &values,
+                            &formulas,
+                            recalc,
+                        )?
+                        .as_bytes(),
+                    ))
+                };
                 ensure!(
-                    worksheet_invariants(
-                        std::str::from_utf8(&self.parts[part])?,
-                        &values,
-                        &formulas,
-                        recalc
-                    )? == worksheet_invariants(
-                        std::str::from_utf8(after)?,
-                        &values,
-                        &formulas,
-                        recalc
-                    )?,
+                    invariants(&self.parts[part])? == invariants(after)?,
                     "non-edited worksheet content changed: {part}"
                 );
                 self.ensure_runs_kept(part, after, &values, &shared)?;
             }
         }
         write_archive(&self.raw, destination, &patched)?;
-        self.ensure_package_kept(destination, &patched)?;
-        ensure_read_back(destination, changes, formulas, shapes, &[])?;
+        let reread = Workbook::open(destination)?;
+        self.ensure_package_kept(&reread, &patched)?;
+        ensure_read_back(&reread, changes, formulas, shapes, &[])?;
         Ok(
             json!({"changed_parts":patched.keys().collect::<Vec<_>>(),"requires_excel_recalculation":recalc,"non_edit_preservation_verified":true,"layout_review_required":true}),
         )
@@ -832,10 +836,11 @@ impl Workbook {
             self.ensure_new_cells_only(&patched, changes, &formula_edits, recalc)?;
         }
         write_archive_without(&self.raw, destination, &patched, &removed)?;
+        let reread = Workbook::open(destination)?;
         if preserving {
-            self.ensure_package_kept(destination, &patched)?;
+            self.ensure_package_kept(&reread, &patched)?;
         }
-        ensure_read_back(destination, changes, formulas, &shapes, &operations)?;
+        ensure_read_back(&reread, changes, formulas, &shapes, &operations)?;
         let mut report = json!({
             "changed_parts": patched.keys().collect::<Vec<_>>(),
             "requires_excel_recalculation": recalc,
@@ -904,25 +909,33 @@ impl Workbook {
         values: &BTreeSet<&str>,
         shared: &SharedStrings<'_>,
     ) -> Result<()> {
+        let edited = |node: &Node<'_, '_>| {
+            node.has_tag_name((NS, "c")) && values.contains(node.attribute("r").unwrap_or(""))
+        };
+        // The original's run formats are read first and its sheet let go, so
+        // that one sheet is held at a time.
         let before_text = std::str::from_utf8(&self.parts[part])?;
+        let mut before = vec![];
+        for cell in xml(before_text.as_bytes())?.descendants().filter(edited) {
+            let address = cell.attribute("r").context("missing cell address")?;
+            before.push((
+                address.to_owned(),
+                super::text_edit::run_properties(cell, before_text, shared)?,
+            ));
+        }
         let after_text = std::str::from_utf8(after)?;
-        let before_doc = xml(before_text.as_bytes())?;
         let after_doc = xml(after_text.as_bytes())?;
         let after_cells: BTreeMap<_, _> = after_doc
             .descendants()
-            .filter(|node| node.has_tag_name((NS, "c")))
+            .filter(edited)
             .map(|cell| (cell.attribute("r").unwrap_or(""), cell))
             .collect();
-        for cell in before_doc.descendants().filter(|node| {
-            node.has_tag_name((NS, "c")) && values.contains(node.attribute("r").unwrap_or(""))
-        }) {
-            let address = cell.attribute("r").context("missing cell address")?;
+        for (address, runs) in before {
             let written = *after_cells
-                .get(address)
+                .get(address.as_str())
                 .context("edited cell disappeared")?;
             ensure!(
-                super::text_edit::run_properties(cell, before_text, shared)?
-                    == super::text_edit::run_properties(written, after_text, shared)?,
+                runs == super::text_edit::run_properties(written, after_text, shared)?,
                 "rich text run properties changed: {part}!{address}"
             );
         }
@@ -933,10 +946,9 @@ impl Workbook {
     /// the original bytes unless `patched` replaced it.
     fn ensure_package_kept(
         &self,
-        destination: &Path,
+        reread: &Workbook,
         patched: &BTreeMap<String, Vec<u8>>,
     ) -> Result<()> {
-        let reread = Workbook::open(destination)?;
         ensure!(
             reread.parts.len() == self.parts.len(),
             "Excel package parts changed unexpectedly"
@@ -1210,14 +1222,13 @@ fn apply_shape_texts(
 /// move with rows and columns, so only formulas no operation moved read back
 /// verbatim.
 fn ensure_read_back(
-    destination: &Path,
+    reread: &Workbook,
     changes: &[Value],
     formulas: &[Value],
     shapes: &[Value],
     operations: &[StructuralOperation],
 ) -> Result<()> {
-    let reread = Workbook::open(destination)?;
-    let cells = cells_by_address(&reread);
+    let cells = cells_by_address(reread);
     for change in shapes {
         let found = reread
             .sheets

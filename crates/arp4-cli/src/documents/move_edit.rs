@@ -566,7 +566,7 @@ impl Store {
         let places = identity::formula_places(&layout)?;
         // The content's formulas by page and key, and whether each is one of
         // the original.
-        let mut formulas: HashMap<(String, String), (Value, bool)> = HashMap::new();
+        let mut formulas: HashMap<(String, String), (Value, bool)> = HashMap::default();
         for (index, entry) in inspected.entries().enumerate() {
             if entry.block()? != "formulas" {
                 continue;

@@ -3,7 +3,8 @@
 #![cfg(windows)]
 
 use anyhow::{Context, Result, bail, ensure};
-use std::{collections::HashSet, mem::ManuallyDrop};
+use foldhash::HashSet;
+use std::mem::ManuallyDrop;
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE},
@@ -65,7 +66,7 @@ pub(crate) fn processes(name: &str) -> Result<HashSet<u32>> {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut ids = HashSet::new();
+    let mut ids = HashSet::default();
     unsafe { Process32FirstW(snapshot.0, &mut entry) }
         .with_context(|| format!("Cannot enumerate existing {name} processes"))?;
     loop {

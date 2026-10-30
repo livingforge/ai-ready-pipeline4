@@ -35,29 +35,31 @@ const CELL_PADDING: f64 = 3.0;
 const NARROW: f64 = 0.55;
 
 /// The warnings for the `targets` whose text shows cut off, or makes a row
-/// grow, in the workbook `book`.
-pub fn layout_warnings(book: &Workbook, targets: &[FitTarget<'_>]) -> Result<Vec<Value>> {
-    let styles = Styles::read(book)?;
+/// grow, in the workbook whose package parts are `parts`.
+pub fn layout_warnings(
+    parts: &BTreeMap<String, Vec<u8>>,
+    targets: &[FitTarget<'_>],
+) -> Result<Vec<Value>> {
+    let styles = Styles::read(parts)?;
+    let (worksheets, _) = super::import::sheet_parts(parts)?;
     let mut sheets: BTreeMap<&str, Sheet> = BTreeMap::new();
     let mut warnings = vec![];
     for target in targets {
         if !sheets.contains_key(target.sheet) {
-            let part = book
-                .sheets
+            let part = worksheets
                 .iter()
-                .find(|sheet| sheet["name"] == target.sheet)
-                .map(|sheet| string(&sheet["part"]))
-                .transpose()?
+                .find(|(name, _, _)| name == target.sheet)
+                .map(|(_, part, _)| part)
                 .with_context(|| format!("no worksheet {}", target.sheet))?;
             sheets.insert(
                 target.sheet,
-                Sheet::read(std::str::from_utf8(&book.parts[part])?, &styles)?,
+                Sheet::read(std::str::from_utf8(&parts[part])?, &styles)?,
             );
         }
         let sheet = &sheets[target.sheet];
         let warning = match target.place {
             Place::Cell(address) => sheet.cell_warning(&styles, address, target)?,
-            Place::Shape(id) => shape_warning(book, sheet, &styles, id, target)?,
+            Place::Shape(id) => shape_warning(parts, sheet, &styles, id, target)?,
         };
         if let Some(mut warning) = warning {
             warning["edit"] = json!(target.edit);
@@ -140,8 +142,8 @@ pub(super) struct Format {
 }
 
 impl Styles {
-    pub(super) fn read(book: &Workbook) -> Result<Self> {
-        let Some(bytes) = book.parts.get("xl/styles.xml") else {
+    pub(super) fn read(parts: &BTreeMap<String, Vec<u8>>) -> Result<Self> {
+        let Some(bytes) = parts.get("xl/styles.xml") else {
             return Ok(Self {
                 formats: vec![],
                 digit: 7.2,
@@ -150,7 +152,7 @@ impl Styles {
         };
         let doc = xml(bytes)?;
         let root = doc.root_element();
-        let japanese = |scheme: &str| theme_font(book, scheme);
+        let japanese = |scheme: &str| theme_font(parts, scheme);
         let fonts: Vec<(f64, String)> = child(root, "fonts")
             .into_iter()
             .flat_map(|fonts| fonts.children().filter(|n| n.has_tag_name((NS, "font"))))
@@ -444,14 +446,14 @@ fn round(points: f64) -> f64 {
 /// The warning for the text of the shape `id` on `sheet` when it needs more
 /// lines than the shape holds, or is wider than a shape not wrapping it.
 fn shape_warning(
-    book: &Workbook,
+    parts: &BTreeMap<String, Vec<u8>>,
     sheet: &Sheet,
     styles: &Styles,
     id: &str,
     target: &FitTarget<'_>,
 ) -> Result<Option<Value>> {
     let (part, number) = id.rsplit_once('#').context("invalid shape ID")?;
-    let Some(bytes) = book.parts.get(part) else {
+    let Some(bytes) = parts.get(part) else {
         return Ok(None);
     };
     let doc = xml(bytes)?;
@@ -505,7 +507,7 @@ fn shape_warning(
         lines(before, wrap_width, size),
     );
     // Shapes space the lines of the MS fonts wider than cells do (measured).
-    let line = size * line_height(&shape_font(book, body)).max(1.28);
+    let line = size * line_height(&shape_font(parts, body)).max(1.28);
     let available = ((height / line).floor() as u32).max(1);
     let widest = target.after.split('\n').map(ems).fold(0.0, f64::max) * size;
     let overflow = after > available && after > before || !wraps && widest > width;
@@ -518,20 +520,20 @@ fn shape_warning(
 
 /// The font of a shape's text: the East Asian or Latin typeface its runs
 /// name, else the theme's minor font for Japanese text.
-fn shape_font(book: &Workbook, body: Node<'_, '_>) -> String {
+fn shape_font(parts: &BTreeMap<String, Vec<u8>>, body: Node<'_, '_>) -> String {
     let named = body
         .descendants()
         .filter(|n| n.has_tag_name((DRAWING, "ea")) || n.has_tag_name((DRAWING, "latin")))
         .find_map(|n| n.attribute("typeface").filter(|f| !f.starts_with('+')));
     named
         .map(str::to_owned)
-        .or_else(|| theme_font(book, "minorFont"))
+        .or_else(|| theme_font(parts, "minorFont"))
         .unwrap_or_default()
 }
 
 /// The theme's Japanese font of its `scheme` (minorFont or majorFont).
-fn theme_font(book: &Workbook, scheme: &str) -> Option<String> {
-    let theme = xml(book.parts.get("xl/theme/theme1.xml")?).ok()?;
+fn theme_font(parts: &BTreeMap<String, Vec<u8>>, scheme: &str) -> Option<String> {
+    let theme = xml(parts.get("xl/theme/theme1.xml")?).ok()?;
     let fonts = theme
         .descendants()
         .find(|n| n.has_tag_name((DRAWING, scheme)))?;
@@ -678,10 +680,10 @@ mod tests {
         };
         // The group is 108 by 60 points, so the shape half its child
         // extent is 54 by 30: two lines of 10 point text.
-        let fits = layout_warnings(&book, &[target("一二三四五")]).unwrap();
+        let fits = layout_warnings(&book.parts, &[target("一二三四五")]).unwrap();
         assert!(fits.is_empty(), "{fits:?}");
         let warnings =
-            layout_warnings(&book, &[target("一二三四五六七八九十一二三四五六")]).unwrap();
+            layout_warnings(&book.parts, &[target("一二三四五六七八九十一二三四五六")]).unwrap();
         assert_eq!(warnings[0]["issue"], "overflows_shape");
         assert_eq!(warnings[0]["estimate"]["width_pt"], 54.0);
         assert_eq!(warnings[0]["estimate"]["height_pt"], 30.0);

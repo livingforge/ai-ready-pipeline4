@@ -3,7 +3,7 @@ use super::*;
 use crate::document_body::{Content, Encoded};
 use crate::document_structure::{Element, ElementCell, Role};
 use crate::extraction::CellValue;
-use std::collections::HashSet;
+use foldhash::HashSet;
 
 mod groups;
 pub(super) use groups::Groups;
@@ -97,7 +97,7 @@ pub(super) struct Bindings {
 
 impl Bindings {
     pub(super) fn of(sheet: &Value) -> Result<Self> {
-        let mut formulas: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut formulas: HashMap<String, HashMap<String, String>> = HashMap::default();
         for (id, target) in sheet["formulas"]
             .as_object()
             .context("layout formulas missing")?
@@ -437,7 +437,7 @@ pub(super) fn metadata_groups(metadata: &[Meta]) -> Result<Groups> {
         let table: Option<Arc<str>> = element["id"].as_str().map(Arc::from);
         let rows = element.rows()?;
         let headings = element["headings"].as_u64().unwrap_or(0);
-        let mut record_rows = HashMap::new();
+        let mut record_rows = HashMap::default();
         for row in rows {
             let first = first_id(row)?;
             if let (Some(id), Some((axis, _))) = (row["id"].as_str(), cell_axes(first)) {
@@ -446,7 +446,7 @@ pub(super) fn metadata_groups(metadata: &[Meta]) -> Result<Groups> {
         }
         let empty = serde_json::Map::new();
         let categories = element["categories"].as_object().unwrap_or(&empty);
-        let mut node_cells: HashMap<&str, &str> = HashMap::new();
+        let mut node_cells: HashMap<&str, &str> = HashMap::default();
         for (key, category) in categories {
             node_cells.insert(key, key);
             for cell in category["cells"].as_array().into_iter().flatten() {
@@ -454,7 +454,7 @@ pub(super) fn metadata_groups(metadata: &[Meta]) -> Result<Groups> {
             }
         }
         // The categories around each record, outer first, by its ID.
-        let mut within: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut within: HashMap<&str, Vec<&str>> = HashMap::default();
         for (i, row) in (0..).zip(rows) {
             if let Some(description) = Description::of(row) {
                 for cell in &row.cells {
@@ -592,7 +592,7 @@ const MAX_TREE_DEPTH: usize = 16;
 fn arrange(sheet: &LayoutSheet, groups: &Groups, metadata: &mut [Meta]) -> Result<()> {
     let position = |axis: &str, id: &str| sheet.axis(axis).position(id);
     // The last row of each merged cell, by its first row and column.
-    let mut bottoms: HashMap<(u64, u64), u64> = HashMap::new();
+    let mut bottoms: HashMap<(u64, u64), u64> = HashMap::default();
     for range in sheet["merges"].as_array().into_iter().flatten() {
         let (start, end) = string(range)?
             .split_once(':')
@@ -638,14 +638,14 @@ fn arrange(sheet: &LayoutSheet, groups: &Groups, metadata: &mut [Meta]) -> Resul
             }
             headings += 1;
         }
-        let mut heading_cells = HashMap::new();
+        let mut heading_cells = HashMap::default();
         for row in &rows[..headings] {
             for cell in &row.cells {
                 heading_cells.insert(cell.id()?.to_owned(), heading_cells.len());
             }
         }
         let mut votes: BTreeMap<String, HashMap<String, usize>> = BTreeMap::new();
-        let mut record_index = HashMap::new();
+        let mut record_index = HashMap::default();
         for (i, row) in rows.iter().enumerate().skip(headings) {
             let first = first_id(row)?;
             if let Some((axis, _)) = cell_axes(first) {
@@ -700,7 +700,7 @@ fn arrange(sheet: &LayoutSheet, groups: &Groups, metadata: &mut [Meta]) -> Resul
         // records than most of the column, as a physical name on the second
         // line of a record under a logical name, keeps its own. A cell across
         // columns under the heading of another column keeps its column's.
-        let mut heading_columns: HashMap<String, String> = HashMap::new();
+        let mut heading_columns: HashMap<String, String> = HashMap::default();
         for row in &rows[..headings] {
             for cell in &row.cells {
                 heading_columns.insert(cell.id()?.to_owned(), cell.column()?.to_owned());
@@ -1122,7 +1122,7 @@ pub(super) fn interpret(layout: &Layout, structure: &[Element]) -> Result<Interp
         };
         let rows = identities("rows")?;
         let columns = identities("columns")?;
-        let mut ids: HashMap<&str, String> = HashMap::new();
+        let mut ids: HashMap<&str, String> = HashMap::default();
         for element in structure.iter().filter(|e| e["sheet"] == sheet["name"]) {
             for cell in &element.cells {
                 let (column, row) = excel::coordinate(&cell.address)?;
@@ -1136,7 +1136,7 @@ pub(super) fn interpret(layout: &Layout, structure: &[Element]) -> Result<Interp
         }
         // The cells of text elements too: a table holds the text written
         // against it as its title and notes.
-        let mut found: HashMap<String, (Value, Vec<String>)> = HashMap::new();
+        let mut found: HashMap<String, (Value, Vec<String>)> = HashMap::default();
         for element in structure.iter().filter(|e| e["sheet"] == sheet["name"]) {
             for cell in &element.cells {
                 if let Some(id) = ids.get(&*cell.id) {
@@ -1227,7 +1227,7 @@ pub(super) fn interpreted_groups<'e>(
                 .map_or(CellValue::Null, |cell| cell.value())
         };
         // The last row of each cell merged down, by its address.
-        let mut merged_down: HashMap<&str, u32> = HashMap::new();
+        let mut merged_down: HashMap<&str, u32> = HashMap::default();
         for range in source
             .into_iter()
             .flat_map(|s| s["merges"].as_array().into_iter().flatten())
@@ -1246,7 +1246,7 @@ pub(super) fn interpreted_groups<'e>(
         // extraction, which pending operations leave as they are; each
         // identity is held by its number in its axis's list.
         let identities = |axis: &str| -> (HashMap<&str, u32>, Vec<&str>) {
-            let mut numbers = HashMap::new();
+            let mut numbers = HashMap::default();
             let mut list = vec![];
             for (id, entry) in sheet.axis(axis).iter() {
                 if numbers
@@ -1289,7 +1289,7 @@ pub(super) fn interpreted_groups<'e>(
         // The tables each text element explains, by its ID: a text that
         // explains one table goes in it as its title or a note, and one that
         // explains several, as a title over tables side by side, stays apart.
-        let mut explaining: HashMap<&str, usize> = HashMap::new();
+        let mut explaining: HashMap<&str, usize> = HashMap::default();
         for element in on_page().filter(|e| e["kind"] == "table") {
             for id in element
                 .get("descriptions")
@@ -1314,7 +1314,7 @@ pub(super) fn interpreted_groups<'e>(
             // interpretation, in the order of the IDs.
             let mut places = Vec::with_capacity(cells.len());
             // The names of each row, by column.
-            let mut names: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
+            let mut names: HashMap<u32, Vec<(u32, &str)>> = HashMap::default();
             for cell in cells {
                 let (x, y) = excel::coordinate(&cell.address)?;
                 places.push((&*cell.id, (cell.role, y, x)));
@@ -1392,7 +1392,7 @@ pub(super) fn interpreted_groups<'e>(
             // Indexed once rather than scanned per cell: a table may have a
             // category every few rows. `owners` lists the categories of each
             // cell and `covering` those around each row, both in `found` order.
-            let mut owners: HashMap<&str, Vec<usize>> = HashMap::new();
+            let mut owners: HashMap<&str, Vec<usize>> = HashMap::default();
             for (i, (_, category)) in found.iter().enumerate() {
                 for &(_, at) in &category.cells {
                     owners.entry(at).or_default().push(i);
@@ -1404,7 +1404,7 @@ pub(super) fn interpreted_groups<'e>(
             for cell in cells {
                 rows.insert(excel::coordinate(&cell.address)?.1);
             }
-            let mut covering: HashMap<u32, Vec<usize>> = HashMap::new();
+            let mut covering: HashMap<u32, Vec<usize>> = HashMap::default();
             let (mut next, mut active) = (0, BTreeSet::new());
             for y in rows {
                 while let Some(&i) = starts.get(next).filter(|&&i| found[i].1.row <= y) {
@@ -1575,7 +1575,7 @@ pub(super) fn adopt_cells(
     };
     let mut bounds = Bounds::new();
     // The cells of each record, by table and row, as the cells adopted join.
-    let mut records: HashMap<String, HashMap<String, Record>> = HashMap::new();
+    let mut records: HashMap<String, HashMap<String, Record>> = HashMap::default();
     for (id, group) in groups.iter() {
         let Some(table) = group
             .table
@@ -1635,7 +1635,7 @@ pub(super) fn adopt_cells(
 /// back. A table the sheet holds other cells of keeps the ID the sheet gives
 /// it.
 pub(super) fn restore_groups(groups: &mut Groups, classified: &Groups, ids: &[String]) {
-    let mut names: HashMap<&str, Arc<str>> = HashMap::new();
+    let mut names: HashMap<&str, Arc<str>> = HashMap::default();
     for (id, group) in classified.iter() {
         if let (Some(table), Some(current)) = (
             group.table.as_deref(),
@@ -1669,7 +1669,7 @@ pub(super) fn orphaned_category(
             continue;
         };
         // The categories each record is in, by its ID.
-        let mut within: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut within: HashMap<&str, Vec<&str>> = HashMap::default();
         let mut kept: BTreeSet<&str> = BTreeSet::new();
         for row in element.rows()? {
             let chain = match row["parent"].as_str() {
@@ -1756,9 +1756,9 @@ fn categories<'a, 'v>(
         headers: Vec<&'a str>,
     }
     let mut seen = vec![];
-    let mut names: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
+    let mut names: HashMap<u32, Vec<(u32, &str)>> = HashMap::default();
     let mut written = BTreeSet::new();
-    let mut heads: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut heads: HashMap<&str, Vec<usize>> = HashMap::default();
     for cell in cells {
         let (x, y) = excel::coordinate(&cell.address)?;
         let id = &*cell.id;
@@ -2467,7 +2467,7 @@ pub(super) fn encode_grid(
     // The visual of each shape text by its text key, the first in order as
     // a search through them finds it, looked up once per shape rather than by
     // going through every visual.
-    let mut visual_of: HashMap<String, (String, Value)> = HashMap::new();
+    let mut visual_of: HashMap<String, (String, Value)> = HashMap::default();
     for (id, v) in sheet["visuals"].as_object().into_iter().flatten() {
         if let Some(key) = v["text_key"].as_str() {
             visual_of
@@ -2819,7 +2819,7 @@ impl<'a> Decoder<'a> {
                 .clone(),
             bindings: Bindings::of(sheet)?,
             used: Vec::with_capacity(count),
-            blocks: HashMap::new(),
+            blocks: HashMap::default(),
             values: Vec::with_capacity(count),
             lines: Names::default(),
         })

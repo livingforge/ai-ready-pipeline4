@@ -6,7 +6,7 @@
 //! counterpart and stays where it was, so its cells only change in value.
 use super::*;
 use crate::excel::{OperationKind, StructuralOperation};
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 /// The largest number of inserted and deleted lines traced line by line. A
 /// larger difference is paired as one block, by similarity or in order.
@@ -177,7 +177,7 @@ fn first_line<T, U>(
 /// the rest being deleted or inserted.
 fn align(old: &[Vec<String>], new: &[Vec<String>]) -> Vec<Step> {
     // Lines compared as numbers: equal lines get the same one.
-    let mut ids: HashMap<&[String], u32> = HashMap::new();
+    let mut ids: HashMap<&[String], u32> = HashMap::default();
     let a: Vec<u32> = old
         .iter()
         .map(|line| {

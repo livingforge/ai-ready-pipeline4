@@ -81,7 +81,7 @@ pub(crate) struct Diagrams {
 
 impl Diagrams {
     pub(crate) fn new(mut list: Vec<Diagram>) -> Result<Self> {
-        let mut of = HashMap::new();
+        let mut of = HashMap::default();
         for (index, diagram) in list.iter_mut().enumerate() {
             diagram.members.sort_unstable();
             diagram.members.dedup();
@@ -232,8 +232,8 @@ impl Diagram {
         }
         // A shape by its text, or by its key when it has none or another
         // shape shows the same.
-        let mut labels: HashMap<&str, String> = HashMap::new();
-        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut labels: HashMap<&str, String> = HashMap::default();
+        let mut counts: HashMap<String, usize> = HashMap::default();
         for shape in &self.shapes {
             let label = shape
                 .texts
@@ -335,7 +335,7 @@ impl Diagram {
                 "its shapes and lines"
             }
         );
-        let mut texts: HashMap<usize, Value> = HashMap::new();
+        let mut texts: HashMap<usize, Value> = HashMap::default();
         let mut take = |item: &Value, places: &[usize], owner: &str| -> Result<()> {
             let text = &item["text"];
             match places {
@@ -447,7 +447,7 @@ pub(crate) fn expand(
         return Ok(elements);
     }
     let mut written = elements.into_iter();
-    let mut pending: HashMap<usize, Value> = HashMap::new();
+    let mut pending: HashMap<usize, Value> = HashMap::default();
     let mut out = Vec::with_capacity(metadata.len());
     for (place, e) in metadata.iter().enumerate() {
         let kind = BodyElement::kind_named(string(&e["type"])?).context("unknown element type")?;

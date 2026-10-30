@@ -141,7 +141,7 @@ struct Squares {
 impl Squares {
     /// The boxes given by drawing, each grown by `margin` on every side.
     fn new(boxes: impl IntoIterator<Item = (usize, Rect)>, margin: f64) -> Self {
-        let mut squares: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        let mut squares: HashMap<(i64, i64), Vec<usize>> = HashMap::default();
         let mut large = vec![];
         let square = |v: f64| (v / SQUARE).floor() as i64;
         for (index, rect) in boxes {
@@ -573,7 +573,7 @@ pub(super) fn derive(
     }
     let grid = Grid::of(sheet)?;
     let mut drawings = Vec::with_capacity(list.len());
-    let mut by_id = HashMap::new();
+    let mut by_id = HashMap::default();
     let mut keys = BTreeSet::new();
     for (index, value) in list.iter().enumerate() {
         let id = string(&value["id"])?;
@@ -780,7 +780,7 @@ pub(super) fn derive(
         ends.insert(index, meets);
     }
     // The text of the cells ends may meet, read in one pass over the cells.
-    let mut texts: HashMap<(u64, u64), String> = HashMap::new();
+    let mut texts: HashMap<(u64, u64), String> = HashMap::default();
     if !wanted.is_empty() {
         for cell in &sheet.cells {
             let Ok((column, row)) = excel::coordinate(cell.address()) else {
@@ -1141,8 +1141,8 @@ pub(super) fn of(sheet: &LayoutSheet) -> Result<crate::document_body::Diagrams> 
     if sheet.diagrams.is_empty() {
         return Ok(Diagrams::default());
     }
-    let mut drawings: HashMap<&str, usize> = HashMap::new();
-    let mut texts: HashMap<&str, usize> = HashMap::new();
+    let mut drawings: HashMap<&str, usize> = HashMap::default();
+    let mut texts: HashMap<&str, usize> = HashMap::default();
     for (place, element) in sheet.metadata.iter().enumerate() {
         if let Some(reference) = element["ref"].as_str() {
             drawings.insert(reference, place);

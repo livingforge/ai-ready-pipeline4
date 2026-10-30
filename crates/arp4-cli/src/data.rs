@@ -1055,8 +1055,8 @@ pub fn grouped_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Valu
     let mut groups: Vec<Value> = Vec::new();
     // The group of each finding by its fields other than `documents`, and the
     // documents each group lists, looked up rather than compared with every group.
-    let mut by_finding: std::collections::HashMap<String, usize> = Default::default();
-    let mut listed: Vec<std::collections::HashSet<&str>> = Vec::new();
+    let mut by_finding: foldhash::HashMap<String, usize> = Default::default();
+    let mut listed: Vec<foldhash::HashSet<&str>> = Vec::new();
     for warning in warnings {
         let parsed = warning.split_once(": ").and_then(|(document, rest)| {
             serde_json::from_str::<Value>(rest)
@@ -1087,7 +1087,7 @@ pub fn grouped_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Valu
                 let mut group = finding;
                 group["documents"] = json!([document]);
                 groups.push(group);
-                listed.push(std::collections::HashSet::from([document]));
+                listed.push(foldhash::HashSet::from_iter([document]));
             }
         }
     }

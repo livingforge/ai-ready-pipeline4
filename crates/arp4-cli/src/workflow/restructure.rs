@@ -31,7 +31,7 @@ impl Workflow {
         };
         let unresolved = self.unresolved()?;
         // The diagnostics a restructuring deferred, looked up rather than compared with each.
-        let deferred: std::collections::HashSet<String> = unresolved
+        let deferred: foldhash::HashSet<String> = unresolved
             .iter()
             .filter(|entry| entry["code"] == "restructure_deferred")
             .map(|entry| crate::data::value_key(&entry["diagnostic"]))

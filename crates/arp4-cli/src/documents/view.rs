@@ -83,22 +83,20 @@ impl Store {
         content: &Content,
     ) -> Result<BTreeMap<String, Structure>> {
         let (layout, interpretation) = self.interpreted_layout(id, proposal)?;
-        let elements = elements_view(id, proposal, &layout, &interpretation)?.into_value()?;
-        let mut values = HashMap::new();
+        let mut elements = elements_view(id, proposal, &layout, &interpretation)?.into_value()?;
+        // The cells of the extraction by sheet and address, their values read
+        // when asked for.
+        let mut cells = HashMap::default();
         for sheet in &inspected.extraction.sheets {
+            let name = string(&sheet["name"])?;
             for cell in &sheet.cells {
-                values.insert(
-                    (
-                        string(&sheet["name"])?.to_owned(),
-                        cell.address().to_owned(),
-                    ),
-                    cell.value().to_json(),
-                );
+                cells.insert((name, cell.address()), cell);
             }
         }
         let mut structures = BTreeMap::new();
-        for (page_id, page) in elements["pages"].as_object().into_iter().flatten() {
-            let name = string(&page["name"])?;
+        for (page_id, page) in elements["pages"].as_object_mut().into_iter().flatten() {
+            let name = string(&page["name"])?.to_owned();
+            let name = name.as_str();
             let typed = layout.sheet(page_id)?;
             // A cell by the row and column the extraction gives it; none for
             // one an operation inserts.
@@ -115,57 +113,84 @@ impl Store {
                     .cells
                     .get(&(name.to_owned(), at.clone()))
                     .map(|shown| shown.value.clone())
-                    .or_else(|| values.get(&(name.to_owned(), at)).cloned())
+                    .or_else(|| cells.get(&(name, at.as_str())).map(|c| c.value().to_json()))
                     .unwrap_or(Value::Null)
             };
             // The elements of the body, to number those it holds.
-            let body = inspected
+            let mut body = inspected
                 .page_files
                 .get(page_id)
                 .and_then(|file| fs::read_to_string(dir.join(file)).ok())
                 .and_then(|text| parse(&text, false).ok())
                 .unwrap_or(Value::Null);
-            let body = body["elements"].as_array().cloned().unwrap_or_default();
-            let places = |kind: &str| -> Vec<usize> {
-                (0..body.len())
-                    .filter(|i| body[*i].get(kind).is_some())
+            let mut body = match body["elements"].take() {
+                Value::Array(elements) => elements,
+                _ => vec![],
+            };
+            // Where the body holds each kind of element, and its diagrams and
+            // check boxes; the rest of the body goes before the tables are read.
+            let mut places = |kind: &str, keep: bool| -> Vec<(usize, Value)> {
+                body.iter_mut()
+                    .enumerate()
+                    .filter_map(|(i, element)| {
+                        let held = element.get_mut(kind)?;
+                        Some((i, if keep { held.take() } else { Value::Null }))
+                    })
                     .collect()
             };
-            let (table_places, diagram_places, checkbox_places) =
-                (places("table"), places("diagram"), places("checkbox"));
+            let table_places: Vec<usize> =
+                places("table", false).into_iter().map(|(i, _)| i).collect();
+            let (diagram_places, checkbox_places) =
+                (places("diagram", true), places("checkbox", true));
+            drop(body);
             let titles = &typed.fields["block_titles"];
             let mut structure = Structure::default();
-            for element in page["element_metadata"].as_array().into_iter().flatten() {
+            for element in page["element_metadata"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
                 match element["type"].as_str() {
                     Some("table") => {
                         let number = structure.tables.len() + 1;
-                        let meta = Meta::from_value(element.clone())?;
+                        let headings = element["headings"].as_u64().unwrap_or(0) as usize;
+                        // Each cell's ID, role and headers, before the element
+                        // itself goes to be read.
+                        let listed = element["rows"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|row| row["cells"].as_array().into_iter().flatten())
+                            .map(|cell| {
+                                Ok((
+                                    string(&cell["id"])?.to_owned(),
+                                    cell["role"].as_str().unwrap_or("unassigned").to_owned(),
+                                    cell["headers"]
+                                        .as_array()
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|h| address(h.as_str()?))
+                                        .collect::<Vec<_>>(),
+                                ))
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let meta = Meta::from_value(element.take())?;
                         let read: HashMap<String, crate::document_body::CellReading> =
                             crate::document_body::table_reading(&meta, &value_of)?
                                 .into_iter()
                                 .map(|r| (r.id.clone(), r))
                                 .collect();
+                        drop(meta);
                         let mut cells = vec![];
-                        for cell in element["rows"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|row| row["cells"].as_array().into_iter().flatten())
-                        {
-                            let id = string(&cell["id"])?;
-                            let Some(at) = address(id) else {
+                        for (id, role, headers) in listed {
+                            let Some(at) = address(&id) else {
                                 continue;
                             };
-                            let reading = read.get(id);
+                            let reading = read.get(&id);
                             cells.push(CellStructure {
                                 address: at,
-                                role: cell["role"].as_str().unwrap_or("unassigned").to_owned(),
-                                headers: cell["headers"]
-                                    .as_array()
-                                    .into_iter()
-                                    .flatten()
-                                    .filter_map(|h| address(h.as_str()?))
-                                    .collect(),
+                                role,
+                                headers,
                                 shown: reading.is_some(),
                                 heading: reading.is_some_and(|r| r.heading),
                                 key: reading.and_then(|r| r.key.clone()),
@@ -182,7 +207,7 @@ impl Store {
                                 .as_str()
                                 .unwrap_or_default()
                                 .to_owned(),
-                            headings: element["headings"].as_u64().unwrap_or(0) as usize,
+                            headings,
                             cells,
                         });
                     }
@@ -194,8 +219,8 @@ impl Store {
                     _ => {}
                 }
             }
-            for (number, &place) in diagram_places.iter().enumerate() {
-                let diagram = &body[place]["diagram"];
+            for (number, (place, diagram)) in diagram_places.iter().enumerate() {
+                let place = *place;
                 structure.diagrams.push(DiagramStructure {
                     number: number + 1,
                     element: place,
@@ -227,8 +252,8 @@ impl Store {
                         .collect(),
                 });
             }
-            for &place in &checkbox_places {
-                let checkbox = &body[place]["checkbox"];
+            for (place, checkbox) in &checkbox_places {
+                let place = *place;
                 structure.checkboxes.push(CheckboxStructure {
                     element: place,
                     text: plain_text(&checkbox["text"]),

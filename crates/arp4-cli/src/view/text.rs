@@ -43,7 +43,7 @@ pub(super) fn records(document: &Document<'_>, sheet: &Sheet, out: &mut Out) -> 
     if rows.is_empty() {
         return Ok(r#"<p class="notice">文字はありません。</p>"#.to_owned());
     }
-    let cells: std::collections::HashMap<&str, crate::extraction::Cell<'_>> =
+    let cells: foldhash::HashMap<&str, crate::extraction::Cell<'_>> =
         sheet.cells.iter().map(|c| (c.address(), c)).collect();
     let mut html = String::from(r#"<table class="records"><tr><th></th>"#);
     for c in 1..=columns {

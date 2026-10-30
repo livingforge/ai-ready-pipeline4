@@ -2,7 +2,7 @@ use super::*;
 use crate::document_source::encryption::{self, Protection};
 use crate::document_structure::Carrier;
 use crate::rights_management::Unprotected;
-use std::collections::HashSet;
+use foldhash::HashSet;
 
 /// The longest project-relative path of a document record. Windows limits a full path
 /// to 259 characters unless Git and every application enable long paths, so this

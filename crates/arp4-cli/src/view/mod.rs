@@ -17,6 +17,7 @@ mod word;
 
 use crate::{document_source::Source, extraction::Extraction};
 use anyhow::Result;
+use foldhash::HashMap;
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt::Write as _, path::Path, sync::Arc};
 
@@ -69,11 +70,16 @@ pub struct CellStructure {
     pub role: String,
     pub headers: Vec<String>,
     pub shown: bool,
+    // What most cells are not is left out, the page reading it as false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub heading: bool,
     pub key: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub mark: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub category: bool,
     /// `title` or `note` for a text the table holds as its title or a note.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<&'static str>,
     pub nodes: Vec<String>,
 }
@@ -258,9 +264,23 @@ struct Out {
     /// The number of the part being drawn.
     page: usize,
     differences: Vec<Difference>,
+    /// The CSS of the classes `k<n>` cells share, by number.
+    classes: Vec<String>,
+    numbers: HashMap<String, usize>,
 }
 
 impl Out {
+    /// The number of the class `k<n>` with the declarations `css`, which the
+    /// page writes once for every element giving it.
+    fn class(&mut self, css: String) -> usize {
+        if let Some(number) = self.numbers.get(&css) {
+            return *number;
+        }
+        self.classes.push(css.clone());
+        self.numbers.insert(css, self.classes.len() - 1);
+        self.classes.len() - 1
+    }
+
     /// The attributes of an element showing `shown`, at `place` of `section`:
     /// a marked difference is given an anchor, a mark and the original's
     /// value as its title.
@@ -331,7 +351,12 @@ fn font_css(font: &Value, style: &Value) -> String {
         .into_iter()
         .filter_map(Value::as_str)
         .filter(|name| *name != "mixed")
-        .map(|name| format!("'{}'", name.replace(['\'', '\\', '<', '>', '"'], "")))
+        .map(|name| {
+            format!(
+                "'{}'",
+                name.replace(['\'', '\\', '<', '>', '"', '{', '}', ';'], "")
+            )
+        })
         .collect();
     if !names.is_empty() {
         let _ = write!(css, "font-family:{},sans-serif;", names.join(","));

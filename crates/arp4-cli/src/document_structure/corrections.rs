@@ -1,6 +1,6 @@
 use super::grid::{Axes, Cells, Point};
 use super::*;
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 pub(super) fn empty(extraction: &Extraction, extraction_hash: &str) -> Value {
     json!({"schema_version":2,
@@ -416,7 +416,7 @@ pub(super) fn record(
     let inferred: Vec<Value> = typed.iter().map(Element::to_value).collect();
     // The first inferred element of each structure, by its canonical text: an
     // element is looked up, not compared with every inferred element.
-    let mut inferred_structures: HashMap<String, usize> = HashMap::new();
+    let mut inferred_structures: HashMap<String, usize> = HashMap::default();
     for (index, element) in inferred.iter().enumerate() {
         inferred_structures
             .entry(structure_of(element).to_string())
@@ -424,7 +424,7 @@ pub(super) fn record(
     }
     let original_visuals = policy::visuals(extraction)?;
     let sheets = sheets(extraction)?;
-    let mut addresses = HashMap::new();
+    let mut addresses = HashMap::default();
     for element in array(&structure["elements"])? {
         let sheet = string(&element["sheet"])?;
         for cell in array(&element["cells"])? {
@@ -462,7 +462,7 @@ pub(super) fn record(
     }
     let mut visuals = Vec::new();
     // The visuals the extraction shows, by ID: one equal to a visual has its ID.
-    let mut originals: HashMap<&str, Vec<&Value>> = HashMap::new();
+    let mut originals: HashMap<&str, Vec<&Value>> = HashMap::default();
     for original in &original_visuals {
         if let Some(id) = original["id"].as_str() {
             originals.entry(id).or_default().push(original);

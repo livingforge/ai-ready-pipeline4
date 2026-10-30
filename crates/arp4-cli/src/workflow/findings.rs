@@ -213,7 +213,7 @@ impl Workflow {
         let mut list = self.unresolved()?;
         // The first entry of each signature, looked up rather than found by
         // signing every entry again for each one added.
-        let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut at: foldhash::HashMap<String, usize> = foldhash::HashMap::default();
         for (index, entry) in list.iter().enumerate() {
             at.entry(Self::unresolved_signature(entry)).or_insert(index);
         }

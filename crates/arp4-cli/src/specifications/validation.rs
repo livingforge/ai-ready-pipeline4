@@ -1,8 +1,6 @@
 use super::*;
-use std::{
-    cell::OnceCell,
-    collections::{HashMap, HashSet},
-};
+use foldhash::{HashMap, HashSet};
+use std::cell::OnceCell;
 
 pub(super) fn nonempty(value: &str) -> Result<()> {
     ensure!(

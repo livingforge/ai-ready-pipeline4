@@ -5,7 +5,7 @@
 use super::fonts::Palette;
 use super::*;
 use crate::fonts::Color;
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 /// A side of a cell's border: Excel's line style (`thin`, `dashed`, …) and
 /// its colour, `RRGGBB`, none for automatic.
@@ -171,7 +171,7 @@ pub fn drawing_looks(book: &Workbook) -> Result<HashMap<String, DrawingLook>> {
                 .map_or(Paint::Unresolved, color)
         })
     };
-    let mut looks = HashMap::new();
+    let mut looks = HashMap::default();
     for (part, bytes) in &book.parts {
         if !(part.starts_with("xl/drawings/")
             && part.ends_with(".xml")
@@ -241,7 +241,7 @@ pub fn sheet_looks(book: &Workbook) -> Result<BTreeMap<String, SheetLook>> {
         Some(doc) => cell_looks(doc.root_element(), &palette),
         None => vec![],
     });
-    let measures = fit::Styles::read(book)?;
+    let measures = fit::Styles::read(&book.parts)?;
     let mut looks = BTreeMap::new();
     for sheet in &book.sheets {
         let part = string(&sheet["part"])?;
@@ -273,7 +273,7 @@ pub fn blank_sheet_look(book: &Workbook) -> Result<SheetLook> {
     let blank = Document::parse(&text)?;
     sheet_look(
         &blank,
-        &fit::Styles::read(book)?,
+        &fit::Styles::read(&book.parts)?,
         std::sync::Arc::new(formats),
     )
 }
@@ -311,9 +311,9 @@ fn sheet_look(
             column_formats.push((min, max, style));
         }
     }
-    let mut rows = HashMap::new();
-    let mut row_formats = HashMap::new();
-    let mut cells = HashMap::new();
+    let mut rows = HashMap::default();
+    let mut row_formats = HashMap::default();
+    let mut cells = HashMap::default();
     for row in child(root, "sheetData")
         .into_iter()
         .flat_map(|data| data.children().filter(|n| n.has_tag_name((NS, "row"))))

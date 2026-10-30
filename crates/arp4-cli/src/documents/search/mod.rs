@@ -86,11 +86,17 @@ fn signature() -> String {
 /// A passage as stored: JSON, deflate-compressed. A table row repeats its
 /// keys, sheet and headers for every cell, which compresses several times over.
 /// The JSON is compressed whole: written straight into the encoder, it went
-/// through the compressor a few bytes at a time.
-fn pack(passage: &Value) -> Result<Vec<u8>> {
-    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+/// through the compressor a few bytes at a time. One `encoder` packs every
+/// passage, reset after each: making its state anew took longer than packing.
+fn pack(passage: &Value, encoder: &mut Packer) -> Result<Vec<u8>> {
     encoder.write_all(&serde_json::to_vec(passage)?)?;
-    Ok(encoder.finish()?)
+    Ok(encoder.reset(Vec::new())?)
+}
+
+type Packer = flate2::write::DeflateEncoder<Vec<u8>>;
+
+fn packer() -> Packer {
+    flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast())
 }
 
 fn unpack(stored: &[u8]) -> Result<Value> {
@@ -504,7 +510,7 @@ impl Store {
                 }
                 let mut failed = vec![];
                 let mut refreshed = 0;
-                let mut known_formats = HashMap::new();
+                let mut known_formats = HashMap::default();
                 let mut stamps = BTreeMap::new();
                 // BM25 uses corpus-wide frequencies. Refresh the same complete corpus for
                 // every scope so ranking never depends on which folder was searched first.
@@ -527,6 +533,7 @@ impl Store {
                             delete_document(&tx, id)?;
                             let mut repetition_groups = BTreeMap::<(String, String), i64>::new();
                             let mut heading_groups = BTreeMap::<(String, String), i64>::new();
+                            let mut encoder = packer();
                             corpus::build(self, &inspected, |mut passage| {
                                 let formats = store_formats(&tx, &mut known_formats, &mut passage)?;
                                 let title = normalize(string(&passage["title"])?);
@@ -541,16 +548,17 @@ impl Store {
                                     .entry((title.clone(), context.clone()))
                                     .or_insert(next_group);
                                 let identifiers = identifiers(string(&passage["text"])?);
-                                tx.execute("INSERT INTO passages(document,payload,title,body,repetition_group,heading_group,identifiers) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                            params![id, pack(&passage)?, title, body, repetition_group, heading_group, identifiers])?;
+                                // Prepared once for every passage.
+                                tx.prepare_cached("INSERT INTO passages(document,payload,title,body,repetition_group,heading_group,identifiers) VALUES (?1,?2,?3,?4,?5,?6,?7)")?
+                                    .execute(params![id, pack(&passage, &mut encoder)?, title, body, repetition_group, heading_group, identifiers])?;
                                 let passage_id = tx.last_insert_rowid();
-                                tx.execute("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)",
-                            params![passage_id, words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
+                                tx.prepare_cached("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)")?
+                                    .execute(params![passage_id, words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
                                 for (format, cells) in formats {
-                                    tx.execute(
+                                    tx.prepare_cached(
                                         "INSERT INTO passage_formats(passage,format,cells) VALUES (?1,?2,?3)",
-                                        params![passage_id, format, cells],
-                                    )?;
+                                    )?
+                                    .execute(params![passage_id, format, cells])?;
                                 }
                                 Ok(())
                             })?;
@@ -884,5 +892,25 @@ mod performance_tests {
             "revision_hashes_old_ms={:.2} shared_ms={:.2}",
             old[2], new[2]
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passages_packed_by_one_encoder_are_packed_as_by_new_ones() {
+        let passages: Vec<Value> = (0..3)
+            .map(
+                |i| json!({"title":format!("表{i}"),"text":"在庫引当のタイムアウト".repeat(i + 1)}),
+            )
+            .collect();
+        let mut encoder = packer();
+        for passage in &passages {
+            let packed = pack(passage, &mut encoder).unwrap();
+            assert_eq!(packed, pack(passage, &mut packer()).unwrap());
+            assert_eq!(&unpack(&packed).unwrap(), passage);
+        }
     }
 }

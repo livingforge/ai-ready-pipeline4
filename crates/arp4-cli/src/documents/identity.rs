@@ -406,7 +406,7 @@ fn stored_tables(metadata: Vec<Meta>) -> Result<Value> {
         let mut marked = serde_json::Map::new();
         let mut parents = serde_json::Map::new();
         let mut notes = vec![];
-        let mut record_rows = HashMap::new();
+        let mut record_rows = HashMap::default();
         for row in &rows {
             let first = row
                 .cells
@@ -741,7 +741,7 @@ fn inherited_fonts<'e>(
     // The number of the row or column each identity's key names, of the
     // identity a number is last found for: a cell is placed by its address.
     let numbers = |axis: &str, rows: bool| -> HashMap<String, u32> {
-        let mut identities = HashMap::new();
+        let mut identities = HashMap::default();
         for (id, entry) in sheet.axis(axis).iter() {
             if let Some(position) = numbered(&entry.key, rows) {
                 identities.insert(position, id.as_str());
@@ -1323,7 +1323,7 @@ fn formula_keys(
 /// The identity of the row or column (`axis` "rows" or "columns") of the
 /// layout `sheet` with each key: the first in order with it.
 pub(super) fn key_identities(sheet: &LayoutSheet, axis: &str) -> HashMap<String, String> {
-    let mut identities = HashMap::new();
+    let mut identities = HashMap::default();
     for (id, entry) in sheet.axis(axis).iter() {
         identities
             .entry(entry.key.clone())
@@ -1362,7 +1362,7 @@ impl<'a> SheetLookup<'a> {
     pub(super) fn identity(&self, axis: &str, key: &str) -> Option<String> {
         let identities = self.identities.get_or_init(|| {
             ["rows", "columns"].map(|axis| {
-                let mut keys = HashMap::new();
+                let mut keys = HashMap::default();
                 for (id, entry) in self.sheet.axis(axis).iter() {
                     keys.entry(entry.key.as_str()).or_insert(id.as_str());
                 }
@@ -1495,7 +1495,7 @@ pub(super) fn stored_grid(
             .clone();
     }
     // Formula caches are extraction metadata, not editable body values.
-    let caches: std::collections::HashSet<(&str, &str)> = sheet["formulas"]
+    let caches: foldhash::HashSet<(&str, &str)> = sheet["formulas"]
         .as_object()
         .context("layout formulas missing")?
         .values()

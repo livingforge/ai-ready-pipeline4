@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use foldhash::{HashMap, HashSet};
 
 impl Store {
     pub fn inspect(&self, dir: &Path, require_reviewed: bool) -> Result<Inspection> {
@@ -416,7 +416,7 @@ struct CellIndex<'a> {
 
 impl<'a> CellIndex<'a> {
     fn new(extraction: &'a Extraction) -> Result<Self> {
-        let mut names: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
+        let mut names: HashMap<&str, Vec<(u32, u32)>> = HashMap::default();
         for (si, sheet) in extraction.sheets.iter().enumerate() {
             let cells = names.entry(string(&sheet["name"])?).or_default();
             cells.extend((0..sheet.cells.len() as u32).map(|ci| (si as u32, ci)));
@@ -570,7 +570,7 @@ impl Store {
         let mut fields = ContentFields::new(entries.len());
         // The page, block and field of each entry given a value that may
         // repeat another's.
-        let mut keyed = HashSet::new();
+        let mut keyed = HashSet::default();
         let mut kept_pages = BTreeMap::new();
         let mut expected = BTreeMap::new();
         let mut page_ids = BTreeSet::new();
@@ -840,11 +840,11 @@ fn validate_coverage(
     // cell.
     let mut named = 0;
     let mut named_fields = 0;
-    let mut actual = HashSet::new();
-    let mut strays = HashSet::new();
-    let mut keyed = HashSet::new();
+    let mut actual = HashSet::default();
+    let mut strays = HashSet::default();
+    let mut keyed = HashSet::default();
     // New table column names by sheet and cell, checked for duplicates below.
-    let mut header_edits = HashMap::new();
+    let mut header_edits = HashMap::default();
     // Whether each cell is covered, by its place in `cells`.
     let mut covered: HashMap<&str, Vec<bool>> = cells
         .names
@@ -857,7 +857,7 @@ fn validate_coverage(
             .expect("a covered cell's sheet is indexed")[place];
         !std::mem::replace(bit, true)
     };
-    let mut destinations = HashSet::new();
+    let mut destinations = HashSet::default();
     // Written positions are checked against the merges as they stand after
     // the operations: an insertion inside a merge grows it over the new cells.
     let mut merges = BTreeMap::new();

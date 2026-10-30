@@ -4,8 +4,8 @@
 //! cell names its group by number, by the numbers of its row and column
 //! identities rather than by its ID.
 use super::{Group, cell_axes, cell_id, plain};
+use foldhash::HashMap;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The identities of rows or of columns, each numbered in order of first use.

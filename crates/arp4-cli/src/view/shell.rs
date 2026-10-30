@@ -28,8 +28,9 @@ pub(super) fn shell(
     let mut html = String::new();
     let _ = write!(
         html,
-        r#"<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{}</title><style>:root{{--accent:{accent}}}{STYLE}</style></head><body data-layout="{name}"><header class="bar"><span class="name" title="{}">{}</span>"#,
+        r#"<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{}</title><style>:root{{--accent:{accent}}}{STYLE}{}</style></head><body data-layout="{name}"><header class="bar"><span class="name" title="{}">{}</span>"#,
         escape(file),
+        classes(out),
         escape(document.source),
         escape(file),
     );
@@ -183,6 +184,15 @@ pub(super) fn shell(
 
 /// The values of the rows and columns operations insert on the sheet of
 /// `section`, listed under it.
+/// The CSS of the classes the cells of the page share.
+fn classes(out: &Out) -> String {
+    let mut css = String::new();
+    for (number, declarations) in out.classes.iter().enumerate() {
+        let _ = write!(css, ".grid .k{number}{{{declarations}}}");
+    }
+    css
+}
+
 fn additions(html: &mut String, document: &Document<'_>, section: &Section) {
     let additions: Vec<&Addition> = document
         .content

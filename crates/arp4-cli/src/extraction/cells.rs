@@ -7,10 +7,10 @@
 //! which few cells have, are listed apart. A [`Cell`] reads a cell from them.
 use super::CellKind;
 use anyhow::{Context, Result, bail};
+use foldhash::HashMap;
 use serde::{Serialize, Serializer};
 use serde_json::{Number, Value};
-use std::collections::HashMap;
-use std::hash::{BuildHasher, RandomState};
+use std::hash::BuildHasher;
 
 /// A text in the buffer of a sheet's cells.
 #[derive(Clone, Copy, Debug)]
@@ -551,7 +551,7 @@ pub struct CellsBuilder {
     cells: Cells,
     /// The string values added so far, by the hash of their text.
     strings: HashMap<u64, Span>,
-    hasher: RandomState,
+    hasher: foldhash::fast::RandomState,
     number_formats: HashMap<Box<str>, u32>,
 }
 

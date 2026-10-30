@@ -132,7 +132,7 @@ fn marks(cells: &[&Cell<'_>]) -> HashSet<(u32, u32)> {
             open.push((level, (k + 1 == last && !record) || c.bottom > c.top));
         }
     }
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut counts: HashMap<&str, usize> = HashMap::default();
     for c in &cutting {
         *counts.entry(c.text().trim()).or_default() += 1;
     }
@@ -171,7 +171,7 @@ fn side_notes(cells: &[&Cell<'_>], headed: impl Fn(&Cell<'_>) -> bool) -> HashSe
     }
     // The rightmost cell of each column, to find what stands beyond the
     // cells of all other columns.
-    let mut rightmost: HashMap<u32, u32> = HashMap::new();
+    let mut rightmost: HashMap<u32, u32> = HashMap::default();
     for c in cells {
         let r = rightmost.entry(c.left).or_default();
         *r = (*r).max(c.right);
@@ -200,7 +200,7 @@ fn side_notes(cells: &[&Cell<'_>], headed: impl Fn(&Cell<'_>) -> bool) -> HashSe
         written * 2 < rows.len()
     });
     if !sparse {
-        return HashSet::new();
+        return HashSet::default();
     }
     beyond.iter().map(|c| (c.top, c.left)).collect()
 }
@@ -401,7 +401,7 @@ fn grouping(column: &[&Cell<'_>], names: &[&Cell<'_>], tree: &Tree) -> bool {
         return false;
     }
     // Each run of rows under the same label, by row.
-    let mut runs: HashMap<u32, usize> = HashMap::new();
+    let mut runs: HashMap<u32, usize> = HashMap::default();
     let mut run = 0;
     for y in first..=last {
         if y > first && text(y) != text(y - 1) {
@@ -544,7 +544,7 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
         forms
     });
     let in_parts = forms.iter().all(|f| matches!(f, Numbering::Parts(_)));
-    let mut depths: HashMap<u32, usize> = HashMap::new();
+    let mut depths: HashMap<u32, usize> = HashMap::default();
     let mut depth = 0;
     for &y in &rows {
         if let Some(x) = numbered
@@ -569,8 +569,8 @@ fn tree(names: &[&Cell<'_>], spread: usize) -> Option<Tree> {
     };
     let mut open: Vec<usize> = vec![];
     let mut ancestors: Vec<Vec<usize>> = vec![];
-    let mut parents_of_later: HashSet<usize> = HashSet::new();
-    let mut parents: HashSet<usize> = HashSet::new();
+    let mut parents_of_later: HashSet<usize> = HashSet::default();
+    let mut parents: HashSet<usize> = HashSet::default();
     for (k, c) in names.iter().enumerate() {
         while open
             .last()
@@ -781,11 +781,11 @@ pub(super) fn outline(
         PATHS.map(|path| match path {
             Path::Whole => {
                 let tree = tree(&named, 1)?;
-                Some((named.clone(), None, None, vec![], HashSet::new(), tree))
+                Some((named.clone(), None, None, vec![], HashSet::default(), tree))
             }
             Path::Spanned => {
                 let (names, span, key, groups, tree) = spanned()?;
-                Some((names, Some(span), key, groups, HashSet::new(), tree))
+                Some((names, Some(span), key, groups, HashSet::default(), tree))
             }
             Path::Noted => {
                 let tree = noted()?;
@@ -908,7 +908,7 @@ pub(super) fn outline(
         let leaves = (0..names.len())
             .filter(|k| !tree.parents.contains(k))
             .count();
-        let mut described: HashMap<u32, HashSet<usize>> = HashMap::new();
+        let mut described: HashMap<u32, HashSet<usize>> = HashMap::default();
         for c in &fields {
             if let Some(k) = row_name(c.top).filter(|k| !tree.parents.contains(k)) {
                 described.entry(c.left).or_default().insert(k);
@@ -1028,7 +1028,7 @@ pub(super) fn outline(
                         .join(" ")
                 })
                 .collect();
-            let mut depths: HashMap<&str, HashSet<usize>> = HashMap::new();
+            let mut depths: HashMap<&str, HashSet<usize>> = HashMap::default();
             for (k, heading) in over.iter().enumerate() {
                 depths
                     .entry(heading)

@@ -1,6 +1,6 @@
 //! Agent-facing presentation only. Persisted evidence never passes through here.
+use foldhash::HashMap;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
 
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 const ITEM_BYTES: usize = 2048;
@@ -95,7 +95,7 @@ impl BatchSizes {
             query_total: 0,
             by_hits: Default::default(),
             tables,
-            refers: HashMap::new(),
+            refers: HashMap::default(),
         };
         for (index, query) in value["queries"]
             .as_array_mut()
@@ -857,7 +857,7 @@ mod tests {
     // The fitting as it was done before the lengths were kept: the whole batch
     // written out again after each dropped hit. Kept as the reference.
     fn scanned_fit(output: &Output, mut value: Value) -> Result<Value, Value> {
-        use std::collections::HashSet;
+        use foldhash::HashSet;
         let this = output;
         if this.full {
             return Ok(value);

@@ -512,8 +512,8 @@ pub(super) fn build(
         // table repeating its header every few rows chains each repeat to
         // the one before, so reading the chain for every cell grows with
         // the cells times the repeats.
-        let mut heads: HashMap<Vec<&str>, std::rc::Rc<Heads<'_>>> = HashMap::new();
-        let mut fields: HashMap<&str, (BTreeSet<&str>, Option<Value>)> = HashMap::new();
+        let mut heads: HashMap<Vec<&str>, std::rc::Rc<Heads<'_>>> = HashMap::default();
+        let mut fields: HashMap<&str, (BTreeSet<&str>, Option<Value>)> = HashMap::default();
         for (row, mut members) in rows {
             members.sort_by_key(|(column, _)| *column);
             // Headers within the row are values of the row; they head no column.

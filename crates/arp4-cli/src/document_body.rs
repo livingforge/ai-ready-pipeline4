@@ -7,10 +7,11 @@
 use crate::data::{YamlNode, YamlReader, array, string};
 use crate::documents::{Description, Meta, MetaCell};
 use anyhow::{Context, Result, bail, ensure};
+use foldhash::HashMap;
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 mod diagrams;
@@ -153,7 +154,7 @@ impl<'a> Table<'a> {
                 _ => bail!("a table's title and notes follow its records, the title first"),
             }
         }
-        let mut index = HashMap::new();
+        let mut index = HashMap::default();
         for (i, row) in rows.iter().enumerate() {
             if let Some(id) = row["id"].as_str() {
                 index.insert(id, i);
@@ -163,14 +164,14 @@ impl<'a> Table<'a> {
             }
         }
         let mut categories = vec![];
-        let mut named = HashMap::new();
+        let mut named = HashMap::default();
         let mut categorized = BTreeSet::new();
         if let Some(map) = element.get("categories") {
             let map = map.as_object().context("table categories must be a map")?;
             // The cells by ID, made only for a table with categories: a large
             // table has a cell for each cell of its sheet, and a layout read
             // back gives each table its categories, none or some.
-            let mut cells = HashMap::new();
+            let mut cells = HashMap::default();
             if !map.is_empty() {
                 for (i, row) in rows.iter().enumerate() {
                     for (j, cell) in row.cells.iter().enumerate() {
@@ -337,7 +338,7 @@ impl<'a> Table<'a> {
     /// The place of each cell whose value a heading takes, by its ID: the
     /// cells the `label` of a cell or the table's `labels` name.
     fn label_places(&self) -> Result<HashMap<&'a str, (usize, usize)>> {
-        let mut named: std::collections::HashSet<&str> = self.element["labels"]
+        let mut named: foldhash::HashSet<&str> = self.element["labels"]
             .as_object()
             .into_iter()
             .flatten()
@@ -346,7 +347,7 @@ impl<'a> Table<'a> {
         for row in self.rows {
             named.extend(row.cells.iter().filter_map(|cell| cell["label"].as_str()));
         }
-        let mut places = HashMap::with_capacity(named.len());
+        let mut places = HashMap::with_capacity_and_hasher(named.len(), Default::default());
         for (i, row) in self.rows.iter().enumerate() {
             for (j, cell) in row.cells.iter().enumerate() {
                 let id = cell.id()?;
@@ -382,7 +383,7 @@ impl<'a> Table<'a> {
                 .as_str()
                 .or_else(|| self.element["labels"][column].as_str()))
         };
-        let mut texts: HashMap<Option<&str>, Option<String>> = HashMap::new();
+        let mut texts: HashMap<Option<&str>, Option<String>> = HashMap::default();
         // Whether a column's cells take a heading's text, and whether one of
         // them names a member of a node.
         let mut headed: BTreeSet<&str> = BTreeSet::new();
@@ -404,7 +405,7 @@ impl<'a> Table<'a> {
         }
         // The key of the cells of a column under a heading, made once for
         // all of them: a long table has many records.
-        let mut made: HashMap<(Option<&'a str>, &'a str, bool), Rc<str>> = HashMap::new();
+        let mut made: HashMap<(Option<&'a str>, &'a str, bool), Rc<str>> = HashMap::default();
         let mut key_of = |cell: &'a MetaCell, qualified: bool| -> Result<Rc<str>> {
             let column = cell.column()?;
             let head = heading(cell)?;
@@ -424,7 +425,7 @@ impl<'a> Table<'a> {
         loop {
             let mut clashing = BTreeSet::new();
             for record in self.headings..self.records {
-                let mut seen: HashMap<Rc<str>, &str> = HashMap::new();
+                let mut seen: HashMap<Rc<str>, &str> = HashMap::default();
                 for cell in self.cells(record)?.iter().filter(|c| keyed(c)) {
                     let column = cell.column()?;
                     let k = key_of(cell, qualified.contains(column))?;
@@ -471,7 +472,7 @@ impl<'a> Table<'a> {
             .enumerate()
             .filter_map(|(i, c)| Some((c["id"].as_str()?, i)))
             .collect();
-        let mut first: HashMap<&str, usize> = HashMap::new();
+        let mut first: HashMap<&str, usize> = HashMap::default();
         for record in self.headings..self.records {
             for (j, cell) in self.cells(record)?.iter().enumerate() {
                 if !keyed(cell) {
@@ -1891,7 +1892,7 @@ pub(crate) fn read_each_element<'a>(
         );
         let mut place = 0;
         // The values of the elements of diagrams read, which come in their places.
-        let mut pending: HashMap<usize, Value> = HashMap::new();
+        let mut pending: HashMap<usize, Value> = HashMap::default();
         let placed = |place: &mut usize,
                       pending: &mut HashMap<usize, Value>,
                       visit: &mut dyn FnMut(Item<'a>, Value) -> Result<()>|
@@ -2207,7 +2208,7 @@ struct CellsBody<'a> {
     values: Values<'a>,
     /// The keys in the order they are written first.
     listed: Vec<String>,
-    order: std::collections::HashSet<String>,
+    order: foldhash::HashSet<String>,
     fills: Fills,
 }
 

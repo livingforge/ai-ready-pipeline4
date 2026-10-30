@@ -7,8 +7,9 @@ use super::drawings::{Defaults, Rect};
 use super::*;
 use crate::excel::{DrawingLook, Paint, SheetLook, Workbook, column_name, coordinate};
 use crate::extraction::{Cell, CellKind, Sheet};
+use foldhash::HashMap;
 use serde_json::json;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The width of the row numbers and the height of the column letters.
 const HEAD_W: f64 = 40.0;
@@ -174,7 +175,7 @@ fn grid(
     let (columns, rows) = ((columns + 1).min(16_384), (rows + 1).min(1_048_576));
     let lines = Lines::new(look, columns, rows);
     let (width, height) = (lines.x(columns + 1), lines.y(rows + 1));
-    let mut merged: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut merged: HashMap<(u32, u32), usize> = HashMap::default();
     for (index, merge) in merges.iter().enumerate() {
         for r in merge.r0..=merge.r1.min(rows) {
             for c in merge.c0..=merge.c1.min(columns) {
@@ -277,7 +278,7 @@ fn grid(
         }
     }
     // Borders, a merged range's only on its edges.
-    let mut borders = String::new();
+    let mut rules = Rules::default();
     for &(c, r) in &places {
         let Some(format) = look.cell(c, r) else {
             continue;
@@ -294,10 +295,11 @@ fn grid(
             if let Some(side) = side
                 && edge
             {
-                border(&mut borders, side, line);
+                rules.add(side, line);
             }
         }
     }
+    let borders = rules.draw();
     if !borders.is_empty() {
         let _ = write!(
             html,
@@ -383,12 +385,10 @@ fn grid(
             Some("center" | "justify" | "distributed") => "center",
             _ => "flex-end",
         };
+        // The look many cells share is a class of the page; the place is the
+        // cell's own.
         let mut style = format!(
-            "left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px;justify-content:{justify};align-items:{align};text-align:{};",
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
+            "justify-content:{justify};align-items:{align};text-align:{};",
             match horizontal {
                 "center" | "centerContinuous" => "center",
                 "right" => "right",
@@ -408,8 +408,13 @@ fn grid(
         ));
         let _ = write!(
             html,
-            r#"<div class="c{}" style="{style}"{attributes}><span>{}</span></div>"#,
+            r#"<div class="c k{}{}" style="left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px"{attributes}><span>{}</span></div>"#,
+            out.class(style),
             if format.wrap { " w" } else { "" },
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
             escape(&text)
         );
     }
@@ -530,6 +535,61 @@ fn display(cell: Option<Cell<'_>>, shown: Option<&Shown>, date1904: bool) -> (St
     }
 }
 
+/// The sides of cells' borders, gathered by the line they lie on and how
+/// they are drawn, so that an edge two cells share is drawn once and the
+/// sides of a run of cells along one line are one line.
+#[derive(Default)]
+struct Rules<'a> {
+    /// Each way of drawing a side, in the order the sheet first uses it.
+    looks: Vec<&'a crate::excel::BorderSide>,
+    /// The spans from and to along each line: by the look, whether the
+    /// line is vertical, and where it stands across, in hundredths of a pixel.
+    spans: BTreeMap<(usize, bool, i64), Vec<(f64, f64)>>,
+}
+
+impl<'a> Rules<'a> {
+    fn add(&mut self, side: &'a crate::excel::BorderSide, (x0, y0, x1, y1): (f64, f64, f64, f64)) {
+        let look = match self.looks.iter().position(|l| *l == side) {
+            Some(look) => look,
+            None => {
+                self.looks.push(side);
+                self.looks.len() - 1
+            }
+        };
+        let vertical = (x0 - x1).abs() < 0.01;
+        let (across, from, to) = if vertical { (x0, y0, y1) } else { (y0, x0, x1) };
+        self.spans
+            .entry((look, vertical, (across * 100.0).round() as i64))
+            .or_default()
+            .push((from.min(to), from.max(to)));
+    }
+
+    /// The SVG lines of the spans, those meeting or overlapping joined.
+    fn draw(mut self) -> String {
+        let mut svg = String::new();
+        for ((look, vertical, across), spans) in &mut self.spans {
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+            let across = *across as f64 / 100.0;
+            let mut joined: Vec<(f64, f64)> = vec![];
+            for &(from, to) in spans.iter() {
+                match joined.last_mut() {
+                    Some(last) if from <= last.1 + 0.01 => last.1 = last.1.max(to),
+                    _ => joined.push((from, to)),
+                }
+            }
+            for (from, to) in joined {
+                let line = if *vertical {
+                    (across, from, across, to)
+                } else {
+                    (from, across, to, across)
+                };
+                border(&mut svg, self.looks[*look], line);
+            }
+        }
+        svg
+    }
+}
+
 /// Draws a side of a cell's border along `line` (x0, y0, x1, y1).
 fn border(svg: &mut String, side: &crate::excel::BorderSide, line: (f64, f64, f64, f64)) {
     let color = side
@@ -647,6 +707,36 @@ mod tests {
         assert_eq!((r.c0, r.r0, r.c1, r.r1), (1, 1, 3, 5));
         let one = range("$B$2").unwrap();
         assert_eq!((one.c0, one.r0, one.c1, one.r1), (2, 2, 2, 2));
+    }
+
+    #[test]
+    fn borders_cells_share_and_run_along_are_one_line() {
+        let thin = crate::excel::BorderSide {
+            style: "thin".into(),
+            color: None,
+        };
+        let thick = crate::excel::BorderSide {
+            style: "thick".into(),
+            color: None,
+        };
+        let mut rules = Rules::default();
+        // The right of A1 and the left of B1, then the rights of A2 and A3.
+        rules.add(&thin, (50.0, 0.0, 50.0, 20.0));
+        rules.add(&thin, (50.0, 0.0, 50.0, 20.0));
+        rules.add(&thin, (50.0, 20.0, 50.0, 40.0));
+        rules.add(&thin, (50.0, 40.0, 50.0, 60.0));
+        // Apart from them: a thick side on the same line, and a thin one
+        // further down past a gap.
+        rules.add(&thick, (50.0, 60.0, 50.0, 80.0));
+        rules.add(&thin, (50.0, 100.0, 50.0, 120.0));
+        let svg = rules.draw();
+        assert_eq!(svg.matches("<line").count(), 3, "{svg}");
+        assert!(
+            svg.contains(r#"x1="49.5" y1="-0.5" x2="49.5" y2="59.5""#),
+            "{svg}"
+        );
+        assert!(svg.contains(r#"y1="99.5" x2="49.5" y2="119.5""#), "{svg}");
+        assert!(svg.contains(r#"stroke-width="3""#), "{svg}");
     }
 
     #[test]

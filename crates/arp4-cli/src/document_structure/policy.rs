@@ -92,7 +92,7 @@ pub fn visuals(extraction: &Extraction) -> Result<Vec<Value>> {
         }
     }
     // The first asset of each path, for the OCR of each image.
-    let mut assets_by_path: HashMap<&str, &Value> = HashMap::new();
+    let mut assets_by_path: HashMap<&str, &Value> = HashMap::default();
     for asset in extraction["assets"].as_array().into_iter().flatten() {
         if let Some(path) = asset["path"].as_str() {
             assets_by_path.entry(path).or_insert(asset);
@@ -155,13 +155,13 @@ pub fn validate_visuals(extraction: &Extraction, value: &Value) -> Result<Vec<Va
     // The visuals and the first region of each ID, looked up rather than
     // scanned for each visual and its evidence. The visuals the extraction
     // shows have IDs that are strings.
-    let mut by_id: HashMap<&str, Vec<&Value>> = HashMap::new();
+    let mut by_id: HashMap<&str, Vec<&Value>> = HashMap::default();
     for v in actual {
         if let Some(id) = v["id"].as_str() {
             by_id.entry(id).or_default().push(v);
         }
     }
-    let mut regions: HashMap<&str, &Value> = HashMap::new();
+    let mut regions: HashMap<&str, &Value> = HashMap::default();
     for r in value["regions"].as_array().into_iter().flatten() {
         if let Some(id) = r["id"].as_str() {
             regions.entry(id).or_insert(r);

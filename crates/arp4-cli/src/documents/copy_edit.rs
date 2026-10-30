@@ -166,7 +166,7 @@ impl Store {
             return Err(Rejection(json!({"code":"operation_id_conflict","message":format!("operation {op_id} is already recorded with other settings; choose another --id, or omit --id to have one generated"),"recorded":existing})).into());
         }
         // The content's values and formulas of the sheet, by place.
-        let mut values: HashMap<(String, String, String), Value> = HashMap::new();
+        let mut values: HashMap<(String, String, String), Value> = HashMap::default();
         for (entry_index, entry) in inspected.entries().enumerate() {
             if entry.page()? != page {
                 continue;

@@ -8,7 +8,8 @@
 use super::*;
 use crate::excel::xml_attr;
 use crate::extraction::Fields;
-use std::{collections::HashMap, ops::Range};
+use foldhash::HashMap;
+use std::ops::Range;
 
 const SLIDE_KINDS: &[&str] = &[
     "insert_slide",
@@ -773,8 +774,8 @@ impl Reached {
     fn of(package: &Package<'_>) -> Result<Self> {
         let mut reached = Self {
             parts: BTreeSet::new(),
-            targets: HashMap::new(),
-            sources: HashMap::new(),
+            targets: HashMap::default(),
+            sources: HashMap::default(),
         };
         let mut queue = vec![String::new()];
         while let Some(part) = queue.pop() {

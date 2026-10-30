@@ -93,8 +93,7 @@ impl Workflow {
     pub(super) fn compact_payload(&self, mut value: Value) -> Result<Value> {
         // The reference of each digest, looked up rather than found by going
         // through every reference for each identity of the payload.
-        let mut references: std::collections::HashMap<&str, &str> =
-            std::collections::HashMap::new();
+        let mut references: foldhash::HashMap<&str, &str> = foldhash::HashMap::default();
         for (reference, digest) in &self.state.transport_refs {
             references
                 .entry(digest.as_str())

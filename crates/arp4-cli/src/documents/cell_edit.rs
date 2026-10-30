@@ -187,7 +187,7 @@ pub(super) fn shift_values(
     let renames = identity::formula_renames(before, after, page_id)?;
     // The cached results of formulas, at the places of their cells, are not
     // the content's: a deleted one goes with its formula.
-    let caches: std::collections::HashSet<(&str, &str)> = before["formulas"]
+    let caches: foldhash::HashSet<(&str, &str)> = before["formulas"]
         .as_object()
         .context("layout formulas missing")?
         .values()

@@ -21,9 +21,10 @@ use crate::{
     specifications::{self as spec, Input, Model, Source},
 };
 use anyhow::{Context, Result, ensure};
+use foldhash::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROMPT: &str = include_str!("../../../../surface/prompts/semantic.md");
 pub const REVIEW_PROMPT: &str = include_str!("../../../../surface/prompts/semantic-review.md");

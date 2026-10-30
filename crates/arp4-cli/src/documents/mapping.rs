@@ -1,9 +1,6 @@
 use super::*;
-use std::{
-    borrow::Cow,
-    collections::{HashSet, hash_map},
-    fmt::Write as _,
-};
+use foldhash::HashSet;
+use std::{borrow::Cow, collections::hash_map, fmt::Write as _};
 
 /// The complete mapping entries of an inspection, in order. The default
 /// entries of an extraction, one or two for every cell, are kept as places in
@@ -537,7 +534,7 @@ pub(super) fn default_entries(extraction: &Extraction, more: usize) -> Result<En
             })
         };
         // The names of the rows of the cells, each written once.
-        let mut rows: HashMap<u32, (u32, u32)> = HashMap::new();
+        let mut rows: HashMap<u32, (u32, u32)> = HashMap::default();
         let computed_ranges = excel::ComputedRanges::new(&sheet.fields)?;
         let merges = excel::Merges::new(&sheet["merges"])?;
         let cells = &sheet.cells;
@@ -600,7 +597,7 @@ pub(super) fn default_entries(extraction: &Extraction, more: usize) -> Result<En
                 ));
             }
         }
-        let mut shapes = HashSet::new();
+        let mut shapes = HashSet::default();
         let mut unique_shapes = true;
         for (item, drawing) in sheet["drawings"]
             .as_array()
@@ -756,7 +753,7 @@ pub(super) fn shift_entries(
     }
     let mut dropped = vec![false; entries.len()];
     // The operations on each sheet whose cells they shift, by its number.
-    let mut sheets: HashMap<u32, Option<Vec<excel::StructuralOperation>>> = HashMap::new();
+    let mut sheets: HashMap<u32, Option<Vec<excel::StructuralOperation>>> = HashMap::default();
     for (at, gone) in dropped.iter_mut().enumerate() {
         let Slot::Default(d) = entries.order[at] else {
             continue;

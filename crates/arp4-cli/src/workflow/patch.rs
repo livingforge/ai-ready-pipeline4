@@ -3,8 +3,9 @@ use super::extraction::ShownTables;
 use super::{arr, obj, s};
 use crate::data::hash;
 use anyhow::{Context, Result, ensure};
+use foldhash::HashMap;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 const FIELDS: &[&str] = &[
     "name",
@@ -139,7 +140,7 @@ impl<'a> Items<'a> {
         let prefix = format!("{}/", s(&self.base["document"])?);
         let mut stored = BTreeMap::new();
         let mut local = BTreeMap::new();
-        let mut sources = HashMap::<String, Vec<String>>::new();
+        let mut sources = HashMap::<String, Vec<String>>::default();
         for (key, item) in &self.items {
             let targets = links(item)?;
             let targets_local: BTreeSet<String> = targets
@@ -210,7 +211,7 @@ impl Base {
     pub fn new(value: Value) -> Self {
         let clean = (|| -> Result<HashMap<String, usize>> {
             let items = value["items"].as_array().context("items required")?;
-            let mut positions = HashMap::new();
+            let mut positions = HashMap::default();
             for (i, item) in items.iter().enumerate() {
                 ensure!(
                     positions.insert(s(&item["key"])?.to_owned(), i).is_none(),
@@ -327,7 +328,7 @@ pub fn apply(base: &Value, scope: &Value, patch: &Value) -> Result<Value> {
     let mut result = base.clone();
     let items = result["items"].as_array_mut().context("items required")?;
     // The position of each item by key; keys are unique and no edit changes one.
-    let mut known = HashMap::new();
+    let mut known = HashMap::default();
     for (i, item) in items.iter().enumerate() {
         ensure!(
             known.insert(s(&item["key"])?.to_owned(), i).is_none(),
@@ -498,7 +499,7 @@ impl<'a> Evidence<'a> {
         let prefix = format!("{}/", s(&base["document"])?);
         let mut sheets = Vec::<Vec<usize>>::new();
         let mut sheet_of = Vec::with_capacity(tables.len());
-        let mut named = HashMap::new();
+        let mut named = HashMap::default();
         for (i, table) in tables.iter().enumerate() {
             let key = crate::data::value_key(&json!([table["document"], table["sheet"]]));
             let sheet = *named.entry(key).or_insert_with(|| {
@@ -509,7 +510,7 @@ impl<'a> Evidence<'a> {
             sheet_of.push(sheet);
         }
         let mut table_rows = vec![Vec::new(); tables.len()];
-        let mut ref_rows = HashMap::<&str, Vec<usize>>::new();
+        let mut ref_rows = HashMap::<&str, Vec<usize>>::default();
         for (i, row) in rows.iter().enumerate() {
             // Every row names a reference and a table index, checked above; only
             // the last row of a reference is known to name a table of the packet.
@@ -554,7 +555,7 @@ impl<'a> Evidence<'a> {
     fn exclusions(&self, included: &BTreeSet<String>) -> Result<Vec<Value>> {
         if self.exclusions.get().is_none() {
             let all = optional(&self.base["exclusions"])?;
-            let mut citing = HashMap::<String, Vec<usize>>::new();
+            let mut citing = HashMap::<String, Vec<usize>>::default();
             for (i, e) in all.iter().enumerate() {
                 for r in refs(&json!({"evidence":[e["evidence"]]}))? {
                     let local = r.strip_prefix(&self.prefix).unwrap_or(&r).to_owned();

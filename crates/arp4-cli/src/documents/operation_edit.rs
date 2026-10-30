@@ -937,7 +937,7 @@ fn reapply(
     let mut count = 0;
     // The formula cells of each sheet by address, and what the element IDs
     // of each page name, read once for all the edits rather than for each.
-    let mut formulas: HashMap<(&str, &str), Cell<'_>> = HashMap::new();
+    let mut formulas: HashMap<(&str, &str), Cell<'_>> = HashMap::default();
     for sheet in &extraction.sheets {
         let name = sheet["name"].as_str().unwrap_or_default();
         for cell in &sheet.cells {
@@ -946,7 +946,7 @@ fn reapply(
             }
         }
     }
-    let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::new();
+    let mut lookups: HashMap<&str, identity::SheetLookup<'_>> = HashMap::default();
     for edit in records
         .as_array()
         .into_iter()

@@ -6,8 +6,9 @@
 use super::*;
 use crate::excel::coordinate;
 use crate::extraction::Sheet;
+use foldhash::HashMap;
 use roxmltree::Document as Xml;
-use std::collections::{BTreeMap as Map, HashMap};
+use std::collections::BTreeMap as Map;
 
 const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
