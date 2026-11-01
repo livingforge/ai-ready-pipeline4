@@ -382,7 +382,10 @@ pub(super) fn rebase(
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        if journal["review"]["content_hash"] == content_hash(&result) {
+        // Without a review recorded, the content is not hashed to compare.
+        if journal["review"]["content_hash"].is_string()
+            && journal["review"]["content_hash"] == content_hash(&result)
+        {
             result["review"] = journal["review"].clone();
         }
     }

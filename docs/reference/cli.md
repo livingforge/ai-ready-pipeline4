@@ -53,7 +53,7 @@ check/statusは各文書・候補の検査結果を `.arp/cache/status/rows.json
 
 構造解釈の機械推定（表の推定）は抽出結果だけで決まるため、`.arp/cache/structure/` に抽出結果のハッシュ・文書ID・原本・プログラムごとに保存し、status・check・編集・検索索引の更新で再利用する（新しい16件まで）。statusの行の `structure_ready`・`structure_conflicts`・`structure_outdated` の元になる構造解釈の再生結果（準備完了か・衝突の件数・要素の要約）も、`.arp/cache/structure-status/` に修正記録・抽出結果・行列の識別ID・原本・プログラムごとに保存し、値や行列の編集の後のように、それらが同じ間は再利用する（新しい64件まで）。画像領域を持つ修正記録は画像を読むため毎回再生する。`--out` を付けない `spec check` は、モデルのファイルがプロジェクト（上位のフォルダに `.arp/config.yml` がある）の中にあれば、検証結果を `.arp/cache/spec-check/` に入力・モデルのファイルとプログラムのハッシュごとに保存し、ページ送りで再利用する（新しい8件まで）。プロジェクトの外では毎回検証する。
 
-文書の検査に成功すると、その管理ファイルの組を `.arp/cache/inspection/` に全ファイルのハッシュ・設定・プログラムごとに記録する（新しい64件まで）。status・check・`structure-read`・`elements-read`・`extraction-read`・検索索引の更新・diff・record・review・adoptは、同じファイルを読み直す間、本文の値・対応表・範囲の検証と本文ページの読み込みを省き、記録した未解決の対応表の件数・本文と抽出結果の違い・ページの一覧・構造の要約を使う。文書の置き場所とID、原本のハッシュ、レビューは毎回確かめる。編集・export・applyは毎回すべてを検証する。`.arp/cache/` の記録は失われても作り直すため、保存時にディスクへの書き込み完了を待たない。
+文書の検査に成功すると、その管理ファイルの組を `.arp/cache/inspection/` に全ファイルのハッシュ・設定・プログラムごとに記録する（新しい64件まで）。status・check・`structure-read`・`elements-read`・`extraction-read`・検索索引の更新・diff・record・review・adoptは、同じファイルを読み直す間、本文の値・対応表・範囲の検証と本文ページの読み込みを省き、記録した未解決の対応表の件数・本文と抽出結果の違い・ページの一覧・構造の要約を使う。本文を読む view・編集・export・apply も、同じファイルなら本文ページを読むだけで、抽出結果の形式・対応表・範囲の検証を省き、記録した件数と違いを使う。文書の置き場所とID、原本のハッシュ、レビューは毎回確かめる。編集が書く新しい内容は、保存の前に毎回すべてを検証する。`.arp/cache/` の記録は失われても作り直すため、保存時にディスクへの書き込み完了を待たない。
 
 ```json
 {"items":[],"ok":true,"page":{"next_offset":null,"offset":0,"returned":0,"total":0},"summary":{}}

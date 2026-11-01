@@ -415,6 +415,41 @@ impl<'a, 'input> Block<'a, 'input> {
         }
     }
 
+    /// The runs that show the text, in order, each with whether it is
+    /// written bold and the characters of the text it shows: a run once for
+    /// each place it shows text in, and with none when no character it
+    /// shows is placed, such as one Word draws itself.
+    pub(super) fn placed_runs(&self) -> Vec<(Node<'a, 'input>, bool, Range<usize>)> {
+        let mut places: foldhash::HashMap<roxmltree::NodeId, Vec<Range<usize>>> =
+            self.runs.iter().map(|run| (run.id(), vec![])).collect();
+        let mut at = 0;
+        for segment in &self.segments {
+            let length = self.text[segment.range.clone()].chars().count();
+            if let Some(ranges) = segment
+                .node
+                .and_then(|node| node.parent())
+                .and_then(|run| places.get_mut(&run.id()))
+            {
+                match ranges.last_mut() {
+                    Some(last) if last.end == at => last.end += length,
+                    _ => ranges.push(at..at + length),
+                }
+            }
+            at += length;
+        }
+        let mut placed = vec![];
+        for run in &self.runs {
+            let bold = written_bold(*run);
+            match places.remove(&run.id()) {
+                Some(ranges) if !ranges.is_empty() => {
+                    placed.extend(ranges.into_iter().map(|chars| (*run, bold, chars)));
+                }
+                _ => placed.push((*run, bold, 0..0)),
+            }
+        }
+        placed
+    }
+
     /// PowerPoint text: a paragraph, or the paragraphs of a table cell, whose
     /// line breaks and tabs an edit can change.
     pub(super) fn slide(
@@ -488,7 +523,7 @@ impl BlockCells {
         self.count += 1;
         let mut style = json!({"bold":block.bold == crate::fonts::Share::Every,
             "fill":u8::from(block.fill),"border":u8::from(block.in_table)});
-        emphasis.mark(&mut style, block.bold);
+        emphasis.mark(&mut style);
         let cell = crate::extraction::NewCell {
             id: &format!("text-{}", self.count),
             address: &block.address,
@@ -788,6 +823,18 @@ pub(super) fn text_break(node: Node<'_, '_>) -> bool {
 /// On/off properties are on unless their value says otherwise.
 fn on(node: Option<Node<'_, '_>>) -> bool {
     node.is_some_and(|n| !matches!(value(n), Some("0" | "false" | "off")))
+}
+
+/// Whether `run` is written bold, as authors set text apart: a Word run by
+/// its own properties, a DrawingML run (`a:r`, `a:fld`) by the `b` of its
+/// `a:rPr`.
+fn written_bold(run: Node<'_, '_>) -> bool {
+    if word_element(run, "r") {
+        return on(property(run, "rPr", "b"));
+    }
+    run.children()
+        .find(|n| n.has_tag_name((DRAWING, "rPr")))
+        .is_some_and(|properties| matches!(properties.attribute("b"), Some("1" | "true")))
 }
 
 fn number(node: Option<Node<'_, '_>>, default: usize) -> Result<usize> {
@@ -1703,10 +1750,11 @@ mod tests {
             )
             .unwrap()
         );
-        // Text bold in part is not a bold cell, and is bold in part.
+        // Text bold in part is not a bold cell, and is bold where it is:
+        // 番号 of 受注番号.
         assert_eq!(
             sheet["cells"][4]["style"],
-            json!({"bold":false,"fill":0,"border":1,"partial":["bold"]})
+            json!({"bold":false,"fill":0,"border":1,"partial":{"bold":[[2,4]]}})
         );
         assert_eq!(sheet["cells"][0]["style"]["border"], 0);
     }

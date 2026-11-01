@@ -78,7 +78,7 @@ fn ems(text: &str) -> f64 {
 
 /// Whether `c` is drawn a full em wide: East Asian wide and fullwidth
 /// characters (CJK, kana, Hangul, fullwidth forms).
-fn wide(c: char) -> bool {
+pub fn wide(c: char) -> bool {
     matches!(u32::from(c),
         0x1100..=0x115F
         | 0x2E80..=0x303E
@@ -109,7 +109,7 @@ fn lines(text: &str, width: f64, size: f64) -> u32 {
 /// the default height of a row for its normal font (measured in Excel): Yu
 /// and Meiryo fonts leave more room above and below their characters than
 /// Calibri, and the MS fonts less.
-fn line_height(font: &str) -> f64 {
+pub fn line_height(font: &str) -> f64 {
     if ["游", "Yu ", "メイリオ", "Meiryo"]
         .iter()
         .any(|name| font.contains(name))
@@ -120,6 +120,33 @@ fn line_height(font: &str) -> f64 {
     } else {
         1.31
     }
+}
+
+/// The width in pixels at 96 per inch of a unit of column width, a digit of
+/// the normal font `font` of `size` points on the screen: 7.2 for Calibri and
+/// ＭＳ Ｐゴシック at 11 points, 8 for 游ゴシック (measured in Excel).
+pub(super) fn digit_width(font: &str, size: f64) -> f64 {
+    let font = glyphs::Font::new(Some(font), false, size, glyphs::SCREEN);
+    font.digit() * glyphs::PAGE / glyphs::SCREEN
+}
+
+/// The width of a column a worksheet gives none of its own, in units of
+/// `digit`: its `defaultColWidth`, else what Excel makes of `baseColWidth`
+/// (8 by default) digits with the room it leaves around them, in a whole
+/// number of 8 pixels of the screen (measured in Excel).
+pub(super) fn default_column_width(format: Option<Node<'_, '_>>, digit: f64) -> f64 {
+    let number = |name: &str| {
+        format
+            .and_then(|f| f.attribute(name))
+            .and_then(|v| v.parse::<f64>().ok())
+    };
+    if let Some(width) = number("defaultColWidth") {
+        return width;
+    }
+    let screen = (digit * glyphs::SCREEN / glyphs::PAGE).round();
+    let base = number("baseColWidth").unwrap_or(8.0);
+    let pixels = ((base * screen + 2.0 * (screen / 4.0).ceil() + 1.0) / 8.0).ceil() * 8.0;
+    pixels / screen
 }
 
 /// The cell formats of a workbook: font and alignment, and the width of a
@@ -146,7 +173,7 @@ impl Styles {
         let Some(bytes) = parts.get("xl/styles.xml") else {
             return Ok(Self {
                 formats: vec![],
-                digit: 7.2,
+                digit: digit_width("Calibri", 11.0),
                 row: 11.0 * line_height(""),
             });
         };
@@ -206,10 +233,7 @@ impl Styles {
             .collect();
         Ok(Self {
             formats,
-            // A unit of column width is 7.2 pixels with an 11 point normal
-            // font, Calibri and ＭＳ Ｐゴシック alike (measured in Excel); other
-            // sizes scale with it.
-            digit: normal.0 * 7.2 / 11.0,
+            digit: digit_width(&normal.1, normal.0),
             row: normal.0 * line_height(&normal.1),
         })
     }
@@ -309,9 +333,7 @@ impl Sheet {
             })
             .collect();
         Ok(Self {
-            column_width: number("defaultColWidth")
-                .or_else(|| number("baseColWidth").map(|base| base + 1.140625))
-                .unwrap_or(9.140625),
+            column_width: default_column_width(format, styles.digit),
             columns,
             // Excel takes the default height only when it is fixed, and
             // otherwise fits the rows to the normal font.
@@ -614,6 +636,27 @@ fn shape_size(sheet: &Sheet, styles: &Styles, shape: Node<'_, '_>) -> Option<(f6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn columns_are_counted_in_digits_of_the_normal_font_as_excel_lays_them_out() {
+        assert_eq!(digit_width("Calibri", 11.0), 7.2);
+        assert_eq!(digit_width("ＭＳ Ｐゴシック", 11.0), 7.2);
+        assert_eq!(digit_width("游ゴシック", 11.0), 8.0);
+        // A column of the default width, 64 pixels for Calibri and 70.4 for
+        // 游ゴシック in Excel, unless the sheet gives its own.
+        let sheet = |format: &str| {
+            format!(r#"<worksheet xmlns="{NS}"><sheetFormatPr {format}/></worksheet>"#)
+        };
+        let width = |format: &str, digit: f64| {
+            let text = sheet(format);
+            let doc = Document::parse(&text).unwrap();
+            default_column_width(child(doc.root_element(), "sheetFormatPr"), digit) * digit
+        };
+        assert_eq!(width("", 7.2), 64.0);
+        assert!((width("", 8.0) - 70.4).abs() < 1e-9);
+        assert!((width(r#"baseColWidth="10""#, 7.2) - 83.2).abs() < 1e-9);
+        assert_eq!(width(r#"defaultColWidth="10""#, 7.2), 72.0);
+    }
 
     #[test]
     fn wide_characters_take_an_em_and_others_a_little_over_half() {

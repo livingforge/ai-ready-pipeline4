@@ -103,13 +103,18 @@ impl Lines {
     }
 
     /// The point a DrawingML anchor marker (`col`, `row` from 0, offsets in
-    /// EMUs) names.
+    /// EMUs) names. Excel keeps an offset within its cell: one past the edge
+    /// of a column or row made narrower or hidden since stops at the edge.
     fn marker(&self, marker: &Value) -> Option<(f64, f64)> {
         let column = marker["col"].as_u64()? as u32 + 1;
         let row = marker["row"].as_u64()? as u32 + 1;
+        let offset = |name: &str, size: f64| {
+            (marker[name].as_f64().unwrap_or(0.0) / EMU_PER_PIXEL).clamp(0.0, size)
+        };
+        let (x, y) = (self.x(column), self.y(row));
         Some((
-            self.x(column) + marker["colOff"].as_f64().unwrap_or(0.0) / EMU_PER_PIXEL,
-            self.y(row) + marker["rowOff"].as_f64().unwrap_or(0.0) / EMU_PER_PIXEL,
+            x + offset("colOff", self.x(column + 1) - x),
+            y + offset("rowOff", self.y(row + 1) - y),
         ))
     }
 }
@@ -190,6 +195,10 @@ fn grid(
         html,
         r#"<div class="heads-x" style="width:{width:.0}px"><div class="corner"></div>"#
     );
+    // Excel marks where columns and rows are hidden with a double line
+    // between the headings beside them.
+    let hidden = |edges: &[f64], i: usize| edges[i + 1] <= edges[i] && edges[i - 1] < edges[i];
+    let mut gaps = String::new();
     for c in 1..=columns {
         let w = lines.x(c + 1) - lines.x(c);
         if w > 0.0 {
@@ -199,8 +208,16 @@ fn grid(
                 lines.x(c),
                 column_name(c)?
             );
+        } else if c == 1 || hidden(&lines.x, c as usize) {
+            let _ = write!(
+                gaps,
+                r#"<div class="gap" style="left:{:.0}px;top:0;width:3px;height:{HEAD_H}px"></div>"#,
+                (lines.x(c) - 2.0).max(HEAD_W)
+            );
         }
     }
+    html.push_str(&gaps);
+    gaps.clear();
     let _ = write!(
         html,
         r#"</div><div class="heads-y" style="height:{:.0}px">"#,
@@ -214,8 +231,15 @@ fn grid(
                 r#"<div class="hd" data-r="{r}" style="left:0;top:{:.0}px;width:{HEAD_W}px;height:{h:.0}px">{r}</div>"#,
                 lines.y(r) - HEAD_H
             );
+        } else if r == 1 || hidden(&lines.y, r as usize) {
+            let _ = write!(
+                gaps,
+                r#"<div class="gap" style="left:0;top:{:.0}px;width:{HEAD_W}px;height:3px"></div>"#,
+                (lines.y(r) - HEAD_H - 2.0).max(0.0)
+            );
         }
     }
+    html.push_str(&gaps);
     html.push_str("</div>");
     // Gridlines, under the fills, which hide them.
     if look.grid_lines {
@@ -285,6 +309,10 @@ fn grid(
         };
         let merge = merged.get(&(c, r)).map(|i| merges[*i]);
         let (x0, x1, y0, y1) = (lines.x(c), lines.x(c + 1), lines.y(r), lines.y(r + 1));
+        // A cell in a hidden column or row draws no border.
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
         let sides = [
             (merge.is_none_or(|m| m.c0 == c), (x0, y0, x0, y1)),
             (merge.is_none_or(|m| m.c1 == c), (x1, y0, x1, y1)),
@@ -306,17 +334,18 @@ fn grid(
             r#"<svg class="lines" width="{width:.0}" height="{height:.0}">{borders}</svg>"#
         );
     }
-    // Values.
+    // Values. Text runs on over a hidden column, whatever it holds.
     let holds = |c: u32, r: u32| {
-        content
-            .get(&(c, r))
-            .map(|s| !s.value.is_null())
-            .unwrap_or_else(|| {
-                cells
+        merged.contains_key(&(c, r))
+            || lines.x(c + 1) > lines.x(c)
+                && content
                     .get(&(c, r))
-                    .is_some_and(|cell| !cell.value().is_null())
-            })
-            || merged.contains_key(&(c, r))
+                    .map(|s| !s.value.is_null())
+                    .unwrap_or_else(|| {
+                        cells
+                            .get(&(c, r))
+                            .is_some_and(|cell| !cell.value().is_null())
+                    })
     };
     let shown_places: BTreeSet<(u32, u32)> = cells.keys().chain(content.keys()).copied().collect();
     for &(c, r) in &shown_places {
@@ -324,33 +353,73 @@ fn grid(
         if merge.is_some_and(|m| (m.c0, m.r0) != (c, r)) {
             continue;
         }
-        let cell = cells.get(&(c, r)).copied();
-        let shown = content.get(&(c, r)).copied();
-        let (text, kind) = display(cell, shown, date1904);
-        let changed = shown.is_some_and(Shown::changed);
-        if text.is_empty() && !changed {
-            continue;
-        }
-        let format = look.cell(c, r).cloned().unwrap_or_default();
-        // Excel breaks the lines of a cell only when it wraps its text.
-        let text = if format.wrap {
-            text
-        } else {
-            text.replace(['\r', '\n'], "")
-        };
         let mut area = merge.unwrap_or(Range {
             c0: c,
             r0: r,
             c1: c,
             r1: r,
         });
+        let shown = content.get(&(c, r)).copied();
+        // A cell in a hidden column or row shows nothing, not even over the
+        // cells beside it; a merge shows what of it is not hidden. A value the
+        // content changes there is still listed among the differences.
+        let own = lines.rect(area);
+        if own.w <= 0.0 || own.h <= 0.0 {
+            if shown.is_some_and(Shown::changed) {
+                out.mark(shown, name, &format!("{}{r}（非表示）", column_name(c)?));
+            }
+            continue;
+        }
+        let cell = cells.get(&(c, r)).copied();
+        let format = look.cell(c, r).cloned().unwrap_or_default();
+        let font = excel_font(cell_font(sheet, cell, shown));
+        let font = font.as_ref();
+        let emphasis = cell_style(sheet, cell);
+        let room = Room::new(
+            look,
+            area,
+            font,
+            emphasis["bold"] == true || font["bold"] == true,
+        );
+        // A number Excel fits to its cell, unless it shrinks it or turns it.
+        let across = format.rotation == 0;
+        let (text, kind) = display(
+            cell,
+            shown,
+            date1904,
+            (across && !format.shrink).then_some(&room),
+        );
+        let changed = shown.is_some_and(Shown::changed);
+        if text.is_empty() && !changed {
+            continue;
+        }
+        // Excel breaks the lines of a cell only when it wraps its text.
+        let text = if format.wrap {
+            text
+        } else {
+            text.replace(['\r', '\n'], "")
+        };
         let horizontal = format.horizontal.as_deref().unwrap_or(match kind {
             Kind::Number => "right",
             Kind::Centered => "center",
             Kind::Text => "left",
         });
-        // Text that does not wrap runs on over the empty cells it points to.
-        if merge.is_none() && !format.wrap && kind == Kind::Text {
+        // Text centred across a selection is centred over the empty cells
+        // after it centred so too.
+        if merge.is_none() && horizontal == "centerContinuous" {
+            while area.c1 < columns
+                && !holds(area.c1 + 1, r)
+                && look
+                    .cell(area.c1 + 1, r)
+                    .and_then(|f| f.horizontal.as_deref())
+                    == Some("centerContinuous")
+            {
+                area.c1 += 1;
+            }
+        }
+        // Text that does not wrap runs on over the empty cells it points to,
+        // unless it shrinks to fit its own.
+        if merge.is_none() && !format.wrap && !format.shrink && kind == Kind::Text {
             if matches!(horizontal, "left" | "general") {
                 while area.c1 < columns && !holds(area.c1 + 1, r) {
                     area.c1 += 1;
@@ -375,15 +444,33 @@ fn grid(
         if let Some(formula) = formula {
             let _ = write!(attributes, r#" data-r="{}""#, escape(&formula));
         }
-        let justify = match horizontal {
+        let stacked = format.rotation == 255;
+        let across_place = match horizontal {
             "center" | "centerContinuous" => "center",
             "right" => "flex-end",
+            // Letters stacked one under another are centred unless placed.
+            "general" | "left" if stacked && format.horizontal.is_none() => "center",
             _ => "flex-start",
         };
-        let align = match format.vertical.as_deref() {
+        let down_place = match format.vertical.as_deref() {
             Some("top") => "flex-start",
             Some("center" | "justify" | "distributed") => "center",
             _ => "flex-end",
+        };
+        // Stacked letters run down the cell, so the flex axes swap, and its
+        // start across is the right.
+        let (justify, align) = if stacked {
+            let across = match across_place {
+                "flex-start" => "flex-end",
+                "flex-end" => "flex-start",
+                place => place,
+            };
+            (down_place.to_owned(), across.to_owned())
+        } else if format.wrap {
+            // Wrapped text taller than its cell shows from its top.
+            (across_place.to_owned(), format!("safe {down_place}"))
+        } else {
+            (across_place.to_owned(), down_place.to_owned())
         };
         // The look many cells share is a class of the page; the place is the
         // cell's own.
@@ -399,18 +486,40 @@ fn grid(
         if format.indent > 0 {
             let _ = write!(style, "padding-left:{}px;", 3 + format.indent * 9);
         }
-        if format.rotation == 255 {
+        if stacked {
             style.push_str("writing-mode:vertical-rl;text-orientation:upright;");
         }
-        style.push_str(&font_css(
-            cell_font(sheet, cell, shown),
-            cell_style(sheet, cell),
-        ));
+        // Text turned 1 to 90 degrees counterclockwise, or 91 to 180 for 1 to
+        // 90 clockwise.
+        let turned = match format.rotation {
+            0 | 255 => 0,
+            r if r <= 90 => -(r as i32),
+            r => r as i32 - 90,
+        };
+        if turned != 0 {
+            let _ = write!(style, "--turn:{turned}deg;");
+        }
+        style.push_str(&font_css(font, emphasis));
+        // The font is a whole number of the screen's pixels, as Excel draws
+        // it there, made smaller to fit the cell's width when it shrinks.
+        let mut pixels = crate::excel::glyphs::screen_pixels(room.size);
+        let needed = room.font.text(&text);
+        if format.shrink && !format.wrap && across && !room.fits(needed) {
+            pixels *= room.width.max(0.0) / needed;
+        }
+        // Lines are as far apart as the font sets them in Excel, as are
+        // stacked letters, each a line.
+        let line = crate::excel::line_height(font["latin"].as_str().unwrap_or_default());
+        let _ = write!(style, "font-size:{pixels:.2}px;line-height:{line};");
+        if stacked {
+            let _ = write!(style, "letter-spacing:{:.2}em;", line - 1.0);
+        }
         let _ = write!(
             html,
-            r#"<div class="c k{}{}" style="left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px"{attributes}><span>{}</span></div>"#,
+            r#"<div class="c k{}{}{}" style="left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px"{attributes}><span>{}</span></div>"#,
             out.class(style),
             if format.wrap { " w" } else { "" },
+            if turned != 0 { " t" } else { "" },
             rect.x,
             rect.y,
             rect.w,
@@ -499,6 +608,20 @@ fn grid(
     Ok(html)
 }
 
+/// The font a cell is drawn in: Japanese Excel draws all the text of a theme
+/// font in its East Asian typeface, which the extraction gives beside the
+/// Latin one.
+fn excel_font(font: &Value) -> std::borrow::Cow<'_, Value> {
+    match font["east_asian"].as_str() {
+        Some(east_asian) if east_asian != "mixed" && font["latin"] != east_asian => {
+            let mut drawn = font.clone();
+            drawn["latin"] = json!(east_asian);
+            std::borrow::Cow::Owned(drawn)
+        }
+        _ => std::borrow::Cow::Borrowed(font),
+    }
+}
+
 /// How a value is aligned when its format leaves it to the value.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -508,8 +631,14 @@ enum Kind {
 }
 
 /// The text a cell shows and its kind: the content's value, in the cell's
-/// number format; a formula the content leaves as it is shows its result.
-fn display(cell: Option<Cell<'_>>, shown: Option<&Shown>, date1904: bool) -> (String, Kind) {
+/// number format; a formula the content leaves as it is shows its result. A
+/// number is fitted to the `room` the cell has.
+fn display(
+    cell: Option<Cell<'_>>,
+    shown: Option<&Shown>,
+    date1904: bool,
+    room: Option<&Room>,
+) -> (String, Kind) {
     let format = cell.map_or("General", |c| c.number_format());
     let value = match shown {
         Some(shown) if shown.formula && shown.original.is_none() => {
@@ -526,12 +655,96 @@ fn display(cell: Option<Cell<'_>>, shown: Option<&Shown>, date1904: bool) -> (St
             (if *b { "TRUE" } else { "FALSE" }).to_owned(),
             Kind::Centered,
         ),
-        Value::Number(_) => (
-            crate::excel::number_format::display(&value, format, date1904),
-            Kind::Number,
-        ),
+        Value::Number(number) => {
+            let text = crate::excel::number_format::display(&value, format, date1904);
+            let text = match number.as_f64() {
+                Some(number) => fitted(text, number, format, room),
+                None => text,
+            };
+            (text, Kind::Number)
+        }
         Value::String(text) if error => (text.clone(), Kind::Centered),
         other => (plain(other), Kind::Text),
+    }
+}
+
+/// What Excel shows of a number whose text is `text`: in the General format
+/// at most 11 characters besides a sign, shortened to fit the `room` there is;
+/// in another, the text when it fits. What does not fit fills the cell with
+/// as many `#` as fit.
+fn fitted(text: String, number: f64, format: &str, room: Option<&Room>) -> String {
+    if format.eq_ignore_ascii_case("general") {
+        let fits = |text: &str| {
+            text.trim_start_matches('-').chars().count() <= 11
+                && room.is_none_or(|room| room.fits(room.general(text)))
+        };
+        if let Some(text) = crate::excel::number_format::general_within(number, fits) {
+            return text;
+        }
+    } else if room.is_none_or(|room| room.fits(room.font.text(&text))) {
+        return text;
+    }
+    room.map_or(text, |room| {
+        "#".repeat((room.width / room.font.width('#')).floor().max(0.0) as usize)
+    })
+}
+
+/// The room a cell gives its text, as Excel measures it: the width between
+/// the edges of its cells less what it leaves around the text, in pixels, for
+/// text in the cell's font at 96 per inch, whatever the screen (measured in
+/// Excel).
+struct Room {
+    font: crate::excel::glyphs::Font,
+    /// The size of the font, in points.
+    size: f64,
+    width: f64,
+}
+
+impl Room {
+    fn new(look: &SheetLook, area: Range, font: &Value, bold: bool) -> Self {
+        use crate::excel::glyphs;
+        // A theme font is drawn in the theme's East Asian typeface in
+        // Japanese Excel; another has one name.
+        let name = [&font["east_asian"], &font["latin"]]
+            .into_iter()
+            .filter_map(Value::as_str)
+            .find(|name| *name != "mixed");
+        let size = font["size"].as_f64().unwrap_or(11.0);
+        let columns = (area.c0..=area.c1).map(|c| look.characters(c)).sum::<f64>();
+        Self::within(
+            glyphs::Font::new(name, bold, size, glyphs::PAGE),
+            size,
+            columns * look.unit(),
+        )
+    }
+
+    /// The room in cells `width` pixels wide for text in `font`.
+    fn within(font: crate::excel::glyphs::Font, size: f64, width: f64) -> Self {
+        // The room left is more for a wider font.
+        let padding = 2.0 * (font.digit() / 4.0).ceil() + 0.5;
+        Self {
+            width: width - padding,
+            font,
+            size,
+        }
+    }
+
+    /// Whether text `width` pixels wide fits: a little over is taken as
+    /// fitting, as the column widths are Excel's to a few hundredths.
+    fn fits(&self, width: f64) -> bool {
+        width <= self.width + 0.05
+    }
+
+    /// The width Excel takes a number in the General format to have: its
+    /// sign, and the rest at least a digit for each character.
+    fn general(&self, text: &str) -> f64 {
+        let body = text.trim_start_matches('-');
+        let sign = if body.len() < text.len() {
+            self.font.width('-')
+        } else {
+            0.0
+        };
+        sign + (self.font.digit() * body.chars().count() as f64).max(self.font.text(body))
     }
 }
 
@@ -707,6 +920,80 @@ mod tests {
         assert_eq!((r.c0, r.r0, r.c1, r.r1), (1, 1, 3, 5));
         let one = range("$B$2").unwrap();
         assert_eq!((one.c0, one.r0, one.c1, one.r1), (2, 2, 2, 2));
+    }
+
+    #[test]
+    fn numbers_wider_than_their_cell_show_as_excel_fits_them() {
+        use crate::excel::glyphs::{Font, PAGE};
+        // As Excel shows them in cells `width` pixels wide, in Calibri of 11
+        // points unless another font is given.
+        let fit = |text: &str, number: f64, format: &str, width: f64| {
+            let room = Room::within(Font::new(Some("Calibri"), false, 11.0, PAGE), 11.0, width);
+            fitted(text.to_owned(), number, format, Some(&room))
+        };
+        assert_eq!(fit("1234567.89", 1234567.89, "General", 54.4), "1234568");
+        assert_eq!(fit("1234567.89", 1234567.89, "General", 52.8), "1E+06");
+        assert_eq!(fit("123456789", 123456789.0, "General", 60.8), "1.23E+08");
+        assert_eq!(fit("0.123456789", 0.123456789, "General", 54.4), "0.12346");
+        // A sign is measured as it is, the other characters at least a digit.
+        assert_eq!(fit("-1234567.89", -1234567.89, "General", 44.8), "-1E+06");
+        assert_eq!(fit("-1234567.89", -1234567.89, "General", 60.0), "-1234568");
+        // Rounded to nothing, a number is shown in scientific notation, else
+        // as nothing.
+        assert_eq!(fit("-0.000123456", -0.000123456, "General", 44.8), "-1E-04");
+        assert_eq!(fit("-0.000123456", -0.000123456, "General", 16.8), "-0");
+        assert_eq!(fit("1.5E-10", 1.5e-10, "General", 40.0), "2E-10");
+        assert_eq!(fit("1.5E-10", 1.5e-10, "General", 12.8), "0");
+        // The General format shows no more than 11 characters besides a sign.
+        assert_eq!(
+            fit("3.14159265358979", std::f64::consts::PI, "General", 200.0),
+            "3.141592654"
+        );
+        // Another format shows its text whole or fills the cell with `#`.
+        assert_eq!(fit("1,234,567", 1234567.0, "#,##0", 61.6), "1,234,567");
+        assert_eq!(fit("1,234,567", 1234567.0, "#,##0", 60.8), "########");
+        assert_eq!(fit("2023/3/15", 45000.0, "yyyy/m/d", 64.8), "########");
+        assert_eq!(fit("12.35%", 0.123456, "0.00%", 48.0), "12.35%");
+        // A column too narrow for one shows nothing.
+        assert_eq!(fit("12345", 12345.0, "#,##0", 11.2), "");
+        // Each font is measured in its own widths and leaves its own room.
+        let meiryo = Room::within(Font::new(Some("メイリオ"), false, 11.0, PAGE), 11.0, 31.2);
+        assert_eq!(
+            fitted("1,234,567".into(), 1234567.0, "#,##0", Some(&meiryo)),
+            "##"
+        );
+        // A number not fitted, as one turned, keeps no more than General's
+        // characters.
+        assert_eq!(
+            fitted("123456789012".into(), 123456789012.0, "General", None),
+            "1.23457E+11"
+        );
+    }
+
+    #[test]
+    fn a_theme_font_is_drawn_in_its_east_asian_typeface() {
+        let theme = json!({"latin":"Calibri","east_asian":"游ゴシック","size":11});
+        assert_eq!(excel_font(&theme)["latin"], "游ゴシック");
+        let own = json!({"latin":"Arial","east_asian":"Arial"});
+        assert!(matches!(excel_font(&own), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn anchor_offsets_stop_at_the_edge_of_their_cell() {
+        // Column B hidden and C four pixels wide; row 2 two pixels high.
+        let lines = Lines {
+            x: vec![40.0, 40.0, 100.0, 100.0, 104.0, 168.0],
+            y: vec![20.0, 20.0, 40.0, 42.0, 62.0],
+        };
+        let at = |col: u32, col_off: f64, row: u32, row_off: f64| {
+            lines
+                .marker(&json!({"col":col,"colOff":col_off * EMU_PER_PIXEL,
+                    "row":row,"rowOff":row_off * EMU_PER_PIXEL}))
+                .unwrap()
+        };
+        assert_eq!(at(1, 20.0, 1, 10.0), (100.0, 42.0));
+        assert_eq!(at(2, 20.0, 0, 10.0), (104.0, 30.0));
+        assert_eq!(at(3, 20.0, 2, 30.0), (124.0, 62.0));
     }
 
     #[test]

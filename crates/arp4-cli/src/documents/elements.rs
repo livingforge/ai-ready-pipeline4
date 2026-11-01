@@ -398,6 +398,10 @@ impl Names {
     }
 }
 
+/// What a header names to the cells it heads: its role and place (row and
+/// column), and the numbers of its row and column identities.
+type Headed = ((Role, u32, u32), (u32, u32));
+
 /// Values by text keys in the order of their keys, found by halves: of
 /// values given one key, the last, as a map given them in turn keeps it.
 struct Keyed<'k, T>(Vec<(&'k str, T)>);
@@ -1324,13 +1328,17 @@ pub(super) fn interpreted_groups<'e>(
             }
             places.sort_by(|a, b| a.0.cmp(b.0));
             let places = Keyed(places);
+            // The place and identities of each header, and the ID of each
+            // label, found once for the many cells they head.
+            let mut headed: HashMap<&str, Option<Headed>> = HashMap::default();
+            let mut labels: HashMap<(u32, u32), Arc<str>> = HashMap::default();
             for cell in cells {
                 let Some((row, column)) = ids.get(&cell.id).map(lines) else {
                     continue;
                 };
-                let own = *places
-                    .get(&cell.id)
-                    .expect("each cell of the table has a place");
+                // A cell's own place: the IDs of an interpretation are unique.
+                let (x, y) = excel::coordinate(&cell.address)?;
+                let own = (cell.role, y, x);
                 let mut group = Group {
                     table: table.clone(),
                     heading: own.0 == Role::ColumnHeader,
@@ -1352,8 +1360,10 @@ pub(super) fn interpreted_groups<'e>(
                 let mut label = None;
                 let mut parent = None;
                 for &header in &headers {
-                    let (Some(&(role, y, x)), Some(at)) = (places.get(header), ids.get(header))
-                    else {
+                    let found = *headed
+                        .entry(header)
+                        .or_insert_with(|| Some((*places.get(header)?, *ids.get(header)?)));
+                    let Some(((role, y, x), at)) = found else {
                         continue;
                     };
                     match role {
@@ -1371,10 +1381,15 @@ pub(super) fn interpreted_groups<'e>(
                     }
                 }
                 group.label = label.map(|(_, at)| {
-                    let (row, column) = lines(at);
-                    shared.get(&cell_id(row, column))
+                    labels
+                        .entry(at)
+                        .or_insert_with(|| {
+                            let (row, column) = lines(&at);
+                            shared.get(&cell_id(row, column))
+                        })
+                        .clone()
                 });
-                group.parent = Some(parent.map(|(_, at)| shared.get(lines(at).0)));
+                group.parent = Some(parent.map(|(_, at)| shared.get(lines(&at).0)));
                 groups.insert_at(row, column, group);
             }
             // Each cell of a category names it, by the ID of its first cell,

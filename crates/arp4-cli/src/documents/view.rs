@@ -4,6 +4,7 @@
 //! font the content changes is marked with the original's. The page is
 //! written to `.arp/view/`, which is not tracked; nothing else changes.
 use super::*;
+use crate::data::{YamlNode, YamlReader};
 use crate::view::{
     Addition, CellStructure, CheckboxStructure, Content, DiagramStructure, Shown, Structure,
     TableStructure,
@@ -21,9 +22,10 @@ impl Store {
             "source changed/missing; re-import before view"
         );
         let source_path = string(&inspected.meta["source"]["path"])?;
-        let original = Source::open(&under(&self.root, source_path)?)?;
         let content = shown(&inspected)?;
         let structure = self.readings(id, proposal, &dir, &inspected, &content)?;
+        // Opened once the readings, which take the most room, are made.
+        let original = Source::open(&under(&self.root, source_path)?)?;
         let page = crate::view::page(&crate::view::Document {
             id,
             source: source_path,
@@ -116,33 +118,17 @@ impl Store {
                     .or_else(|| cells.get(&(name, at.as_str())).map(|c| c.value().to_json()))
                     .unwrap_or(Value::Null)
             };
-            // The elements of the body, to number those it holds.
-            let mut body = inspected
+            // Where the body holds its tables, diagrams and check boxes.
+            let BodyPlaces {
+                tables: table_places,
+                diagrams: diagram_places,
+                checkboxes: checkbox_places,
+            } = inspected
                 .page_files
                 .get(page_id)
                 .and_then(|file| fs::read_to_string(dir.join(file)).ok())
-                .and_then(|text| parse(&text, false).ok())
-                .unwrap_or(Value::Null);
-            let mut body = match body["elements"].take() {
-                Value::Array(elements) => elements,
-                _ => vec![],
-            };
-            // Where the body holds each kind of element, and its diagrams and
-            // check boxes; the rest of the body goes before the tables are read.
-            let mut places = |kind: &str, keep: bool| -> Vec<(usize, Value)> {
-                body.iter_mut()
-                    .enumerate()
-                    .filter_map(|(i, element)| {
-                        let held = element.get_mut(kind)?;
-                        Some((i, if keep { held.take() } else { Value::Null }))
-                    })
-                    .collect()
-            };
-            let table_places: Vec<usize> =
-                places("table", false).into_iter().map(|(i, _)| i).collect();
-            let (diagram_places, checkbox_places) =
-                (places("diagram", true), places("checkbox", true));
-            drop(body);
+                .and_then(|text| body_places(&text).ok())
+                .unwrap_or_default();
             let titles = &typed.fields["block_titles"];
             let mut structure = Structure::default();
             for element in page["element_metadata"]
@@ -268,6 +254,55 @@ impl Store {
     }
 }
 
+/// The places of the elements of a body that a view numbers: its tables, and
+/// its diagrams and check boxes with what they hold.
+#[derive(Default)]
+struct BodyPlaces {
+    tables: Vec<usize>,
+    diagrams: Vec<(usize, Value)>,
+    checkboxes: Vec<(usize, Value)>,
+}
+
+/// The [`BodyPlaces`] of the content page `text`, read past its tables and
+/// texts rather than made into values: the table of a large sheet took
+/// several times the room of its page.
+fn body_places(text: &str) -> Result<BodyPlaces> {
+    let mut places = BodyPlaces::default();
+    let mut reader = YamlReader::new(text)?;
+    let YamlNode::Mapping = reader.node(0)? else {
+        return Ok(places);
+    };
+    while let Some(key) = reader.key()? {
+        let node = reader.node(1)?;
+        if key != "elements" || !matches!(node, YamlNode::Sequence) {
+            reader.skip(node, 1)?;
+            continue;
+        }
+        let mut place = 0;
+        while let Some(element) = reader.item(2)? {
+            if let YamlNode::Mapping = element {
+                while let Some(kind) = reader.key()? {
+                    let node = reader.node(3)?;
+                    match kind.as_ref() {
+                        "table" => {
+                            places.tables.push(place);
+                            reader.skip(node, 3)?;
+                        }
+                        "diagram" => places.diagrams.push((place, reader.value(node, 3)?)),
+                        "checkbox" => places.checkboxes.push((place, reader.value(node, 3)?)),
+                        _ => reader.skip(node, 3)?,
+                    }
+                }
+            } else {
+                reader.skip(element, 2)?;
+            }
+            place += 1;
+        }
+    }
+    reader.end()?;
+    Ok(places)
+}
+
 /// The text of a shape or label as the body writes it: a value, or the list
 /// of its paragraphs.
 fn plain_text(value: &Value) -> String {
@@ -390,4 +425,52 @@ fn shown(inspected: &Inspection) -> Result<Content> {
         }
     }
     Ok(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The places of a body are those of its elements as the page lists
+    /// them, with what its diagrams and check boxes hold, as the page reads.
+    #[test]
+    fn the_body_places_are_read_past_the_tables() {
+        let text = "elements:
+- text: 見出し
+- table:
+    columns:
+    - 項目
+    rows:
+    - 項目: 1
+- diagram:
+    shapes:
+    - id: s2
+      text: 箱
+- blank: null
+- checkbox:
+    text: 済
+    checked: true
+- table:
+    columns: []
+    rows: []
+page_id: sheet-1
+";
+        let places = body_places(text).unwrap();
+        let body = parse(text, false).unwrap();
+        let elements = body["elements"].as_array().unwrap();
+        assert_eq!(places.tables, vec![1, 5]);
+        assert_eq!(places.diagrams, vec![(2, elements[2]["diagram"].clone())]);
+        assert_eq!(
+            places.checkboxes,
+            vec![(4, elements[4]["checkbox"].clone())]
+        );
+        assert!(
+            body_places(
+                "elements:
+- text: a # note
+"
+            )
+            .is_err()
+        );
+    }
 }

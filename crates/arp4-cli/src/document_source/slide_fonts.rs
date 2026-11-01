@@ -5,8 +5,9 @@
 use super::word::Block;
 use super::word_fonts::TablePlace;
 use super::*;
-use crate::fonts::{Color, ColorContext, ElementEmphasis, FontEdit, RunFont, Theme};
+use crate::fonts::{Color, ColorContext, ElementEmphasis, FontEdit, RunFont, TextRun, Theme};
 use std::cell::OnceCell;
+use std::ops::Range;
 
 /// The sizes PowerPoint gives text whose master defines no text styles:
 /// titles 44 points, body text by level, notes 12 and other text 18 points.
@@ -499,26 +500,30 @@ impl SlideFonts {
     /// The font and emphasis of a block of slide text from the runs that show
     /// it; an empty placeholder shows the font of its paragraph end.
     pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, ElementEmphasis) {
-        self.runs_font(&block.runs, block.place.as_ref(), block.empty)
+        self.runs_font(&block.placed_runs(), block.place.as_ref(), block.empty)
     }
 
-    /// The font and emphasis of `runs`, in a table cell at `place`, or of the
+    /// The font and emphasis of `runs`, each with whether it is written bold
+    /// and the characters it shows, in a table cell at `place`, or of the
     /// empty placeholder paragraph `empty`.
     pub(super) fn runs_font(
         &self,
-        runs: &[Node<'_, '_>],
+        runs: &[(Node<'_, '_>, bool, Range<usize>)],
         place: Option<&TablePlace>,
         empty: Option<Node<'_, '_>>,
     ) -> (Value, ElementEmphasis) {
         let context = self.context();
-        let ends: Vec<Node<'_, '_>> = empty
+        let ends: Vec<(Node<'_, '_>, bool, Range<usize>)> = empty
             .into_iter()
-            .map(|paragraph| drawing_child(paragraph, "endParaRPr").unwrap_or(paragraph))
+            .map(|paragraph| {
+                let end = drawing_child(paragraph, "endParaRPr").unwrap_or(paragraph);
+                (end, false, 0..0)
+            })
             .collect();
         let runs: Vec<_> = runs
             .iter()
             .chain(&ends)
-            .map(|run| {
+            .map(|(run, bold, chars)| {
                 let paragraph = run.ancestors().find(|n| n.has_tag_name((DRAWING, "p")));
                 let level = paragraph.map_or(1, crate::fonts::paragraph_level);
                 let body = paragraph.and_then(|p| p.parent());
@@ -544,10 +549,16 @@ impl SlideFonts {
                 } else {
                     drawing_child(*run, "rPr")
                 };
-                own.map(|p| crate::fonts::drawing_run(p, &context))
+                let font = own
+                    .map(|p| crate::fonts::drawing_run(p, &context))
                     .unwrap_or_default()
                     .or(&own_list)
-                    .or(&inherited)
+                    .or(&inherited);
+                TextRun {
+                    font,
+                    bold: *bold,
+                    chars: chars.clone(),
+                }
             })
             .collect();
         (

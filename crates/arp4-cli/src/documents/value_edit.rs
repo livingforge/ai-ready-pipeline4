@@ -1,3 +1,4 @@
+use super::inspection::Kept;
 use super::sheet_edit::rejection;
 use super::*;
 use crate::fonts::FontEdit;
@@ -84,12 +85,32 @@ impl Store {
         validate("value-edits", request)
             .map_err(|error| rejection("invalid_request", format!("{error:#}")))?;
         let dir = self.structure_dir(id, proposal)?;
-        let mut inspected = self.inspect(&dir, false).map_err(|error| {
-            rejection(
-                "invalid_document",
-                format!("the document fails check before the edit; fix that first: {error:#}"),
-            )
-        })?;
+        // The layout the inspection loads is kept, which the edits are placed
+        // on, and so are the pages of the sheets they name: each is read once.
+        // The inspection loads the layout with the original's sheets, which
+        // lacks the fonts of the sheets operations add: a workbook with such
+        // operations is read again with them.
+        let sheets: Vec<&str> = array(&request["edits"])?
+            .iter()
+            .filter_map(|edit| edit["sheet"].as_str())
+            .collect();
+        let keep = inspection::Keep {
+            layout: true,
+            pages: &sheets,
+        };
+        let (mut inspected, kept) = self
+            .inspect_layout(&dir, false, &Planned::new(), &keep)
+            .map_err(|error| {
+                rejection(
+                    "invalid_document",
+                    format!("the document fails check before the edit; fix that first: {error:#}"),
+                )
+            })?;
+        let kept = if inspected.original.is_some() {
+            Kept::default()
+        } else {
+            kept
+        };
         if !inspected.source_current {
             return Err(rejection(
                 "source_changed",
@@ -117,6 +138,7 @@ impl Store {
         let planned = self.plan_values(
             &dir,
             &mut inspected,
+            kept,
             false,
             &book,
             request,
@@ -139,6 +161,7 @@ impl Store {
                             self.plan_values(
                                 &dir,
                                 &mut whole,
+                                Kept::default(),
                                 true,
                                 &book,
                                 request,
@@ -192,7 +215,9 @@ impl Store {
     /// Plans the edits at `indices` of `request` on the document in `dir`:
     /// the content pages, layout and mappings they leave, checked like
     /// `check`, and written by the original's writer to a scratch file with
-    /// every other pending change, as export writes them. Unless `keep`, the
+    /// every other pending change, as export writes them. The layout and the
+    /// pages `kept` holds are those the inspection read; the others are read.
+    /// Unless `keep`, the
     /// content of `inspected` is let go once the edits are planned, before
     /// the document they leave is inspected: the two together took most of
     /// the room a large sheet's edit takes.
@@ -201,6 +226,7 @@ impl Store {
         &self,
         dir: &Path,
         inspected: &mut Inspection,
+        kept: Kept,
         keep: bool,
         book: &Source,
         request: &Value,
@@ -210,10 +236,16 @@ impl Store {
         let edits = array(&request["edits"])?;
         let extraction = &inspected.extraction;
         let workbook = identity::is_excel(extraction);
-        let mut current = identity::load(dir, extraction, &Planned::new())?;
+        let Kept {
+            layout: kept_layout,
+            pages: mut kept_pages,
+        } = kept;
+        let mut current = match kept_layout {
+            Some(layout) => layout,
+            None => identity::load(dir, extraction, &Planned::new())?,
+        };
         // Cells past the rows and columns the extraction's cells reach take
         // values too, given the identities they lack.
-        let mut reached: Vec<(String, String)> = vec![];
         if workbook {
             let page_of: BTreeMap<String, String> = current
                 .sheets
@@ -236,12 +268,9 @@ impl Store {
                 {
                     continue;
                 }
-                if identity::reach_cell(&mut current, page, cell)? {
-                    reached.push((page.clone(), cell.to_owned()));
-                }
+                identity::reach_cell(&mut current, page, cell)?;
             }
         }
-        let current = current;
         let originals: BTreeSet<&str> = extraction
             .sheets
             .iter()
@@ -505,10 +534,13 @@ impl Store {
                     let key = identity::formula_name(page, &slot.row, &slot.column);
                     new_formulas.push((page.to_owned(), row, column));
                     if !pages.contains_key(&slot.file) {
-                        pages.insert(
-                            slot.file.clone(),
-                            self.read_content(dir, &slot.file, extraction)?,
-                        );
+                        let page = match kept_pages.remove(&slot.page) {
+                            Some(page) => page.to_value(),
+                            None => {
+                                self.read_content_with(dir, &slot.file, extraction, &current)?
+                            }
+                        };
+                        pages.insert(slot.file.clone(), page);
                     }
                     let content = pages.get_mut(&slot.file).unwrap();
                     // A value given to the cell before goes; the formula takes its place.
@@ -565,10 +597,11 @@ impl Store {
                 ));
             }
             if !pages.contains_key(&slot.file) {
-                pages.insert(
-                    slot.file.clone(),
-                    self.read_content(dir, &slot.file, extraction)?,
-                );
+                let page = match kept_pages.remove(&slot.page) {
+                    Some(page) => page.to_value(),
+                    None => self.read_content_with(dir, &slot.file, extraction, &current)?,
+                };
+                pages.insert(slot.file.clone(), page);
             }
             let content = pages.get_mut(&slot.file).unwrap();
             if edit.get("before").is_some() {
@@ -723,10 +756,8 @@ impl Store {
                 rows.retain(|_, values| values.as_object().is_none_or(|v| !v.is_empty()));
             }
         }
-        let mut layout = identity::load(dir, extraction, &Planned::new())?;
-        for (page, cell) in &reached {
-            identity::reach_cell(&mut layout, page, cell)?;
-        }
+        // The layout the edits were placed on, with the cells they reach.
+        let mut layout = current;
         for (page, row, column) in &new_formulas {
             identity::add_formula(&mut layout, page, row, column)?;
         }

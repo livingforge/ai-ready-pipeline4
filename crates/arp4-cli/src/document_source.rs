@@ -3970,14 +3970,14 @@ fn pdf_text<'a>(
                     _ => look.fill.clone(),
                 };
                 let look_of = crate::fonts::element_font(
-                    &[crate::fonts::RunFont {
+                    &[],
+                    &crate::fonts::RunFont {
                         latin: name.clone(),
                         east_asian: name,
                         size: (size > 0.0).then_some(size),
                         color: color.map(crate::fonts::Color::rgb),
                         ..crate::fonts::RunFont::default()
-                    }],
-                    &crate::fonts::RunFont::default(),
+                    },
                 );
                 let widths = read
                     .widths

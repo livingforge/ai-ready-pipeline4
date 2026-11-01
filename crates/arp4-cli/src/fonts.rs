@@ -1,14 +1,17 @@
 //! Font name, size, colour and emphasis of document text as readers see them:
 //! every property is resolved through the styles and themes it inherits from.
-//! An element holds runs; a property its runs disagree on is `mixed`, with the
-//! values they show in `runs`, and one that cannot be resolved is null. An
-//! emphasis mark holds for an element when every run shows it, and is
-//! `partial` when only some do.
+//! An element holds runs; a property its runs disagree on is `mixed`, with
+//! the value each run shows on its characters in `runs`, and one that cannot
+//! be resolved is null. An emphasis mark holds for an element when every run
+//! shows it, and is `partial`, on the characters of the runs that show it,
+//! when only some do. Characters are counted from the start of the element's
+//! text, as Unicode scalar values.
 use crate::data::string;
 use anyhow::{Context, Result, bail, ensure};
 use roxmltree::{Document, Node};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 /// The editable font properties, in the order of the `font` contract.
 pub const PROPERTIES: [&str; 4] = ["latin", "east_asian", "size", "color"];
@@ -71,6 +74,60 @@ impl RunFont {
             emphasis: self.emphasis.or(&inherited.emphasis),
         }
     }
+}
+
+/// A run of an element's text: its font, whether it is written bold, and the
+/// characters of the element's text it shows, none when they cannot be
+/// placed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextRun {
+    pub font: RunFont,
+    pub bold: bool,
+    pub chars: Range<usize>,
+}
+
+/// The fonts of `runs`, or `empty` when there are none.
+fn fonts_of<'a>(
+    runs: &'a [TextRun],
+    empty: &'a RunFont,
+) -> impl Iterator<Item = &'a RunFont> + Clone {
+    runs.iter()
+        .map(|run| &run.font)
+        .chain(runs.is_empty().then_some(empty))
+}
+
+/// `ranges` in order with those that touch joined; none empty.
+fn joined(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = vec![];
+    for range in ranges.filter(|range| !range.is_empty()) {
+        match out.last_mut() {
+            Some(last) if last.end == range.start => last.end = range.end,
+            _ => out.push(range),
+        }
+    }
+    out
+}
+
+/// The `runs` of a font: each set of values on the characters it is shown
+/// on, those next to each other with the same values joined.
+fn placed(entries: impl Iterator<Item = (Range<usize>, Map<String, Value>)>) -> Vec<Value> {
+    let mut out: Vec<(Range<usize>, Map<String, Value>)> = vec![];
+    for (range, values) in entries.filter(|(range, values)| !range.is_empty() && !values.is_empty())
+    {
+        match out.last_mut() {
+            Some((last, seen)) if last.end == range.start && *seen == values => {
+                last.end = range.end;
+            }
+            _ => out.push((range, values)),
+        }
+    }
+    out.into_iter()
+        .map(|(range, mut values)| {
+            values.insert("start".into(), json!(range.start));
+            values.insert("end".into(), json!(range.end));
+            Value::Object(values)
+        })
+        .collect()
 }
 
 /// The emphasis marks of one run: italic, underlined (in any line), struck
@@ -136,39 +193,54 @@ impl Share {
     }
 }
 
-/// The emphasis of an element: the marks every run shows, and those only
-/// some of them show.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// The emphasis of an element: the marks every run shows, and where those
+/// only some of them show are.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ElementEmphasis {
     pub every: Emphasis,
-    pub some: Emphasis,
+    /// Every run is written bold.
+    pub bold: bool,
+    /// Each mark only some runs show, bold first and the others in the order
+    /// of the contract, with the characters of the runs that show it.
+    pub partial: Vec<(&'static str, Vec<Range<usize>>)>,
 }
 
 impl ElementEmphasis {
-    /// Records the marks in `style`: each every run shows as true, and in
-    /// `partial` those only some show, after bold when `bold` is so.
-    pub fn mark(&self, style: &mut Value, bold: Share) {
+    /// Records the marks in `style`: bold when every run is, each mark every
+    /// run shows as true, and in `partial` the characters each mark only some
+    /// show is on; bold only when `style` is not bold already, as a cell's
+    /// format makes it.
+    pub fn mark(&self, style: &mut Value) {
+        if self.bold {
+            style["bold"] = json!(true);
+        }
+        let bold = style["bold"] == true;
+        self.mark_but(style, bold);
+    }
+
+    /// Records the marks in `style` as [`ElementEmphasis::mark`] does, bold
+    /// in part only unless `bold`.
+    fn mark_but(&self, style: &mut Value, bold: bool) {
         self.every.mark(style);
-        let partial: Vec<&str> = (bold == Share::Some)
-            .then_some("bold")
-            .into_iter()
-            .chain(
-                self.some
-                    .marks()
-                    .into_iter()
-                    .filter(|(_, shown)| *shown == Some(true))
-                    .map(|(key, _)| key),
-            )
+        let partial: Map<String, Value> = self
+            .partial
+            .iter()
+            .filter(|(mark, _)| !(bold && *mark == "bold"))
+            .map(|(mark, ranges)| {
+                let ranges: Vec<[usize; 2]> = ranges.iter().map(|r| [r.start, r.end]).collect();
+                ((*mark).to_owned(), json!(ranges))
+            })
             .collect();
         if !partial.is_empty() {
-            style["partial"] = json!(partial);
+            style["partial"] = Value::Object(partial);
         }
     }
 
-    /// The marks as a `style` object; `None` for none.
+    /// The marks but bold as a `style` object, as a shape's text records
+    /// them; `None` for none.
     pub fn style(&self) -> Option<Value> {
         let mut style = json!({});
-        self.mark(&mut style, Share::None);
+        self.mark_but(&mut style, true);
         style
             .as_object()
             .is_some_and(|marks| !marks.is_empty())
@@ -176,42 +248,44 @@ impl ElementEmphasis {
     }
 }
 
-/// The emphasis of an element from the fonts of its runs. With no runs, the
-/// element shows `empty`.
-pub fn element_emphasis(runs: &[RunFont], empty: &RunFont) -> ElementEmphasis {
-    let runs = if runs.is_empty() {
-        std::slice::from_ref(empty)
-    } else {
-        runs
-    };
-    let share = |mark: fn(&Emphasis) -> Option<bool>| {
-        Share::of(
-            runs.iter()
-                .filter(|run| mark(&run.emphasis) == Some(true))
-                .count(),
-            runs.len(),
-        )
-    };
-    let marks = [
-        share(|e| e.italic),
-        share(|e| e.underline),
-        share(|e| e.strike),
-        share(|e| e.highlight),
+/// The emphasis of an element from its runs. With no runs, the element shows
+/// `empty`.
+pub fn element_emphasis(runs: &[TextRun], empty: &RunFont) -> ElementEmphasis {
+    // A font and whether its run is bold show a mark.
+    type Shows = fn(&RunFont, bool) -> bool;
+    let marks: [(&str, Shows); 5] = [
+        ("bold", |_, bold| bold),
+        ("italic", |font, _| font.emphasis.italic == Some(true)),
+        ("underline", |font, _| font.emphasis.underline == Some(true)),
+        ("strike", |font, _| font.emphasis.strike == Some(true)),
+        ("highlight", |font, _| font.emphasis.highlight == Some(true)),
     ];
-    let shown = |wanted: Share| {
-        let [italic, underline, strike, highlight] =
-            marks.map(|share| (share == wanted).then_some(true));
-        Emphasis {
-            italic,
-            underline,
-            strike,
-            highlight,
+    let mut emphasis = ElementEmphasis::default();
+    for (key, mark) in marks {
+        let shows = |run: &&TextRun| mark(&run.font, run.bold);
+        let share = if runs.is_empty() {
+            Share::of(usize::from(mark(empty, false)), 1)
+        } else {
+            Share::of(runs.iter().filter(shows).count(), runs.len())
+        };
+        match share {
+            Share::Every => match key {
+                "bold" => emphasis.bold = true,
+                "italic" => emphasis.every.italic = Some(true),
+                "underline" => emphasis.every.underline = Some(true),
+                "strike" => emphasis.every.strike = Some(true),
+                _ => emphasis.every.highlight = Some(true),
+            },
+            Share::Some => {
+                let ranges = joined(runs.iter().filter(shows).map(|run| run.chars.clone()));
+                if !ranges.is_empty() {
+                    emphasis.partial.push((key, ranges));
+                }
+            }
+            Share::None => {}
         }
-    };
-    ElementEmphasis {
-        every: shown(Share::Every),
-        some: shown(Share::Some),
     }
+    emphasis
 }
 
 /// A size in points as JSON: whole sizes as integers, so that `11` written by
@@ -225,27 +299,12 @@ pub fn size_value(points: f64) -> Value {
     }
 }
 
-/// Each value of `values` once, in the order they first come; none unset.
-fn distinct(values: impl Iterator<Item = Option<Value>>) -> Vec<Value> {
-    let mut seen = vec![];
-    for value in values.flatten() {
-        if !seen.contains(&value) {
-            seen.push(value);
-        }
-    }
-    seen
-}
-
-/// The font of an element from the fonts of its runs. With no runs, the
-/// element shows `empty` (such as a cell's own font). A property the runs
-/// disagree on is `mixed`, and `runs` gives the values they show of it, and
-/// with the colours the theme slots they come from.
-pub fn element_font(runs: &[RunFont], empty: &RunFont) -> Value {
-    let runs = if runs.is_empty() {
-        std::slice::from_ref(empty)
-    } else {
-        runs
-    };
+/// The font of an element from its runs. With no runs, the element shows
+/// `empty` (such as a cell's own font). A property the runs disagree on is
+/// `mixed`, and `runs` gives the value of it each run shows on its
+/// characters, and with the colours the theme slots they come from.
+pub fn element_font(text_runs: &[TextRun], empty: &RunFont) -> Value {
+    let runs = fonts_of(text_runs, empty);
     fn agreed<T: PartialEq + Clone>(values: impl Iterator<Item = Option<T>>) -> Agreement<T> {
         let mut first = None;
         for value in values {
@@ -268,16 +327,16 @@ pub fn element_font(runs: &[RunFont], empty: &RunFont) -> Value {
     let mut font = Map::new();
     font.insert(
         "latin".into(),
-        text(agreed(runs.iter().map(|r| r.latin.clone()))),
+        text(agreed(runs.clone().map(|r| r.latin.clone()))),
     );
     font.insert(
         "east_asian".into(),
-        text(agreed(runs.iter().map(|r| r.east_asian.clone()))),
+        text(agreed(runs.clone().map(|r| r.east_asian.clone()))),
     );
     font.insert(
         "size".into(),
         match agreed(
-            runs.iter()
+            runs.clone()
                 .map(|r| r.size.map(|s| (s * 100.0).round() as i64)),
         ) {
             Agreement::Same(hundredths) => size_value(hundredths as f64 / 100.0),
@@ -285,7 +344,7 @@ pub fn element_font(runs: &[RunFont], empty: &RunFont) -> Value {
             Agreement::Unknown => Value::Null,
         },
     );
-    match agreed(runs.iter().map(|r| r.color.clone())) {
+    match agreed(runs.clone().map(|r| r.color.clone())) {
         Agreement::Same(color) => {
             font.insert("color".into(), color.json());
             if let Some(theme) = color.theme() {
@@ -300,31 +359,33 @@ pub fn element_font(runs: &[RunFont], empty: &RunFont) -> Value {
         }
     }
     // Only mixed properties have values of their runs, which most elements,
-    // in one run or in runs that agree, do not.
-    let mut shown = Map::new();
+    // in one run or in runs that agree, do not: each run gives the value it
+    // shows of each where its characters are.
     type Of = fn(&RunFont) -> Option<Value>;
-    let of_runs: [(&str, Of); 4] = [
+    let of_runs: [(&str, Of); 5] = [
         ("latin", |r| r.latin.clone().map(Value::from)),
         ("east_asian", |r| r.east_asian.clone().map(Value::from)),
         ("size", |r| r.size.map(size_value)),
         ("color", |r| r.color.as_ref().map(Color::json)),
+        ("color_theme", |r| {
+            r.color.as_ref().and_then(Color::theme).map(Value::from)
+        }),
     ];
-    for (key, value) in of_runs {
-        if font[key] == MIXED {
-            shown.insert(key.into(), Value::Array(distinct(runs.iter().map(value))));
+    let mixed: Vec<(&str, Of)> = of_runs
+        .into_iter()
+        .filter(|(key, _)| font[key.strip_suffix("_theme").unwrap_or(key)] == MIXED)
+        .collect();
+    if !mixed.is_empty() {
+        let shown = placed(text_runs.iter().map(|run| {
+            let values = mixed
+                .iter()
+                .filter_map(|(key, of)| Some(((*key).to_owned(), of(&run.font)?)))
+                .collect();
+            (run.chars.clone(), values)
+        }));
+        if !shown.is_empty() {
+            font.insert("runs".into(), Value::Array(shown));
         }
-    }
-    if font["color"] == MIXED {
-        let themes = distinct(
-            runs.iter()
-                .map(|r| r.color.as_ref().and_then(Color::theme).map(Value::from)),
-        );
-        if !themes.is_empty() {
-            shown.insert("color_theme".into(), Value::Array(themes));
-        }
-    }
-    if !shown.is_empty() {
-        font.insert("runs".into(), Value::Object(shown));
     }
     Value::Object(font)
 }
@@ -435,11 +496,20 @@ impl FontEdit {
             }
         }
         if let Some(object) = out.as_object_mut()
-            && let Some(Value::Object(runs)) = object.get_mut("runs")
+            && let Some(Value::Array(runs)) = object.remove("runs")
         {
-            runs.retain(|key, _| !set.contains(&key.as_str()));
-            if runs.is_empty() {
-                object.remove("runs");
+            let kept = placed(runs.into_iter().filter_map(|run| {
+                let mut values = match run {
+                    Value::Object(values) => values,
+                    _ => return None,
+                };
+                let start = values.remove("start")?.as_u64()? as usize;
+                let end = values.remove("end")?.as_u64()? as usize;
+                values.retain(|key, _| !set.contains(&key.as_str()));
+                Some((start..end, values))
+            }));
+            if !kept.is_empty() {
+                object.insert("runs".into(), Value::Array(kept));
             }
         }
         out
@@ -909,39 +979,82 @@ pub fn paragraph_level(paragraph: Node<'_, '_>) -> usize {
         .map_or(1, |l| l.clamp(0, 8) + 1)
 }
 
-/// The fonts of the runs with text of a DrawingML paragraph (`a:r`, `a:fld`),
-/// with what a run leaves unset from `inherited` for the paragraph's level, and
-/// the font of its end (`a:endParaRPr`), which an empty paragraph shows.
+/// The runs with text of a DrawingML paragraph (`a:r`, `a:fld`), each with
+/// the characters it shows of the paragraph's text, which its runs and line
+/// breaks (`a:br`, one character) show, counted from `start`; and where that
+/// text ends.
+pub fn placed_runs<'a, 'input>(
+    paragraph: Node<'a, 'input>,
+    start: usize,
+) -> (Vec<(Node<'a, 'input>, Range<usize>)>, usize) {
+    let mut runs = vec![];
+    let mut at = start;
+    for node in paragraph.descendants() {
+        if node.has_tag_name((DRAWING, "t")) {
+            let length = node.text().map_or(0, |t| t.chars().count());
+            if length > 0
+                && let Some(run) = node.parent().filter(|run| {
+                    run.has_tag_name((DRAWING, "r")) || run.has_tag_name((DRAWING, "fld"))
+                })
+            {
+                runs.push((run, at..at + length));
+            }
+            at += length;
+        } else if node.has_tag_name((DRAWING, "br")) {
+            at += 1;
+        }
+    }
+    (runs, at)
+}
+
+/// The runs with text of a DrawingML text body, placed as [`placed_runs`]
+/// places them in the text of its paragraphs, a line each.
+pub fn body_runs<'a, 'input>(body: Node<'a, 'input>) -> Vec<(Node<'a, 'input>, Range<usize>)> {
+    let mut runs = vec![];
+    let mut at = 0;
+    for (i, paragraph) in body
+        .children()
+        .filter(|n| n.has_tag_name((DRAWING, "p")))
+        .enumerate()
+    {
+        let (own, end) = placed_runs(paragraph, at + usize::from(i > 0));
+        runs.extend(own);
+        at = end;
+    }
+    runs
+}
+
+/// The runs with text of a DrawingML paragraph, placed from `start` as
+/// [`placed_runs`] places them, with what a run leaves unset from
+/// `inherited` for the paragraph's level; the font of its end
+/// (`a:endParaRPr`), which an empty paragraph shows; and where its text ends.
 pub fn paragraph_runs(
     paragraph: Node<'_, '_>,
+    start: usize,
     inherited: &dyn Fn(usize) -> RunFont,
     context: &ColorContext<'_>,
-) -> (Vec<RunFont>, RunFont) {
+) -> (Vec<TextRun>, RunFont, usize) {
     let base = inherited(paragraph_level(paragraph));
-    let own = |run: Node<'_, '_>, tag: &str| {
-        run.children()
-            .find(|n| n.has_tag_name((DRAWING, tag)))
-            .map(|p| drawing_run(p, context))
-            .unwrap_or_default()
-            .or(&base)
-    };
-    let runs = paragraph
-        .children()
-        .filter(|n| n.has_tag_name((DRAWING, "r")) || n.has_tag_name((DRAWING, "fld")))
-        .filter(|run| {
-            run.children()
-                .find(|n| n.has_tag_name((DRAWING, "t")))
-                .and_then(|t| t.text())
-                .is_some_and(|t| !t.is_empty())
+    let (placed, end_at) = placed_runs(paragraph, start);
+    let runs = placed
+        .into_iter()
+        .map(|(run, chars)| TextRun {
+            font: run
+                .children()
+                .find(|n| n.has_tag_name((DRAWING, "rPr")))
+                .map(|p| drawing_run(p, context))
+                .unwrap_or_default()
+                .or(&base),
+            bold: false,
+            chars,
         })
-        .map(|run| own(run, "rPr"))
         .collect();
     let end = paragraph
         .children()
         .find(|n| n.has_tag_name((DRAWING, "endParaRPr")))
         .map(|p| drawing_run(p, context).or(&base))
         .unwrap_or_else(|| base.clone());
-    (runs, end)
+    (runs, end, end_at)
 }
 
 /// The DrawingML children of run properties in schema order (CT_TextCharacterProperties).
@@ -1153,6 +1266,23 @@ pub fn excel_name(edit: &FontEdit) -> Result<Option<String>> {
 mod tests {
     use super::*;
 
+    /// Runs of `fonts`, each showing as many characters as it says, after
+    /// one another.
+    fn placed(fonts: &[(RunFont, usize)]) -> Vec<TextRun> {
+        let mut at = 0;
+        fonts
+            .iter()
+            .map(|(font, length)| {
+                at += length;
+                TextRun {
+                    font: font.clone(),
+                    bold: false,
+                    chars: at - length..at,
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn element_fonts_report_disagreeing_runs_as_mixed() {
         let run = |latin: &str, size: f64, color: &str| RunFont {
@@ -1163,16 +1293,20 @@ mod tests {
             ..RunFont::default()
         };
         let font = element_font(
-            &[run("Arial", 11.0, "FF0000"), run("Arial", 12.0, "FF0000")],
+            &placed(&[
+                (run("Arial", 11.0, "FF0000"), 2),
+                (run("Arial", 12.0, "FF0000"), 3),
+            ]),
             &RunFont::default(),
         );
         assert_eq!(
             font,
             json!({"latin":"Arial","east_asian":"游ゴシック","size":"mixed","color":"FF0000",
-                "runs":{"size":[11,12]}})
+                "runs":[{"start":0,"end":2,"size":11},{"start":2,"end":5,"size":12}]})
         );
         // A run whose colour cannot be resolved gives none; theme slots go
-        // with the colours.
+        // with the colours, and runs next to each other showing the same
+        // values are one.
         let themed = RunFont {
             color: Some(Color::Rgb {
                 rgb: "4472C4".into(),
@@ -1181,19 +1315,24 @@ mod tests {
             ..RunFont::default()
         };
         let font = element_font(
-            &[
-                themed.clone(),
-                RunFont::default(),
-                run("Arial", 11.0, "FF0000"),
-                themed,
-            ],
+            &placed(&[
+                (themed.clone(), 1),
+                (themed.clone(), 1),
+                (RunFont::default(), 1),
+                (run("Arial", 11.0, "FF0000"), 2),
+                (themed, 1),
+            ]),
             &RunFont::default(),
         );
         assert_eq!(font["color"], MIXED);
         assert_eq!(
             font["runs"],
-            json!({"latin":["Arial"],"east_asian":["游ゴシック"],"size":[11],
-                "color":["4472C4","FF0000"],"color_theme":["accent1"]})
+            json!([
+                {"start":0,"end":2,"color":"4472C4","color_theme":"accent1"},
+                {"start":3,"end":5,"latin":"Arial","east_asian":"游ゴシック","size":11,
+                    "color":"FF0000"},
+                {"start":5,"end":6,"color":"4472C4","color_theme":"accent1"}
+            ])
         );
         // What an edit sets every run shows.
         let edited = FontEdit::parse(&json!({"color":"auto","size":12}))
@@ -1201,7 +1340,7 @@ mod tests {
             .applied(&font);
         assert_eq!(
             edited["runs"],
-            json!({"latin":["Arial"],"east_asian":["游ゴシック"]})
+            json!([{"start":3,"end":5,"latin":"Arial","east_asian":"游ゴシック"}])
         );
         let edited = FontEdit::parse(&json!({"latin":"A","east_asian":"A"}))
             .unwrap()
@@ -1210,13 +1349,27 @@ mod tests {
         let empty = element_font(&[], &run("Calibri", 10.5, "000000"));
         assert_eq!(empty["size"], 10.5);
         assert_eq!(
-            element_font(&[RunFont::default()], &RunFont::default())["latin"],
+            element_font(&placed(&[(RunFont::default(), 1)]), &RunFont::default())["latin"],
             Value::Null
         );
+        // A run whose characters are not placed counts toward what the
+        // runs agree on, but shows its values nowhere.
+        let unplaced = element_font(
+            &[
+                TextRun {
+                    font: run("Arial", 11.0, "FF0000"),
+                    ..TextRun::default()
+                },
+                placed(&[(run("Arial", 12.0, "FF0000"), 2)]).remove(0),
+            ],
+            &RunFont::default(),
+        );
+        assert_eq!(unplaced["size"], MIXED);
+        assert_eq!(unplaced["runs"], json!([{"start":0,"end":2,"size":12}]));
     }
 
     #[test]
-    fn marks_only_some_runs_show_are_partial() {
+    fn marks_only_some_runs_show_are_partial_where_they_show() {
         let marked = |italic: bool, strike: bool| RunFont {
             emphasis: Emphasis {
                 italic: Some(italic),
@@ -1225,21 +1378,47 @@ mod tests {
             },
             ..RunFont::default()
         };
-        let emphasis = element_emphasis(
-            &[marked(true, false), marked(true, true)],
-            &RunFont::default(),
-        );
+        let mut runs = placed(&[
+            (marked(true, false), 1),
+            (marked(true, true), 2),
+            (marked(true, false), 1),
+            (marked(true, true), 1),
+        ]);
+        runs[0].bold = true;
+        runs[1].bold = true;
+        let emphasis = element_emphasis(&runs, &RunFont::default());
         let mut style = json!({"bold":false});
-        emphasis.mark(&mut style, Share::Some);
+        emphasis.mark(&mut style);
         assert_eq!(
             style,
-            json!({"bold":false,"italic":true,"partial":["bold","strike"]})
+            json!({"bold":false,"italic":true,
+                "partial":{"bold":[[0,3]],"strike":[[1,3],[4,5]]}})
         );
+        // A shape's text records no bold; a cell bold by its format is bold
+        // as a whole.
         assert_eq!(
             emphasis.style(),
-            Some(json!({"italic":true,"partial":["strike"]}))
+            Some(json!({"italic":true,"partial":{"strike":[[1,3],[4,5]]}}))
         );
+        let mut bold = json!({"bold":true});
+        emphasis.mark(&mut bold);
+        assert_eq!(
+            bold,
+            json!({"bold":true,"italic":true,"partial":{"strike":[[1,3],[4,5]]}})
+        );
+        // Runs all written bold make the text bold.
+        for run in &mut runs {
+            run.bold = true;
+        }
+        let mut style = json!({"bold":false});
+        element_emphasis(&runs, &RunFont::default()).mark(&mut style);
+        assert_eq!(style["bold"], true);
+        assert!(style["partial"].get("bold").is_none());
         assert_eq!(element_emphasis(&[], &RunFont::default()).style(), None);
+        assert_eq!(
+            element_emphasis(&[], &marked(true, false)).style(),
+            Some(json!({"italic":true}))
+        );
         assert_eq!(
             [
                 Share::of(0, 3),

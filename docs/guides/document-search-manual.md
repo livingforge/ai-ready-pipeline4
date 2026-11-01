@@ -213,10 +213,10 @@ arp4 documents search "秒" --color red --root C:/project
 ```
 
 ```json
-{"items":[{"formatted":["B2"],"kind":"row","row":2,"table_ref":"t1","values":["注文登録","30","秒"]},{"formatted":["B4"],"kind":"row","row":4,"table_ref":"t1","values":["在庫引当","90","秒"]},{"formatted":["E6"],"kind":"block","text":"赤字は変更箇所", …}], "page":{"total":3, …}, …}
+{"items":[{"formatted":[{"address":"B2","pointer":"/sheets/0/cells/4/value","spans":[{"start":0,"end":2,"text":"30","format":{"color":"FF0000","east_asian":"游ゴシック","latin":"游ゴシック","size":11}}]}],"kind":"row","row":2,"table_ref":"t1","values":["注文登録","30","秒"]},{"formatted":[{"address":"B3","pointer":"/sheets/0/cells/7/value","spans":[{"start":2,"end":6,"text":"（変更）","format":{"color":"FF0000", …}}]}],"kind":"row","row":3,"table_ref":"t1","values":["履歴照会","60（変更）","秒"]},{"formatted":[{"address":"E6", …}],"kind":"block","text":"赤字は変更箇所", …}], "page":{"total":3, …}, …}
 ```
 
-`formatted` が、指定した書式に一致したセルの番地です（図形の文字は抽出結果へのポインター）。表の行では、行の中のどのセルが赤いかをここで確認します。
+`formatted` が、指定した書式に一致した文字です。セルごと（図形の文字は抽出結果へのポインター `pointer` だけ）に、一致した部分の位置（`start`・`end`。値の先頭からの文字数で、`end` の文字は含みません）、文字（`text`）、書式（`format`）を返します。表の行では、行の中のどのセルのどの文字が赤いかをここで確認します。上の例では、B3の「60（変更）」のうち「（変更）」だけが赤字です。`format` には色・フォント・サイズと、付いている強調（`bold` など）を含む、その文字の書式の全体が入ります。
 
 | やりたいこと | 書き方 |
 |---|---|
@@ -224,7 +224,6 @@ arp4 documents search "秒" --color red --root C:/project
 | 特定の色だけ | `--color FF0000` |
 | 赤か青 | `--color red --color blue` |
 | テーマの色（アクセント2など） | `--color accent2` |
-| 一部の文字だけ色が違うセル（色を問わない） | `--color mixed` |
 | フォント | `--font "MS ゴシック"` |
 | 14ポイント以上 | `--size 14..` |
 | 太字・斜体・下線 | `--bold`・`--italic`・`--underline` |
@@ -232,7 +231,7 @@ arp4 documents search "秒" --color red --root C:/project
 | 蛍光ペン（Word・PowerPoint） | `--highlight` |
 | 塗りつぶしのあるセル | `--fill` |
 
-色の系統には `red`・`orange`・`yellow`・`green`・`cyan`・`blue`・`purple`・`pink`・`gray`・`black`・`white` を使えます。自動色（Excelの「自動」）は `black` に入ります。書式はセルや段落の文字の一部だけに付いていても一致します（「仕様**書**」のように1文字だけ太字のセルも `--bold` で見つかります）。複数の条件を付けると、すべてを満たすセルがある箇所だけを返します。条件ごとに別の文字でもよく、`--bold --color red` は太字の部分と赤い部分を持つセルを返します。
+色の系統には `red`・`orange`・`yellow`・`green`・`cyan`・`blue`・`purple`・`pink`・`gray`・`black`・`white` を使えます。自動色（Excelの「自動」）は `black` に入ります。書式はセルや段落の文字の一部だけに付いていても一致します（「仕様**書**」のように1文字だけ太字のセルも `--bold` で見つかります）。複数の条件を付けると、すべてを満たす文字がある箇所だけを返します。条件は同じ文字で満たす必要があり、`--bold --color red` は赤い太字の文字を返します。太字の部分と赤い部分が別の文字のセルは返しません。
 
 どんな色やフォントが使われているかは、先に `search-formats` で確認できます。
 
@@ -241,10 +240,10 @@ arp4 documents search-formats --root C:/project
 ```
 
 ```json
-{"items":[{"cells":9,"family":"black","hits":4,"property":"color","value":"auto"},{"cells":2,"family":"red","hits":2,"property":"color","value":"FF0000"},{"cells":1,"family":"red","hits":1,"property":"color","value":"C00000"},{"cells":1,"hits":1,"property":"color","value":"mixed"},{"cells":3,"hits":1,"property":"font","value":"Meiryo UI"}, …], …}
+{"items":[{"cells":10,"family":"black","hits":4,"property":"color","value":"auto"},{"cells":3,"family":"red","hits":3,"property":"color","value":"FF0000"},{"cells":1,"family":"red","hits":1,"property":"color","value":"C00000"},{"cells":3,"hits":1,"property":"font","value":"Meiryo UI"}, …], …}
 ```
 
-`hits` はその値だけで絞ったときの件数、`cells` はその書式の文字があるセルの数です。一部の文字だけ赤いセルは、`mixed` と、`FF0000` などその文字の色の両方に数えます。
+`hits` はその値だけで絞ったときの件数、`cells` はその値の文字があるセルの数です。一部の文字だけ赤いセルは、`FF0000` などその文字の色と、ほかの文字の色（`auto` など）の両方に数えます。
 
 注意点:
 
@@ -335,7 +334,7 @@ groups:
 | `search revision changed; restart at offset 0 without --revision` | ページ送りの途中で索引が更新されました。`--offset` と `--revision` を外して最初から検索し直します。 |
 | `the argument '--full' cannot be used with '--limit <LIMIT>'`（指定順により逆の文言。`--offset` も同様） | `--full` は全件を返すため、件数の指定とは併用できません。どちらかを外します。 |
 | `search query must contain 1..256 characters` | 検索語が空か、長すぎます。書式だけで探す場合は検索語を省きます。 |
-| `unknown color …` | `--color` に指定できない値です。`RRGGBB`、色の系統（`red` など）、テーマの色枠（`accent1` など）、`auto`、`mixed` のいずれかを指定します。 |
+| `unknown color …` | `--color` に指定できない値です。`RRGGBB`、色の系統（`red` など）、テーマの色枠（`accent1` など）、`auto` のいずれかを指定します。 |
 | `ok: false` で `failed` に文書が並ぶ | 一部の文書の検証に失敗し、その文書を除いた結果が返っています。**「該当なし」と判断しないでください。** `search-refresh` を実行し、それでも失敗する場合は該当文書の状態を `documents status` で確認します。 |
 | 索引が壊れた様子がある | `documents search-refresh --rebuild` で索引を作り直します。索引は再生成できるキャッシュなので、作り直しても文書は失われません。 |
 

@@ -149,56 +149,85 @@ fn snapshot(db: &Connection, signature: &str) -> Result<(String, Vec<Value>, u64
     ))
 }
 
-/// Moves the format of each source of `passage` into the `formats` table,
-/// leaving its ID in its place, and gives the cells of the passage in each
-/// format. A source continuing a value from an earlier fragment is counted
-/// with that fragment.
+/// Moves the format of each part of each source of `passage` into the
+/// `formats` table, leaving its ID in its place, and gives the formats the
+/// passage's text is in and the values of format properties it shows. A
+/// source continuing a value from an earlier fragment is counted with that
+/// fragment.
 fn store_formats(
     db: &Connection,
     known: &mut HashMap<String, i64>,
     passage: &mut Value,
-) -> Result<BTreeMap<i64, i64>> {
-    let mut cells = BTreeMap::new();
+) -> Result<(BTreeSet<i64>, format::Values)> {
+    let mut ids = BTreeSet::new();
+    let mut values = format::Values::default();
     for source in passage["sources"].as_array_mut().into_iter().flatten() {
-        let Some(format) = source.as_object_mut().and_then(|s| s.remove("format")) else {
+        let Some(Value::Array(parts)) = source.as_object_mut().and_then(|s| s.remove("formats"))
+        else {
             continue;
         };
-        let key = format.to_string();
-        let id = match known.get(&key) {
-            Some(id) => *id,
-            None => {
-                db.execute("INSERT OR IGNORE INTO formats(format) VALUES (?1)", [&key])?;
-                let id = db.query_row("SELECT id FROM formats WHERE format=?1", [&key], |r| {
-                    r.get(0)
-                })?;
-                known.insert(key, id);
-                id
-            }
-        };
-        source["format"] = json!(id);
-        *cells.entry(id).or_default() += i64::from(source["start"] == 0);
+        values.add(parts.iter().map(|part| &part[2]), source["start"] == 0);
+        let mut stored = Vec::with_capacity(parts.len());
+        for part in parts {
+            let key = part[2].to_string();
+            let id = match known.get(&key) {
+                Some(id) => *id,
+                None => {
+                    db.execute("INSERT OR IGNORE INTO formats(format) VALUES (?1)", [&key])?;
+                    let id =
+                        db.query_row("SELECT id FROM formats WHERE format=?1", [&key], |r| {
+                            r.get(0)
+                        })?;
+                    known.insert(key, id);
+                    id
+                }
+            };
+            ids.insert(id);
+            stored.push(json!([part[0], part[1], id]));
+        }
+        source["formats"] = json!(stored);
     }
-    Ok(cells)
+    Ok((ids, values))
 }
 
 /// Takes the format IDs out of a hit's sources and, when the search filters
-/// by format, lists the sources in a `wanted` format as `formatted`: a cell
-/// by its address, a shape's text by its pointer.
-fn mark_formats(item: &mut Value, wanted: Option<&BTreeSet<i64>>) {
+/// by format, lists in `formatted` each source with text in a `wanted`
+/// format (by ID): its pointer, a cell's address, and each part of its text
+/// in one, with its characters and format.
+fn mark_formats(item: &mut Value, wanted: Option<&BTreeMap<i64, Value>>) {
     let mut formatted: Vec<Value> = vec![];
     for source in item["sources"].as_array_mut().into_iter().flatten() {
-        let Some(id) = source.as_object_mut().and_then(|s| s.remove("format")) else {
+        let Some(Value::Array(parts)) = source.as_object_mut().and_then(|s| s.remove("formats"))
+        else {
             continue;
         };
-        if wanted.is_some_and(|wanted| id.as_i64().is_some_and(|id| wanted.contains(&id))) {
-            let place = match source["address"].as_str() {
-                Some(address) if !address.is_empty() => json!(address),
-                _ => source["pointer"].clone(),
-            };
-            if !formatted.contains(&place) {
-                formatted.push(place);
-            }
+        let Some(wanted) = wanted else {
+            continue;
+        };
+        // A part lies in the source's value; the source holds the
+        // characters from its start.
+        let offset = source["start"].as_u64().unwrap_or(0) as usize;
+        let chars: Vec<char> = source["text"].as_str().unwrap_or("").chars().collect();
+        let spans: Vec<Value> = parts
+            .iter()
+            .filter_map(|part| {
+                let format = wanted.get(&part[2].as_i64()?)?;
+                let (start, end) = (part[0].as_u64()? as usize, part[1].as_u64()? as usize);
+                let text: String = chars
+                    .get(start.saturating_sub(offset)..end.saturating_sub(offset))?
+                    .iter()
+                    .collect();
+                Some(json!({"start":start,"end":end,"text":text,"format":format}))
+            })
+            .collect();
+        if spans.is_empty() {
+            continue;
         }
+        let mut place = json!({"pointer":source["pointer"],"spans":spans});
+        if let Some(address) = source["address"].as_str().filter(|a| !a.is_empty()) {
+            place["address"] = json!(address);
+        }
+        formatted.push(place);
     }
     if wanted.is_some() {
         item["formatted"] = json!(formatted);
@@ -297,6 +326,10 @@ fn delete_document(db: &Connection, id: &str) -> Result<()> {
         [id],
     )?;
     db.execute(
+        "DELETE FROM passage_values WHERE passage IN (SELECT id FROM passages WHERE document = ?1)",
+        [id],
+    )?;
+    db.execute(
         "DELETE FROM terms WHERE rowid IN (SELECT id FROM passages WHERE document = ?1)",
         [id],
     )?;
@@ -346,32 +379,17 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let tx = db.transaction()?;
         let (_, failed, indexed_at_unix, indexed_documents) = snapshot(&tx, &signature())?;
-        let formats = tx
-            .prepare("SELECT id,format FROM formats")?
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-            .map(|row| {
-                let (id, format) = row?;
-                Ok((id, serde_json::from_str::<Value>(&format)?))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
         let rows = tx
             .prepare(&format!(
-                "SELECT f.passage,f.format,f.cells FROM passage_formats f JOIN passages p ON p.id=f.passage WHERE {}",
+                "SELECT v.passage,v.counts FROM passage_values v JOIN passages p ON p.id=v.passage WHERE {}",
                 in_scope("?1")
             ))?
             .query_map([scope.unwrap_or("")], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
             })?
-            .map(|row| {
-                let (passage, format, cells) = row?;
-                let format = formats
-                    .get(&format)
-                    .with_context(|| format!("search index lacks format {format}"))?;
-                Ok((passage, format, cells))
-            })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(FormatInventory {
-            items: format::inventory(rows),
+            items: format::inventory(rows)?,
             failed: failed
                 .into_iter()
                 .filter(|failure| within(failure["document_id"].as_str().unwrap_or(""), scope))
@@ -467,7 +485,7 @@ impl Store {
                 .optional()
                 .unwrap_or(None);
             if saved.as_deref() != Some(&signature) {
-                tx.execute_batch("DROP TABLE IF EXISTS terms; DROP TABLE IF EXISTS passage_formats; DROP TABLE IF EXISTS formats; DROP TABLE IF EXISTS passages; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS metadata;")?;
+                tx.execute_batch("DROP TABLE IF EXISTS terms; DROP TABLE IF EXISTS passage_formats; DROP TABLE IF EXISTS passage_values; DROP TABLE IF EXISTS formats; DROP TABLE IF EXISTS passages; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS metadata;")?;
                 tx.execute_batch(SQL)?;
                 tx.execute("INSERT INTO metadata VALUES (?1,'[]',0,'',0)", [&signature])?;
             }
@@ -535,7 +553,8 @@ impl Store {
                             let mut heading_groups = BTreeMap::<(String, String), i64>::new();
                             let mut encoder = packer();
                             corpus::build(self, &inspected, |mut passage| {
-                                let formats = store_formats(&tx, &mut known_formats, &mut passage)?;
+                                let (formats, values) =
+                                    store_formats(&tx, &mut known_formats, &mut passage)?;
                                 let title = normalize(string(&passage["title"])?);
                                 let body = normalize(string(&passage["text"])?);
                                 let context = normalize(&corpus::headings(&passage));
@@ -554,11 +573,17 @@ impl Store {
                                 let passage_id = tx.last_insert_rowid();
                                 tx.prepare_cached("INSERT INTO terms(rowid,title,body,context,grams) VALUES (?1,?2,?3,?4,?5)")?
                                     .execute(params![passage_id, words(&title), words(&body), words(&context), grams(&format!("{title}\n{body}\n{context}"))])?;
-                                for (format, cells) in formats {
+                                for format in formats {
                                     tx.prepare_cached(
-                                        "INSERT INTO passage_formats(passage,format,cells) VALUES (?1,?2,?3)",
+                                        "INSERT INTO passage_formats(passage,format) VALUES (?1,?2)",
                                     )?
-                                    .execute(params![passage_id, format, cells])?;
+                                    .execute(params![passage_id, format])?;
+                                }
+                                if let Some(values) = values.stored() {
+                                    tx.prepare_cached(
+                                        "INSERT INTO passage_values(passage,counts) VALUES (?1,?2)",
+                                    )?
+                                    .execute(params![passage_id, values])?;
                                 }
                                 Ok(())
                             })?;
@@ -637,21 +662,22 @@ impl Store {
             None
         } else {
             let started = Instant::now();
-            let mut wanted = BTreeSet::new();
+            let mut wanted = BTreeMap::new();
             let mut statement = tx.prepare("SELECT id,format FROM formats")?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
-                if options
-                    .format
-                    .matches(&serde_json::from_str(&row.get::<_, String>(1)?)?)
-                {
-                    wanted.insert(row.get::<_, i64>(0)?);
+                let format: Value = serde_json::from_str(&row.get::<_, String>(1)?)?;
+                if options.format.matches(&format) {
+                    wanted.insert(row.get::<_, i64>(0)?, format);
                 }
             }
             timings.sql += started.elapsed();
             Some(wanted)
         };
-        let format_ids = formats.as_ref().map(serde_json::to_string).transpose()?;
+        let format_ids = formats
+            .as_ref()
+            .map(|wanted| serde_json::to_string(&wanted.keys().collect::<Vec<_>>()))
+            .transpose()?;
         let scope = options.document.unwrap_or("");
         let rankings = under(&self.arp, "cache/search/rankings")?;
         let mut results: Vec<SearchResult> = Vec::with_capacity(texts.len());

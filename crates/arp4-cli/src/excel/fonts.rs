@@ -1,6 +1,6 @@
 //! The fonts of cells and shape text as Excel shows them, and font edits.
 use super::*;
-use crate::fonts::{Color, ColorContext, Emphasis, FontEdit, RunFont, Theme, tinted};
+use crate::fonts::{Color, ColorContext, Emphasis, FontEdit, RunFont, TextRun, Theme, tinted};
 
 /// Excel's default colour palette (`indexed` 0–63); 64 is the automatic
 /// (system) text colour.
@@ -165,30 +165,38 @@ impl Palette {
         }
     }
 
-    /// The fonts of rich text runs (`r` in `si` or `is`) with text, as they set
-    /// them: what a run leaves unset comes from its cell.
-    pub(super) fn runs(&self, container: Node<'_, '_>) -> Vec<RunFont> {
-        container
-            .children()
-            .filter(|n| n.has_tag_name((NS, "r")))
-            .filter(|run| {
-                child(*run, "t")
-                    .and_then(|t| t.text())
-                    .is_some_and(|t| !t.is_empty())
-            })
-            .map(|run| {
-                child(run, "rPr")
-                    .map(|p| self.font(p, true))
-                    .unwrap_or_default()
-            })
-            .collect()
+    /// The rich text runs (`r` in `si` or `is`) with text, with the fonts
+    /// they set (what a run leaves unset comes from its cell) and the
+    /// characters of the cell's text they show.
+    pub(super) fn runs(&self, container: Node<'_, '_>) -> Vec<TextRun> {
+        let length = |node: Option<Node<'_, '_>>| {
+            node.and_then(|t| t.text())
+                .map_or(0, |t| super::decode_xstring(t).chars().count())
+        };
+        // Text before the runs comes first.
+        let mut at = length(child(container, "t"));
+        let mut runs = vec![];
+        for run in container.children().filter(|n| n.has_tag_name((NS, "r"))) {
+            let chars = at..at + length(child(run, "t"));
+            at = chars.end;
+            if chars.is_empty() {
+                continue;
+            }
+            let properties = child(run, "rPr");
+            runs.push(TextRun {
+                font: properties.map(|p| self.font(p, true)).unwrap_or_default(),
+                bold: properties.is_some_and(|p| super::on(p, "b")),
+                chars,
+            });
+        }
+        runs
     }
 }
 
 /// The fonts of the text of an Excel shape (`xdr:sp`) and the font it shows
 /// without runs: run properties, the shape's list style, its style's font
 /// reference, then Excel's 11-point text in the theme text colour.
-pub(super) fn shape_runs(shape: Node<'_, '_>, theme: Option<&Theme>) -> (Vec<RunFont>, RunFont) {
+pub(super) fn shape_runs(shape: Node<'_, '_>, theme: Option<&Theme>) -> (Vec<TextRun>, RunFont) {
     let map = crate::fonts::default_color_map();
     let base_context = ColorContext {
         theme,
@@ -226,10 +234,18 @@ pub(super) fn shape_runs(shape: Node<'_, '_>, theme: Option<&Theme>) -> (Vec<Run
     };
     let mut runs = vec![];
     let mut empty = None;
-    for paragraph in body.children().filter(|n| n.has_tag_name((DRAWING, "p"))) {
-        let (own, end) = crate::fonts::paragraph_runs(paragraph, &inherited, &context);
+    // The paragraphs of the text are a line each.
+    let mut at = 0;
+    for (i, paragraph) in body
+        .children()
+        .filter(|n| n.has_tag_name((DRAWING, "p")))
+        .enumerate()
+    {
+        let (own, end, end_at) =
+            crate::fonts::paragraph_runs(paragraph, at + usize::from(i > 0), &inherited, &context);
         runs.extend(own);
         empty.get_or_insert(end);
+        at = end_at;
     }
     (runs, empty.unwrap_or_else(|| inherited(1)))
 }

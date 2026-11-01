@@ -1,5 +1,5 @@
 ARP4 1.0.0-alpha.1
-commit: 69f347be0d71c7bacc177375d981d7a9b6ef8f3c
+commit: 823accfef51c885318441fbb08a7003600092f77
 dirty: false
 Contents are the selected working-tree files. SHA256SUMS identifies their exact bytes.
 Dependencies and toolchains are downloaded separately.

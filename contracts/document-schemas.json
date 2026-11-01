@@ -6232,48 +6232,46 @@
                     "minLength": 1
                   },
                   "runs": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "minProperties": 1,
-                    "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                    "properties": {
-                      "latin": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start",
+                        "end"
+                      ],
+                      "minProperties": 3,
+                      "properties": {
+                        "start": {
+                          "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "end": {
+                          "description": "runの最後の文字の次の位置",
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "latin": {
                           "type": "string",
                           "minLength": 1
-                        }
-                      },
-                      "east_asian": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "east_asian": {
                           "type": "string",
                           "minLength": 1
-                        }
-                      },
-                      "size": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "size": {
                           "type": "number",
                           "exclusiveMinimum": 0
-                        }
-                      },
-                      "color": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "color": {
                           "type": "string",
                           "pattern": "^([0-9A-F]{6}|auto)$"
-                        }
-                      },
-                      "color_theme": {
-                        "description": "テーマ色に由来するrunの色のテーマの色枠",
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "color_theme": {
+                          "description": "テーマ色に由来するrunの色のテーマの色枠",
                           "type": "string",
                           "minLength": 1
                         }
@@ -6325,18 +6323,76 @@
                     "minimum": 1
                   },
                   "partial": {
-                    "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                    "type": "array",
-                    "minItems": 1,
-                    "uniqueItems": true,
-                    "items": {
-                      "enum": [
-                        "bold",
-                        "italic",
-                        "underline",
-                        "strike",
-                        "highlight"
-                      ]
+                    "description": "The characters each mark only some runs of the text show is on, by mark (bold, italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "bold": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      "italic": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      "underline": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      "strike": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      "highlight": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2,
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
                     }
                   }
                 },
@@ -6865,48 +6921,46 @@
                         "minLength": 1
                       },
                       "runs": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "minProperties": 1,
-                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                        "properties": {
-                          "latin": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "start",
+                            "end"
+                          ],
+                          "minProperties": 3,
+                          "properties": {
+                            "start": {
+                              "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "end": {
+                              "description": "runの最後の文字の次の位置",
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "latin": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "east_asian": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "east_asian": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "size": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "size": {
                               "type": "number",
                               "exclusiveMinimum": 0
-                            }
-                          },
-                          "color": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color": {
                               "type": "string",
                               "pattern": "^([0-9A-F]{6}|auto)$"
-                            }
-                          },
-                          "color_theme": {
-                            "description": "テーマ色に由来するrunの色のテーマの色枠",
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color_theme": {
+                              "description": "テーマ色に由来するrunの色のテーマの色枠",
                               "type": "string",
                               "minLength": 1
                             }
@@ -6916,7 +6970,7 @@
                     }
                   },
                   "style": {
-                    "description": "The emphasis the shape's text shows, in every run or, under partial, in some. Absent when it shows none.",
+                    "description": "The emphasis the shape's text shows, in every run or, under partial, on the characters of some. Absent when it shows none.",
                     "type": "object",
                     "additionalProperties": false,
                     "minProperties": 1,
@@ -6938,17 +6992,63 @@
                         "const": true
                       },
                       "partial": {
-                        "description": "The marks only some runs of the text show, in this order: italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": true,
-                        "items": {
-                          "enum": [
-                            "italic",
-                            "underline",
-                            "strike",
-                            "highlight"
-                          ]
+                        "description": "The characters each mark only some runs of the text show is on, by mark (italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "properties": {
+                          "italic": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "underline": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "strike": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "highlight": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -7580,18 +7680,76 @@
                         "type": "boolean"
                       },
                       "partial": {
-                        "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": true,
-                        "items": {
-                          "enum": [
-                            "bold",
-                            "italic",
-                            "underline",
-                            "strike",
-                            "highlight"
-                          ]
+                        "description": "The characters each mark only some runs of the text show is on, by mark (bold, italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "properties": {
+                          "bold": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "italic": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "underline": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "strike": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "highlight": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -7661,48 +7819,46 @@
                         "minLength": 1
                       },
                       "runs": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "minProperties": 1,
-                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                        "properties": {
-                          "latin": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "start",
+                            "end"
+                          ],
+                          "minProperties": 3,
+                          "properties": {
+                            "start": {
+                              "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "end": {
+                              "description": "runの最後の文字の次の位置",
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "latin": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "east_asian": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "east_asian": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "size": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "size": {
                               "type": "number",
                               "exclusiveMinimum": 0
-                            }
-                          },
-                          "color": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color": {
                               "type": "string",
                               "pattern": "^([0-9A-F]{6}|auto)$"
-                            }
-                          },
-                          "color_theme": {
-                            "description": "テーマ色に由来するrunの色のテーマの色枠",
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color_theme": {
+                              "description": "テーマ色に由来するrunの色のテーマの色枠",
                               "type": "string",
                               "minLength": 1
                             }
@@ -8201,18 +8357,76 @@
                             "minimum": 1
                           },
                           "partial": {
-                            "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                            "type": "array",
-                            "minItems": 1,
-                            "uniqueItems": true,
-                            "items": {
-                              "enum": [
-                                "bold",
-                                "italic",
-                                "underline",
-                                "strike",
-                                "highlight"
-                              ]
+                            "description": "The characters each mark only some runs of the text show is on, by mark (bold, italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "minProperties": 1,
+                            "properties": {
+                              "bold": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "array",
+                                  "minItems": 2,
+                                  "maxItems": 2,
+                                  "items": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              },
+                              "italic": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "array",
+                                  "minItems": 2,
+                                  "maxItems": 2,
+                                  "items": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              },
+                              "underline": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "array",
+                                  "minItems": 2,
+                                  "maxItems": 2,
+                                  "items": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              },
+                              "strike": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "array",
+                                  "minItems": 2,
+                                  "maxItems": 2,
+                                  "items": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              },
+                              "highlight": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                  "type": "array",
+                                  "minItems": 2,
+                                  "maxItems": 2,
+                                  "items": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
                             }
                           }
                         },
@@ -8290,48 +8504,46 @@
                             "minLength": 1
                           },
                           "runs": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "minProperties": 1,
-                            "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                            "properties": {
-                              "latin": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "start",
+                                "end"
+                              ],
+                              "minProperties": 3,
+                              "properties": {
+                                "start": {
+                                  "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "end": {
+                                  "description": "runの最後の文字の次の位置",
+                                  "type": "integer",
+                                  "minimum": 1
+                                },
+                                "latin": {
                                   "type": "string",
                                   "minLength": 1
-                                }
-                              },
-                              "east_asian": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
+                                },
+                                "east_asian": {
                                   "type": "string",
                                   "minLength": 1
-                                }
-                              },
-                              "size": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
+                                },
+                                "size": {
                                   "type": "number",
                                   "exclusiveMinimum": 0
-                                }
-                              },
-                              "color": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
+                                },
+                                "color": {
                                   "type": "string",
                                   "pattern": "^([0-9A-F]{6}|auto)$"
-                                }
-                              },
-                              "color_theme": {
-                                "description": "テーマ色に由来するrunの色のテーマの色枠",
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
+                                },
+                                "color_theme": {
+                                  "description": "テーマ色に由来するrunの色のテーマの色枠",
                                   "type": "string",
                                   "minLength": 1
                                 }
@@ -8873,48 +9085,46 @@
                         "minLength": 1
                       },
                       "runs": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "minProperties": 1,
-                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                        "properties": {
-                          "latin": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "start",
+                            "end"
+                          ],
+                          "minProperties": 3,
+                          "properties": {
+                            "start": {
+                              "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "end": {
+                              "description": "runの最後の文字の次の位置",
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "latin": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "east_asian": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "east_asian": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "size": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "size": {
                               "type": "number",
                               "exclusiveMinimum": 0
-                            }
-                          },
-                          "color": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color": {
                               "type": "string",
                               "pattern": "^([0-9A-F]{6}|auto)$"
-                            }
-                          },
-                          "color_theme": {
-                            "description": "テーマ色に由来するrunの色のテーマの色枠",
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color_theme": {
+                              "description": "テーマ色に由来するrunの色のテーマの色枠",
                               "type": "string",
                               "minLength": 1
                             }
@@ -8924,7 +9134,7 @@
                     }
                   },
                   "style": {
-                    "description": "The emphasis the shape's text shows, in every run or, under partial, in some. Absent when it shows none.",
+                    "description": "The emphasis the shape's text shows, in every run or, under partial, on the characters of some. Absent when it shows none.",
                     "type": "object",
                     "additionalProperties": false,
                     "minProperties": 1,
@@ -8946,17 +9156,63 @@
                         "const": true
                       },
                       "partial": {
-                        "description": "The marks only some runs of the text show, in this order: italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": true,
-                        "items": {
-                          "enum": [
-                            "italic",
-                            "underline",
-                            "strike",
-                            "highlight"
-                          ]
+                        "description": "The characters each mark only some runs of the text show is on, by mark (italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "properties": {
+                          "italic": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "underline": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "strike": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "highlight": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -9183,48 +9439,46 @@
                   "minLength": 1
                 },
                 "runs": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "minProperties": 1,
-                  "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                  "properties": {
-                    "latin": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "start",
+                      "end"
+                    ],
+                    "minProperties": 3,
+                    "properties": {
+                      "start": {
+                        "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "end": {
+                        "description": "runの最後の文字の次の位置",
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "latin": {
                         "type": "string",
                         "minLength": 1
-                      }
-                    },
-                    "east_asian": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "east_asian": {
                         "type": "string",
                         "minLength": 1
-                      }
-                    },
-                    "size": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "size": {
                         "type": "number",
                         "exclusiveMinimum": 0
-                      }
-                    },
-                    "color": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "color": {
                         "type": "string",
                         "pattern": "^([0-9A-F]{6}|auto)$"
-                      }
-                    },
-                    "color_theme": {
-                      "description": "テーマ色に由来するrunの色のテーマの色枠",
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来するrunの色のテーマの色枠",
                         "type": "string",
                         "minLength": 1
                       }
@@ -9272,18 +9526,76 @@
                   "minimum": 1
                 },
                 "partial": {
-                  "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                  "type": "array",
-                  "minItems": 1,
-                  "uniqueItems": true,
-                  "items": {
-                    "enum": [
-                      "bold",
-                      "italic",
-                      "underline",
-                      "strike",
-                      "highlight"
-                    ]
+                  "description": "The characters each mark only some runs of the text show is on, by mark (bold, italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "bold": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    "italic": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    "underline": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    "strike": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    "highlight": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    }
                   }
                 }
               },
@@ -9747,18 +10059,76 @@
                         "type": "boolean"
                       },
                       "partial": {
-                        "description": "The marks only some runs of the text show, in this order: bold, italic, underline, strike, highlight. Search format filters match them as they match a mark every run shows. Absent when none.",
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": true,
-                        "items": {
-                          "enum": [
-                            "bold",
-                            "italic",
-                            "underline",
-                            "strike",
-                            "highlight"
-                          ]
+                        "description": "The characters each mark only some runs of the text show is on, by mark (bold, italic, underline, strike, highlight): ranges [start, end) in order and apart, counted in characters (Unicode scalar values) from the start of the text. Search format filters match those characters as they match text every run of which shows the mark. Absent when no mark is partial.",
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "properties": {
+                          "bold": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "italic": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "underline": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "strike": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "highlight": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2,
+                              "items": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
                         }
                       }
                     },
@@ -9828,48 +10198,46 @@
                         "minLength": 1
                       },
                       "runs": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "minProperties": 1,
-                        "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                        "properties": {
-                          "latin": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "start",
+                            "end"
+                          ],
+                          "minProperties": 3,
+                          "properties": {
+                            "start": {
+                              "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "end": {
+                              "description": "runの最後の文字の次の位置",
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "latin": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "east_asian": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "east_asian": {
                               "type": "string",
                               "minLength": 1
-                            }
-                          },
-                          "size": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "size": {
                               "type": "number",
                               "exclusiveMinimum": 0
-                            }
-                          },
-                          "color": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color": {
                               "type": "string",
                               "pattern": "^([0-9A-F]{6}|auto)$"
-                            }
-                          },
-                          "color_theme": {
-                            "description": "テーマ色に由来するrunの色のテーマの色枠",
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
+                            },
+                            "color_theme": {
+                              "description": "テーマ色に由来するrunの色のテーマの色枠",
                               "type": "string",
                               "minLength": 1
                             }
@@ -12581,48 +12949,46 @@
                     "minLength": 1
                   },
                   "runs": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "minProperties": 1,
-                    "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                    "properties": {
-                      "latin": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "start",
+                        "end"
+                      ],
+                      "minProperties": 3,
+                      "properties": {
+                        "start": {
+                          "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "end": {
+                          "description": "runの最後の文字の次の位置",
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "latin": {
                           "type": "string",
                           "minLength": 1
-                        }
-                      },
-                      "east_asian": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "east_asian": {
                           "type": "string",
                           "minLength": 1
-                        }
-                      },
-                      "size": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "size": {
                           "type": "number",
                           "exclusiveMinimum": 0
-                        }
-                      },
-                      "color": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "color": {
                           "type": "string",
                           "pattern": "^([0-9A-F]{6}|auto)$"
-                        }
-                      },
-                      "color_theme": {
-                        "description": "テーマ色に由来するrunの色のテーマの色枠",
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
+                        },
+                        "color_theme": {
+                          "description": "テーマ色に由来するrunの色のテーマの色枠",
                           "type": "string",
                           "minLength": 1
                         }
@@ -13154,48 +13520,46 @@
                   "minLength": 1
                 },
                 "runs": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "minProperties": 1,
-                  "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                  "properties": {
-                    "latin": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "start",
+                      "end"
+                    ],
+                    "minProperties": 3,
+                    "properties": {
+                      "start": {
+                        "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "end": {
+                        "description": "runの最後の文字の次の位置",
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "latin": {
                         "type": "string",
                         "minLength": 1
-                      }
-                    },
-                    "east_asian": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "east_asian": {
                         "type": "string",
                         "minLength": 1
-                      }
-                    },
-                    "size": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "size": {
                         "type": "number",
                         "exclusiveMinimum": 0
-                      }
-                    },
-                    "color": {
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "color": {
                         "type": "string",
                         "pattern": "^([0-9A-F]{6}|auto)$"
-                      }
-                    },
-                    "color_theme": {
-                      "description": "テーマ色に由来するrunの色のテーマの色枠",
-                      "type": "array",
-                      "minItems": 1,
-                      "items": {
+                      },
+                      "color_theme": {
+                        "description": "テーマ色に由来するrunの色のテーマの色枠",
                         "type": "string",
                         "minLength": 1
                       }
@@ -13285,48 +13649,46 @@
                                 "minLength": 1
                               },
                               "runs": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "minProperties": 1,
-                                "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                                "properties": {
-                                  "latin": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                "type": "array",
+                                "minItems": 1,
+                                "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "start",
+                                    "end"
+                                  ],
+                                  "minProperties": 3,
+                                  "properties": {
+                                    "start": {
+                                      "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                                      "type": "integer",
+                                      "minimum": 0
+                                    },
+                                    "end": {
+                                      "description": "runの最後の文字の次の位置",
+                                      "type": "integer",
+                                      "minimum": 1
+                                    },
+                                    "latin": {
                                       "type": "string",
                                       "minLength": 1
-                                    }
-                                  },
-                                  "east_asian": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "east_asian": {
                                       "type": "string",
                                       "minLength": 1
-                                    }
-                                  },
-                                  "size": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "size": {
                                       "type": "number",
                                       "exclusiveMinimum": 0
-                                    }
-                                  },
-                                  "color": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "color": {
                                       "type": "string",
                                       "pattern": "^([0-9A-F]{6}|auto)$"
-                                    }
-                                  },
-                                  "color_theme": {
-                                    "description": "テーマ色に由来するrunの色のテーマの色枠",
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "color_theme": {
+                                      "description": "テーマ色に由来するrunの色のテーマの色枠",
                                       "type": "string",
                                       "minLength": 1
                                     }
@@ -13419,48 +13781,46 @@
                                 "minLength": 1
                               },
                               "runs": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "minProperties": 1,
-                                "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                                "properties": {
-                                  "latin": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                "type": "array",
+                                "minItems": 1,
+                                "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "start",
+                                    "end"
+                                  ],
+                                  "minProperties": 3,
+                                  "properties": {
+                                    "start": {
+                                      "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                                      "type": "integer",
+                                      "minimum": 0
+                                    },
+                                    "end": {
+                                      "description": "runの最後の文字の次の位置",
+                                      "type": "integer",
+                                      "minimum": 1
+                                    },
+                                    "latin": {
                                       "type": "string",
                                       "minLength": 1
-                                    }
-                                  },
-                                  "east_asian": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "east_asian": {
                                       "type": "string",
                                       "minLength": 1
-                                    }
-                                  },
-                                  "size": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "size": {
                                       "type": "number",
                                       "exclusiveMinimum": 0
-                                    }
-                                  },
-                                  "color": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "color": {
                                       "type": "string",
                                       "pattern": "^([0-9A-F]{6}|auto)$"
-                                    }
-                                  },
-                                  "color_theme": {
-                                    "description": "テーマ色に由来するrunの色のテーマの色枠",
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
+                                    },
+                                    "color_theme": {
+                                      "description": "テーマ色に由来するrunの色のテーマの色枠",
                                       "type": "string",
                                       "minLength": 1
                                     }
@@ -13632,48 +13992,46 @@
                                             "minLength": 1
                                           },
                                           "runs": {
-                                            "type": "object",
-                                            "additionalProperties": false,
-                                            "minProperties": 1,
-                                            "description": "\"mixed\"の項目について、各runが示す値（初出順、解決できないrunは含まない）。検索の書式の条件はこの値にも一致する。フォント編集で1つの値にした項目は持たない",
-                                            "properties": {
-                                              "latin": {
-                                                "type": "array",
-                                                "minItems": 1,
-                                                "items": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "description": "\"mixed\"の項目について、各runがその文字に示す値（文字の順、解決できない値と位置を特定できない文字は含まない）。隣り合うrunで値が同じものは1つにまとめる。検索の書式の条件はこの値に文字ごとに一致する。フォント編集で1つの値にした項目は持たない",
+                                            "items": {
+                                              "type": "object",
+                                              "additionalProperties": false,
+                                              "required": [
+                                                "start",
+                                                "end"
+                                              ],
+                                              "minProperties": 3,
+                                              "properties": {
+                                                "start": {
+                                                  "description": "runの最初の文字の位置。文字列の先頭からの文字数（Unicodeのスカラー値）",
+                                                  "type": "integer",
+                                                  "minimum": 0
+                                                },
+                                                "end": {
+                                                  "description": "runの最後の文字の次の位置",
+                                                  "type": "integer",
+                                                  "minimum": 1
+                                                },
+                                                "latin": {
                                                   "type": "string",
                                                   "minLength": 1
-                                                }
-                                              },
-                                              "east_asian": {
-                                                "type": "array",
-                                                "minItems": 1,
-                                                "items": {
+                                                },
+                                                "east_asian": {
                                                   "type": "string",
                                                   "minLength": 1
-                                                }
-                                              },
-                                              "size": {
-                                                "type": "array",
-                                                "minItems": 1,
-                                                "items": {
+                                                },
+                                                "size": {
                                                   "type": "number",
                                                   "exclusiveMinimum": 0
-                                                }
-                                              },
-                                              "color": {
-                                                "type": "array",
-                                                "minItems": 1,
-                                                "items": {
+                                                },
+                                                "color": {
                                                   "type": "string",
                                                   "pattern": "^([0-9A-F]{6}|auto)$"
-                                                }
-                                              },
-                                              "color_theme": {
-                                                "description": "テーマ色に由来するrunの色のテーマの色枠",
-                                                "type": "array",
-                                                "minItems": 1,
-                                                "items": {
+                                                },
+                                                "color_theme": {
+                                                  "description": "テーマ色に由来するrunの色のテーマの色枠",
                                                   "type": "string",
                                                   "minLength": 1
                                                 }

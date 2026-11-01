@@ -24,21 +24,26 @@ CREATE TABLE IF NOT EXISTS passages (
     identifiers TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS passages_document ON passages(document);
--- Each format of indexed text once, as JSON: the effective font of a cell or
--- shape text and the emphasis its style records.
+-- Each format of indexed characters once, as JSON: the effective font of a
+-- cell or shape text where they are and the emphasis they show.
 CREATE TABLE IF NOT EXISTS formats (
     id INTEGER PRIMARY KEY,
     format TEXT NOT NULL UNIQUE
 );
--- The formats each passage's text is in, with the cells in each; a cell that
--- continues from an earlier fragment is counted there.
+-- The formats the characters of each passage's text are in.
 CREATE TABLE IF NOT EXISTS passage_formats (
     passage INTEGER NOT NULL,
     format INTEGER NOT NULL,
-    cells INTEGER NOT NULL,
     PRIMARY KEY (passage, format)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS passage_formats_format ON passage_formats(format, passage);
+-- Each value of a format property the characters of a passage's text show,
+-- with the cells that show it, as JSON ([property, value, cells] each); a
+-- cell that continues from an earlier fragment is counted there.
+CREATE TABLE IF NOT EXISTS passage_values (
+    passage INTEGER PRIMARY KEY,
+    counts TEXT NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS terms USING fts5(title, body, context, grams,
     content = '', contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 0');

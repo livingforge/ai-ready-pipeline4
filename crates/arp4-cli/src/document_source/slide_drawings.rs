@@ -329,16 +329,11 @@ pub(super) fn drawings(
             }
         }
         if kind == "shape" && !text.is_empty() {
-            let runs: Vec<Node<'_, '_>> = body
+            // A shape's text records no bold.
+            let runs: Vec<_> = body
                 .into_iter()
-                .flat_map(|b| b.descendants())
-                .filter(|n| n.has_tag_name((DRAWING, "r")) || n.has_tag_name((DRAWING, "fld")))
-                .filter(|run| {
-                    run.children()
-                        .find(|n| n.has_tag_name((DRAWING, "t")))
-                        .and_then(|t| t.text())
-                        .is_some_and(|t| !t.is_empty())
-                })
+                .flat_map(crate::fonts::body_runs)
+                .map(|(run, chars)| (run, false, chars))
                 .collect();
             let (font, emphasis) = fonts.runs_font(&runs, None, None);
             object["font"] = font;

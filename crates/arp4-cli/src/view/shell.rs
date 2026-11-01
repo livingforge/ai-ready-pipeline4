@@ -296,9 +296,12 @@ body.plain [data-changed]::after,body.plain .mark{display:none}
 .grid .hd{position:absolute;background:#f3f3f3;border:solid #d0d0d0;border-width:0 1px 1px 0;color:#666;font:11px/1 'Segoe UI',system-ui,sans-serif;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .grid .hd.on{background:#d2d2d2;color:#217346;font-weight:600;box-shadow:inset 0 -2px 0 #217346}
 .grid .heads-y .hd.on{box-shadow:inset -2px 0 0 #217346}
+.grid .gap{position:absolute;background:#f3f3f3;border:solid #9b9b9b;border-width:0 1px;pointer-events:none}
+.grid .heads-y .gap{border-width:1px 0}
 .grid .f{position:absolute}
 .grid .c{position:absolute;display:flex;padding:0 3px;line-height:1.2;white-space:pre;overflow:hidden}
 .grid .c.w{white-space:pre-wrap;overflow-wrap:anywhere}
+.grid .c.t>span{transform:rotate(var(--turn))}
 .grid .sel{position:absolute;border:2px solid #217346;z-index:4;pointer-events:none;scroll-margin:28px 8px 8px 48px}
 svg.lines{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
 .shape{position:absolute;cursor:default}

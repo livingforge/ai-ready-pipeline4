@@ -431,6 +431,7 @@ fn validate_hashed(
         current,
         &mut unresolved,
     )?;
+    let fingerprint = fingerprint.expect("a listing verification hashes the content");
     Ok(
         json!({"valid":true,"ready":reviewed && unresolved.count == 0,"review_current":value["review"]["content_hash"] == fingerprint,
         "content_hash":fingerprint,"unresolved":unresolved.entries}),
@@ -478,7 +479,7 @@ impl Unresolved {
 
 /// The checks of [`validate_hashed`], noting in `unresolved` what is left to
 /// resolve. Returns whether the review is accepted for the content, and the
-/// content's hash.
+/// content's hash when `unresolved` lists or the review is accepted.
 fn verify(
     root: &Path,
     extraction: &Extraction,
@@ -486,7 +487,7 @@ fn verify(
     value: &Structure,
     current: bool,
     unresolved: &mut Unresolved,
-) -> Result<(bool, String)> {
+) -> Result<(bool, Option<String>)> {
     value.check(validate_schema)?;
     relations::validate_elements(&value.elements, &value.fields)?;
     ensure!(
@@ -679,9 +680,11 @@ fn verify(
             );
         }
     }
-    let fingerprint = content_hash(value);
-    let reviewed =
-        value["review"]["status"] == "accepted" && value["review"]["content_hash"] == fingerprint;
+    // Hashed only to be listed or to accept a review: the structure of a
+    // large sheet has a cell for each of its values.
+    let accepted = value["review"]["status"] == "accepted";
+    let fingerprint = (unresolved.listed || accepted).then(|| content_hash(value));
+    let reviewed = accepted && value["review"]["content_hash"].as_str() == fingerprint.as_deref();
     Ok((reviewed, fingerprint))
 }
 

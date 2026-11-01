@@ -4,21 +4,56 @@ use std::{collections::BTreeSet, path::Path};
 use unicode_normalization::UnicodeNormalization;
 
 pub(super) fn normalize(text: &str) -> String {
-    text.nfkc()
-        .flat_map(char::to_lowercase)
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let folded: String = text.nfkc().flat_map(char::to_lowercase).collect();
+    let mut out = String::with_capacity(folded.len());
+    for word in folded.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 fn encoded(prefix: char, text: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::from(prefix);
-    for c in text.chars() {
-        write!(out, "{:x}z", c as u32).unwrap();
-    }
+    let mut out = String::with_capacity(1 + 4 * text.len());
+    push_encoded(&mut out, prefix, text.chars());
     out
+}
+
+/// Writes the token of `chars` after `prefix`: each character as its code
+/// point in lowercase hex and a `z`. Written by hand: a table row has
+/// hundreds of characters, each written several times, and formatting each
+/// took a third of indexing a sheet.
+fn push_encoded(out: &mut String, prefix: char, chars: impl IntoIterator<Item = char>) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    out.push(prefix);
+    for c in chars {
+        let mut code = c as u32;
+        let mut digits = [0u8; 8];
+        let mut start = digits.len();
+        loop {
+            start -= 1;
+            digits[start] = DIGITS[(code & 0xf) as usize];
+            code >>= 4;
+            if code == 0 {
+                break;
+            }
+        }
+        for &digit in &digits[start..] {
+            out.push(char::from(digit));
+        }
+        out.push('z');
+    }
+}
+
+/// Adds the token of `chars` after `prefix` to the tokens of `out`, which
+/// spaces separate.
+fn push_token(out: &mut String, prefix: char, chars: impl IntoIterator<Item = char>) {
+    if !out.is_empty() {
+        out.push(' ');
+    }
+    push_encoded(out, prefix, chars);
 }
 
 /// Split text where it changes between ASCII letters and digits and the rest.
@@ -44,52 +79,62 @@ pub(super) fn words(text: &str) -> String {
     // The segmenter cuts digits apart one by one, so an ID such as E01234
     // would match any text holding an e and those digits anywhere. A run of
     // ASCII letters and digits stays one word; only the rest is segmented.
-    runs(&normalize(text))
-        .into_iter()
-        .flat_map(|(ascii, run)| {
-            if ascii {
-                vec![run]
-            } else {
-                tiniestsegmenter::tokenize(run)
+    let mut out = String::new();
+    for (ascii, run) in runs(&normalize(text)) {
+        let segments = if ascii {
+            vec![run]
+        } else {
+            tiniestsegmenter::tokenize(run)
+        };
+        for segment in segments {
+            for word in segment
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+            {
+                push_token(&mut out, 'w', word.chars());
             }
-        })
-        .flat_map(|s| {
-            s.split(|c: char| !c.is_alphanumeric())
-                .filter(|s| !s.is_empty())
-                .map(|s| encoded('w', s))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+        }
+    }
+    out
 }
 
 pub(super) fn grams(text: &str) -> String {
     // Query terms hold no whitespace, so a pair across whitespace is never
     // searched; in a table row half the pairs are. Whitespace becomes one
     // break token instead, so pairs on either side never read as adjacent.
-    let mut pairs = vec![];
+    let mut out = String::with_capacity(12 * text.len());
     for chunk in text.split_whitespace() {
-        let chars: Vec<_> = chunk.chars().collect();
-        if chars.len() < 2 {
+        let mut chars = chunk.chars();
+        let Some(mut before) = chars.next() else {
+            continue;
+        };
+        let mut pairs = chars.peekable();
+        if pairs.peek().is_none() {
             continue;
         }
-        if !pairs.is_empty() {
-            pairs.push("b".to_owned());
+        if !out.is_empty() {
+            out.push_str(" b");
         }
-        pairs.extend(
-            chars
-                .windows(2)
-                .map(|p| encoded('g', &p.iter().collect::<String>())),
-        );
+        for after in pairs {
+            push_token(&mut out, 'g', [before, after]);
+            before = after;
+        }
     }
-    // Unigrams support two-kanji and single-character queries without a scan.
-    let singles: BTreeSet<_> = text
-        .chars()
-        .filter(|c| !c.is_whitespace())
+    // Unigrams support two-kanji and single-character queries without a scan,
+    // in the order of their tokens.
+    let singles: BTreeSet<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut singles: Vec<String> = singles
+        .into_iter()
         .map(|c| encoded('u', &c.to_string()))
         .collect();
-    pairs.extend(singles);
-    pairs.join(" ")
+    singles.sort_unstable();
+    for single in singles {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&single);
+    }
+    out
 }
 
 pub(super) fn identifiers(text: &str) -> String {
@@ -189,5 +234,31 @@ impl Query {
             identifier: format!("\n{}\n", text.trim()),
             groups,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tokens are each character's code point in hex and a z, after their
+    /// kind, separated by spaces: pairs within each run of non-space text, a
+    /// break between runs, then each character once in their order.
+    #[test]
+    fn tokens_spell_each_character_in_hex() {
+        assert_eq!(encoded('g', "aあ"), "g61z3042z");
+        assert_eq!(encoded('u', "😀"), "u1f600z");
+        assert_eq!(encoded('u', " "), "u0z");
+        assert_eq!(
+            grams("ab cd e"),
+            "g61z62z b g63z64z u61z u62z u63z u64z u65z"
+        );
+        assert_eq!(grams("😀"), "u1f600z");
+        assert_eq!(grams(" "), "");
+        assert_eq!(
+            words("TBL-00001  Ab"),
+            "w74z62z6cz w30z30z30z30z31z w61z62z"
+        );
+        assert_eq!(normalize("  Ａ	 b  "), "a b");
     }
 }

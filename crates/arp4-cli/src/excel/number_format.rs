@@ -293,26 +293,52 @@ fn general(x: f64) -> String {
     if x == 0.0 {
         return "0".into();
     }
-    let sign = if x < 0.0 { "-" } else { "" };
-    let abs = x.abs();
-    let exponent = abs.log10().floor() as i32;
+    let exponent = x.abs().log10().floor() as i32;
     if !(-9..15).contains(&exponent) {
-        let (integer, fraction) = fixed(abs / 10f64.powi(exponent), 14);
-        let fraction = fraction.trim_end_matches('0');
-        let point = if fraction.is_empty() { "" } else { "." };
-        let (integer, exponent) = if integer.len() > 1 {
-            ("1".to_owned(), exponent + 1)
-        } else {
-            (integer, exponent)
-        };
-        let sign_e = if exponent < 0 { '-' } else { '+' };
-        return format!(
-            "{sign}{integer}{point}{fraction}E{sign_e}{:02}",
-            exponent.abs()
-        );
+        return scientific(x, 14);
     }
-    let places = (14 - exponent).max(0) as usize;
-    let (integer, fraction) = fixed(abs, places);
+    decimal(x, (14 - exponent).max(0) as usize)
+}
+
+/// What Excel shows of `x` in the General format in a cell where only text
+/// that `fits` shows: the number as it is, else rounded to fewer decimals,
+/// else in scientific notation with fewer digits, else rounded to no
+/// decimals though that leaves nothing of it (`0`, `-0`); none when not even
+/// that fits, and Excel fills the cell with `#`.
+pub fn general_within(x: f64, fits: impl Fn(&str) -> bool) -> Option<String> {
+    let text = general(x);
+    if fits(&text) {
+        return Some(text);
+    }
+    if x == 0.0 || !x.is_finite() {
+        return None;
+    }
+    if !text.contains('E')
+        && let Some((_, fraction)) = text.split_once('.')
+    {
+        for places in (0..fraction.len()).rev() {
+            let text = decimal(x, places);
+            // Rounded to nothing, the number is better told in scientific
+            // notation.
+            if text.trim_start_matches(['-', '0', '.']).is_empty() {
+                break;
+            }
+            if fits(&text) {
+                return Some(text);
+            }
+        }
+    }
+    (0..14)
+        .rev()
+        .map(|places| scientific(x, places))
+        .chain([decimal(x, 0)])
+        .find(|t| fits(t))
+}
+
+/// `x` with at most `places` decimals, without the zeros that end them.
+fn decimal(x: f64, places: usize) -> String {
+    let sign = if x < 0.0 { "-" } else { "" };
+    let (integer, fraction) = fixed(x.abs(), places);
     let fraction = fraction.trim_end_matches('0');
     let integer = if integer.is_empty() { "0" } else { &integer };
     if fraction.is_empty() {
@@ -320,6 +346,27 @@ fn general(x: f64) -> String {
     } else {
         format!("{sign}{integer}.{fraction}")
     }
+}
+
+/// `x` in scientific notation (`1.5E+20`) with at most `places` decimals,
+/// without the zeros that end them.
+fn scientific(x: f64, places: usize) -> String {
+    let sign = if x < 0.0 { "-" } else { "" };
+    let abs = x.abs();
+    let exponent = abs.log10().floor() as i32;
+    let (integer, fraction) = fixed(abs / 10f64.powi(exponent), places);
+    let fraction = fraction.trim_end_matches('0');
+    let point = if fraction.is_empty() { "" } else { "." };
+    let (integer, exponent) = if integer.len() > 1 {
+        ("1".to_owned(), exponent + 1)
+    } else {
+        (integer, exponent)
+    };
+    let sign_e = if exponent < 0 { '-' } else { '+' };
+    format!(
+        "{sign}{integer}{point}{fraction}E{sign_e}{:02}",
+        exponent.abs()
+    )
 }
 
 fn numeric(x: f64, tokens: &[Token]) -> Option<String> {

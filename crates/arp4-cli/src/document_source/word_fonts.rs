@@ -3,7 +3,7 @@
 //! the theme, and font edits written to the runs.
 use super::word::Block;
 use super::*;
-use crate::fonts::{AUTO, Color, ElementEmphasis, Emphasis, FontEdit, RunFont, Theme};
+use crate::fonts::{AUTO, Color, ElementEmphasis, Emphasis, FontEdit, RunFont, TextRun, Theme};
 
 /// A style of `word/styles.xml`.
 struct Style {
@@ -306,11 +306,17 @@ impl WordStyles {
 
     /// The font and emphasis of a block of Word text from the runs that show it.
     pub(super) fn block_font(&self, block: &Block<'_, '_>) -> (Value, ElementEmphasis) {
-        let runs: Vec<_> = block
-            .runs
-            .iter()
-            .map(|run| self.run(*run, block.place.as_ref()))
-            .collect();
+        let mut runs: Vec<TextRun> = vec![];
+        let mut last = None;
+        for (run, bold, chars) in block.placed_runs() {
+            // A run showing text in several places has one font.
+            let font = match runs.last() {
+                Some(previous) if last == Some(run) => previous.font.clone(),
+                _ => self.run(run, block.place.as_ref()),
+            };
+            last = Some(run);
+            runs.push(TextRun { font, bold, chars });
+        }
         (
             crate::fonts::element_font(&runs, &RunFont::default()),
             crate::fonts::element_emphasis(&runs, &RunFont::default()),

@@ -20,7 +20,8 @@ impl Store {
     }
     /// [`Store::inspect_with`] together with what `keep` asks for of what the
     /// inspection read. Otherwise the layout is dropped as soon as the pages
-    /// are read: it is as large as the extraction.
+    /// are read: it is as large as the extraction. Files an inspection by this
+    /// program found valid before are read but not validated again.
     pub(super) fn inspect_layout(
         &self,
         dir: &Path,
@@ -31,7 +32,8 @@ impl Store {
         let files = self
             .file_hashes_with(dir, planned)?
             .context("document not found")?;
-        self.inspect_files(dir, &files, require_reviewed, planned, keep, None)
+        let known = self.known_inspection(&fingerprint_of(&files));
+        self.inspect_files(dir, &files, require_reviewed, planned, keep, known, true)
     }
     /// [`Store::inspect`] for a command that reads none of the content values,
     /// fonts and mapping entries, which are left empty, with the layout when
@@ -52,14 +54,23 @@ impl Store {
             layout,
             ..Default::default()
         };
-        let (mut inspected, kept) =
-            self.inspect_files(dir, &files, require_reviewed, &Planned::new(), &keep, known)?;
+        let (mut inspected, kept) = self.inspect_files(
+            dir,
+            &files,
+            require_reviewed,
+            &Planned::new(),
+            &keep,
+            known,
+            false,
+        )?;
         inspected.release_content();
         Ok((inspected, kept.layout))
     }
     /// The inspection of the files whose hashes are `files`; with `known`, what
     /// an earlier inspection found of the same files, which are then not
-    /// validated again.
+    /// validated again. Unless `with_content` asks for the content values, fonts
+    /// and mapping entries, known files are not read past their records.
+    #[allow(clippy::too_many_arguments)]
     fn inspect_files(
         &self,
         dir: &Path,
@@ -67,7 +78,8 @@ impl Store {
         require_reviewed: bool,
         planned: &Planned,
         keep: &Keep<'_>,
-        known: Option<Known>,
+        mut known: Option<Known>,
+        with_content: bool,
     ) -> Result<(Inspection, Kept)> {
         let fp = fingerprint_of(files);
         let metadata = self.management(dir)?;
@@ -98,7 +110,7 @@ impl Store {
         let (axes, axes_digest) = identity::stored_axes(dir, planned)?;
         // The extraction takes its document and original from this document.yml
         // when it is read; the extraction key above ties it to the file.
-        let layout = if known.is_none() || keep.layout {
+        let layout = if with_content || known.is_none() || keep.layout {
             Some(identity::load(dir, &extraction, planned)?)
         } else {
             None
@@ -111,7 +123,7 @@ impl Store {
             })
             .transpose()?
             .unwrap_or(false);
-        if let Some(known) = known {
+        if !with_content && let Some(known) = known.take() {
             debug_assert!(keep.pages.is_empty(), "known files read no content page");
             let mut mappings = complete_mappings(read_planned(
                 "mappings.yml",
@@ -207,9 +219,14 @@ impl Store {
         // Checked like the original, with the pages slide operations delete or add.
         let operated = operated_extraction(&extraction, &stored["operations"])?;
         let (mappings, entries) = with_default_entries(stored, &operated)?;
+        // What the files hold is checked unless known valid; read, it is
+        // made into the inspection either way.
+        let validate = known.is_none();
         let journal = &mappings["interpretation"];
-        crate::document_structure::validate_corrections(journal)?;
-        if !structure_format(&meta)? {
+        if validate {
+            crate::document_structure::validate_corrections(journal)?;
+        }
+        if validate && !structure_format(&meta)? {
             ensure!(
                 journal["elements"].as_array().is_some_and(Vec::is_empty)
                     && journal["readings"].as_array().is_some_and(Vec::is_empty)
@@ -235,18 +252,19 @@ impl Store {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pptx"));
         ensure!(
-            array(&mappings["operations"])?.iter().all(|o| {
-                if crate::document_source::is_presentation_operation(o) {
-                    presentation
-                } else {
-                    !text_format
-                        || laid_out
-                            && matches!(o["kind"].as_str(), Some("insert_rows" | "delete_rows"))
-                }
-            }),
+            !validate
+                || array(&mappings["operations"])?.iter().all(|o| {
+                    if crate::document_source::is_presentation_operation(o) {
+                        presentation
+                    } else {
+                        !text_format
+                            || laid_out
+                                && matches!(o["kind"].as_str(), Some("insert_rows" | "delete_rows"))
+                    }
+                }),
             "row operations apply to Excel, Word and PowerPoint documents, column and image operations to Excel only, and slide and shape operations to PowerPoint only"
         );
-        if let Cow::Owned(operated) = &operated {
+        if validate && let Cow::Owned(operated) = &operated {
             ensure_slide_pages(&extraction, operated, &content_pages)?;
         }
         let operations =
@@ -264,7 +282,9 @@ impl Store {
                     .filter_map(|o| o.asset().map(str::to_owned)),
             )
             .collect();
-        self.image_assets(dir, &assets)?;
+        if validate {
+            self.image_assets(dir, &assets)?;
+        }
         let mut entries = entries;
         shift_entries(&mut entries, &operated, &operations)?;
         let (mappings, entries) = regenerate_mappings(
@@ -279,50 +299,61 @@ impl Store {
         // Validating the content takes the values out of the pages but those kept.
         let mut content = Self::validate_content(&entries, &operated, content_pages, keep.pages)?;
         let kept_pages = std::mem::take(&mut content.kept);
-        validate_coverage(
-            &operated,
-            &mappings,
-            &entries,
-            &content,
-            &operations,
-            native_text,
-            text_format,
-        )?;
+        if validate {
+            validate_coverage(
+                &operated,
+                &mappings,
+                &entries,
+                &content,
+                &operations,
+                native_text,
+                text_format,
+            )?;
+        }
         let fields = content.fields;
-        for asset in array(&extraction["assets"])? {
-            ensure!(
-                hash(&fs::read(under(
-                    dir,
-                    &format!("assets/{}", string(&asset["path"])?)
-                )?)?)
-                    == asset["sha256"],
-                "asset evidence changed"
-            );
+        if validate {
+            for asset in array(&extraction["assets"])? {
+                ensure!(
+                    hash(&fs::read(under(
+                        dir,
+                        &format!("assets/{}", string(&asset["path"])?)
+                    )?)?)
+                        == asset["sha256"],
+                    "asset evidence changed"
+                );
+            }
         }
         let reviewed = self.reviewed(&metadata, dir, &fp)?;
         ensure!(
             !require_reviewed || reviewed,
             "content changed or not reviewed; run documents review"
         );
-        let pending = entries
-            .iter(&operated)
-            .filter(|e| e.writeback().is_ok_and(|w| w == "pending"))
-            .count();
-        let content_edited = content_edited(&extraction, &mappings, &entries, &operated, &fields)?;
+        let (pending, content_edited) = match &known {
+            Some(known) => (known.pending, known.content_edited),
+            None => (
+                entries
+                    .iter(&operated)
+                    .filter(|e| e.writeback().is_ok_and(|w| w == "pending"))
+                    .count(),
+                content_edited(&extraction, &mappings, &entries, &operated, &fields)?,
+            ),
+        };
         // The defaults are read from the extraction the operations leave.
         let operated = match operated {
             Cow::Owned(operated) => Some(operated),
             Cow::Borrowed(_) => None,
         };
-        self.save_known_inspection(
-            &fp,
-            &Known {
-                pending,
-                content_edited,
-                page_files: page_files.clone(),
-                structure_sha256: structure_sha256.clone(),
-            },
-        );
+        if validate {
+            self.save_known_inspection(
+                &fp,
+                &Known {
+                    pending,
+                    content_edited,
+                    page_files: page_files.clone(),
+                    structure_sha256: structure_sha256.clone(),
+                },
+            );
+        }
         Ok((
             Inspection {
                 meta,
@@ -792,6 +823,7 @@ pub(super) struct Keep<'a> {
 }
 
 /// What an inspection kept, as [`Keep`] asked.
+#[derive(Default)]
 pub(super) struct Kept {
     pub(super) layout: Option<Layout>,
     /// The content pages by page ID, as the writer reads them.

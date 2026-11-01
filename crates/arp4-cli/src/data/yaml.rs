@@ -307,6 +307,26 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Reads past the node at `depth` that `node` starts without making its
+    /// value, as a reader wanting a few members of a large page does.
+    pub(crate) fn skip(&mut self, node: Node, depth: usize) -> Result<()> {
+        match node {
+            Node::Scalar(_) => {}
+            Node::Sequence => {
+                while let Some(item) = self.item(depth + 1)? {
+                    self.skip(item, depth + 1)?;
+                }
+            }
+            Node::Mapping => {
+                while self.key()?.is_some() {
+                    let node = self.node(depth + 1)?;
+                    self.skip(node, depth + 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Reads the end of the document, which ends the stream.
     pub(crate) fn end(mut self) -> Result<()> {
         ensure!(
@@ -453,6 +473,7 @@ fn float(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// [`parse_listing`] of `text`, given back as the value [`parse`] reads.
     fn listed(text: &str) -> Option<Value> {
@@ -489,6 +510,42 @@ mod tests {
             assert!(parse(text).is_err(), "{text}");
             assert!(read(text).is_err(), "{text}");
         }
+    }
+
+    /// A node read past leaves the reader where reading its value leaves it,
+    /// and what the node refuses is refused too.
+    #[test]
+    fn a_reader_skips_a_node_as_it_reads_it() {
+        let text = "elements:
+- text: 段落
+- table:
+    columns:
+    - 項目
+    rows:
+    - 項目: 1
+      children:
+      - 項目: '010'
+- blank: null
+page_id: sheet-1
+";
+        let mut reader = Reader::new(text).unwrap();
+        assert!(matches!(reader.node(0).unwrap(), Node::Mapping));
+        assert_eq!(reader.key().unwrap().as_deref(), Some("elements"));
+        let elements = reader.node(1).unwrap();
+        reader.skip(elements, 1).unwrap();
+        assert_eq!(reader.key().unwrap().as_deref(), Some("page_id"));
+        let node = reader.node(1).unwrap();
+        assert_eq!(reader.value(node, 1).unwrap(), json!("sheet-1"));
+        assert!(reader.key().unwrap().is_none());
+        reader.end().unwrap();
+        let mut reader = Reader::new(
+            "a:
+  b: &x 1
+",
+        )
+        .unwrap();
+        let node = reader.node(0).unwrap();
+        assert!(reader.skip(node, 0).is_err());
     }
 
     #[test]

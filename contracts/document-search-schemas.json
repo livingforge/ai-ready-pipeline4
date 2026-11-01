@@ -44,15 +44,15 @@
   },
   "search-format": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them: of a cell or shape text whose runs differ, mixed and the value of each run. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds where some run of the text shows it; fill is a filled cell behind the text.",
+    "description": "One value of a format property of the indexed text, an item of documents search-formats. Values are as the adopted extraction resolves them, for each character of a cell or shape text: a cell whose runs differ shows the value of each run. Properties come in the order color, theme, font, size, bold, italic, underline, strike, highlight, fill, each with the most hits first. A mark holds on the characters that show it; fill is a filled cell behind the text.",
     "type": "object", "additionalProperties": false,
     "required": ["property", "value", "hits", "cells"],
     "properties": {
       "property": {"enum": ["color", "theme", "font", "size", "bold", "italic", "underline", "strike", "highlight", "fill"]},
-      "value": {"type": ["string", "number", "boolean"], "description": "Font color as RRGGBB, auto or mixed (text whose runs differ); theme slot of the color; latin or East Asian font name or mixed; size in points or mixed; true for a mark (bold, italic, underline, strike, highlight, fill)."},
+      "value": {"type": ["string", "number", "boolean"], "description": "Font color as RRGGBB or auto; theme slot of the color; latin or East Asian font name; size in points; true for a mark (bold, italic, underline, strike, highlight, fill)."},
       "family": {"enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray", "black", "white"], "description": "For a color, the family a --color filter names it by; auto is black."},
       "hits": {"type": "integer", "minimum": 1, "description": "The hits of a search filtering by this value alone."},
-      "cells": {"type": "integer", "minimum": 0, "description": "The cells and shape texts with text in this value."}
+      "cells": {"type": "integer", "minimum": 0, "description": "The cells and shape texts with characters in this value, each once."}
     }
   },
   "search-synonyms": {
@@ -122,7 +122,30 @@
       "values": {"type": "array", "items": {"type": ["string", "null"]}, "description": "Every cell of the row in table.columns order, as the original shows it, an empty cell as an empty string. unread names why a cell is unread or uncalculated; an unread cell keeps its extracted text, and is null without one, as an uncalculated formula is. A row too long for one passage lists the pieces of this passage, without its empty cells."},
       "row_context": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field"}, "description": "Row headers of other rows that head this row, such as a merged item name or a section row, outermost first."},
       "unread": {"type": "object", "minProperties": 1, "additionalProperties": {"enum": ["unreadable", "not_examined", "uncalculated"]}, "description": "Cells of the row by address without a known text: a reader could not read it or has not examined it, or a formula was saved without its result."},
-      "formatted": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}, "description": "On a hit of a search with a format filter: the sources of this passage whose text is in the format, in source order; a cell by its address, a shape's text by its pointer."},
+      "formatted": {
+        "type": "array", "minItems": 1,
+        "description": "On a hit of a search with a format filter: the sources of this passage with characters in the format, in source order, each with the parts of its text in the format.",
+        "items": {
+          "type": "object", "additionalProperties": false, "required": ["pointer", "spans"],
+          "properties": {
+            "pointer": {"type": "string", "description": "The source's pointer into the extraction, as sources give it."},
+            "address": {"type": "string", "minLength": 1, "description": "The cell's address (a Word or PowerPoint paragraph's included); absent for a shape's text."},
+            "spans": {
+              "type": "array", "minItems": 1,
+              "description": "Each part of the source's text in the format, in order: its characters [start, end), counted as the source's start and end are, the text it shows, and its whole format.",
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["start", "end", "text", "format"],
+                "properties": {
+                  "start": {"type": "integer", "minimum": 0},
+                  "end": {"type": "integer", "minimum": 1},
+                  "text": {"type": "string", "minLength": 1},
+                  "format": {"$ref": "#/$defs/format"}
+                }
+              }
+            }
+          }
+        }
+      },
       "structure_reviewed": {"type": "boolean"}
     },
     "dependentRequired": {"table": ["row", "values"], "row": ["table"], "values": ["table"], "row_context": ["table"], "unread": ["table"]},
@@ -142,9 +165,27 @@
           "text": {"type": "string", "description": "The text the original shows. A workbook cell shows its value, for a formula its result, under its number format."},
           "value": {"type": ["string", "number", "boolean"], "description": "The stored value of a workbook cell, when it reads otherwise than text."},
           "formula": {"type": "string", "description": "The formula of a workbook cell. Its result is the stored value; a formula saved without one shows no text."},
-          "format": {"type": "integer", "minimum": 1, "description": "The index's ID of the format of the source's text; stored only, responses leave it out."},
+          "formats": {
+            "type": "array", "minItems": 1,
+            "description": "The parts of the source's text in each format, as [start, end, the index's ID of the format]; stored only, responses leave it out.",
+            "items": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "integer", "minimum": 0}}
+          },
           "start": {"type": "integer", "minimum": 0},
           "end": {"type": "integer", "minimum": 0}
+        }
+      },
+      "format": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "description": "The format of characters as the adopted extraction resolves it: the effective font where they are, a property that cannot be resolved left out, and each mark they show.",
+        "properties": {
+          "color": {"type": "string", "pattern": "^([0-9A-F]{6}|auto)$", "description": "Font color as RRGGBB, or auto for the automatic color."},
+          "theme": {"type": "string", "minLength": 1, "description": "The theme slot the color comes from."},
+          "latin": {"type": "string", "minLength": 1},
+          "east_asian": {"type": "string", "minLength": 1},
+          "size": {"type": "number", "exclusiveMinimum": 0, "description": "Font size in points."},
+          "bold": {"const": true}, "italic": {"const": true}, "underline": {"const": true},
+          "strike": {"const": true}, "highlight": {"const": true},
+          "fill": {"const": true, "description": "A filled cell behind the text."}
         }
       }
     }

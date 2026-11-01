@@ -58,12 +58,22 @@ pub struct SheetLook {
 impl SheetLook {
     /// The width of the column numbered `column` (from 1), in pixels.
     pub fn width(&self, column: u32) -> f64 {
-        let characters = self
-            .columns
+        (self.characters(column) * self.digit).round()
+    }
+
+    /// The width of the column numbered `column` as the sheet writes it, in
+    /// digits of the normal font with the padding Excel adds to them.
+    pub fn characters(&self, column: u32) -> f64 {
+        self.columns
             .iter()
             .find(|(min, max, _)| (*min..=*max).contains(&column))
-            .map_or(self.column_width, |(_, _, width)| *width);
-        (characters * self.digit).round()
+            .map_or(self.column_width, |(_, _, width)| *width)
+    }
+
+    /// The width of a unit of column width, a digit of the normal font on
+    /// the screen, in pixels.
+    pub fn unit(&self) -> f64 {
+        self.digit
     }
 
     /// The height of the row numbered `row` (from 1), in pixels.
@@ -291,6 +301,16 @@ fn sheet_look(
             .and_then(|v| v.parse::<f64>().ok())
     };
     let flag = |node: Node<'_, '_>, name: &str| matches!(node.attribute(name), Some("1" | "true"));
+    // Excel takes the default height only when it is fixed, and otherwise
+    // fits the rows to the normal font.
+    let row_height = if format.is_some_and(|f| flag(f, "customHeight")) {
+        number("defaultRowHeight").unwrap_or(measures.row)
+    } else {
+        measures.row
+    };
+    // A sheet hiding the rows it does not use (`zeroHeight`, as hiding the
+    // rows to the last one leaves it) shows only the rows it writes.
+    let zero_height = format.is_some_and(|f| flag(f, "zeroHeight"));
     let mut columns = vec![];
     let mut column_formats = vec![];
     for col in child(root, "cols")
@@ -325,6 +345,8 @@ fn sheet_look(
             rows.insert(number, 0.0);
         } else if let Some(height) = row.attribute("ht").and_then(|h| h.parse().ok()) {
             rows.insert(number, height);
+        } else if zero_height {
+            rows.insert(number, row_height);
         }
         if flag(row, "customFormat")
             && let Some(style) = row.attribute("s").and_then(|s| s.parse().ok())
@@ -349,16 +371,8 @@ fn sheet_look(
         .is_none_or(|view| !matches!(view.attribute("showGridLines"), Some("0" | "false")));
     Ok(SheetLook {
         digit: measures.digit,
-        column_width: number("defaultColWidth")
-            .or_else(|| number("baseColWidth").map(|base| base + 1.140625))
-            .unwrap_or(9.140625),
-        // Excel takes the default height only when it is fixed, and otherwise
-        // fits the rows to the normal font.
-        row_height: if format.is_some_and(|f| flag(f, "customHeight")) {
-            number("defaultRowHeight").unwrap_or(measures.row)
-        } else {
-            measures.row
-        },
+        column_width: fit::default_column_width(format, measures.digit),
+        row_height: if zero_height { 0.0 } else { row_height },
         columns,
         rows,
         cells,
@@ -531,9 +545,10 @@ mod tests {
 <sheetViews><sheetView showGridLines="0"/></sheetViews><sheetFormatPr defaultRowHeight="15" customHeight="1"/>
 <cols><col min="2" max="3" width="20" style="1"/><col min="4" max="4" width="5" hidden="1"/></cols>
 <sheetData><row r="2" ht="30" customHeight="1" s="1" customFormat="1"><c r="A2" s="0"/></row><row r="3" hidden="1"/></sheetData></worksheet>"#).unwrap();
+        // Calibri's digit, 9 pixels on the screen.
         let measures = fit::Styles {
             formats: vec![],
-            digit: 7.0,
+            digit: 7.2,
             row: 20.0,
         };
         let looks = std::sync::Arc::new(vec![
@@ -545,8 +560,10 @@ mod tests {
         ]);
         let look = sheet_look(&sheet, &measures, looks).unwrap();
         assert!(!look.grid_lines);
+        // A column of the default width is 8 digits and the room around
+        // them, in a whole number of 8 pixels of the screen.
         assert_eq!(look.width(1), 64.0);
-        assert_eq!(look.width(2), 140.0);
+        assert_eq!(look.width(2), 144.0);
         assert_eq!(look.width(4), 0.0);
         assert_eq!(look.height(1), 20.0);
         assert_eq!(look.height(2), 40.0);
@@ -556,5 +573,24 @@ mod tests {
         assert_eq!(look.cell(5, 2).unwrap().fill.as_deref(), Some("FF0000"));
         assert_eq!(look.cell(2, 9).unwrap().fill.as_deref(), Some("FF0000"));
         assert!(look.cell(1, 9).is_none());
+    }
+
+    #[test]
+    fn a_sheet_hiding_the_rows_it_does_not_use_shows_only_those_it_writes() {
+        let sheet = Document::parse(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetFormatPr defaultRowHeight="18" zeroHeight="1"/>
+<sheetData><row r="1"/><row r="2" ht="30" customHeight="1"/></sheetData></worksheet>"#,
+        )
+        .unwrap();
+        let measures = fit::Styles {
+            formats: vec![],
+            digit: 7.0,
+            row: 15.0,
+        };
+        let look = sheet_look(&sheet, &measures, std::sync::Arc::new(vec![])).unwrap();
+        assert_eq!(look.height(1), 20.0);
+        assert_eq!(look.height(2), 40.0);
+        assert_eq!(look.height(3), 0.0);
     }
 }

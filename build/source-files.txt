@@ -96,6 +96,8 @@ crates/arp4-cli/src/excel/fit.rs
 crates/arp4-cli/src/excel/fonts.rs
 crates/arp4-cli/src/excel/formatting.rs
 crates/arp4-cli/src/excel/formula_edit.rs
+crates/arp4-cli/src/excel/glyph_widths.txt
+crates/arp4-cli/src/excel/glyphs.rs
 crates/arp4-cli/src/excel/import.rs
 crates/arp4-cli/src/excel/look.rs
 crates/arp4-cli/src/excel/mod.rs

@@ -17,6 +17,19 @@ fn source(pointer: String, sheet: &str, address: &str, position: &Value, value: 
         "start":0,"end":body.chars().count(),"text":body})
 }
 
+/// Gives `entry`, a source `length` characters long, the parts of its text
+/// in each format as [`super::format::of`] gives them, which the index takes
+/// out into its own tables.
+fn formatted(entry: &mut Value, font: &Value, style: &Value, length: usize, shift: Option<usize>) {
+    let parts = super::format::of(font, style, length, shift);
+    if !parts.is_empty() {
+        entry["formats"] = parts
+            .into_iter()
+            .map(|(chars, format)| json!([chars.start, chars.end, format]))
+            .collect();
+    }
+}
+
 /// Bounded fragments retain exact offsets within each extracted value. Long
 /// Markdown/code blocks are split; whole normal table rows stay together.
 fn fragments(sources: Vec<Value>) -> Vec<Vec<Value>> {
@@ -41,6 +54,19 @@ fn fragments(sources: Vec<Value>) -> Vec<Vec<Value>> {
             part["text"] = json!(chars[start..end].iter().collect::<String>());
             part["start"] = json!(start);
             part["end"] = json!(end);
+            // A fragment holds the parts of the formats within it.
+            if let Some(Value::Array(formats)) = part.get_mut("formats") {
+                formats.retain_mut(|format| {
+                    let from = format[0].as_u64().unwrap_or(0).max(start as u64);
+                    let to = format[1].as_u64().unwrap_or(0).min(end as u64);
+                    format[0] = json!(from);
+                    format[1] = json!(to);
+                    from < to
+                });
+                if formats.is_empty() {
+                    part.as_object_mut().unwrap().remove("formats");
+                }
+            }
             used += end - start;
             row.push(part);
             if end == chars.len() {
@@ -404,15 +430,25 @@ pub(super) fn build(
             &json!(shown),
         );
         let value = cell.value().to_json();
-        if text(&value) != *shown {
-            entry["value"] = value;
-        }
-        // The index takes the format out into its own tables.
-        if let Some(format) = super::format::of(
+        let stored = text(&value);
+        // The runs of rich text lie in its value, which a number format's
+        // text section may show with text around it.
+        let shift = if stored == *shown {
+            Some(0)
+        } else {
+            shown
+                .find(stored.as_str())
+                .map(|at| shown[..at].chars().count())
+        };
+        formatted(
+            &mut entry,
             crate::extraction::font(sheet, cell)?,
             crate::extraction::style(sheet, cell)?,
-        ) {
-            entry["format"] = format;
+            shown.chars().count(),
+            shift,
+        );
+        if stored != *shown {
+            entry["value"] = value;
         }
         if let Some(formula) = cell.formula() {
             entry["formula"] = json!(formula);
@@ -675,11 +711,15 @@ pub(super) fn build(
                         );
                         // A shape's font and emphasis are those of its text, not of
                         // its description.
-                        if *field == "text"
-                            && let Some(format) =
-                                super::format::of(&object["font"], &object["style"])
-                        {
-                            entry["format"] = format;
+                        if *field == "text" {
+                            let length = entry["end"].as_u64().unwrap_or(0) as usize;
+                            formatted(
+                                &mut entry,
+                                &object["font"],
+                                &object["style"],
+                                length,
+                                Some(0),
+                            );
                         }
                         entry
                     })
