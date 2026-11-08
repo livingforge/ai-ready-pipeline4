@@ -1419,6 +1419,7 @@ fn typed_record(path: &Path, text: &str) -> Result<Extraction> {
             },
         )?;
     deserializer.end()?;
+    ensure_current(path, &fields["schema_version"])?;
     ensure!(
         fields.get(SOURCE).is_none() && fields.get(DOCUMENT).is_none(),
         "{} records its document or original, which document.yml records in this version; re-import the original with documents import --force",
@@ -1610,8 +1611,25 @@ fn read_file(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }
 
+/// The version of the stored extraction this program writes and reads.
+pub(crate) const SCHEMA_VERSION: &str = "4";
+
+/// Refuses an extraction another version of ARP4 stored before anything is
+/// read of its form: it is made anew from its original, never read in a
+/// former form.
+fn ensure_current(path: &Path, version: &Value) -> Result<()> {
+    ensure!(
+        version.as_str() == Some(SCHEMA_VERSION),
+        "{} is stored as extraction schema {}, not {SCHEMA_VERSION}, the schema of this version; re-import the original with documents import --force",
+        path.display(),
+        version.as_str().unwrap_or("(none)")
+    );
+    Ok(())
+}
+
 fn read_text(path: &Path, text: &str) -> Result<Value> {
     let extraction = data::parse(text, true)?;
+    ensure_current(path, &extraction["schema_version"])?;
     ensure!(
         extraction.get(SOURCE).is_none() && extraction.get(DOCUMENT).is_none(),
         "{} records its document or original, which document.yml records in this version; re-import the original with documents import --force",
@@ -1857,5 +1875,30 @@ mod tests {
         assert!(sheet["cells"][1].get("font").is_none() && sheet["cells"][1].get("id").is_none());
         assert!(sheet["cells"][4]["style"].is_null());
         assert!(sheet.get("fonts").is_none() && reading["findings"][0]["message"] == note);
+    }
+
+    #[test]
+    fn an_extraction_an_earlier_version_stored_is_refused_with_how_to_make_it_anew() {
+        // Schema 2 kept each print setting's XML as one string, which this
+        // version's form reads as a list: its version, not its form, refuses it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extraction.json");
+        let stored = json!({"parser":"arp4-rust/1.0.0-alpha.1;word-blocks/1;ocr=auto-images","schema_version":"2",
+            "print_settings":[{"component":"sectPr","parts":["word/document.xml"],"xml":"<w:sectPr/>"}],
+            "sheets":[{"name":"document","part":"word/document.xml","state":"visible","merges":[],"tables":[],
+                "fonts":[{"latin":"A","size":10}],"styles":[{"bold":false,"border":0,"fill":0}],
+                "cells":[{"address":"A1","font":0,"id":"text-1","number_format":"","style":0,"type":"string","value":"題"}]}]});
+        let bytes = serde_json::to_vec_pretty(&stored).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        data::write(
+            &dir.path().join("document.yml"),
+            &json!({"schema_version":"1","document_id":"spec.docx","source":{"path":"docs/spec.docx","sha256":"0".repeat(64)},"extraction":data::hash(&bytes)}),
+        )
+        .unwrap();
+        for error in [read_record(&path).unwrap_err(), read(&path).unwrap_err()] {
+            let message = error.to_string();
+            assert!(message.contains("extraction schema 2, not 4"), "{message}");
+            assert!(message.contains("documents import --force"), "{message}");
+        }
     }
 }

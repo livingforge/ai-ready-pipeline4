@@ -57,7 +57,7 @@ OCR結果とLLM補正結果は構造解釈の参考情報であり、原本か�
 
 埋め込み画像はimportで保存されたファイルをそのまま使用します。ExcelとPPTXではファイル名を文書内の初出順に `image-001.png` のように付け、同じ内容の画像は共有します。Wordでは `word/media/` の画像部品ごとに部品名順の連番を付けます。SHA-256は抽出JSONに検証用として保持します。readは抽出JSONと同じディレクトリの `assets/` にあるファイルのハッシュを検証し、絶対パスを返します。`drawings` の `image_id` を `image_paths` の `id` と対応させ、`path` を画像閲覧機能で開きます。`image_paths` はハッシュを表示せず、配置ごとの `source`・シート・位置を返します。同じ画像を複数箇所に配置した場合、IDとパスは共通で、sourceは配置ごとに異なります。登録済み領域の画像IDは `region-<領域ID>` です。画像IDはこの文書の読取結果内の識別子で、再取り込みをまたぐ識別や根拠の参照には使いません。visualのevidenceには、そのvisualのsourcesにある画像のsource参照を指定します。撮影し直したり、画像のためだけにregionを作ったりする必要はありません。抽出JSONを移動する場合はassetsも一緒に保持します。形式によって画像閲覧機能が対応しない場合は、表示できる形式へ変換したPNGをregionに登録します。シートを持たないvisual（Wordの画像や、DrawingMLにないExcelの画像 `asset-N`）では `--range` を省きます（下記）。
 
-図形の組合せや画像内の関係を整理できる場合は、visualに任意の `graph` を追加します。nodesは対象、edgesはfromからtoへの名前付きの関係です。ノード・関係のsourcesは、そのvisualの原本参照またはevidenceを指します。図形から読み取った関係と画像から解釈した関係はreadingに根拠を記録します。visionは実際の画像閲覧とvisualのevidenceを必要とします。OCRの文字列だけから線の接続や階層を推測しません。関係の循環や自己参照は図の内容として許し、存在しないノードや別visualの出典参照は拒否します。
+図形の組合せや画像内の関係を整理できる場合は、visualに任意の `graph` を追加します。nodesは対象、edgesはfromからtoへの関係です。edgesの `label` は、画像や図形が線に示す文字だけを記録し、文字のない線では省きます（関係に名前を付けて補いません）。ノード・関係のsourcesは、そのvisualの原本参照またはevidenceを指します。図形から読み取った関係と画像から解釈した関係はreadingに根拠を記録します。visionは実際の画像閲覧とvisualのevidenceを必要とします。OCRの文字列だけから線の接続や階層を推測しません。関係の循環や自己参照は図の内容として許し、存在しないノードや別visualの出典参照は拒否します。
 
 例えば画像を指すvisualのsourcesが `/sheets/0/drawings/0` の場合、次のように関係を記録できます（visual内の抜粋）。
 
@@ -69,6 +69,7 @@ graph:
     - {id: operator, label: 担当者, sources: [/sheets/0/drawings/0]}
   edges:
     - {from: manager, to: operator, label: 指示, sources: [/sheets/0/drawings/0]}
+    - {from: operator, to: manager, sources: [/sheets/0/drawings/0]}  # 文字のない矢印
   reading: {method: vision, actor: reader-1, reason: 抽出画像の文字と矢印を確認}
 ```
 

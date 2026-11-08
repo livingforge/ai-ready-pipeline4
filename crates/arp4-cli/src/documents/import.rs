@@ -444,7 +444,7 @@ impl Store {
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
             .collect();
-        let mut extraction = json!({"schema_version":"4","document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
+        let mut extraction = json!({"schema_version":crate::extraction::SCHEMA_VERSION,"document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
         if matches!(&book, Source::Excel(workbook) if workbook.date1904) {
             extraction["date1904"] = json!(true);
         }

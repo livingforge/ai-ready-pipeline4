@@ -104,8 +104,10 @@
           "properties": {"id": {"$ref": "#/$defs/text"}, "label": {"$ref": "#/$defs/text"}, "sources": {"$ref": "#/$defs/graph_sources"}}
         }},
         "edges": {"type": "array", "uniqueItems": true, "items": {
-          "type": "object", "additionalProperties": false, "required": ["from", "to", "label", "sources"],
-          "properties": {"from": {"$ref": "#/$defs/text"}, "to": {"$ref": "#/$defs/text"}, "label": {"$ref": "#/$defs/text"}, "sources": {"$ref": "#/$defs/graph_sources"}}
+          "type": "object", "additionalProperties": false, "required": ["from", "to", "sources"],
+          "properties": {"from": {"$ref": "#/$defs/text"}, "to": {"$ref": "#/$defs/text"},
+            "label": {"$ref": "#/$defs/text", "description": "Text the visual shows on or beside the line. Omitted for a line that carries none; never a name given to it."},
+            "sources": {"$ref": "#/$defs/graph_sources"}}
         }},
         "reading": {"$ref": "#/$defs/reading"}
       }

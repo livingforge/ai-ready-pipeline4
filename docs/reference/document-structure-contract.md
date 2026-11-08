@@ -148,9 +148,9 @@
 | <code>/$defs/element/allOf/1</code> | <code>{"if":{"required":["parent"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
 | <code>/$defs/graph</code> | <code>{"additionalProperties":false,"description":"Reviewed interpretation within one visual. Node IDs are local. Sources reference that visual's extraction sources or evidence regions; labels are interpretations, not exact quotations. Vision requires image evidence on the visual.","required":["nodes","edges","reading"],"type":"object"}</code> |
 | <code>/$defs/graph/properties/edges</code> | <code>{"type":"array","uniqueItems":true}</code> |
-| <code>/$defs/graph/properties/edges/items</code> | <code>{"additionalProperties":false,"required":["from","to","label","sources"],"type":"object"}</code> |
+| <code>/$defs/graph/properties/edges/items</code> | <code>{"additionalProperties":false,"required":["from","to","sources"],"type":"object"}</code> |
 | <code>/$defs/graph/properties/edges/items/properties/from</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/graph/properties/edges/items/properties/label</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/graph/properties/edges/items/properties/label</code> | <code>{"$ref":"#/$defs/text","description":"Text the visual shows on or beside the line. Omitted for a line that carries none; never a name given to it."}</code> |
 | <code>/$defs/graph/properties/edges/items/properties/sources</code> | <code>{"$ref":"#/$defs/graph_sources"}</code> |
 | <code>/$defs/graph/properties/edges/items/properties/to</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/graph/properties/nodes</code> | <code>{"minItems":1,"type":"array"}</code> |
