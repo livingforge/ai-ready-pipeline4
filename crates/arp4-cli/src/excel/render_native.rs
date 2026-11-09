@@ -4,7 +4,7 @@
 use crate::office_com::{
     Apartment, Arg, Handle, call, get, invoke, isolated_application, item, method, prop, put,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::json;
 use std::{fs, path::Path, time::Duration};
@@ -26,6 +26,8 @@ struct Request {
     range: Option<String>,
     output: String,
     result: String,
+    /// Where a failed render describes what failed, for the parent to report.
+    failure: String,
     /// How long to wait for another render to finish with the clipboard.
     lock_wait_seconds: u64,
     /// Whether the formulas are calculated before the range is drawn, as
@@ -59,6 +61,232 @@ impl Drop for RenderMutex {
     }
 }
 
+/// The step of a render that failed, kept in the error so that the parent can
+/// say what failed and how to recover: source, clipboard_lock, launch, open,
+/// sheet, range, calibrate, budget, prepare, copy_picture, paste, export or image.
+#[derive(Debug, Clone, Copy)]
+struct Stage(&'static str);
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Excel render step {}", self.0)
+    }
+}
+
+/// How many times a clipboard call was tried before it failed.
+#[derive(Debug, Clone, Copy)]
+struct Attempts(u32);
+impl std::fmt::Display for Attempts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tried {} times", self.0)
+    }
+}
+
+/// A range larger than one image may be, with the cell ranges that each fit:
+/// rendered one by one, they show all of it at full size.
+#[derive(Debug)]
+struct OverBudget {
+    range: String,
+    width: f64,
+    height: f64,
+    plan: Tiles,
+}
+
+/// How a range over the budget splits into images.
+#[derive(Debug, PartialEq)]
+enum Tiles {
+    /// The cell ranges, row by row, that each render within the budget.
+    Fit(Vec<String>),
+    /// About this many images: more than [`MAX_TILES`], so none are listed.
+    TooMany(usize),
+    /// A single row or column is larger than one image may be.
+    TooLarge,
+}
+
+/// The most tiles a range over the budget is split into; a larger range is
+/// narrowed first, to the cells a drawing actually covers.
+const MAX_TILES: usize = 100;
+impl std::fmt::Display for OverBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Range {} exceeds the render budget ({:.0}x{:.0} px; at most {MAX_SIDE} px a side and {MAX_PIXELS} pixels); ",
+            self.range, self.width, self.height
+        )?;
+        match &self.plan {
+            Tiles::Fit(tiles) => write!(f, "render it as {} tiles", tiles.len()),
+            Tiles::TooMany(count) => write!(
+                f,
+                "it would take about {count} images; give a narrower range"
+            ),
+            Tiles::TooLarge => write!(f, "a single row or column is larger than the budget"),
+        }
+    }
+}
+impl std::error::Error for OverBudget {}
+
+/// The most pixels a rendered image may have on a side and in all.
+const MAX_SIDE: f64 = 8192.0;
+const MAX_PIXELS: f64 = 32_000_000.0;
+/// A tile is planned this much under the budget, for Excel's rounding.
+const TILE_MARGIN: f64 = 0.95;
+/// The side, in points, of the empty chart exported to measure pixels per point.
+const PROBE_POINTS: f64 = 144.0;
+
+/// Whether a range of `width` x `height` points renders within the budget at
+/// `ratio` pixels per point.
+fn within_budget(width: f64, height: f64, ratio: f64) -> bool {
+    let (w, h) = (width * ratio, height * ratio);
+    w <= MAX_SIDE && h <= MAX_SIDE && w * h <= MAX_PIXELS
+}
+
+/// The pixels Excel's PNG export gives a point on this machine: 4/3 at 100 %
+/// display scaling and more above it. An empty chart is exported and measured,
+/// so that the budget and the tiles hold for the image Excel actually writes.
+fn pixels_per_point(scratch: &IDispatch, probe: &Path) -> Result<f64> {
+    let scratch_sheet = item(&prop(scratch, "Worksheets")?, Arg::Int(1))?;
+    let chart_object = method(
+        &method(&scratch_sheet, "ChartObjects", vec![])?,
+        "Add",
+        vec![
+            Arg::Int(0),
+            Arg::Int(0),
+            Arg::Float(PROBE_POINTS),
+            Arg::Float(PROBE_POINTS),
+        ],
+    )?;
+    let exported = call(
+        &prop(&chart_object, "Chart")?,
+        "Export",
+        vec![
+            Arg::Text(&probe.to_string_lossy()),
+            Arg::Text("PNG"),
+            Arg::Bool(false),
+        ],
+    )?
+    .boolean()?;
+    let _ = call(&chart_object, "Delete", vec![]);
+    ensure!(exported, "Excel did not export the measuring chart.");
+    let bytes = fs::read(probe)?;
+    let _ = fs::remove_file(probe);
+    ensure!(
+        bytes.len() >= 24 && &bytes[12..16] == b"IHDR",
+        "Invalid measuring image"
+    );
+    let ratio = f64::from(u32::from_be_bytes(bytes[16..20].try_into()?)) / PROBE_POINTS;
+    ensure!(
+        (0.5..=8.0).contains(&ratio),
+        "Unexpected export scale {ratio:.2} px/pt"
+    );
+    Ok(ratio)
+}
+
+/// Splits `first..=last` into consecutive groups whose extent is at most
+/// `limit`, each as large as fits: `extent(from, to)` measures a group, and
+/// growing a group never shrinks it, so the end of each is found by halving.
+/// None when a single row or column is larger than `limit`.
+fn spans(
+    first: i32,
+    last: i32,
+    limit: f64,
+    extent: &mut impl FnMut(i32, i32) -> Result<f64>,
+) -> Result<Option<Vec<(i32, i32)>>> {
+    let mut groups = Vec::new();
+    let mut start = first;
+    while start <= last {
+        if extent(start, start)? > limit {
+            return Ok(None);
+        }
+        let (mut low, mut high) = (start, last);
+        while low < high {
+            let middle = low + (high - low + 1) / 2;
+            if extent(start, middle)? <= limit {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        groups.push((start, low));
+        start = low + 1;
+    }
+    Ok(Some(groups))
+}
+
+/// How the range splits into images that each render within the budget.
+/// `width(c1, c2)` and `height(r1, r2)` are the points a span of columns or
+/// rows takes. A range that would need more than [`MAX_TILES`] images is only
+/// counted, from its whole height, before its rows are planned.
+fn plan_tiles(
+    (column, row, last_column, last_row): (i32, i32, i32, i32),
+    ratio: f64,
+    mut width: impl FnMut(i32, i32) -> Result<f64>,
+    mut height: impl FnMut(i32, i32) -> Result<f64>,
+) -> Result<Tiles> {
+    let side = MAX_SIDE / ratio * TILE_MARGIN;
+    let total = width(column, last_column)?;
+    if (total / side).ceil() as usize > MAX_TILES {
+        return Ok(Tiles::TooMany((total / side).ceil() as usize));
+    }
+    let Some(columns) = spans(column, last_column, side, &mut width)? else {
+        return Ok(Tiles::TooLarge);
+    };
+    let mut widest: f64 = 1.0;
+    for &(from, to) in &columns {
+        widest = widest.max(width(from, to)?);
+    }
+    // The widest tile leaves the least height under the pixel budget.
+    let area = MAX_PIXELS / (ratio * ratio);
+    let tall = side.min(area / widest * TILE_MARGIN);
+    let estimate = columns.len() * (height(row, last_row)? / tall).ceil() as usize;
+    if estimate > MAX_TILES {
+        return Ok(Tiles::TooMany(estimate));
+    }
+    let Some(rows) = spans(row, last_row, tall, &mut height)? else {
+        return Ok(Tiles::TooLarge);
+    };
+    let mut tiles = Vec::new();
+    for &(top, bottom) in &rows {
+        for &(left, right) in &columns {
+            let (first, last) = (address(left, top), address(right, bottom));
+            tiles.push(if first == last {
+                first
+            } else {
+                format!("{first}:{last}")
+            });
+        }
+    }
+    Ok(Tiles::Fit(tiles))
+}
+
+/// What a failed render reports to the parent: the step, the COM error code,
+/// the clipboard tries and, for a range over the budget, the tiles.
+fn describe(error: &anyhow::Error, request: &Request) -> serde_json::Value {
+    let mut failure = json!({
+        "stage": error.downcast_ref::<Stage>().map(|stage| stage.0),
+        "message": format!("{error:#}"),
+        "sheet": request.sheet,
+        "requested_range": request.range,
+    });
+    if let Some(com) = error.downcast_ref::<windows::core::Error>() {
+        failure["hresult"] = json!(format!("0x{:08X}", com.code().0 as u32));
+    }
+    if let Some(attempts) = error.downcast_ref::<Attempts>() {
+        failure["attempts"] = json!(attempts.0);
+    }
+    if let Some(over) = error.downcast_ref::<OverBudget>() {
+        failure["range"] = json!(over.range);
+        failure["width"] = json!(over.width.round());
+        failure["height"] = json!(over.height.round());
+        let (tiles, needed) = match &over.plan {
+            Tiles::Fit(tiles) => (tiles.clone(), tiles.len()),
+            Tiles::TooMany(count) => (Vec::new(), *count),
+            Tiles::TooLarge => (Vec::new(), 0),
+        };
+        failure["tiles"] = json!(tiles);
+        failure["tiles_needed"] = json!(needed);
+    }
+    failure
+}
+
 /// The error Excel gives for a failed call, which is also what a clipboard
 /// call gives while another program has the clipboard open.
 const EXCEL_CALL_FAILED: HRESULT = HRESULT(0x800A_03EC_u32 as i32);
@@ -78,6 +306,7 @@ fn on_clipboard<T>(mut call: impl FnMut() -> Result<T>) -> Result<T> {
                 std::thread::sleep(Duration::from_millis(100 * u64::from(attempt)));
                 attempt += 1;
             }
+            Err(error) => return Err(error.context(Attempts(attempt))),
             outcome => return outcome,
         }
     }
@@ -121,11 +350,23 @@ fn png_dimensions(path: &Path) -> Result<(u32, u32)> {
 
 pub fn worker(request_path: &Path) -> Result<()> {
     let request: Request = serde_json::from_slice(&fs::read(request_path)?)?;
-    super::render::validate_source(Path::new(&request.source))?;
-    let _mutex = RenderMutex::lock(request.lock_wait_seconds)?;
-    let _apartment = Apartment::new()?;
-    let (excel, job) = isolated_application("Excel.Application", "excel.exe")?;
-    let outcome = render_with_excel(&excel, &request);
+    let outcome = render_request(&request);
+    if let Err(error) = &outcome {
+        fs::write(
+            &request.failure,
+            serde_json::to_vec(&describe(error, &request))?,
+        )?;
+    }
+    outcome
+}
+
+fn render_request(request: &Request) -> Result<()> {
+    super::render::validate_source(Path::new(&request.source)).context(Stage("source"))?;
+    let _mutex = RenderMutex::lock(request.lock_wait_seconds).context(Stage("clipboard_lock"))?;
+    let _apartment = Apartment::new().context(Stage("launch"))?;
+    let (excel, job) =
+        isolated_application("Excel.Application", "excel.exe").context(Stage("launch"))?;
+    let outcome = render_with_excel(&excel, request);
     // Drop the job after a best-effort graceful close; a stuck COM call is handled by
     // the parent killing this worker, which closes the job handle and its Excel.
     let _ = call(&excel, "Quit", vec![]);
@@ -134,9 +375,9 @@ pub fn worker(request_path: &Path) -> Result<()> {
 }
 
 fn render_with_excel(excel: &IDispatch, request: &Request) -> Result<()> {
-    let (scratch, source) = open_quietly(excel, &request.source)?;
+    let (scratch, source) = open_quietly(excel, &request.source).context(Stage("open"))?;
     if request.recalculate {
-        call(excel, "CalculateFull", vec![])?;
+        call(excel, "CalculateFull", vec![]).context(Stage("open"))?;
     }
     let outcome = render_range(excel, &scratch, &source, request);
     let _ = call(&source, "Close", vec![Arg::Bool(false)]);
@@ -220,22 +461,26 @@ fn render_range(
     source: &IDispatch,
     request: &Request,
 ) -> Result<()> {
-    let sheets = prop(source, "Worksheets")?;
-    let sheet = item(&sheets, Arg::Text(&request.sheet))?;
-    ensure!(
-        get(&sheet, "Visible")?.int()? == -1,
-        "The requested sheet is hidden. Render a visible sheet; hidden state is not changed."
-    );
-    call(&sheet, "Activate", vec![])?;
+    let sheet = (|| -> Result<IDispatch> {
+        let sheet = item(&prop(source, "Worksheets")?, Arg::Text(&request.sheet))?;
+        ensure!(
+            get(&sheet, "Visible")?.int()? == -1,
+            "The requested sheet is hidden. Render a visible sheet; hidden state is not changed."
+        );
+        call(&sheet, "Activate", vec![])?;
+        Ok(sheet)
+    })()
+    .context(Stage("sheet"))?;
     let cells = match &request.range {
         Some(range) if !range.is_empty() => invoke(
             &sheet,
             "Range",
             DISPATCH_PROPERTYGET,
             vec![Arg::Text(range)],
-        )?
-        .dispatch()?,
-        _ => prop(&sheet, "UsedRange")?,
+        )
+        .and_then(|cells| cells.dispatch())
+        .context(Stage("range"))?,
+        _ => prop(&sheet, "UsedRange").context(Stage("range"))?,
     };
     let column = get(&cells, "Column")?.int()?;
     let row = get(&cells, "Row")?.int()?;
@@ -250,56 +495,107 @@ fn render_range(
     };
     let width = get(&cells, "Width")?.float()?;
     let height = get(&cells, "Height")?.float()?;
-    ensure!(
-        width > 0.0 && height > 0.0,
-        "The requested range has no visible area."
-    );
-    ensure!(
-        width * 4.0 / 3.0 <= 8192.0
-            && height * 4.0 / 3.0 <= 8192.0
-            && width * height * 16.0 / 9.0 <= 32_000_000.0,
-        "Range exceeds the render budget; request smaller explicit cell ranges."
-    );
-    let scratch_sheet = item(&prop(scratch, "Worksheets")?, Arg::Int(1))?;
-    let chart_objects = method(&scratch_sheet, "ChartObjects", vec![])?;
-    let chart_object = method(
-        &chart_objects,
-        "Add",
-        vec![
-            Arg::Int(0),
-            Arg::Int(0),
-            Arg::Float(width),
-            Arg::Float(height),
-        ],
-    )?;
-    let chart = prop(&chart_object, "Chart")?;
-    let line = prop(&prop(&prop(&chart, "ChartArea")?, "Format")?, "Line")?;
-    put(&line, "Visible", Arg::Int(0))?;
-    call(&sheet, "Activate", vec![])?;
-    on_clipboard(|| call(&cells, "CopyPicture", vec![Arg::Int(1), Arg::Int(-4147)]))?;
-    call(scratch, "Activate", vec![])?;
-    call(&chart_object, "Activate", vec![])?;
-    on_clipboard(|| call(&chart, "Paste", vec![]))?;
-    ensure!(
-        call(
-            &chart,
-            "Export",
+    if width <= 0.0 || height <= 0.0 {
+        return Err(anyhow::anyhow!("The requested range has no visible area."))
+            .context(Stage("range"));
+    }
+    let probe = Path::new(&request.output).with_extension("probe.png");
+    let ratio = pixels_per_point(scratch, &probe).context(Stage("calibrate"))?;
+    if !within_budget(width, height, ratio) {
+        // Measure spans of whole columns and rows on the sheet to plan the tiles.
+        let span = |from: String, to: String, what: &str| -> Result<f64> {
+            let cells = invoke(
+                &sheet,
+                "Range",
+                DISPATCH_PROPERTYGET,
+                vec![Arg::Text(&format!("{from}:{to}"))],
+            )?
+            .dispatch()?;
+            get(&cells, what)?.float()
+        };
+        let tiles = plan_tiles(
+            (column, row, last_column, last_row),
+            ratio,
+            |from, to| span(address(from, row), address(to, row), "Width"),
+            |from, to| span(address(column, from), address(column, to), "Height"),
+        )
+        .context(Stage("budget"))?;
+        let over = OverBudget {
+            range,
+            width: width * ratio,
+            height: height * ratio,
+            plan: tiles,
+        };
+        return Err(anyhow::Error::new(over).context(Stage("budget")));
+    }
+    render_picture(
+        excel, scratch, &sheet, &cells, request, &range, width, height, ratio,
+    )
+}
+
+/// Copies `cells` as a picture into a chart of the scratch workbook and exports
+/// it as PNG, recording what was drawn.
+#[allow(clippy::too_many_arguments)]
+fn render_picture(
+    excel: &IDispatch,
+    scratch: &IDispatch,
+    sheet: &IDispatch,
+    cells: &IDispatch,
+    request: &Request,
+    range: &str,
+    width: f64,
+    height: f64,
+    ratio: f64,
+) -> Result<()> {
+    let prepared = (|| -> Result<(IDispatch, IDispatch)> {
+        let scratch_sheet = item(&prop(scratch, "Worksheets")?, Arg::Int(1))?;
+        let chart_objects = method(&scratch_sheet, "ChartObjects", vec![])?;
+        let chart_object = method(
+            &chart_objects,
+            "Add",
             vec![
-                Arg::Text(&request.output),
-                Arg::Text("PNG"),
-                Arg::Bool(false)
-            ]
-        )?
-        .boolean()?,
-        "Excel PNG export failed."
-    );
-    let (width, height) = png_dimensions(Path::new(&request.output))?;
+                Arg::Int(0),
+                Arg::Int(0),
+                Arg::Float(width),
+                Arg::Float(height),
+            ],
+        )?;
+        let chart = prop(&chart_object, "Chart")?;
+        let line = prop(&prop(&prop(&chart, "ChartArea")?, "Format")?, "Line")?;
+        put(&line, "Visible", Arg::Int(0))?;
+        call(sheet, "Activate", vec![])?;
+        Ok((chart_object, chart))
+    })()
+    .context(Stage("prepare"))?;
+    let (chart_object, chart) = prepared;
+    on_clipboard(|| call(cells, "CopyPicture", vec![Arg::Int(1), Arg::Int(-4147)]))
+        .context(Stage("copy_picture"))?;
+    call(scratch, "Activate", vec![])
+        .and_then(|_| call(&chart_object, "Activate", vec![]))
+        .context(Stage("paste"))?;
+    on_clipboard(|| call(&chart, "Paste", vec![])).context(Stage("paste"))?;
+    let exported = call(
+        &chart,
+        "Export",
+        vec![
+            Arg::Text(&request.output),
+            Arg::Text("PNG"),
+            Arg::Bool(false),
+        ],
+    )
+    .and_then(|done| done.boolean())
+    .context(Stage("export"))?;
+    if !exported {
+        return Err(anyhow::anyhow!("Excel PNG export failed.")).context(Stage("export"));
+    }
+    let (width, height) = png_dimensions(Path::new(&request.output)).context(Stage("image"))?;
     let version = get(excel, "Version")?.string()?;
     fs::write(
         &request.result,
         serde_json::to_vec(&json!({
             "engine":"excel-com", "version":version, "sheet":request.sheet,
             "range":range, "width":width, "height":height, "clipboard_changed":true,
+            "pixels_per_point":(ratio * 1000.0).round() / 1000.0,
         }))?,
     )?;
     Ok(())
@@ -340,6 +636,124 @@ mod tests {
         .unwrap();
         assert!(waited >= Duration::from_millis(200), "{waited:?}");
         holder.join().unwrap();
+    }
+
+    #[test]
+    fn a_range_over_the_budget_is_planned_as_tiles_that_each_fit() {
+        // 40 columns of 300 points and 500 rows of 20 points: 16000 x 13333 px at 100 %.
+        let width = |from: i32, to: i32| Ok(f64::from(to - from + 1) * 300.0);
+        let height = |from: i32, to: i32| Ok(f64::from(to - from + 1) * 20.0);
+        let parse = |cell: &str| -> (i32, i32) {
+            let split = cell.find(|c: char| c.is_ascii_digit()).unwrap();
+            let column = cell[..split]
+                .bytes()
+                .fold(0, |n, b| n * 26 + i32::from(b - b'A' + 1));
+            (column, cell[split..].parse().unwrap())
+        };
+        // At 100 % display scaling and at 150 %, where Excel exports 2 px a point.
+        for ratio in [4.0 / 3.0, 2.0] {
+            assert!(!within_budget(
+                width(1, 40).unwrap(),
+                height(1, 500).unwrap(),
+                ratio
+            ));
+            let Tiles::Fit(tiles) = plan_tiles((1, 1, 40, 500), ratio, width, height).unwrap()
+            else {
+                panic!("the range fits in tiles")
+            };
+            let mut cells = 0;
+            for tile in &tiles {
+                let (first, last) = tile.split_once(':').unwrap();
+                let ((c1, r1), (c2, r2)) = (parse(first), parse(last));
+                assert!(
+                    within_budget(width(c1, c2).unwrap(), height(r1, r2).unwrap(), ratio),
+                    "{tile} at {ratio}"
+                );
+                cells += (c2 - c1 + 1) * (r2 - r1 + 1);
+            }
+            assert_eq!(cells, 40 * 500, "the tiles cover the range once");
+            if ratio < 1.5 {
+                // Columns of at most 5836 points: 19 columns (5700); rows of at most
+                // 18M / 5700 x 0.95 = 3000 points: 150.
+                assert_eq!(tiles[0], "A1:S150");
+                assert_eq!(tiles[1], "T1:AL150");
+                assert_eq!(tiles[2], "AM1:AN150");
+                assert_eq!(tiles.last().unwrap(), "AM451:AN500");
+            } else {
+                // Columns of at most 3891 points: 12 columns (3600).
+                assert_eq!(
+                    tiles[0]
+                        .split_once(':')
+                        .unwrap()
+                        .1
+                        .trim_end_matches(char::is_numeric),
+                    "L"
+                );
+            }
+        }
+        let ratio = 4.0 / 3.0;
+        // A single column wider than an image cannot be tiled.
+        let wide = |from: i32, to: i32| Ok(f64::from(to - from + 1) * 7000.0);
+        assert_eq!(
+            plan_tiles((1, 1, 3, 10), ratio, wide, height).unwrap(),
+            Tiles::TooLarge
+        );
+        // A whole sheet is counted from its size, never planned row by row.
+        let mut probes = 0;
+        let counted = plan_tiles((1, 1, 16384, 1_048_576), ratio, width, |from, to| {
+            probes += 1;
+            height(from, to)
+        })
+        .unwrap();
+        assert!(
+            matches!(counted, Tiles::TooMany(n) if n > MAX_TILES),
+            "{counted:?}"
+        );
+        assert!(probes <= 1, "{probes}");
+    }
+
+    #[test]
+    fn a_failure_reports_its_step_com_code_and_tries() {
+        let request = Request {
+            source: String::new(),
+            sheet: "S".into(),
+            range: Some("A1:B2".into()),
+            output: String::new(),
+            result: String::new(),
+            failure: String::new(),
+            lock_wait_seconds: 0,
+            recalculate: false,
+        };
+        let error = on_clipboard(|| -> Result<()> { Err(failed(EXCEL_CALL_FAILED)) })
+            .context(Stage("copy_picture"))
+            .unwrap_err();
+        let failure = describe(&error, &request);
+        assert_eq!(failure["stage"], "copy_picture");
+        assert_eq!(failure["hresult"], "0x800A03EC");
+        assert_eq!(failure["attempts"], CLIPBOARD_ATTEMPTS);
+        assert_eq!(failure["sheet"], "S");
+        let over = OverBudget {
+            range: "A1:Z40".into(),
+            width: 9000.4,
+            height: 100.0,
+            plan: Tiles::Fit(vec!["A1:M40".into(), "N1:Z40".into()]),
+        };
+        let failure = describe(&anyhow::Error::new(over).context(Stage("budget")), &request);
+        assert_eq!(
+            (failure["stage"].clone(), failure["width"].clone()),
+            (json!("budget"), json!(9000.0))
+        );
+        assert_eq!(failure["tiles"], json!(["A1:M40", "N1:Z40"]));
+        assert_eq!(failure["tiles_needed"], 2);
+        let over = OverBudget {
+            range: "A1:XFD1048576".into(),
+            width: 1e6,
+            height: 1e7,
+            plan: Tiles::TooMany(5000),
+        };
+        let failure = describe(&anyhow::Error::new(over).context(Stage("budget")), &request);
+        assert_eq!(failure["tiles"], json!([]));
+        assert_eq!(failure["tiles_needed"], 5000);
     }
 
     #[test]
