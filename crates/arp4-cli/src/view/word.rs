@@ -87,11 +87,11 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
         let _ = write!(
             html,
             r#"<div class="band top">{}</div>"#,
-            flow(document, band, &prefix, out)?
+            flow(document, band, &prefix, out, &Paragraphs)?
         );
     }
     if let Some(body) = named("document").next() {
-        html.push_str(&flow(document, body, "", out)?);
+        html.push_str(&flow(document, body, "", out, &Paragraphs)?);
     }
     // Footnotes and endnotes under a short rule, as Word sets them.
     for notes in named("footnotes-").chain(named("endnotes-")) {
@@ -99,7 +99,7 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
         let _ = write!(
             html,
             r#"<div class="notes">{}</div>"#,
-            flow(document, notes, &prefix, out)?
+            flow(document, notes, &prefix, out, &Paragraphs)?
         );
     }
     let images: Vec<String> = document.extraction["assets"]
@@ -119,7 +119,7 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
         let _ = write!(
             html,
             r#"<div class="band bottom">{}</div>"#,
-            flow(document, band, &prefix, out)?
+            flow(document, band, &prefix, out, &Paragraphs)?
         );
     }
     html.push_str("</div>");
@@ -145,10 +145,38 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
     Ok(vec![section])
 }
 
+/// How a part draws the blocks of its flow: a paragraph outside tables, and
+/// what a table cell shows before its text.
+pub(super) trait Blocks {
+    /// The paragraph at `address`, placed as `place`, with the CSS of its
+    /// font, its difference `mark` and its `text` escaped.
+    fn paragraph(&self, place: &str, address: &str, css: &str, mark: &str, text: &str) -> String;
+
+    /// What table cell `address` shows before its text.
+    fn before(&self, _address: &str) -> String {
+        String::new()
+    }
+}
+
+/// Word's paragraphs, as they are.
+struct Paragraphs;
+
+impl Blocks for Paragraphs {
+    fn paragraph(&self, place: &str, _address: &str, css: &str, mark: &str, text: &str) -> String {
+        format!(r#"<p data-a="{place}" style="{css}"{mark}>{text}</p>"#)
+    }
+}
+
 /// The paragraphs and tables of a part, in the order of its rows: a row a
-/// table takes is a row of the table, any other the paragraph in column A.
-/// Each is placed by its address after `prefix`.
-fn flow(document: &Document<'_>, sheet: &Sheet, prefix: &str, out: &mut Out) -> Result<String> {
+/// table takes is a row of the table, any other the paragraph in column A,
+/// drawn by `blocks`. Each is placed by its address after `prefix`.
+pub(super) fn flow(
+    document: &Document<'_>,
+    sheet: &Sheet,
+    prefix: &str,
+    out: &mut Out,
+    blocks: &dyn Blocks,
+) -> Result<String> {
     let name = sheet["name"].as_str().unwrap_or_default();
     let cells: HashMap<(u32, u32), crate::extraction::Cell<'_>> = sheet
         .cells
@@ -221,7 +249,8 @@ fn flow(document: &Document<'_>, sheet: &Sheet, prefix: &str, out: &mut Out) -> 
                     let mark = out.mark(shown, name, &address);
                     let _ = write!(
                         html,
-                        r#"<td{span} data-a="{prefix}{address}" style="{css}"{mark}>{}</td>"#,
+                        r#"<td{span} data-a="{prefix}{address}" style="{css}"{mark}>{}{}</td>"#,
+                        blocks.before(&address),
                         escape(&text_of(shown, cell))
                     );
                 }
@@ -235,12 +264,13 @@ fn flow(document: &Document<'_>, sheet: &Sheet, prefix: &str, out: &mut Out) -> 
         let cell = cells.get(&(1, row)).copied();
         let shown = document.content.cell(name, &address);
         let mark = out.mark(shown, name, &address);
-        let _ = write!(
-            html,
-            r#"<p data-a="{prefix}{address}" style="{}"{mark}>{}</p>"#,
-            font_css(cell_font(sheet, cell, shown), cell_style(sheet, cell)),
-            escape(&text_of(shown, cell))
-        );
+        html.push_str(&blocks.paragraph(
+            &format!("{prefix}{address}"),
+            &address,
+            &font_css(cell_font(sheet, cell, shown), cell_style(sheet, cell)),
+            &mark,
+            &escape(&text_of(shown, cell)),
+        ));
         row += 1;
     }
     Ok(html)

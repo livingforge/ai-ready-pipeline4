@@ -13,6 +13,7 @@ mod sheet;
 mod shell;
 mod slides;
 mod text;
+mod web;
 mod word;
 
 use crate::{document_source::Source, extraction::Extraction};
@@ -173,6 +174,8 @@ enum Layout {
     Paper,
     /// PDF: the pages one under another.
     Pages,
+    /// HTML: the page as a browser shows it without its style sheets.
+    Web,
     /// Text: the lines or records as a table.
     Records,
 }
@@ -188,6 +191,9 @@ pub fn page(document: &Document<'_>) -> Result<Page> {
         }
         original if original.office_part("word/document.xml").is_some() => {
             (Layout::Paper, word::document(document, &mut out)?)
+        }
+        original if crate::document_source::HTML_FORMATS.contains(&original.format()) => {
+            (Layout::Web, web::page(document, &mut out)?)
         }
         _ => (Layout::Records, text::sheets(document, &mut out)?),
     };

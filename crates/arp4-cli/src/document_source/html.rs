@@ -145,6 +145,21 @@ pub(super) struct Block {
     /// under, its own first when it is one.
     kind: &'static str,
     headings: Vec<String>,
+    /// How browsers set the block off beyond its font (see [`BlockShape`]).
+    indent: usize,
+    marker: Option<String>,
+}
+
+/// How browsers set a block off from the text around it beyond its font,
+/// for a page that shows the blocks as a browser does.
+pub struct BlockShape {
+    /// What the block is, as its position names it.
+    pub kind: &'static str,
+    /// How many lists, definitions, quotes and figures hold it, each of
+    /// which a browser indents.
+    pub indent: usize,
+    /// The bullet or number of the list item it starts.
+    pub marker: Option<String>,
 }
 
 enum RowKind {
@@ -221,11 +236,26 @@ fn data_picture(src: &str) -> Option<(Vec<u8>, String)> {
 }
 
 impl Layout {
+    /// How browsers set off each block beyond its font, by its address.
+    pub(super) fn shapes(self) -> BTreeMap<String, BlockShape> {
+        self.blocks
+            .into_iter()
+            .map(|block| {
+                let shape = BlockShape {
+                    kind: block.kind,
+                    indent: block.indent,
+                    marker: block.marker,
+                };
+                (block.address, shape)
+            })
+            .collect()
+    }
+
     /// Names the pictures of the page at `page` as assets, in the order the
     /// page first shows them: those it holds as data URLs, and the picture
-    /// files beside it its relative `src` names. Pictures on other sites are
-    /// not read.
-    pub(super) fn assets(&mut self, page: &Path) -> Pictures {
+    /// files its relative `src` names that lie in one of `folders`
+    /// (canonical paths). Pictures on other sites are not read.
+    pub(super) fn assets(&mut self, page: &Path, folders: &[std::path::PathBuf]) -> Pictures {
         let mut pictures = Pictures::default();
         // The asset of each picture already named, by file or by its bytes.
         let mut named: BTreeMap<String, String> = BTreeMap::new();
@@ -256,16 +286,18 @@ impl Layout {
                     .and_then(|e| e.to_str())
                     .map(str::to_ascii_lowercase)
                     .filter(|e| PICTURES.contains(&e.as_str()));
-                let (Some(extension), true) = (extension, file.is_file()) else {
+                // The path as it resolves past `..` and links, so that it
+                // cannot leave the folders by them.
+                let canonical = dunce::canonicalize(&file).ok().filter(|file| {
+                    file.is_file() && folders.iter().any(|folder| file.starts_with(folder))
+                });
+                let (Some(extension), Some(canonical)) = (extension, canonical) else {
                     continue;
                 };
-                let key = dunce::canonicalize(&file)
-                    .unwrap_or(file.clone())
-                    .to_string_lossy()
-                    .to_lowercase();
+                let key = canonical.to_string_lossy().to_lowercase();
                 named.get(&key).cloned().unwrap_or_else(|| {
                     let name = format!("{next}.{extension}");
-                    pictures.files.insert(name.clone(), file);
+                    pictures.files.insert(name.clone(), canonical);
                     named.insert(key, name.clone());
                     name
                 })
@@ -313,9 +345,11 @@ fn main_of(tree: &Tree, excluded: &[bool]) -> Option<usize> {
 }
 
 impl Layout {
-    /// Finds the links, anchors and pictures of the elements of `tree` that
-    /// are not `excluded`: hidden, or outside the main content it marks.
-    fn link(&mut self, tree: &Tree, excluded: &[bool]) {
+    /// Finds the links and pictures of the elements of `tree` that are not
+    /// `excluded` (hidden, or outside the main content it marks), and the
+    /// anchors of those not `inert`: a link to the site's navigation or a
+    /// hidden element finds it too, at the block that follows it.
+    fn link(&mut self, tree: &Tree, excluded: &[bool], inert: &[bool]) {
         // The blocks by where their text starts and ends in the original.
         let mut spans: Vec<(usize, usize, usize)> = self
             .blocks
@@ -339,9 +373,10 @@ impl Layout {
                 _ => spans.get(next).map(|(_, _, index)| *index),
             }
         };
+        let last = spans.last().map(|(_, _, index)| *index);
         let mut names = BTreeSet::new();
         for (node, excluded) in excluded.iter().enumerate() {
-            let Some(element) = tree.element(node).filter(|_| !excluded) else {
+            let Some(element) = tree.element(node) else {
                 continue;
             };
             let range = tree.nodes[node].range.clone();
@@ -352,13 +387,17 @@ impl Layout {
                         .then(|| element.attribute("name"))
                         .flatten()
                 })
-                .filter(|name| !name.is_empty());
+                .filter(|name| !name.is_empty() && !inert[node]);
+            // An element after the last block, as a footer, is at the last.
             if let Some(name) = name
-                && let Some(index) = block_at(range.start)
+                && let Some(index) = block_at(range.start).or(last)
                 && names.insert(name.to_owned())
             {
                 self.anchors
                     .push(json!({"name":name,"range":self.blocks[index].address}));
+            }
+            if *excluded {
+                continue;
             }
             let linking = element.name == "a" && element.attribute("href").is_some();
             if element.name != "img" && !linking {
@@ -385,7 +424,7 @@ impl Layout {
                 let index = around
                     .map(|(_, _, index)| index)
                     .or_else(|| block_at(range.start))
-                    .or(spans.last().map(|(_, _, index)| *index));
+                    .or(last);
                 if let (Some(index), Some(src)) = (index, element.attribute("src")) {
                     let mut image = json!({"address":self.blocks[index].address,"src":src});
                     if let Some(alt) = element.attribute("alt") {
@@ -442,6 +481,8 @@ struct Inherited {
     kind: &'static str,
     /// The level of the heading the text is in.
     level: Option<usize>,
+    /// How many indenting elements hold the text (see [`BlockShape::indent`]).
+    indent: usize,
 }
 
 /// The text of a block being read.
@@ -456,11 +497,16 @@ struct Run {
     /// Whether the last piece is a line break, which white space dropped at
     /// the start of the next line goes with.
     after_break: bool,
+    /// Whether a block element inside `pre` started or ended since the last
+    /// character, so that the next starts a line.
+    block_break: bool,
     bold: bool,
     size: Option<u32>,
     anchor: Option<usize>,
     /// The kind and heading level of the first character.
     kind: Option<(&'static str, Option<usize>)>,
+    /// The indent of the first character.
+    indent: Option<usize>,
 }
 
 impl Run {
@@ -476,6 +522,7 @@ impl Run {
         self.anchor.get_or_insert(node);
         self.size.get_or_insert(context.size);
         self.kind.get_or_insert((context.kind, context.level));
+        self.indent.get_or_insert(context.indent);
         self.bold &= context.bold;
         self.line_start = false;
         self.after_break = false;
@@ -520,6 +567,7 @@ impl Run {
             }
             return;
         }
+        self.open_line();
         if let Some(space) = self.pending.take() {
             let start = self.text.len();
             self.text.push(' ');
@@ -559,6 +607,7 @@ impl Run {
     /// Adds the line break of `<br>` `node` at `source`; the spaces before it
     /// and after it are dropped with it.
     fn line_break(&mut self, node: usize, source: Range<usize>, context: &Inherited) {
+        self.open_line();
         let mut sources = self.pending.take().map_or(vec![], |space| space.sources);
         extend(&mut sources, source);
         self.shown(node, context);
@@ -572,6 +621,25 @@ impl Run {
         });
         self.line_start = !context.pre;
         self.after_break = true;
+    }
+
+    /// Starts a line after a block element inside `pre`, unless one has
+    /// started. The line break has no place in the original, as the one
+    /// joining the paragraphs of a table cell.
+    fn open_line(&mut self) {
+        if std::mem::take(&mut self.block_break)
+            && !self.text.is_empty()
+            && !self.text.ends_with('\n')
+        {
+            let start = self.text.len();
+            self.text.push('\n');
+            self.pieces.push(Piece {
+                text: start..start + 1,
+                sources: vec![],
+                literal: false,
+                pre: true,
+            });
+        }
     }
 }
 
@@ -652,6 +720,39 @@ struct Walker<'t> {
     headings: Vec<(usize, String)>,
     /// Whether each node holds a table (see [`Walker::frame`]).
     holds_table: Vec<bool>,
+    /// The marker of the list item being read, for the first block it makes.
+    marker: Option<String>,
+}
+
+/// The bullet or number browsers show before list item `node`: in a
+/// numbered list the number its `start` and the `value` of its items count
+/// to, in decimal, else a disc, circle or square by how many lists hold it.
+fn marker(tree: &Tree, node: usize) -> String {
+    let number = |node: usize, name: &str| {
+        tree.element(node)
+            .and_then(|e| e.attribute(name))
+            .and_then(|value| value.trim().parse::<i64>().ok())
+    };
+    if let Some(list) = tree.parent(node).filter(|list| tree.name(*list) == "ol") {
+        let mut count = number(list, "start").unwrap_or(1);
+        for item in tree.children(list).filter(|item| tree.name(*item) == "li") {
+            count = number(item, "value").unwrap_or(count);
+            if item == node {
+                return format!("{count}.");
+            }
+            count += 1;
+        }
+    }
+    let lists = tree
+        .ancestors(node)
+        .filter(|a| matches!(tree.name(*a), "ul" | "ol" | "menu" | "dir"))
+        .count();
+    match lists {
+        0 | 1 => "•",
+        2 => "◦",
+        _ => "▪",
+    }
+    .to_owned()
 }
 
 fn heading_size(name: &str) -> Option<u32> {
@@ -687,6 +788,12 @@ impl Walker<'_> {
             context.size = size;
             context.level = name[1..].parse().ok();
         }
+        if matches!(
+            name,
+            "ul" | "ol" | "menu" | "dir" | "dd" | "blockquote" | "figure"
+        ) {
+            context.indent += 1;
+        }
         let kind = match name {
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
             "p" => "paragraph",
@@ -711,31 +818,61 @@ impl Walker<'_> {
 
     fn visit(&mut self, node: usize, context: Inherited, depth: usize) -> Result<()> {
         ensure!(depth < 512, "HTML nests elements more than 512 deep");
+        for child in self.tree.children(node) {
+            self.child(child, context, depth)?;
+        }
+        Ok(())
+    }
+
+    /// Reads node `child` of a node at `depth`.
+    fn child(&mut self, child: usize, context: Inherited, depth: usize) -> Result<()> {
         let tree = self.tree;
-        for child in tree.children(node) {
-            match &tree.nodes[child].kind {
-                Kind::Text { raw } => {
+        match &tree.nodes[child].kind {
+            Kind::Text { raw } => {
+                let range = tree.nodes[child].range.clone();
+                read_text(&mut self.run, self.text, child, range, !raw, &context);
+            }
+            Kind::Element(element) if !self.hidden(child) => match &*element.name {
+                "br" => {
                     let range = tree.nodes[child].range.clone();
-                    read_text(&mut self.run, self.text, child, range, !raw, &context);
+                    self.run.line_break(child, range, &context);
                 }
-                Kind::Element(element) => {
-                    if self.hidden(child) {
-                        continue;
-                    }
-                    match &*element.name {
-                        "br" => {
-                            let range = self.tree.nodes[child].range.clone();
-                            self.run.line_break(child, range, &context);
-                        }
-                        "table" if !self.frame(child) => self.table(child, context, depth + 1)?,
-                        name if BLOCK.contains(&name) => self.block(child, context, depth + 1)?,
-                        _ => {
-                            let inner = self.inside(child, context);
-                            self.visit(child, inner, depth + 1)?;
-                        }
+                "table" if !self.frame(child) => self.table(child, context, depth + 1)?,
+                // Code a highlighter puts on a block element for each line.
+                name if context.pre && BLOCK.contains(&name) => {
+                    let inner = Inherited {
+                        kind: context.kind,
+                        level: context.level,
+                        ..self.inside(child, context)
+                    };
+                    self.run.block_break = true;
+                    self.visit(child, inner, depth + 1)?;
+                    self.run.block_break = true;
+                }
+                name if BLOCK.contains(&name) => self.block(child, context, depth + 1)?,
+                _ => {
+                    let inner = self.inside(child, context);
+                    self.visit(child, inner, depth + 1)?;
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Reads what table `node` or its row group or row holds outside its
+    /// cells, which browsers show before the table.
+    fn stray(&mut self, node: usize, context: Inherited, depth: usize) -> Result<()> {
+        ensure!(depth < 512, "HTML nests elements more than 512 deep");
+        for child in self.tree.children(node) {
+            match self.tree.name(child) {
+                "caption" | "colgroup" | "col" | "td" | "th" => {}
+                "thead" | "tbody" | "tfoot" | "tr" => {
+                    if !self.hidden(child) {
+                        self.stray(child, context, depth + 1)?;
                     }
                 }
-                _ => {}
+                _ => self.child(child, context, depth)?,
             }
         }
         Ok(())
@@ -752,9 +889,16 @@ impl Walker<'_> {
         self.entered += 1;
         let (made, entered) = (self.made, self.entered);
         let inner = self.inside(node, context);
+        let name = self.tree.name(node);
+        let item = name == "li";
+        if item {
+            self.marker = Some(marker(self.tree, node));
+        }
         self.visit(node, inner, depth)?;
         self.flush(true);
-        let name = self.tree.name(node);
+        if item {
+            self.marker = None;
+        }
         // The element is the row's own when its text is all it holds.
         if self.cell.is_none()
             && self.made == made + 1
@@ -775,7 +919,13 @@ impl Walker<'_> {
     fn flush(&mut self, breaks: bool) {
         let mut run = std::mem::replace(&mut self.run, Run::new());
         run.pending = None;
-        if run.text.is_empty() {
+        // A line break ending a block starts no line, and a block of white
+        // space alone, such as `&nbsp;` or a lone `<br>`, shows nothing.
+        if run.after_break {
+            run.pieces.pop();
+            run.text.pop();
+        }
+        if run.text.chars().all(char::is_whitespace) {
             return;
         }
         self.made += 1;
@@ -797,6 +947,8 @@ impl Walker<'_> {
             in_table: false,
             kind,
             headings: self.headings.iter().map(|(_, h)| h.clone()).collect(),
+            indent: run.indent.unwrap_or(0),
+            marker: self.marker.take(),
         };
         if let Some(cell) = &mut self.cell {
             cell.push(block);
@@ -823,27 +975,51 @@ impl Walker<'_> {
         self.flush(true);
         self.entered += 1;
         let tree = self.tree;
+        self.stray(table, context, depth)?;
+        self.flush(true);
         // A caption is shown above the table.
         for child in tree.children(table) {
             if tree.name(child) == "caption" && !self.hidden(child) {
                 self.block(child, context, depth)?;
             }
         }
-        let mut rows = vec![];
+        // The rows of each row group, rows directly in the table making one
+        // of their own, with the header first and the footer last as browsers
+        // show them.
+        let mut groups: Vec<(&str, Vec<usize>)> = vec![];
+        let mut loose = false;
         for child in tree.children(table) {
             match tree.name(child) {
-                "tr" => rows.push((child, false)),
-                group @ ("thead" | "tbody" | "tfoot") if !self.hidden(child) => {
-                    for row in tree.children(child) {
-                        if tree.name(row) == "tr" {
-                            rows.push((row, group == "thead"));
-                        }
+                "tr" => {
+                    if !loose {
+                        groups.push(("tbody", vec![]));
+                        loose = true;
+                    }
+                    groups.last_mut().unwrap().1.push(child);
+                }
+                group @ ("thead" | "tbody" | "tfoot") => {
+                    loose = false;
+                    if !self.hidden(child) {
+                        let rows = tree.children(child).filter(|r| tree.name(*r) == "tr");
+                        groups.push((group, rows.collect()));
                     }
                 }
                 _ => {}
             }
         }
-        rows.retain(|(row, _)| !self.hidden(*row));
+        groups.sort_by_key(|(group, _)| match *group {
+            "thead" => 0,
+            "tbody" => 1,
+            _ => 2,
+        });
+        // Each row, its group and where the group ends, past which no cell
+        // spans.
+        let mut rows = vec![];
+        for (group, members) in groups {
+            let members: Vec<_> = members.into_iter().filter(|r| !self.hidden(*r)).collect();
+            let end = rows.len() + members.len();
+            rows.extend(members.into_iter().map(|row| (row, group, end)));
+        }
         if rows.is_empty() {
             return Ok(());
         }
@@ -851,9 +1027,9 @@ impl Walker<'_> {
         let count = rows.len();
         let mut taken: Vec<Vec<bool>> = vec![vec![]; count];
         let mut cells = vec![];
-        for (r, (row, _)) in rows.iter().enumerate() {
+        for (r, &(row, _, end)) in rows.iter().enumerate() {
             let mut column = 0;
-            for cell in tree.children(*row) {
+            for cell in tree.children(row) {
                 if !matches!(tree.name(cell), "td" | "th") || self.hidden(cell) {
                     continue;
                 }
@@ -868,8 +1044,8 @@ impl Walker<'_> {
                 };
                 let across = number("colspan").unwrap_or(1).clamp(1, 1000);
                 let down = match number("rowspan") {
-                    Some(0) => count - r,
-                    Some(n) => n.min(count - r),
+                    Some(0) => end - r,
+                    Some(n) => n.min(end - r),
                     None => 1,
                 };
                 for line in &mut taken[r..r + down] {
@@ -903,7 +1079,7 @@ impl Walker<'_> {
             })
             .collect();
         let mut spanning = 0;
-        for (r, ((row, _), own)) in rows.iter().zip(own).enumerate() {
+        for (r, ((row, _, _), own)) in rows.iter().zip(own).enumerate() {
             spanning += spans[r];
             let spanned = spanning > 0;
             self.layout.rows.insert(
@@ -950,17 +1126,22 @@ impl Walker<'_> {
             }
         }
         // Header rows: the rows of thead, else the leading rows of th cells.
-        let header = rows.iter().take_while(|(_, head)| *head).count();
+        // Totals rows: the rows of tfoot, when rows are left between.
+        let header = rows.iter().take_while(|(_, g, _)| *g == "thead").count();
         let header = if header > 0 && header < count {
             header
         } else {
             let leading = header_cells.iter().take_while(|th| **th).count();
             if leading < count { leading } else { 0 }
         };
+        let totals = rows.iter().rev().take_while(|(_, g, _)| *g == "tfoot");
+        let totals = Some(totals.count())
+            .filter(|t| header + t < count)
+            .unwrap_or(0);
         let name = format!("table-{}", self.layout.tables.len() + 1);
         self.layout.tables.push(json!({"name":name,
             "range":format!("A{top}:{}", address(top + count - 1, width - 1)?),
-            "header_rows":header,"totals_rows":0}));
+            "header_rows":header,"totals_rows":totals}));
         Ok(())
     }
 }
@@ -1033,6 +1214,7 @@ pub(super) fn layout(tree: &Tree, text: &str) -> Result<Layout> {
         last_row: None,
         headings: vec![],
         holds_table,
+        marker: None,
     };
     let context = Inherited {
         pre: false,
@@ -1041,6 +1223,7 @@ pub(super) fn layout(tree: &Tree, text: &str) -> Result<Layout> {
         size: 12,
         kind: "text",
         level: None,
+        indent: 0,
     };
     let title_context = Inherited {
         kind: "title",
@@ -1083,7 +1266,15 @@ pub(super) fn layout(tree: &Tree, text: &str) -> Result<Layout> {
     for (node, excluded) in excluded.iter_mut().enumerate() {
         *excluded |= !scope.contains(&node);
     }
-    layout.link(tree, &excluded);
+    // A link's fragment finds any element of the page, shown or not, but
+    // not the content of a template, which is not part of the page.
+    let mut inert = vec![false; count];
+    for node in 1..count {
+        inert[node] = tree
+            .parent(node)
+            .is_some_and(|parent| inert[parent] || tree.name(parent) == "template");
+    }
+    layout.link(tree, &excluded, &inert);
     Ok(layout)
 }
 
@@ -1938,7 +2129,7 @@ mod tests {
 
     #[test]
     fn links_and_anchors_name_their_blocks() {
-        let html = "<head><link id=css href=x.css></head><h1 id=top>Guide</h1><section id=install><p>See <a href=\"linux.html#apt\">the <b>Linux</b> page</a> and <a href=#top>top</a>.</p></section><p><a name=old></a>Old <a href=pic.html><img src=p.png></a></p><p hidden><a href=no.html id=gone>x</a></p><h1 id=top>Again</h1>";
+        let html = "<head><link id=css href=x.css></head><h1 id=top>Guide</h1><section id=install><p>See <a href=\"linux.html#apt\">the <b>Linux</b> page</a> and <a href=#top>top</a>.</p></section><p><a name=old></a>Old <a href=pic.html><img src=p.png></a></p><p hidden><a href=no.html id=gone>x</a></p><template><p id=inert>t</p></template><h1 id=top>Again</h1>";
         let layout = laid(html);
         assert_eq!(
             layout.links,
@@ -1948,12 +2139,16 @@ mod tests {
                 json!({"range":"A3","url":"pic.html"}),
             ]
         );
+        // Elements shown or not are found by a link, at the block after
+        // them; the content of a template is not part of the page.
         assert_eq!(
             layout.anchors,
             [
+                json!({"name":"css","range":"A1"}),
                 json!({"name":"top","range":"A1"}),
                 json!({"name":"install","range":"A2"}),
                 json!({"name":"old","range":"A3"}),
+                json!({"name":"gone","range":"A4"}),
             ]
         );
     }
@@ -1968,7 +2163,8 @@ mod tests {
         fs::create_dir(temp.path().join("img")).unwrap();
         fs::write(temp.path().join("img/a b.png"), b"picture").unwrap();
         let mut layout = laid(&html);
-        let pictures = layout.assets(&temp.path().join("page.html"));
+        let folders = [dunce::canonicalize(temp.path()).unwrap()];
+        let pictures = layout.assets(&temp.path().join("page.html"), &folders);
         let images: Vec<_> = layout
             .images
             .iter()
@@ -1992,6 +2188,36 @@ mod tests {
     }
 
     #[test]
+    fn pictures_outside_the_folders_are_not_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(temp.path()).unwrap();
+        for file in ["site/img/a.png", "shared/b.png", "secret.png"] {
+            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            fs::write(root.join(file), file).unwrap();
+        }
+        let html = "<p>図 <img src=img/a.png><img src=../shared/b.png><img src=../secret.png><img src=img/../../secret.png></p>";
+        let mut layout = laid(html);
+        let pictures = layout.assets(
+            &root.join("site/page.html"),
+            &[root.join("site"), root.join("shared")],
+        );
+        let assets: Vec<_> = layout.images.iter().map(|i| i["asset"].clone()).collect();
+        assert_eq!(
+            assets,
+            [
+                json!("image-001.png"),
+                json!("image-002.png"),
+                Value::Null,
+                Value::Null
+            ]
+        );
+        assert_eq!(
+            pictures.files.values().collect::<Vec<_>>(),
+            [&root.join("site/img/a.png"), &root.join("shared/b.png")]
+        );
+    }
+
+    #[test]
     fn tab_panels_not_chosen_are_read() {
         let html = "<div role=tablist><button role=tab>Python</button><button role=tab>Rust</button></div><div role=tabpanel><pre>print(1)</pre></div><div role=tabpanel hidden><pre>println!(1)</pre><p hidden>gone</p></div><p hidden>no</p>";
         let texts: Vec<_> = laid(html).blocks.into_iter().map(|b| b.text).collect();
@@ -2000,10 +2226,10 @@ mod tests {
 
     #[test]
     fn landmarks_keep_the_site_frame_out_of_the_body() {
-        let page = "<title>API</title><header role=banner><a href=/>Home</a></header><nav><a href=a.html>A</a></nav>";
+        let page = "<title>API</title><header role=banner id=top><a href=/>Home</a></header><nav><a href=a.html>A</a></nav>";
         // The main content, when marked, is the body; its own navigation is not.
         let html = format!(
-            "{page}<div role=main><h1 id=api>API</h1><nav class=toc><a href=#x>x</a></nav><p>Text <a href=b.html>B</a></p></div><footer role=contentinfo>(c)</footer><p>after</p>"
+            "{page}<div role=main><h1 id=api>API</h1><nav class=toc><a href=#api id=toc-api>x</a></nav><p>Text <a href=b.html>B</a></p></div><footer role=contentinfo id=end>(c)</footer><p>after</p>"
         );
         let layout = laid(&html);
         let texts: Vec<_> = layout.blocks.iter().map(|b| b.text.as_str()).collect();
@@ -2012,12 +2238,50 @@ mod tests {
             layout.links,
             [json!({"range":"A3","url":"b.html","text":"B"})]
         );
+        // A link still finds the names in the frame, as a heading's link back
+        // to its entry in the table of contents: at the block after them.
+        assert_eq!(
+            layout.anchors,
+            [
+                json!({"name":"top","range":"A2"}),
+                json!({"name":"api","range":"A2"}),
+                json!({"name":"toc-api","range":"A3"}),
+                json!({"name":"end","range":"A3"}),
+            ]
+        );
         // Without it, the frame's landmarks are left out.
         let html = format!(
             "{page}<header><h1>Guide</h1></header><div role=search>find</div><p>Body</p><footer role=contentinfo>(c)</footer>"
         );
         let texts: Vec<_> = laid(&html).blocks.into_iter().map(|b| b.text).collect();
         assert_eq!(texts, ["API", "Guide", "Body"]);
+    }
+
+    #[test]
+    fn blocks_take_the_indent_and_markers_browsers_give_them() {
+        let html = "<p>Steps</p><ol start=3><li>Get</li><li><p>Unpack</p><ul><li>zip<ul><li>gz</li></ul></li></ul></li><li value=10>Run</li></ol>\
+            <dl><dt>key</dt><dd>its value</dd></dl><blockquote><p>Note</p></blockquote><li>alone</li>";
+        let shapes: Vec<_> = laid(html)
+            .blocks
+            .into_iter()
+            .map(|b| (b.kind, b.indent, b.marker))
+            .collect();
+        let marked = |kind, indent, marker: &str| (kind, indent, Some(marker.to_owned()));
+        assert_eq!(
+            shapes,
+            [
+                ("paragraph", 0, None),
+                marked("list_item", 1, "3."),
+                marked("paragraph", 1, "4."),
+                marked("list_item", 2, "◦"),
+                marked("list_item", 3, "▪"),
+                marked("list_item", 1, "10."),
+                ("term", 0, None),
+                ("definition", 1, None),
+                ("paragraph", 1, None),
+                marked("list_item", 0, "•"),
+            ]
+        );
     }
 
     fn kinds(layout: &Layout) -> Vec<(&str, &str)> {
@@ -2201,6 +2465,108 @@ mod tests {
             layout.tables,
             [json!({"name":"table-1","range":"A5:C7","header_rows":0,"totals_rows":0})]
         );
+    }
+
+    #[test]
+    fn line_breaks_and_spaces_alone_show_no_line() {
+        let html = "<p>a<br></p><p><br></p><p>&nbsp;</p><p>b<br><br> </p><table><tr><td>&nbsp;<td>c<br></table><p>\u{3000}</p>";
+        assert_eq!(
+            texts(html),
+            [("A1", "a"), ("A2", "b\n"), ("B3", "c")].map(|(a, t)| (a.to_owned(), t.to_owned()))
+        );
+        assert_eq!(
+            laid(html).tables,
+            [json!({"name":"table-1","range":"A3:B3","header_rows":0,"totals_rows":0})]
+        );
+        // The line break dropped stays in the original.
+        assert_eq!(
+            edited(html, 0, "a2").unwrap(),
+            html.replacen("a<br>", "a2<br>", 1)
+        );
+    }
+
+    #[test]
+    fn blocks_inside_pre_are_its_lines() {
+        // A highlighter's code: a block element and a line break for each line.
+        let html = "<pre class=prism-code><code><div class=token-line><span class=plain>my-site</span><br></div>\
+            <div class=token-line><span class=plain>\u{251c}\u{2500}\u{2500} docs</span><br></div></code></pre><pre>a<div>b</div>c</pre>";
+        assert_eq!(
+            kinds(&laid(html)),
+            [
+                ("code", "my-site\n\u{251c}\u{2500}\u{2500} docs"),
+                ("code", "a\nb\nc")
+            ]
+        );
+        assert_eq!(
+            edited(html, 0, "my-web\n\u{251c}\u{2500}\u{2500} docs").unwrap(),
+            html.replace(">my-site<", ">my-web<")
+        );
+        // The line break between blocks is in no element to edit.
+        assert!(edited(html, 1, "abc").is_err());
+    }
+
+    #[test]
+    fn text_in_a_table_outside_its_cells_comes_before_it() {
+        let html = "<table>stray<tr><td>x</td>loose</tr><tbody><p>para</p><tr><td>y</table>";
+        assert_eq!(
+            texts(html),
+            [
+                ("A1", "strayloose"),
+                ("A2", "para"),
+                ("A3", "x"),
+                ("A4", "y")
+            ]
+            .map(|(a, t)| (a.to_owned(), t.to_owned()))
+        );
+        assert_eq!(
+            laid(html).tables,
+            [json!({"name":"table-1","range":"A3:A4","header_rows":0,"totals_rows":0})]
+        );
+    }
+
+    #[test]
+    fn footers_are_totals_rows_shown_last() {
+        // HTML 4 put tfoot before tbody; browsers show it last, and a cell
+        // spans no rows past its row group.
+        let html = "<table><thead><tr><th>k<th>v</thead><tfoot><tr><td>sum<td>3</tfoot>\
+            <tbody><tr><td rowspan=5>a<td>1<tr><td>2</tbody></table>";
+        let layout = laid(html);
+        assert_eq!(
+            texts(html),
+            [
+                ("A1", "k"),
+                ("B1", "v"),
+                ("A2", "a"),
+                ("B2", "1"),
+                ("B3", "2"),
+                ("A4", "sum"),
+                ("B4", "3"),
+            ]
+            .map(|(a, t)| (a.to_owned(), t.to_owned()))
+        );
+        assert_eq!(layout.merges, ["A2:A3"]);
+        assert_eq!(
+            layout.tables,
+            [json!({"name":"table-1","range":"A1:B4","header_rows":1,"totals_rows":1})]
+        );
+        // A row inserted above the footer goes into the body.
+        let html = "<table><tfoot><tr><td>sum<td>3</tfoot><tbody><tr><td>a<td>1</tbody></table>";
+        let values = InsertedText::from([
+            (("op".to_owned(), 0, "A".to_owned()), "b".to_owned()),
+            (("op".to_owned(), 0, "B".to_owned()), "2".to_owned()),
+        ]);
+        let insert = operation(OperationKind::InsertRows, 2, 1);
+        let out = patch(html.as_bytes(), &[&insert], &BTreeMap::new(), &values).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            html.replace(
+                "<td>1</tbody>",
+                "<td>1<tr><td>b</td><td>2</td></tr></tbody>"
+            )
+        );
+        // A table of a header and a footer alone has no totals rows.
+        let html = "<table><thead><tr><th>k</thead><tfoot><tr><td>sum</tfoot></table>";
+        assert_eq!(laid(html).tables[0]["totals_rows"], 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 use crate::agent_format::AgentFormat;
 use crate::data::{read, under, write};
 use anyhow::{Context, Result, ensure};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -28,7 +28,69 @@ pub fn open(root: &Path) -> Result<PathBuf> {
         &root,
         config["sources"].as_str().context("sources required")?,
     )?;
+    project_picture_folders(&root, &config)?;
     Ok(root)
+}
+
+/// The `picture_folders` of the project configuration `config`, which stay
+/// inside the project at `root`.
+fn project_picture_folders(root: &Path, config: &Value) -> Result<Vec<PathBuf>> {
+    let folders = config["picture_folders"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    folders
+        .iter()
+        .map(|folder| {
+            let folder = folder.as_str().context("picture folder must be a string")?;
+            ensure!(
+                !folder.starts_with(".arp") && !folder.starts_with(".git"),
+                "picture_folders must be outside ARP/Git metadata: {folder}"
+            );
+            under(root, folder).with_context(|| {
+                format!("picture folder {folder} of .arp/config.yml must lie inside the project; give a folder outside it in .arp/local.yml")
+            })
+        })
+        .collect()
+}
+
+/// The folders whose picture files the HTML page at `page` may read as
+/// assets: the sources folder of the project holding it, the
+/// `picture_folders` of its configuration and of this machine's
+/// `.arp/local.yml`, else the page's own folder. Folders that do not exist
+/// are left out.
+pub fn picture_folders(page: &Path) -> Result<Vec<PathBuf>> {
+    let page = dunce::canonicalize(page)?;
+    let folder = page.parent().context("page has no folder")?;
+    for root in folder.ancestors() {
+        let path = under(root, ".arp/config.yml")?;
+        if path.is_file() {
+            let config = read(&path, Some("project-config"))?;
+            let mut folders = vec![under(
+                root,
+                config["sources"].as_str().context("sources required")?,
+            )?];
+            folders.extend(project_picture_folders(root, &config)?);
+            let local = under(root, ".arp/local.yml")?;
+            if local.is_file() {
+                // A project made before this file is kept from committing it.
+                ensure_lines(&under(root, ".arp/.gitignore")?, &["/local.yml"])?;
+                let local = read(&local, Some("project-local-config"))?;
+                for folder in local["picture_folders"].as_array().into_iter().flatten() {
+                    folders.push(
+                        root.join(folder.as_str().context("picture folder must be a string")?),
+                    );
+                }
+            }
+            return Ok(folders
+                .into_iter()
+                .filter_map(|folder| dunce::canonicalize(folder).ok())
+                .collect());
+        }
+        if root.join(".git").exists() {
+            break;
+        }
+    }
+    Ok(vec![folder.to_owned()])
 }
 
 /// Reading views may also be produced outside a configured project. Stop at the
@@ -76,7 +138,7 @@ pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
     }
     ensure_lines(
         &under(&root, ".arp/.gitignore")?,
-        &["/work/", "/cache/", "/view/"],
+        &["/work/", "/cache/", "/view/", "/local.yml"],
     )?;
     // Originals and records are verified byte for byte, so Git must not convert
     // their line endings. These deeper files override the repository's own settings.

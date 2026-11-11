@@ -53,9 +53,25 @@ agent_read_format: toon
 
 `arp4 documents init` が `.arp/config.yml` と内部の `.gitignore` を作成します。原本の配置は `documents init --sources specifications` のように変更できます。初期化で既存の原本、AGENTS.md、エディタ設定は変更しません。
 
+HTMLのページが相対パスで指す画像ファイルは、取り込み元フォルダ（sources）の中にあるものだけを読みます。画像を別のフォルダに置くときは、そのフォルダを `picture_folders` に書きます。プロジェクト内のフォルダは `.arp/config.yml` に、プロジェクトの外のフォルダ（共有ドライブなど）はGit管理外の `.arp/local.yml` に書きます。`local.yml` はそのマシンだけの設定で、絶対パスや `../` も書けます。存在しないフォルダは無視するので、ほかのマシンではその画像がassetsに入りません。
+
+```yaml
+# .arp/config.yml
+picture_folders:
+- shared/images
+```
+
+```yaml
+# .arp/local.yml（Git管理外）
+picture_folders:
+- D:/share/manual-images
+```
+
+読む範囲を広げると、そのフォルダの画像が取込時に `.arp/documents/` へ写され、Gitで共有されます。利用者が判断して設定し、Agentには書き換えさせません。設定を変えても原本が変わらない文書は再取込されないので、`documents import --force` で取り込み直します。`.arp/.gitignore` の `/local.yml` は `documents init` が書き、以前に作ったプロジェクトでも `local.yml` を初めて読むときに追加します。
+
 ARPは原本と `.arp/` の記録をバイト列のハッシュで照合します。Gitが改行を変換すると、コミットやcloneの時点で原本のCRLFがLFに変わる、または記録ファイルがCRLFになり、原本の変更や記録の不整合として検出されます。Windowsの既定の `core.autocrlf=true` や、リポジトリの `* text=auto eol=lf` が該当します。このため `documents init` はsourcesフォルダと `.arp/` の `.gitattributes` に `* -text` を追記します。下位フォルダの `.gitattributes` はリポジトリルートの指定より優先されるため、コード等の改行設定は変わりません。既存の `.gitattributes` の内容は残し、行が無い場合だけ追記します。削除しないでください。
 
-設定と保存済み原本参照はリポジトリルートからの相対パスです。絶対パスや `../` による外部の参照は設定に保存しません。リポジトリを移動しても内部の参照が成立します。CLIに直接指定する実行ファイル等には絶対パスも使えます。
+設定と保存済み原本参照はリポジトリルートからの相対パスです。絶対パスや `../` による外部の参照は設定に保存しません（マシンごとの `.arp/local.yml` は例外で、Gitで共有しません）。リポジトリを移動しても内部の参照が成立します。CLIに直接指定する実行ファイル等には絶対パスも使えます。
 
 `documents`・`spec workflow`・`spec registry` の `--root` はリポジトリルートです。省略時は `.arp/config.yml` を親へ探索し、Gitルート（worktreeの `.git` ファイルも含む）を越えません。
 importの相対パスはリポジトリ基準で、そこに存在しない場合は設定のsourcesを基準に探します。原本はsourcesの中に置きます。sourcesの外のファイルは取り込めません。prompt・outやspecの入力引数は起動位置が基準です。管理対象のパスはリンクや外部への脱出を拒否します。

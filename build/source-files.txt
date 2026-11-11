@@ -165,6 +165,7 @@ crates/arp4-cli/src/view/sheet.rs
 crates/arp4-cli/src/view/shell.rs
 crates/arp4-cli/src/view/slides.rs
 crates/arp4-cli/src/view/text.rs
+crates/arp4-cli/src/view/web.rs
 crates/arp4-cli/src/view/word.rs
 crates/arp4-cli/src/workflow/artifacts.rs
 crates/arp4-cli/src/workflow/confirmation.rs

@@ -22,6 +22,7 @@ pub(super) fn shell(
         Layout::Slides => ("slides", "#c43e1c"),
         Layout::Paper => ("paper", "#2b579a"),
         Layout::Pages => ("pages", "#b30b00"),
+        Layout::Web => ("web", "#3c4043"),
         Layout::Records => ("records", "#3b5b7d"),
     };
     let file = document.id.rsplit('/').next().unwrap_or(document.id);
@@ -173,7 +174,7 @@ pub(super) fn shell(
             r#"<span id="where"></span><button id="notes-toggle" class="flat" aria-pressed="true">ノート</button>"#,
         ),
         Layout::Pages => html.push_str(r#"<span id="where"></span>"#),
-        Layout::Paper | Layout::Records => {}
+        Layout::Paper | Layout::Web | Layout::Records => {}
     }
     let _ = write!(
         html,
@@ -241,7 +242,7 @@ button{font:inherit;color:inherit}
 .body{flex:1;min-height:0;display:flex}
 .stage{flex:1;min-width:0;overflow:auto;position:relative}
 [data-layout=sheets] .stage{background:#fff}
-[data-layout=paper] .stage,[data-layout=pages] .stage,[data-layout=records] .stage{padding:24px}
+[data-layout=paper] .stage,[data-layout=pages] .stage,[data-layout=web] .stage,[data-layout=records] .stage{padding:24px}
 .view[hidden]{display:none!important}
 [data-layout=pages] .view{margin:0 auto 20px;width:max-content}
 [data-layout=records] .view{margin-bottom:20px}
@@ -320,6 +321,18 @@ svg.lines{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
 .paper .band.bottom{border-top:1px dashed var(--ui-line);margin-top:16px}
 .paper .notes{border-top:1px solid #000;width:40%;margin-top:18px;padding-top:4px;font-size:9pt}
 .paper figure{margin:8px 0}.paper figure img{max-width:100%}
+.web{position:relative;background:#fff;padding:0 8px 16px;box-shadow:0 1px 4px rgba(0,0,0,.25);font-family:initial;font-size:12pt;line-height:normal;color:#000}
+.web .title{margin:0 -8px 8px;padding:6px 12px;background:#dee1e6;color:#3c4043;font-size:12px;position:relative}
+.web p{margin:1em 0;white-space:pre-wrap;position:relative}
+.web p.heading{margin:.67em 0}
+.web p.list_item,.web p.term,.web p.definition,.web p.text{margin:0}
+.web p.code{white-space:pre;overflow-x:auto}
+.web p.caption{margin:0;text-align:center}
+.web .marker{position:absolute;right:100%;padding-right:.5em;white-space:nowrap}
+.web table{border-collapse:collapse;width:auto!important}
+.web td{border:1px solid transparent;padding:1px 4px;white-space:pre-wrap;position:relative}
+.web figure{margin:1em 40px}.web figure img{max-width:100%}
+.web figure.missing{color:var(--muted);font-size:12px;border:1px dashed var(--ui-line);padding:4px 8px}
 .pdf{position:relative;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.3);overflow:hidden}
 table.records{border-collapse:collapse;background:#fff}
 table.records caption{text-align:left;color:var(--muted);font-size:12px;padding:6px 0}

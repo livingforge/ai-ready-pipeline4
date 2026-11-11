@@ -31,6 +31,7 @@ mod slides;
 mod word;
 mod word_fonts;
 
+pub use html::BlockShape;
 pub(crate) use package::{office_archive, office_package, read_entry, uncompressed_size};
 pub use slide_shapes::{
     ConnectorEnd, ShapeEdit, ShapeOperation, ShapeProperties, is_shape_operation,
@@ -129,6 +130,20 @@ enum TextBackend {
 }
 
 impl Source {
+    /// How browsers set off each block of an HTML page beyond its font, by
+    /// its address, read from the page again; none for other originals.
+    pub fn html_shapes(&self) -> Result<Option<BTreeMap<String, BlockShape>>> {
+        let Self::Text(doc) = self else {
+            return Ok(None);
+        };
+        if !html(&doc.format) {
+            return Ok(None);
+        }
+        let decoded = html_parse::decode(&doc.raw)?;
+        let layout = html::layout(&html_parse::parse(&decoded.text), &decoded.text)?;
+        Ok(Some(layout.shapes()))
+    }
+
     /// Images in Word's media folder, PowerPoint's pictures and the pictures
     /// an HTML page shows are kept as independently reviewable assets. Their
     /// bytes are read from the original package, or the files an HTML page
@@ -427,7 +442,7 @@ impl Source {
             // The tree is let go before the sheet is made, which needs only
             // the layout.
             let mut layout = html::layout(&html_parse::parse(&decoded.text), &decoded.text)?;
-            pictures = layout.assets(path);
+            pictures = layout.assets(path, &crate::project::picture_folders(path)?);
             (
                 TextBackend::Html(decoded.encoding),
                 vec![html::sheet(&layout, &raw, &decoded)?],
@@ -1378,7 +1393,7 @@ pub fn base_note(format: &str) -> &'static str {
             "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味とActiveXコントロールの内部設定は未抽出です。印刷設定とグラフXMLは読み取り専用で抽出し、ActiveX部品はハッシュで記録します。"
         }
         format if html(format) => {
-            "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行です。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表します。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。<img>はimagesにブロックのセル・src・altを記録し、data URLの画像とページから相対パスで指す画像ファイルは取込時にassetsへ保存し、WindowsではOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落をまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
+            "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行、合計行はtfootの行です。ブラウザの表示と同じく、theadの行は表の先頭、tfootの行は末尾に置き、rowspanは行グループ（thead・tbody・tfoot）の外へ伸ばしません。表のセルの外に書いた文字は表の前のブロックにします。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表し、ブロック末尾の<br>は表示どおり除きます。空白と&nbsp;だけのブロックは行にしません。pre内のブロック要素（行ごとに要素を置くハイライト済みのコード）は、preのブロックの中の行として改行で区切ります。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。リンクの行き先になるため、本文から除いた部分やhidden属性の要素のものも、その位置か後のブロックのセルとして記録します（templateの中は除きます）。<img>はimagesにブロックのセル・src・altを記録し、data URLの画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定のpicture_folders（.arp/config.ymlはプロジェクト内、Git管理外の.arp/local.ymlはこのマシンのプロジェクト外も可）の中にあるものは取込時にassetsへ保存し、その外の画像ファイルは読みません。保存した画像にはWindowsでOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落やpre内のブロックをまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
         }
         "pdf" => {
             "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。画像・OCR・フォーム・注釈・Form XObject内の文字は未抽出です。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"

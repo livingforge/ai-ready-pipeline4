@@ -7278,7 +7278,7 @@
             },
             "images": {
               "type": "array",
-              "description": "HTMLのページの <img>。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）",
+              "description": "HTMLのページの <img>。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定の picture_folders の中にあるもの）",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -9713,7 +9713,7 @@
             },
             "images": {
               "type": "array",
-              "description": "HTMLのページの <img>。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）",
+              "description": "HTMLのページの <img>。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定の picture_folders の中にあるもの）",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -12862,12 +12862,38 @@
       "sources": {
         "type": "string",
         "minLength": 1
+      },
+      "picture_folders": {
+        "description": "Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.",
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "required": [
       "schema_version",
       "sources"
     ]
+  },
+  "project-local-config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Settings of one machine in .arp/local.yml, which Git does not track.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "picture_folders": {
+        "description": "Folders, absolute or relative to the project root and possibly outside the project, whose picture files HTML pages may read as assets when they name them by a relative path. Folders that do not exist are left out.",
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
   },
   "proposal": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

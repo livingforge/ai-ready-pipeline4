@@ -1537,7 +1537,7 @@
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/images</code> | <code>{"description":"HTMLのページの &lt;img&gt;。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/images</code> | <code>{"description":"HTMLのページの &lt;img&gt;。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定の picture_folders の中にあるもの）","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/images/items</code> | <code>{"additionalProperties":false,"required":["address","src"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/images/items/properties/address</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/images/items/properties/alt</code> | <code>{"type":"string"}</code> |
@@ -2007,7 +2007,7 @@
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/images</code> | <code>{"description":"HTMLのページの &lt;img&gt;。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/images</code> | <code>{"description":"HTMLのページの &lt;img&gt;。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定の picture_folders の中にあるもの）","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/images/items</code> | <code>{"additionalProperties":false,"required":["address","src"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/images/items/properties/address</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/images/items/properties/alt</code> | <code>{"type":"string"}</code> |
@@ -2580,8 +2580,18 @@
 | --- | --- |
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","sources"],"type":"object"}</code> |
 | <code>/properties/agent_read_format</code> | <code>{"default":"toon","description":"Presentation of agent reading material; storage and reply protocols remain JSON.","enum":["toon","json"],"type":"string"}</code> |
+| <code>/properties/picture_folders</code> | <code>{"description":"Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.","type":"array","uniqueItems":true}</code> |
+| <code>/properties/picture_folders/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/sources</code> | <code>{"minLength":1,"type":"string"}</code> |
+
+## project-local-config
+
+| JSON Pointer | 制約 |
+| --- | --- |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Settings of one machine in .arp/local.yml, which Git does not track.","type":"object"}</code> |
+| <code>/properties/picture_folders</code> | <code>{"description":"Folders, absolute or relative to the project root and possibly outside the project, whose picture files HTML pages may read as assets when they name them by a relative path. Folders that do not exist are left out.","type":"array","uniqueItems":true}</code> |
+| <code>/properties/picture_folders/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 
 ## proposal
 
