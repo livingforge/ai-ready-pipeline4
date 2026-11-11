@@ -31,7 +31,7 @@ impl Store {
         } else {
             std::env::current_dir()?.join(candidate)
         };
-        let relative = candidate
+        let relative = crate::data::plain(&candidate)
             .strip_prefix(&self.root)
             .context("candidate must be inside project .arp/cache/export")?
             .to_string_lossy()

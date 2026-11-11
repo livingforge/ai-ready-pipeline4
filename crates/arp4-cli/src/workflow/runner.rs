@@ -93,7 +93,7 @@ impl RunOptions {
             ),
         }
         let executable =
-            dunce::canonicalize(&self.executable).context("provider executable not found")?;
+            crate::data::canonicalize(&self.executable).context("provider executable not found")?;
         ensure!(executable.is_file(), "provider must be an executable file");
         Ok(executable)
     }

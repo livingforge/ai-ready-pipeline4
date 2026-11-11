@@ -27,7 +27,7 @@ impl Workflow {
             .transpose()?
             .unwrap_or(self.store.json(&self.state.regions)?);
         if let Some(input) = input {
-            let input = dunce::canonicalize(input)?;
+            let input = crate::data::canonicalize(input)?;
             let captured = read(&input)?;
             let current = crate::specifications::load_input(&input)?;
             let previous: crate::specifications::Input =

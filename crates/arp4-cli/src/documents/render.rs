@@ -29,7 +29,7 @@ impl Store {
         } else {
             std::env::current_dir()?.join(candidate)
         };
-        let relative = candidate
+        let relative = crate::data::plain(&candidate)
             .strip_prefix(&self.root)
             .context("candidate must be inside project .arp/cache/export")?
             .to_string_lossy()
@@ -98,7 +98,9 @@ impl Store {
             let pdf = if extension == "pdf" {
                 bytes
             } else {
-                let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
+                // Office opens a copy in the short temporary folder, as the
+                // Excel render does, so a long project path does not stop it.
+                let stage = tempfile::tempdir()?;
                 crate::office_pdf::convert(&candidate, stage.path(), timeout)?
             };
             let rendered = crate::pdf_render::render(&pdf, place.page, timeout)?;

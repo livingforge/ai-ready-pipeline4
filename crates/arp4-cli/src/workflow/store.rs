@@ -14,9 +14,7 @@ pub fn encode(value: &Value) -> Vec<u8> {
     bytes
 }
 pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("missing parent")?;
-    fs::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    let (mut temp, path) = crate::data::beside(path)?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path)?;
@@ -53,7 +51,7 @@ impl Store {
     }
     fn open_waiting(root: &Path, shared: bool, wait: std::time::Duration) -> Result<Self> {
         fs::create_dir_all(root)?;
-        let root = dunce::canonicalize(root)?;
+        let root = crate::data::canonicalize(root)?;
         let lock_path = crate::data::under(&root, ".rust-workflow.lock")?;
         let lock = OpenOptions::new()
             .read(true)
@@ -223,7 +221,7 @@ impl Store {
         let path = self.managed("archive.zip")?;
         // The archive is replaced below; a later read opens the new one.
         *self.archive.borrow_mut() = None;
-        let temp = tempfile::NamedTempFile::new_in(&self.root)?;
+        let (temp, target) = crate::data::beside(&path)?;
         let mut writer = zip::ZipWriter::new(temp.reopen()?);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
@@ -259,7 +257,7 @@ impl Store {
                 ensure!(&checked == bytes, "archive verification failed");
             }
         }
-        temp.persist(&path)?;
+        temp.persist(target)?;
         *self.archived.borrow_mut() = Some(known);
         for (digest, bytes) in &candidates {
             let path = self.path(digest)?;

@@ -23,7 +23,7 @@ impl Workflow {
         let root = self.store.root.ancestors().nth(4).map(Path::to_path_buf);
         let mut references = Map::new();
         for path in paths {
-            let canonical = dunce::canonicalize(path)
+            let canonical = crate::data::canonicalize(path)
                 .with_context(|| format!("reference not found: {}", path.display()))?;
             ensure!(
                 !crate::data::is_link(&fs::symlink_metadata(&canonical)?),

@@ -373,7 +373,8 @@ impl Store {
         if let Some(scope) = scope {
             document_id(scope)?;
         }
-        let path = under(&self.arp, "cache/search/index.sqlite")?;
+        // SQLite gives Windows the path as it is.
+        let path = crate::data::verbatim(&under(&self.arp, "cache/search/index.sqlite")?)?;
         let mut db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .context("search index unavailable; run documents search-refresh")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -464,6 +465,8 @@ impl Store {
         if refresh {
             fs::create_dir_all(path.parent().unwrap())?;
         }
+        // SQLite gives Windows the path as it is.
+        let path = crate::data::verbatim(&path)?;
         let mut db = if refresh {
             Connection::open(&path).context("open search index")?
         } else {

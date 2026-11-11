@@ -44,7 +44,7 @@ pub(super) fn assets(
     extraction_path: &Path,
     ext: &Extraction,
 ) -> Result<BTreeMap<String, (PathBuf, String)>> {
-    let extraction_path = dunce::canonicalize(extraction_path)?;
+    let extraction_path = crate::data::canonicalize(extraction_path)?;
     let parent = extraction_path
         .parent()
         .context("extraction directory missing")?;

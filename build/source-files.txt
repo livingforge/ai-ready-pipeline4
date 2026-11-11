@@ -133,6 +133,7 @@ crates/arp4-cli/src/ocr.rs
 crates/arp4-cli/src/office_com.rs
 crates/arp4-cli/src/office_pdf.rs
 crates/arp4-cli/src/office_worker.rs
+crates/arp4-cli/src/path_limits.rs
 crates/arp4-cli/src/pdf_render.rs
 crates/arp4-cli/src/project.rs
 crates/arp4-cli/src/registry/mod.rs

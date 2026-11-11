@@ -4,7 +4,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
     use arp4_cli::specifications as spec;
     match command {
         SpecCommand::Structure { root, command } => {
-            let root = dunce::canonicalize(root)?;
+            let root = arp4_cli::data::canonicalize(root)?;
             use arp4_cli::document_structure::StructureCommand;
             let _lock = if matches!(
                 &command,
@@ -372,7 +372,8 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
         } => {
             let mut input = spec::capture(&extraction, root.as_deref())?;
             if !document.is_empty() {
-                let root = dunce::canonicalize(root.context("--root required with --document")?)?;
+                let root =
+                    arp4_cli::data::canonicalize(root.context("--root required with --document")?)?;
                 let store = arp4_cli::documents::Store::open(&root)?;
                 let mut seen = std::collections::BTreeSet::new();
                 for id in document {

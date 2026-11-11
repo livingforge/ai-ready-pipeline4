@@ -772,14 +772,119 @@ fn replace_with(
     durable: bool,
     fill: impl FnOnce(&mut fs::File) -> Result<()>,
 ) -> Result<()> {
-    fs::create_dir_all(path.parent().context("missing parent")?)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    let (mut tmp, path) = beside(path)?;
     fill(tmp.as_file_mut())?;
     if durable {
         tmp.as_file().sync_all()?;
     }
     tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
+}
+/// A new temporary file in the folder of `path`, made first, and `path`, both
+/// [`verbatim`]: tempfile's persist gives Windows the paths as they are.
+pub fn beside(path: &Path) -> Result<(tempfile::NamedTempFile, PathBuf)> {
+    let path = verbatim(path)?;
+    let parent = path.parent().context("missing parent")?;
+    fs::create_dir_all(parent)?;
+    Ok((tempfile::NamedTempFile::new_in(parent)?, path))
+}
+/// `path` as Windows takes a path of any length: absolute, without `.` or
+/// `..`, as `\\?\C:\…` or `\\?\UNC\server\share\…`. Rust's file functions do
+/// this themselves, but tempfile's persist and SQLite give Windows a path as
+/// it is, and Windows refuses one of 260 characters or more unless every
+/// program is set up for long paths. Other systems take `path` as it is.
+pub fn verbatim(path: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use std::path::Prefix;
+        let absolute = std::path::absolute(path)?;
+        let wide: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+        let (prefix, rest) = match absolute.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(_) => (r"\\?\", &wide[..]),
+                // \\server\share\… is \\?\UNC\server\share\…
+                Prefix::UNC(..) => (r"\\?\UNC", &wide[1..]),
+                _ => return Ok(absolute),
+            },
+            _ => return Ok(absolute),
+        };
+        let mut long: Vec<u16> = prefix.encode_utf16().collect();
+        long.extend_from_slice(rest);
+        Ok(PathBuf::from(std::ffi::OsString::from_wide(&long)))
+    }
+    #[cfg(not(windows))]
+    Ok(path.to_owned())
+}
+/// `path` absolute with its links resolved, as `fs::canonicalize` gives it,
+/// but [`plain`] at any length: dunce keeps the `\\?\` prefix from 260
+/// characters, and a long path would then not start with the root it lies in.
+pub fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    Ok(plain(&fs::canonicalize(path)?))
+}
+/// `path` without the `\\?\` prefix of a Windows path given as `\\?\C:\…` or
+/// `\\?\UNC\server\share\…`, as a root is resolved by [`canonicalize`], so
+/// that the two compare. A path with a name Windows reads otherwise without
+/// the prefix (`CON`, `..`, a trailing dot or space) keeps it.
+pub fn plain(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        let mut components = path.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return path.to_owned();
+        };
+        let mut plain = match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!(r"{}:\", char::from(drive))),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut plain = std::ffi::OsString::from(r"\\");
+                plain.push(server);
+                plain.push(r"\");
+                plain.push(share);
+                plain.push(r"\");
+                PathBuf::from(plain)
+            }
+            _ => return path.to_owned(),
+        };
+        for component in components {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) if plain_name(name) => plain.push(name),
+                _ => return path.to_owned(),
+            }
+        }
+        plain
+    }
+    #[cfg(not(windows))]
+    path.to_owned()
+}
+/// Whether Windows reads the file name `name` as it is without the `\\?\` prefix.
+#[cfg(windows)]
+fn plain_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let device = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let reserved = matches!(
+        device.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|kind| {
+        device.strip_prefix(kind).is_some_and(|number| {
+            matches!(
+                number,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    });
+    !name.is_empty()
+        && !reserved
+        && !name.ends_with(['.', ' '])
+        && !name.chars().any(|c| c < ' ' || "<>:\"/\\|?*".contains(c))
 }
 pub fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.exists() {
@@ -790,8 +895,7 @@ pub fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
         );
         return Ok(());
     }
-    fs::create_dir_all(path.parent().context("missing parent")?)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    let (mut tmp, path) = beside(path)?;
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?;
     tmp.persist_noclobber(path).map_err(|e| e.error)?;
@@ -1183,6 +1287,51 @@ mod tests {
         changed[3] = b'#';
         assert!(!is_encoded_lazy_lines(lazy(), &["a"], &changed).unwrap());
         assert!(!is_encoded_lazy_lines(lazy(), &[], &encoded).unwrap());
+    }
+
+    #[test]
+    fn files_are_replaced_in_folders_of_any_length() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = canonicalize(temp.path()).unwrap();
+        // Beyond the 260 characters Windows takes by default.
+        let folder = root.join("a".repeat(150)).join("b".repeat(150));
+        let file = folder.join("c.json");
+        replace(&file, b"1").unwrap();
+        replace(&file, b"2").unwrap();
+        immutable(&folder.join("d.json"), b"3").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"2");
+        assert_eq!(fs::read(folder.join("d.json")).unwrap(), b"3");
+        // A long path resolves in the form of its root.
+        assert_eq!(canonicalize(&file).unwrap(), file);
+        assert!(canonicalize(&file).unwrap().starts_with(&root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_take_and_lose_the_long_path_prefix() {
+        let path = |text: &str| PathBuf::from(text);
+        assert_eq!(verbatim(&path(r"C:\a\..\b")).unwrap(), path(r"\\?\C:\b"));
+        assert_eq!(
+            verbatim(&path(r"\\server\share\a")).unwrap(),
+            path(r"\\?\UNC\server\share\a")
+        );
+        assert_eq!(verbatim(&path(r"\\?\C:\a")).unwrap(), path(r"\\?\C:\a"));
+        assert_eq!(plain(&path(r"\\?\C:\a\b")), path(r"C:\a\b"));
+        assert_eq!(
+            plain(&path(r"\\?\UNC\server\share\a")),
+            path(r"\\server\share\a")
+        );
+        assert_eq!(plain(&path(r"C:\a")), path(r"C:\a"));
+        for kept in [
+            r"\\?\C:\CON",
+            r"\\?\C:\con.txt",
+            r"\\?\C:\COM¹.txt",
+            r"\\?\C:\a.",
+            r"\\?\C:\a ",
+            r"\\?\C:\a\..\b",
+        ] {
+            assert_eq!(plain(&path(kept)), path(kept), "{kept}");
+        }
     }
 
     #[test]

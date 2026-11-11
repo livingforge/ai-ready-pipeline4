@@ -383,7 +383,7 @@ impl Store {
         if !path.is_file() {
             return Ok(None);
         }
-        let actual = dunce::canonicalize(&path)?;
+        let actual = crate::data::canonicalize(&path)?;
         let exact = actual
             .strip_prefix(&self.root)
             .is_ok_and(|p| p.to_string_lossy().replace('\\', "/") == relative);
@@ -438,6 +438,22 @@ impl Store {
             "missing proposal: {id}"
         );
         Ok(dir)
+    }
+    /// Fails when Git where the project is checked out cannot keep the
+    /// records `names` of document `id`, or its `original`. The adopted
+    /// document's folder is checked, as its path is longer than the proposal's.
+    pub(super) fn check_record_paths<'a>(
+        &self,
+        id: &str,
+        names: impl IntoIterator<Item = &'a str>,
+        original: Option<&Path>,
+    ) -> Result<()> {
+        let folder = self.document(id)?;
+        let mut limits = crate::path_limits::PathLimits::new(&self.root);
+        for name in names {
+            limits.check(&folder.join(name))?;
+        }
+        original.map_or(Ok(()), |original| limits.check(original))
     }
     fn entry(&self, area: &str, id: &str) -> Result<PathBuf> {
         document_id(id)?;

@@ -288,7 +288,7 @@ impl Layout {
                     .filter(|e| PICTURES.contains(&e.as_str()));
                 // The path as it resolves past `..` and links, so that it
                 // cannot leave the folders by them.
-                let canonical = dunce::canonicalize(&file).ok().filter(|file| {
+                let canonical = crate::data::canonicalize(&file).ok().filter(|file| {
                     file.is_file() && folders.iter().any(|folder| file.starts_with(folder))
                 });
                 let (Some(extension), Some(canonical)) = (extension, canonical) else {
@@ -2163,7 +2163,7 @@ mod tests {
         fs::create_dir(temp.path().join("img")).unwrap();
         fs::write(temp.path().join("img/a b.png"), b"picture").unwrap();
         let mut layout = laid(&html);
-        let folders = [dunce::canonicalize(temp.path()).unwrap()];
+        let folders = [crate::data::canonicalize(temp.path()).unwrap()];
         let pictures = layout.assets(&temp.path().join("page.html"), &folders);
         let images: Vec<_> = layout
             .images
@@ -2190,7 +2190,7 @@ mod tests {
     #[test]
     fn pictures_outside_the_folders_are_not_read() {
         let temp = tempfile::tempdir().unwrap();
-        let root = dunce::canonicalize(temp.path()).unwrap();
+        let root = crate::data::canonicalize(temp.path()).unwrap();
         for file in ["site/img/a.png", "shared/b.png", "secret.png"] {
             fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
             fs::write(root.join(file), file).unwrap();

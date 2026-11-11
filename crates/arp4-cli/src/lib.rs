@@ -14,6 +14,7 @@ pub mod ocr;
 mod office_com;
 pub mod office_pdf;
 mod office_worker;
+pub mod path_limits;
 pub mod pdf_render;
 pub mod project;
 pub mod registry;

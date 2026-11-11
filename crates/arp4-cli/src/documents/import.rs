@@ -4,10 +4,6 @@ use crate::document_structure::Carrier;
 use crate::rights_management::Unprotected;
 use foldhash::HashSet;
 
-/// The longest project-relative path of a document record. Windows limits a full path
-/// to 259 characters unless Git and every application enable long paths, so this
-/// leaves room for the folder a project is checked out in.
-const MAX_RECORD_PATH: usize = 200;
 /// Records written after import, which the proposal does not contain yet.
 const LATER_RECORDS: [&str; 3] = ["formation.json", "review.json", "prompt.txt"];
 
@@ -59,9 +55,9 @@ impl Store {
                 sources.join(source)
             }
         };
-        let path = dunce::canonicalize(&path)
+        let path = crate::data::canonicalize(&path)
             .with_context(|| format!("original not found: {}", source.display()))?;
-        let sources = dunce::canonicalize(&sources).context("sources folder missing")?;
+        let sources = crate::data::canonicalize(&sources).context("sources folder missing")?;
         let id = path
             .strip_prefix(&sources)
             .with_context(|| {
@@ -636,17 +632,11 @@ impl Store {
                 &json!({"schema_version":"1","interpretation":interpretation}),
             )?,
         )?;
-        let names = files(&ready)?
+        let names: Vec<_> = files(&ready)?
             .into_keys()
-            .chain(LATER_RECORDS.map(String::from));
-        for name in names {
-            let record = format!(".arp/documents/{id}/{name}");
-            ensure!(
-                record.encode_utf16().count() <= MAX_RECORD_PATH,
-                "document path too long for Windows checkouts ({} > {MAX_RECORD_PATH} characters): {record}; shorten the folder or file names of the original",
-                record.encode_utf16().count()
-            );
-        }
+            .chain(LATER_RECORDS.map(String::from))
+            .collect();
+        self.check_record_paths(id, names.iter().map(String::as_str), Some(source))?;
         ensure!(fs::read(source)? == raw, "source changed during import");
         // Not inspected again here: record inspects the proposal before it can be adopted.
         fs::create_dir_all(destination.parent().unwrap())?;

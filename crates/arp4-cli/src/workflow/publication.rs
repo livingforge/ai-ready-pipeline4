@@ -25,7 +25,7 @@ pub fn publish(root: &Path, output: &Path) -> Result<bool> {
     );
     let parent = output.parent().context("output has no parent")?;
     fs::create_dir_all(parent)?;
-    let parent = dunce::canonicalize(parent)?;
+    let parent = crate::data::canonicalize(parent)?;
     let name = output
         .file_name()
         .and_then(|v| v.to_str())

@@ -21,17 +21,21 @@ pub fn calculate(candidate: &Path, source: &Path) -> Result<Value> {
         cfg!(windows),
         "calculating formulas requires Windows and desktop Microsoft Excel"
     );
-    super::render::validate_source(candidate)?;
+    let bytes = super::render::validate_source(candidate)?;
     let stage = tempfile::tempdir()?;
     let extension = candidate
         .extension()
         .context("candidate without an extension")?;
+    // Excel opens a copy in the short temporary folder, as it does not open
+    // a workbook whose path is too long.
+    let copy = stage.path().join("candidate").with_extension(extension);
+    fs::write(&copy, &bytes)?;
     let calculated = stage.path().join("calculated").with_extension(extension);
     let request_path = stage.path().join("request.json");
     let result_path = stage.path().join("result.json");
     fs::write(
         &request_path,
-        encoded(&json!({"source":candidate,"output":calculated,"result":result_path})),
+        encoded(&json!({"source":copy,"output":calculated,"result":result_path})),
     )?;
     let log = stage.path().join("stderr.txt");
     let Some(status) = crate::office_worker::run(

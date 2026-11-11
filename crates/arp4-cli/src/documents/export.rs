@@ -385,7 +385,7 @@ impl Store {
         } else {
             std::env::current_dir()?.join(output)
         };
-        let relative = output
+        let relative = crate::data::plain(&output)
             .strip_prefix(&self.root)
             .context("output must be inside project .arp/cache/export")?
             .to_string_lossy()

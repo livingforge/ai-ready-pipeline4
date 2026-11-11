@@ -276,6 +276,8 @@ impl Store {
                             format!("{target} already exists; choose another --id"),
                         ));
                     }
+                    self.check_record_paths(id, [target.as_str()], None)
+                        .map_err(|error| rejection("path_too_long", format!("{error:#}")))?;
                     planned.insert(target.clone(), Some(elements::page_bytes(&page, &layout)?));
                     added.push(target);
                 }
@@ -332,6 +334,8 @@ impl Store {
                         format!("{target} already exists; choose another --id"),
                     ));
                 }
+                self.check_record_paths(id, [target.as_str()], None)
+                    .map_err(|error| rejection("path_too_long", format!("{error:#}")))?;
                 let note = array(&inspected.extraction["findings"])?
                     .iter()
                     .find(|f| f["code"] == "R001")

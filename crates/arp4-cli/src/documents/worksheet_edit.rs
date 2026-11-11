@@ -353,6 +353,8 @@ impl Store {
                 format!("{file} already exists; choose another --name"),
             ));
         }
+        self.check_record_paths(id, [file.as_str()], None)
+            .map_err(|error| rejection("path_too_long", format!("{error:#}")))?;
         let mut layout = identity::load(&dir, extraction, &Planned::new())?;
         let mut copied_operations = vec![];
         let page = match &added.from {

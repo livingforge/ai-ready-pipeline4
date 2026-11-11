@@ -106,7 +106,7 @@ fn run(cli: Cli) -> Result<bool> {
             if matches!(command, DocumentCommand::Init { .. }) {
                 fs::create_dir_all(&root)?;
             }
-            let root = dunce::canonicalize(&root)?;
+            let root = arp4_cli::data::canonicalize(&root)?;
             let mutate = matches!(
                 command,
                 DocumentCommand::Init { .. }
@@ -577,7 +577,8 @@ fn run(cli: Cli) -> Result<bool> {
                     let report = store.save_structure(&document, &structure, proposal)?;
                     let managed = under(&root, &format!(".arp/work/structure/{document}.yml"))?;
                     if managed.is_file()
-                        && dunce::canonicalize(&input)? == dunce::canonicalize(&managed)?
+                        && arp4_cli::data::canonicalize(&input)?
+                            == arp4_cli::data::canonicalize(&managed)?
                     {
                         fs::remove_file(&managed)?;
                         remove_empty_directories(managed.parent().unwrap(), &store.arp);
@@ -1761,7 +1762,7 @@ fn report_path(store: &Store, path: PathBuf) -> Result<PathBuf> {
             .all(|c| matches!(c, std::path::Component::Normal(_))),
         "invalid output path"
     );
-    let parent = dunce::canonicalize(ancestor)?.join(suffix);
+    let parent = arp4_cli::data::canonicalize(ancestor)?.join(suffix);
     ensure!(
         !parent.starts_with(&store.arp) || parent.starts_with(store.arp.join("cache")),
         "report must be outside document data or in .arp/cache"

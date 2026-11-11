@@ -207,7 +207,7 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
             | WorkflowCommand::ValidateReply { .. }
     );
     let store = Store::open_mode(root, shared)?;
-    let binary = dunce::canonicalize(std::env::current_exe()?)?;
+    let binary = crate::data::canonicalize(std::env::current_exe()?)?;
     if let WorkflowCommand::Init {
         review_plan,
         input,

@@ -67,9 +67,7 @@ fn checked(root: &Path, relative: &str) -> Result<PathBuf> {
 }
 
 fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("missing parent")?;
-    fs::create_dir_all(parent)?;
-    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    let (mut staged, path) = crate::data::beside(path)?;
     staged.write_all(bytes)?;
     staged.as_file().sync_all()?;
     staged.persist(path).map_err(|e| e.error)?;

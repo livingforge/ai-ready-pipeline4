@@ -9,7 +9,7 @@ use std::{
 };
 
 pub fn discover(start: &Path) -> Result<PathBuf> {
-    let start = dunce::canonicalize(start)?;
+    let start = crate::data::canonicalize(start)?;
     for root in start.ancestors() {
         if under(root, ".arp/config.yml")?.is_file() {
             return Ok(root.to_owned());
@@ -22,7 +22,7 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
 }
 
 pub fn open(root: &Path) -> Result<PathBuf> {
-    let root = dunce::canonicalize(root)?;
+    let root = crate::data::canonicalize(root)?;
     let config = read(&under(&root, ".arp/config.yml")?, Some("project-config"))?;
     under(
         &root,
@@ -59,7 +59,7 @@ fn project_picture_folders(root: &Path, config: &Value) -> Result<Vec<PathBuf>> 
 /// `.arp/local.yml`, else the page's own folder. Folders that do not exist
 /// are left out.
 pub fn picture_folders(page: &Path) -> Result<Vec<PathBuf>> {
-    let page = dunce::canonicalize(page)?;
+    let page = crate::data::canonicalize(page)?;
     let folder = page.parent().context("page has no folder")?;
     for root in folder.ancestors() {
         let path = under(root, ".arp/config.yml")?;
@@ -83,7 +83,7 @@ pub fn picture_folders(page: &Path) -> Result<Vec<PathBuf>> {
             }
             return Ok(folders
                 .into_iter()
-                .filter_map(|folder| dunce::canonicalize(folder).ok())
+                .filter_map(|folder| crate::data::canonicalize(folder).ok())
                 .collect());
         }
         if root.join(".git").exists() {
@@ -96,7 +96,7 @@ pub fn picture_folders(page: &Path) -> Result<Vec<PathBuf>> {
 /// Reading views may also be produced outside a configured project. Stop at the
 /// repository boundary, and never hide an invalid existing configuration.
 pub fn agent_read_format(start: &Path) -> Result<AgentFormat> {
-    let start = dunce::canonicalize(start)?;
+    let start = crate::data::canonicalize(start)?;
     for root in start.ancestors() {
         let path = under(root, ".arp/config.yml")?;
         if path.is_file() {
@@ -115,7 +115,7 @@ pub fn agent_read_format(start: &Path) -> Result<AgentFormat> {
 
 pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
     fs::create_dir_all(root)?;
-    let root = dunce::canonicalize(root)?;
+    let root = crate::data::canonicalize(root)?;
     let folder = under(&root, sources)?;
     ensure!(
         !sources.starts_with(".arp/") && sources != ".arp" && !sources.starts_with(".git"),

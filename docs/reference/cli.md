@@ -251,7 +251,7 @@ Excelのワークシートは `documents sheets add|copy` で追加・複製し�
 - 順序: exportは追加・複製を最初に、削除・名前の変更をほかのすべての編集の後に行います。そのため、ほかのコマンド（値・行・書式・複製元・位置）は、名前を変えるシートを原本の名前で指します。削除・名前の変更で空く名前は、exportするまでほかのシートに付けられません。
 - 名前と位置: シート名は31文字まで、`: \ / ? * [ ]` を含まず、`'` で始まらず終わらず、ほかのシートと重なってはいけません（大文字小文字を区別しない）。`--after`・`--before` には原本のシートか先に追加したシートの名前を指定します。
 - 追加したシートの編集: 値は `documents values` で `sheet` に新しいシート名、`cell` にそのシートの番地（複製では複製元と同じ番地）を指定して変え、行・列・セルの操作、書式、リンク・メモ・入力規則・条件付き書式、画像はほかのシートと同じく `--sheet <新しいシート名>` で記録します。`documents elements-read` と `check` は追加したシートを含めて読みます。`documents extraction-read` は原本の抽出なので、追加したシートを含みません。
-- 拒否: ピボットテーブル・スレッド形式のコメント・コントロール・埋め込みオブジェクトを持つシートの複製は `invalid_sheet` または試し書きの `writeback_refused` で拒否します。行・列・セルの挿入・削除・移動を記録したシートは複製元にできません（`invalid_sheet`。先に複製するか、その操作を取り除く）。名前の誤り・重なりも `invalid_sheet`、同じ名前の本文ファイルがあれば `page_exists` です。
+- 拒否: ピボットテーブル・スレッド形式のコメント・コントロール・埋め込みオブジェクトを持つシートの複製は `invalid_sheet` または試し書きの `writeback_refused` で拒否します。行・列・セルの挿入・削除・移動を記録したシートは複製元にできません（`invalid_sheet`。先に複製するか、その操作を取り除く）。名前の誤り・重なりも `invalid_sheet`、同じ名前の本文ファイルがあれば `page_exists`、本文ファイルのパスがそのcloneのGitの扱える長さを超えれば `path_too_long` です。
 - 取り消し: `documents operations remove` でシートの追加・複製を取り除くと、本文のページとlayoutのシート、そのシートへの `value_edits` も除きます。削除を取り除くと、シートは原本の値で戻ります（削除で除いた操作と値の編集は戻らない）。名前の変更は操作だけを取り除きます。そのシートに記録した操作が残っていれば `operation_has_dependents` で拒否します（後の操作から取り消す）。
 - 応答: 成功時は `state`、`operation`、`page`（ページID `sheet-<操作ID>`）、`added_pages`、`sheets`（操作後のワークシートの順序。グラフシートは含まない）、`copied_operations`、`check` を返します。export reportの `added_sheets`・`deleted_sheets`・`renamed_sheets` に追加・削除・名前を変えたシートを記録します。
 - Excelとの違い: Excelはコピーを選択したシートにしますが、ARPは選択中のシートを変えません。`docProps/app.xml` のシート一覧は更新しません（Excelが保存時に作り直す）。
@@ -276,7 +276,7 @@ PowerPoint文書のスライドは `documents slides insert|delete` で複製・
 - 拒否: 他のスライドのハイパーリンクや動作設定から参照されているスライドの削除と、目的別スライドショーが空になる削除は `structural_edit_unsupported` で拒否します。リンクを PowerPoint で外してから削除してください。操作IDがスライド名・ノート名と重なる場合、数字だけの場合、存在しないスライドを指定した場合は `invalid_slide` です。
 - 再実行と競合: `--id` を指定した同じコマンドの再実行は `state: unchanged` を返します。同じIDで設定が違う場合は `operation_id_conflict` です。`--base` と `--dry-run` は行の操作と同じです。
 - 応答: 成功時は `state`、`operation`、`added_pages`・`removed_pages`（追加・削除した本文ファイル）、`slides`（操作後のスライドの順序）、`check`、`next_actions` を返します。
-- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`（PowerPoint以外の文書）、`source_changed`、`invalid_reason`、`invalid_operation_id`、`operation_id_conflict`、`invalid_slide`、`invalid_layout`（`slides add` の `--layout` がレイアウトにない、または同名が複数）、`page_exists`、`structural_edit_unsupported`、`validation_failed`。
+- エラーコード: `invalid_document`、`base_changed`、`unsupported_format`（PowerPoint以外の文書）、`source_changed`、`invalid_reason`、`invalid_operation_id`、`operation_id_conflict`、`invalid_slide`、`invalid_layout`（`slides add` の `--layout` がレイアウトにない、または同名が複数）、`page_exists`、`path_too_long`（追加するスライドの本文ファイルのパスがそのcloneのGitの扱える長さを超える）、`structural_edit_unsupported`、`validation_failed`。
 
 記録される操作は次の形です。`insert_slide` は `after` と `before` のどちらか一方を持ちます。
 

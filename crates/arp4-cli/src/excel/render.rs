@@ -1,6 +1,6 @@
 //! Native Excel rendering, isolated from the scalar/structural writeback engine.
 use crate::data::{Rejection, encoded, hash, read};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
@@ -25,6 +25,14 @@ pub fn render(
     );
     let original = validate_source(source)?;
     let stage = tempfile::tempdir()?;
+    // Excel opens a copy in the short temporary folder, as it does not open
+    // a workbook whose path is too long.
+    let copy = stage.path().join("source").with_extension(
+        source
+            .extension()
+            .context("workbook without an extension")?,
+    );
+    fs::write(&copy, &original)?;
     let request_path = stage.path().join("request.json");
     let result_path = stage.path().join("result.json");
     let output = stage.path().join("render.png");
@@ -34,7 +42,7 @@ pub fn render(
     fs::write(
         &request_path,
         encoded(
-            &json!({"source":source,"sheet":sheet,"range":range,"output":output,"result":result_path,"failure":failure_path,"lock_wait_seconds":timeout / 2,"recalculate":recalculate}),
+            &json!({"source":copy,"sheet":sheet,"range":range,"output":output,"result":result_path,"failure":failure_path,"lock_wait_seconds":timeout / 2,"recalculate":recalculate}),
         ),
     )?;
     let log = stage.path().join("stderr.txt");
