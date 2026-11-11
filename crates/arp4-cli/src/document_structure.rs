@@ -335,7 +335,7 @@ fn extraction(path: &Path) -> Result<Extraction> {
         .to_ascii_lowercase();
     ensure!(
         crate::document_source::structure_formats().contains(&extension.as_str()),
-        "document structure requires Excel, Word, PPTX or PDF extraction"
+        "document structure requires Excel, Word, PPTX, PDF or HTML extraction"
     );
     context::assets(path, &value)?;
     Ok(value)

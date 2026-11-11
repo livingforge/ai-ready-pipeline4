@@ -25,12 +25,14 @@ mod format_edit;
 mod identity;
 mod image_edit;
 mod layout;
+mod link_check;
 pub(crate) use layout::{
     Layout, LayoutSheet, Line, Lines, Meta, MetaCell, MetaRow, MetaText, metadata_from,
     metadata_value,
 };
 mod object_edit;
 mod operation_edit;
+mod reading;
 mod render;
 mod shape_edit;
 mod slide_edit;
@@ -643,6 +645,19 @@ fn elements_view<'a>(
     layout: &'a Layout,
     interpretation: &'a elements::Interpretation,
 ) -> Result<Lazy<'a>> {
+    Ok(Lazy::Object(vec![
+        ("schema_version", Lazy::Value(json!("1"))),
+        ("document_id", Lazy::Value(json!(id))),
+        ("proposal", Lazy::Value(json!(proposal))),
+        ("pages", elements_pages(layout, interpretation)?),
+    ]))
+}
+
+/// The `pages` of [`elements_view`]: what it reads of the document itself.
+fn elements_pages<'a>(
+    layout: &'a Layout,
+    interpretation: &'a elements::Interpretation,
+) -> Result<Lazy<'a>> {
     let mut pages = vec![];
     for (page_id, sheet) in &layout.sheets {
         let found = &interpretation[page_id];
@@ -659,12 +674,7 @@ fn elements_view<'a>(
         members.push(("element_metadata", metadata));
         pages.push((page_id.as_str(), Lazy::Object(members)));
     }
-    Ok(Lazy::Object(vec![
-        ("schema_version", Lazy::Value(json!("1"))),
-        ("document_id", Lazy::Value(json!(id))),
-        ("proposal", Lazy::Value(json!(proposal))),
-        ("pages", Lazy::Object(pages)),
-    ]))
+    Ok(Lazy::Object(pages))
 }
 
 /// The element metadata `element` of the layout `sheet` with its fonts

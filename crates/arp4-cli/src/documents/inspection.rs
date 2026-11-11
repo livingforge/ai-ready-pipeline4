@@ -242,12 +242,14 @@ impl Store {
         let text_format = extraction["parser"]
             .as_str()
             .is_some_and(|p| !p.contains(";cells/"));
-        // Word and PowerPoint lay paragraphs and table rows out as rows, which
-        // row operations insert and delete, and PowerPoint slides are copied
-        // and deleted; other text formats keep their structure.
-        let laid_out = extraction["parser"]
-            .as_str()
-            .is_some_and(|p| p.contains(";word-blocks/") || p.contains(";slide-blocks/"));
+        // Word, PowerPoint and HTML lay paragraphs and table rows out as rows,
+        // which row operations insert and delete, and PowerPoint slides are
+        // copied and deleted; other text formats keep their structure.
+        let laid_out = extraction["parser"].as_str().is_some_and(|p| {
+            p.contains(";word-blocks/")
+                || p.contains(";slide-blocks/")
+                || p.contains(";html-blocks/")
+        });
         let presentation = Path::new(string(&meta["source"]["path"])?)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pptx"));
@@ -262,7 +264,7 @@ impl Store {
                                 && matches!(o["kind"].as_str(), Some("insert_rows" | "delete_rows"))
                     }
                 }),
-            "row operations apply to Excel, Word and PowerPoint documents, column and image operations to Excel only, and slide and shape operations to PowerPoint only"
+            "row operations apply to Excel, Word, PowerPoint and HTML documents, column and image operations to Excel only, and slide and shape operations to PowerPoint only"
         );
         if validate && let Cow::Owned(operated) = &operated {
             ensure_slide_pages(&extraction, operated, &content_pages)?;
@@ -381,13 +383,12 @@ impl Store {
         ))
     }
     /// Whether the review of the document in `dir`, whose management folder
-    /// is `metadata`, is of its content as `fingerprint` names it.
+    /// is `metadata`, is of its content as `fingerprint` names it. A review
+    /// another version of ARP recorded has lapsed.
     fn reviewed(&self, metadata: &Path, dir: &Path, fingerprint: &str) -> Result<bool> {
-        let review = metadata.join("review.json");
-        if !review.exists() {
+        let Some(r) = reading::recorded_review(&metadata.join("review.json"))? else {
             return Ok(false);
-        }
-        let r = read(&review, Some("review"))?;
+        };
         let (_, key) = self.formation(dir)?;
         ensure!(r["formation"] == key, "review/formation identity mismatch");
         Ok(r["content"] == fingerprint)

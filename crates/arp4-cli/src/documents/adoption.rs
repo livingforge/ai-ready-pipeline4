@@ -202,14 +202,19 @@ impl Store {
     /// import: `reviewed` when it has a review, `edited` when its content is not
     /// what import or apply extracted from its original. None when there is no
     /// adopted document, or it holds what was extracted, so adopting a new
-    /// import loses nothing.
+    /// import loses nothing, or the new import reads as the content its review
+    /// confirmed, which adopting it keeps.
     pub(super) fn kept_from_import(&self, id: &str) -> Result<Option<&'static str>> {
         let dir = self.document(id)?;
         if !dir.join("document.yml").is_file() {
             return Ok(None);
         }
         if dir.join("review.json").exists() {
-            return Ok(Some("reviewed"));
+            let kept = match self.current_review(&dir)? {
+                Some(review) => review["reading"] == self.reading(&self.proposal(id)?)?,
+                None => false,
+            };
+            return Ok((!kept).then_some("reviewed"));
         }
         let (f, _) = self.formation(&dir)?;
         Ok(
@@ -272,7 +277,9 @@ impl Store {
         let dir = self.document(id)?;
         let (result, _) = self.inspect_records(&dir, false, false)?;
         let (_, key) = self.formation(&dir)?;
-        let r = json!({"schema_version":"1","content":result.fingerprint,"reviewer":reviewer,"formation":key});
+        let reading = self.reading(&dir)?;
+        let r = json!({"schema_version":reading::REVIEW_VERSION,"content":result.fingerprint,
+            "reading":reading,"reviewer":reviewer,"formation":key});
         ensure!(
             self.fingerprint(&dir)?.as_deref() == Some(&result.fingerprint),
             "document changed during review"
@@ -303,7 +310,7 @@ impl Store {
         fingerprint: &str,
         source_current: bool,
     ) -> Result<Value> {
-        let (f, _) = self.formation(proposal)?;
+        let (f, formation) = self.formation(proposal)?;
         ensure!(
             plan["document_id"] == *document_id && f["content"] == fingerprint,
             "proposal changed after record; record again"
@@ -326,6 +333,7 @@ impl Store {
                 json!({"state":"skipped","reason":"no_changes","document_id":doc_id,"document":current}),
             );
         }
+        let review = self.kept_review(&current, proposal, &formation)?;
         let dest = current.clone();
         fs::create_dir_all(dest.parent().unwrap())?;
         let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
@@ -342,6 +350,9 @@ impl Store {
                     ready.display()
                 )
             })?;
+        }
+        if let Some(review) = &review {
+            write(&ready.join("review.json"), review)?;
         }
         ensure!(
             self.fingerprint(&current)? == plan["base"].as_str().map(str::to_owned)
@@ -370,7 +381,12 @@ impl Store {
         })?;
         remove_empty_directories(proposal.parent().unwrap(), &self.arp);
         self.remove_views(doc_id, false)?;
-        Ok(json!({"document_id":doc_id,"document":dest}))
+        let mut adopted = json!({"document_id":doc_id,"document":dest});
+        if review.is_some() {
+            adopted["state"] = json!("reviewed");
+            adopted["review"] = json!("kept");
+        }
+        Ok(adopted)
     }
 }
 /// Whether formation `f` records content adopted as import extracted it.

@@ -20,6 +20,8 @@ use std::{
 };
 
 pub mod encryption;
+mod html;
+mod html_parse;
 mod package;
 mod slide_drawings;
 mod slide_fonts;
@@ -61,10 +63,12 @@ pub const EXCEL_FORMATS: &[&str] = &["xlsx", "xlsm", "xltx", "xltm"];
 /// never read and are copied unchanged on writeback.
 pub const WORD_FORMATS: &[&str] = &["docx", "docm", "dotx", "dotm"];
 const NATIVE_FORMATS: &[&str] = &["txt", "md", "csv", "tsv"];
+/// HTML pages, laid out as Word text is and written back in their encoding.
+pub const HTML_FORMATS: &[&str] = &["html", "htm"];
 
 /// Formats whose extraction supports document structure interpretation.
 pub fn structure_formats() -> Vec<&'static str> {
-    [EXCEL_FORMATS, WORD_FORMATS, &["pptx", "pdf"]].concat()
+    [EXCEL_FORMATS, WORD_FORMATS, &["pptx", "pdf"], HTML_FORMATS].concat()
 }
 
 pub fn input_formats() -> Vec<&'static str> {
@@ -100,8 +104,11 @@ pub struct TextSource {
     backend: TextBackend,
     /// The slide layouts of a presentation (see [`slides::layouts`]).
     layouts: Vec<Value>,
-    /// The pictures of a presentation's slides by asset name.
+    /// The pictures of a presentation's slides, or those an HTML page holds
+    /// as data URLs, by asset name.
     images: BTreeMap<String, Vec<u8>>,
+    /// The picture files an HTML page shows, by asset name, read on import.
+    linked: BTreeMap<String, std::path::PathBuf>,
 }
 
 enum TextBackend {
@@ -116,18 +123,37 @@ enum TextBackend {
         unparsed: Vec<u32>,
         left_out: Vec<(u32, BTreeSet<String>)>,
     },
+    /// An HTML page, with the encoding its text is read in.
+    Html(&'static encoding_rs::Encoding),
     Native,
 }
 
 impl Source {
-    /// Images in Word's media folder are kept as independently reviewable
-    /// assets. Their bytes are read from the original package only on import.
-    pub fn word_images(&self) -> Result<BTreeMap<String, Vec<u8>>> {
+    /// Images in Word's media folder, PowerPoint's pictures and the pictures
+    /// an HTML page shows are kept as independently reviewable assets. Their
+    /// bytes are read from the original package, or the files an HTML page
+    /// links, only on import.
+    pub fn image_assets(&self) -> Result<BTreeMap<String, Vec<u8>>> {
         let Self::Text(doc) = self else {
             return Ok(BTreeMap::new());
         };
         if doc.format == "pptx" {
             return Ok(doc.images.clone());
+        }
+        if html(&doc.format) {
+            let mut images = doc.images.clone();
+            for (name, file) in &doc.linked {
+                ensure!(
+                    fs::metadata(file)?.len() <= 256 * 1024 * 1024,
+                    "picture {} exceeds size budget",
+                    file.display()
+                );
+                images.insert(
+                    name.clone(),
+                    fs::read(file).with_context(|| format!("read {}", file.display()))?,
+                );
+            }
+            return Ok(images);
         }
         if !word(&doc.format) {
             return Ok(BTreeMap::new());
@@ -339,7 +365,7 @@ impl Source {
             );
             let size = fs::metadata(path)?.len();
             ensure!(size <= MAX_BYTES as u64, "document exceeds size budget");
-            if matches!(format.as_str(), "txt" | "md" | "csv" | "tsv") {
+            if matches!(format.as_str(), "txt" | "md" | "csv" | "tsv") || html(&format) {
                 ensure!(
                     size <= MAX_PAGE as u64,
                     "text document exceeds 32 MiB size budget"
@@ -366,7 +392,7 @@ impl Source {
         );
         ensure!(raw.len() <= MAX_BYTES, "document exceeds size budget");
         let native = matches!(format.as_str(), "txt" | "md" | "csv" | "tsv");
-        if native {
+        if native || html(&format) {
             ensure!(
                 raw.len() <= MAX_PAGE,
                 "text document exceeds 32 MiB size budget"
@@ -378,6 +404,7 @@ impl Source {
         } else {
             BTreeMap::new()
         };
+        let mut pictures = html::Pictures::default();
         let (backend, mut sheets) = if native {
             let text = std::str::from_utf8(&raw)
                 .context("text documents require UTF-8 (optional BOM); convert the original explicitly before import")?;
@@ -394,6 +421,16 @@ impl Source {
             (
                 TextBackend::Native,
                 vec![crate::extraction::Sheet::from_value(sheet, 0)?],
+            )
+        } else if html(&format) {
+            let decoded = html_parse::decode(&raw)?;
+            // The tree is let go before the sheet is made, which needs only
+            // the layout.
+            let mut layout = html::layout(&html_parse::parse(&decoded.text), &decoded.text)?;
+            pictures = layout.assets(path);
+            (
+                TextBackend::Html(decoded.encoding),
+                vec![html::sheet(&layout, &raw, &decoded)?],
             )
         } else if format == "pdf" {
             let doc = Pdf::load_mem(&raw)?;
@@ -539,6 +576,7 @@ impl Source {
                 }
             }
         }
+        images.extend(pictures.embedded);
         Ok(Self::Text(TextSource {
             raw,
             extraction: sheets,
@@ -547,6 +585,7 @@ impl Source {
             backend,
             layouts,
             images,
+            linked: pictures.files,
         }))
     }
 
@@ -671,6 +710,7 @@ impl Source {
             Self::Excel(_) => "xml",
             Self::Text(doc) if matches!(doc.backend, TextBackend::Native) => "text",
             Self::Text(doc) if doc.format == "pdf" => "pdf",
+            Self::Text(doc) if html(&doc.format) => "html",
             _ => "xml",
         }
     }
@@ -681,12 +721,23 @@ impl Source {
             Self::Text(doc) if matches!(doc.backend, TextBackend::Native) => "native-text/1",
             Self::Text(doc) if word(&doc.format) => "word-blocks/1",
             Self::Text(doc) if doc.format == "pptx" => "slide-blocks/1",
+            Self::Text(doc) if html(&doc.format) => "html-blocks/1",
             Self::Text(_) => "text-runs/1",
         }
     }
 
     pub fn note(&self) -> String {
         let mut note = self.skipped_note();
+        if let Self::Text(TextSource {
+            backend: TextBackend::Html(encoding),
+            ..
+        }) = self
+        {
+            note.push_str(&format!("原本の文字コードは{}です。", encoding.name()));
+            if html_parse::ensure_writable(encoding).is_err() {
+                note.push_str("この文字コードの原本は書き戻せません。UTF-8かShift_JISで保存し直して再取込してください。");
+            }
+        }
         if let Self::Excel(book) = self
             && book.date1904
         {
@@ -791,9 +842,13 @@ impl Source {
                 if operations.is_empty() {
                     return Ok(());
                 }
+                if html(&doc.format) {
+                    let operations: Vec<_> = operations.iter().collect();
+                    return html::ensure_rows(&doc.raw, &operations);
+                }
                 ensure!(
                     word(&doc.format) || doc.format == "pptx",
-                    "row operations apply to Excel, Word and PowerPoint documents only"
+                    "row operations apply to Excel, Word, PowerPoint and HTML documents only"
                 );
                 let TextBackend::Office(parts) = &doc.backend else {
                     bail!("Office document without parts");
@@ -1322,6 +1377,9 @@ pub fn base_note(format: &str) -> &'static str {
         format if is_excel(format) => {
             "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味とActiveXコントロールの内部設定は未抽出です。印刷設定とグラフXMLは読み取り専用で抽出し、ActiveX部品はハッシュで記録します。"
         }
+        format if html(format) => {
+            "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行です。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表します。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。<img>はimagesにブロックのセル・src・altを記録し、data URLの画像とページから相対パスで指す画像ファイルは取込時にassetsへ保存し、WindowsではOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落をまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
+        }
         "pdf" => {
             "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。画像・OCR・フォーム・注釈・Form XObject内の文字は未抽出です。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
         }
@@ -1336,6 +1394,32 @@ pub fn base_note(format: &str) -> &'static str {
 
 fn word(format: &str) -> bool {
     WORD_FORMATS.contains(&format)
+}
+
+fn html(format: &str) -> bool {
+    HTML_FORMATS.contains(&format)
+}
+
+/// `text` with its percent-encoded UTF-8 decoded, as a URL path names a
+/// file; a sequence that is not one is kept as written.
+pub(crate) fn percent_decode_lenient(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%'
+            && let Some(byte) = text
+                .get(at + 1..at + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            out.push(byte);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
 }
 
 /// The format of the document at `path`: its extension, in lowercase.
@@ -2210,9 +2294,9 @@ impl TextSource {
                 .all(|operation| if is_presentation_operation(operation) {
                     self.format == "pptx"
                 } else {
-                    word(&self.format) || self.format == "pptx"
+                    word(&self.format) || self.format == "pptx" || html(&self.format)
                 }),
-            "row operations apply to Excel, Word and PowerPoint documents, slide and shape operations to PowerPoint"
+            "row operations apply to Excel, Word, PowerPoint and HTML documents, slide and shape operations to PowerPoint"
         );
         let slide_operations = parse_slide_operations(operations, self.sheets())?;
         let shape_operations = parse_shape_operations(operations)?;
@@ -2328,6 +2412,27 @@ impl TextSource {
         }
         match &self.backend {
             TextBackend::Native => unreachable!("native text writeback rejected above"),
+            TextBackend::Html(_) if changes.is_empty() && operations.is_empty() => {
+                crate::excel::write_unchanged(&self.raw, output)?;
+            }
+            TextBackend::Html(_) => {
+                let no_values = word::InsertedText::new();
+                let no_changes = BTreeMap::new();
+                let written = html::patch(
+                    &self.raw,
+                    operations_by_sheet
+                        .get("document")
+                        .map_or(&[][..], Vec::as_slice),
+                    replacements.get("html").unwrap_or(&no_changes),
+                    inserted.get("document").unwrap_or(&no_values),
+                )?;
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output)?;
+                std::io::Write::write_all(&mut file, &written)?;
+                file.sync_all()?;
+            }
             TextBackend::Office(parts) => {
                 ensure!(
                     !parts
@@ -4306,7 +4411,7 @@ mod tests {
         );
         let source = Source::open(&path).unwrap();
         assert_eq!(
-            source.word_images().unwrap()["image-001.png"],
+            source.image_assets().unwrap()["image-001.png"],
             b"image bytes"
         );
         assert_eq!(

@@ -1305,6 +1305,15 @@ pub(super) fn interpreted_groups<'e>(
                 *explaining.entry(id).or_default() += 1;
             }
         }
+        // The text elements of the page by ID, found once for the tables they
+        // explain: a page of many tables, each with its title, took the square
+        // of their number to scan the page for each.
+        let mut texts: HashMap<&str, Vec<&Element>> = HashMap::default();
+        for element in on_page().filter(|e| e["kind"] == "text") {
+            if let Some(id) = element["id"].as_str() {
+                texts.entry(id).or_default().push(element);
+            }
+        }
         for element in structure
             .iter()
             .filter(|e| e["sheet"] == sheet["name"] && e["kind"] == "table")
@@ -1478,7 +1487,7 @@ pub(super) fn interpreted_groups<'e>(
                 .filter_map(Value::as_str)
                 .filter(|id| explaining.get(id) == Some(&1))
             {
-                for text in on_page().filter(|e| e["kind"] == "text" && e["id"] == id) {
+                for text in texts.get(id).into_iter().flatten() {
                     for cell in &text.cells {
                         let (x, y) = excel::coordinate(&cell.address)?;
                         written.push(((y, x), &*cell.id));

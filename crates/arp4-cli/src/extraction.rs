@@ -1192,6 +1192,16 @@ pub fn reading(extraction: &Extraction) -> Result<Value> {
     form.reading(extraction, &top, &sheets).into_value()
 }
 
+/// The hash of the reading form of `extraction` without its members `skip`,
+/// made a cell at a time.
+pub fn reading_hash(extraction: &Extraction, skip: &[&str]) -> Result<String> {
+    let (form, mut top, sheets) = reading_form(extraction)?;
+    if let Some(top) = top.as_object_mut() {
+        top.retain(|key, _| !skip.contains(&key.as_str()));
+    }
+    data::hash_encoded_lazy(form.reading(extraction, &top, &sheets))
+}
+
 /// The extraction its reading form `reading` gives back: each cell's font
 /// and style in place, from its sheet when the cell names none, and each
 /// formula's cached result, its value.

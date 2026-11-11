@@ -152,6 +152,7 @@ fn paged(command: &Command) -> bool {
                 | DocumentCommand::Check { .. }
                 | DocumentCommand::Search { .. }
                 | DocumentCommand::SearchFormats { .. }
+                | DocumentCommand::LinkCheck { .. }
                 | DocumentCommand::Operations {
                     command: OperationCommand::List { .. }
                 }

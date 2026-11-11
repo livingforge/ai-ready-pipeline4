@@ -672,20 +672,23 @@ pub(super) fn build(
         }
         for (_, mut sources) in rows {
             sources.sort_by_key(|s| excel::coordinate(s["address"].as_str().unwrap()).unwrap().0);
-            let headings: BTreeSet<_> = sources
-                .iter()
-                .flat_map(|s| {
-                    s["position"]["headings"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                })
-                .collect();
+            // The headings in the order the document nests them.
+            let mut headings: Vec<&str> = vec![];
+            for heading in sources.iter().flat_map(|s| {
+                s["position"]["headings"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+            }) {
+                if !headings.contains(&heading) {
+                    headings.push(heading);
+                }
+            }
             let title = format!(
                 "{} / {name} / {}",
                 inspected.meta["document_id"].as_str().unwrap(),
-                headings.into_iter().collect::<Vec<_>>().join(" / ")
+                headings.join(" / ")
             );
             let kind = if sources.len() == 1 { "block" } else { "row" };
             corpus.add(kind, &title, sources, None)?;
@@ -693,6 +696,8 @@ pub(super) fn build(
         for (key, kind, fields) in [
             ("comments", "comment", vec!["text"]),
             ("drawings", "drawing", vec!["text", "description"]),
+            // The alternative text of an HTML page's pictures.
+            ("images", "image", vec!["alt"]),
         ] {
             for (i, object) in sheet[key].as_array().into_iter().flatten().enumerate() {
                 // The paragraphs of a slide's shapes are cells of the slide,

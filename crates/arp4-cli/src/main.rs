@@ -321,6 +321,15 @@ fn run(cli: Cli) -> Result<bool> {
                     output.emit(result, ok);
                     return Ok(ok);
                 }
+                DocumentCommand::LinkCheck { document, all } => {
+                    let (summary, items) = store.link_check(document.as_deref(), all)?;
+                    let mut result = output.page(items);
+                    for (key, value) in summary.as_object().unwrap() {
+                        result[key] = value.clone();
+                    }
+                    output.emit(result, true);
+                    return Ok(true);
+                }
                 DocumentCommand::SearchRefresh { rebuild } => {
                     let refreshed = store.refresh_search_index(rebuild)?;
                     let ok = refreshed.failed.is_empty();
@@ -444,6 +453,7 @@ fn run(cli: Cli) -> Result<bool> {
                         let mut proposals = !array(&result["imported"])?.is_empty();
                         if adopt {
                             let mut adopted = vec![];
+                            let mut reviews_kept = vec![];
                             let mut not_adopted = vec![];
                             let mut failed = array(&result["failed"])?.clone();
                             for id in array(&result["imported"])?.clone() {
@@ -451,6 +461,11 @@ fn run(cli: Cli) -> Result<bool> {
                                 match store.adopt_import(id) {
                                     Ok(taken) if taken["state"] == "imported" => {
                                         adopted.push(json!(id))
+                                    }
+                                    // Read as the content its review confirmed, which it keeps.
+                                    Ok(taken) if taken["state"] == "reviewed" => {
+                                        adopted.push(json!(id));
+                                        reviews_kept.push(json!(id));
                                     }
                                     Ok(taken) if taken["state"] == "needs_record" => {
                                         not_adopted.push(json!({"document_id":id,"reason":taken["not_adopted"]}));
@@ -462,6 +477,9 @@ fn run(cli: Cli) -> Result<bool> {
                             }
                             proposals = !not_adopted.is_empty();
                             result["adopted"] = json!(adopted);
+                            if !reviews_kept.is_empty() {
+                                result["reviews_kept"] = json!(reviews_kept);
+                            }
                             result["not_adopted"] = json!(not_adopted);
                             result["failed"] = json!(failed);
                         }
@@ -611,7 +629,11 @@ fn run(cli: Cli) -> Result<bool> {
                         return run_batch(&store, &output, targets, &batch, include_hashes);
                     };
                     let mut result = store.review(&document, &reviewer)?;
-                    omit_hashes(&mut result, &["content", "formation"], include_hashes);
+                    omit_hashes(
+                        &mut result,
+                        &["content", "reading", "formation"],
+                        include_hashes,
+                    );
                     if !output.full {
                         for key in ["schema_version", "reviewer"] {
                             result.as_object_mut().unwrap().remove(key);

@@ -602,18 +602,20 @@ impl Store {
         }
         let extraction = &inspected.extraction;
         let parser = extraction["parser"].as_str().unwrap_or("");
-        // Word and PowerPoint lay paragraphs and table rows out as rows.
-        let laid_out = parser.contains(";word-blocks/") || parser.contains(";slide-blocks/");
+        // Word, PowerPoint and HTML lay paragraphs and table rows out as rows.
+        let laid_out = parser.contains(";word-blocks/")
+            || parser.contains(";slide-blocks/")
+            || parser.contains(";html-blocks/");
         if !parser.contains(";cells/") && !laid_out {
             return Err(rejection(
                 "unsupported_format",
-                "row edits apply to Excel, Word and PowerPoint documents, column edits to Excel only",
+                "row edits apply to Excel, Word, PowerPoint and HTML documents, column edits to Excel only",
             ));
         }
         if laid_out && edit.axis == Axis::Columns {
             return Err(rejection(
                 "unsupported_format",
-                "Word and PowerPoint lay out table columns themselves; insert or delete them in Word or PowerPoint and re-import",
+                "Word, PowerPoint and HTML lay out table columns themselves; insert or delete them in the original and re-import",
             ));
         }
         // Slides a slide operation inserts take row edits like the others.

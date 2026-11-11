@@ -23,7 +23,7 @@ arp4 documents init --root <project>
 
 取り込みをAIに委任する場合、利用者は原本またはフォルダと作業範囲を伝えます。AIはimport、候補の成形と検査、record、adoptを進め、実際に内容を確認した文書だけreviewを記録します。結果は取り込み件数、採用件数、未レビュー件数、確認が必要な文書の箇所と理由をまとめて報告します。原本でしか確認できない情報、曖昧な対応、失敗やblockersがあれば、該当文書について利用者の判断を求めます。採用はレビュー完了を意味しません。
 
-成形もレビューも行わず、原本を取り込んで採用データ（`.arp/documents/<文書ID>/`）を作るだけなら、`arp4 documents import docs --adopt --root C:/my-project` で取り込みと採用を1回で行えます。record・adoptは不要で、文書は `imported` 状態（抽出したまま、レビュー対象外）になります。採用済み文書に編集やレビュー記録がある場合は置き換えず、候補を残して `not_adopted` に理由を返すので、通常の手順で確認・record・adoptします。
+成形もレビューも行わず、原本を取り込んで採用データ（`.arp/documents/<文書ID>/`）を作るだけなら、`arp4 documents import docs --adopt --root C:/my-project` で取り込みと採用を1回で行えます。record・adoptは不要で、文書は `imported` 状態（抽出したまま、レビュー対象外）になります。採用済み文書に編集やレビュー記録がある場合は置き換えず、候補を残して `not_adopted` に理由を返すので、通常の手順で確認・record・adoptします。ただし、レビューした内容と読み取りが同じ候補（版の違う ARP で取り込み直しただけのものなど）は採用し、レビューを引き継いで `reviewed` のままにします。
 
 以下では、原本を `C:/my-project/docs/基本設計.xlsx` に置き、任意の作業フォルダーで実行します。この節の JSON 取り出し例は PowerShell 用です。文書IDは `docs/` からの相対パス `基本設計.xlsx` です。Linux の Agent は JSON 応答の document_id を読み、同じ CLI 引数で操作します。
 
@@ -56,7 +56,7 @@ arp4 documents adopt $candidate.document_id --root C:/my-project
 arp4 documents review $candidate.document_id --reviewer <確認担当> --root C:/my-project
 ```
 
-`adopt` は候補を現在版へ移しますが、レビュー記録は作りません。採用直後は `needs_review` で、内容を確認した担当者が `review` すると `reviewed` になります。`record`・`adopt`・`review` は文書IDの代わりにフォルダIDを渡すと配下の文書を、`--all` を付けると全文書をまとめて処理します。対象はその操作を待っている状態（recordは `needs_record`、adoptは `ready_to_adopt`、reviewは `needs_review`）の文書だけで、他の状態の文書は `skipped` に状態・blockersを付けて返します。1件が失敗しても他の文書は処理し、`failed` があれば終了コード2です。処理済みの文書は対象の状態から外れるので、同じコマンドの再実行で残りだけを処理します。
+`adopt` は候補を現在版へ移しますが、レビュー記録は作りません。候補がレビュー済みの内容と同じ読み取りなら、レビューを引き継ぎます（応答の `review: kept`、状態は `reviewed`）。それ以外は採用直後は `needs_review` で、内容を確認した担当者が `review` すると `reviewed` になります。`record`・`adopt`・`review` は文書IDの代わりにフォルダIDを渡すと配下の文書を、`--all` を付けると全文書をまとめて処理します。対象はその操作を待っている状態（recordは `needs_record`、adoptは `ready_to_adopt`、reviewは `needs_review`）の文書だけで、他の状態の文書は `skipped` に状態・blockersを付けて返します。1件が失敗しても他の文書は処理し、`failed` があれば終了コード2です。処理済みの文書は対象の状態から外れるので、同じコマンドの再実行で残りだけを処理します。
 
 確認した内容だけを処理するには、先に `--dry-run --out <計画.json>` で対象と各文書のcontentハッシュを保存し、確認後に `--expect <計画.json>` を付けて実行します。計画にない文書は `not_planned`、計画後に内容が変わった文書は `changed_since_plan` として処理せず `skipped` に返します。
 

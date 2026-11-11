@@ -28,6 +28,8 @@ crates/arp4-cli/src/document_body.rs
 crates/arp4-cli/src/document_body/diagrams.rs
 crates/arp4-cli/src/document_source.rs
 crates/arp4-cli/src/document_source/encryption.rs
+crates/arp4-cli/src/document_source/html.rs
+crates/arp4-cli/src/document_source/html_parse.rs
 crates/arp4-cli/src/document_source/package.rs
 crates/arp4-cli/src/document_source/slide_drawings.rs
 crates/arp4-cli/src/document_source/slide_fonts.rs
@@ -65,11 +67,13 @@ crates/arp4-cli/src/documents/image_edit.rs
 crates/arp4-cli/src/documents/import.rs
 crates/arp4-cli/src/documents/inspection.rs
 crates/arp4-cli/src/documents/layout.rs
+crates/arp4-cli/src/documents/link_check.rs
 crates/arp4-cli/src/documents/mapping.rs
 crates/arp4-cli/src/documents/mod.rs
 crates/arp4-cli/src/documents/move_edit.rs
 crates/arp4-cli/src/documents/object_edit.rs
 crates/arp4-cli/src/documents/operation_edit.rs
+crates/arp4-cli/src/documents/reading.rs
 crates/arp4-cli/src/documents/render.rs
 crates/arp4-cli/src/documents/result_cache.rs
 crates/arp4-cli/src/documents/search/analyzer.rs

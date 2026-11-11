@@ -3170,15 +3170,44 @@ fn describe(
     if tables.is_empty() {
         return Ok(());
     }
+    // The tables, by their places in `tables`, that start on each row, end on
+    // each row and end a column before each column: a text can explain only
+    // a table it touches, and a sheet of many tables took the product of its
+    // texts and tables to compare each with all.
+    let mut by_top: HashMap<u32, Vec<usize>> = HashMap::default();
+    let mut by_bottom: HashMap<u32, Vec<usize>> = HashMap::default();
+    let mut by_right: HashMap<u32, Vec<usize>> = HashMap::default();
+    for (k, (_, (_, top, right, bottom))) in tables.iter().enumerate() {
+        by_top.entry(*top).or_default().push(k);
+        by_bottom.entry(*bottom).or_default().push(k);
+        by_right.entry(*right).or_default().push(k);
+    }
     let mut explaining: BTreeMap<(Against, Vec<usize>), Vec<usize>> = BTreeMap::new();
     leftovers.retain(|&i| {
         let c = &cells[i];
         if apart.contains(&i) || !c.nonempty() {
             return true;
         }
+        fn touching(
+            map: &HashMap<u32, Vec<usize>>,
+            key: Option<u32>,
+        ) -> impl Iterator<Item = usize> + '_ {
+            key.and_then(|key| map.get(&key))
+                .into_iter()
+                .flatten()
+                .copied()
+        }
         let against = |place: Against| -> Vec<usize> {
-            tables
-                .iter()
+            let mut near: Vec<usize> = match place {
+                Against::Above => touching(&by_top, c.bottom.checked_add(1))
+                    .chain(touching(&by_top, c.bottom.checked_add(2)))
+                    .collect(),
+                Against::Right => touching(&by_right, c.left.checked_sub(1)).collect(),
+                Against::Below => touching(&by_bottom, c.top.checked_sub(1)).collect(),
+            };
+            near.sort_unstable();
+            near.into_iter()
+                .map(|k| &tables[k])
                 .filter(|(_, (left, top, right, bottom))| {
                     let within = c.left >= *left && c.left <= *right;
                     match place {

@@ -91,6 +91,10 @@ impl Store {
                 place.sheet.is_none() && place.range.is_none(),
                 "--sheet and --range render Excel workbooks; give --page for other documents"
             );
+            ensure!(
+                !crate::document_source::HTML_FORMATS.contains(&extension.as_str()),
+                "HTML candidates are not rendered; open the exported HTML in a browser, check how it shows, and record it with confirm-export"
+            );
             let pdf = if extension == "pdf" {
                 bytes
             } else {

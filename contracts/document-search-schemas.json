@@ -95,7 +95,7 @@
       "document_id": {"type": "string"},
       "source_path": {"type": "string"},
       "extraction_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-      "kind": {"enum": ["row", "block", "comment", "drawing", "ocr"]},
+      "kind": {"enum": ["row", "block", "comment", "drawing", "image", "ocr"]},
       "title": {"type": "string"},
       "text": {"type": "string"},
       "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},

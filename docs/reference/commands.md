@@ -7,7 +7,7 @@
 ## `arp4`
 
 ```text
-ARP Rust: Excel, Word, PPTX and PDF document workflow
+ARP Rust: Excel, Word, PPTX, PDF and HTML document workflow
 
 Usage: arp4 [OPTIONS] <COMMAND>
 
@@ -1758,6 +1758,7 @@ Commands:
   discard              Discard one proposal, leaving the original and adopted document untouched
   search               Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
   search-formats       List the font colors, theme colors, fonts, sizes and emphasis of the indexed text, each with the hits a search filtering by it alone returns
+  link-check           Check the links of adopted HTML documents: where each <a href> points among the imported pages and their anchors (id, and name of a). Lists the links that point to no page or anchor, to a file not imported or from the site root; --all lists every link with its target
   search-refresh       Reconcile canonical documents with the local search index
   structure-read       Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
   elements-read        Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
@@ -2065,6 +2066,39 @@ Options:
 
       --root <ROOT>
 
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help
+```
+
+## `arp4 documents link-check`
+
+```text
+Check the links of adopted HTML documents: where each <a href> points among the imported pages and their anchors (id, and name of a). Lists the links that point to no page or anchor, to a file not imported or from the site root; --all lists every link with its target
+
+Usage: arp4 documents link-check [OPTIONS]
+
+Options:
+      --document <DOCUMENT>
+          Restrict to the links of a document ID or folder ID
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --all
+          List every link, with the document and cell it points to
 
       --include-hashes
           Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports

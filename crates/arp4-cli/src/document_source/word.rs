@@ -158,8 +158,8 @@ fn ensure_row_editable(
 /// The rows after `operations` (row insertions and deletions, in order) of a
 /// document whose rows are `rows`. A new row copies `style_from`, else the row
 /// above it.
-pub(super) fn placed_rows(
-    rows: &BTreeMap<usize, Node<'_, '_>>,
+pub(super) fn placed_rows<T>(
+    rows: &BTreeMap<usize, T>,
     operations: &[&StructuralOperation],
     application: &str,
 ) -> Result<Vec<Placed>> {
@@ -1531,7 +1531,7 @@ fn run_texts(
 
 /// The byte range of `before` that `after` replaces, found by matching the
 /// longest common prefix first (`prefix_first`) or the longest common suffix first.
-fn changed_range(before: &str, after: &str, prefix_first: bool) -> (usize, usize) {
+pub(super) fn changed_range(before: &str, after: &str, prefix_first: bool) -> (usize, usize) {
     let common_prefix = |a: &str, b: &str| -> usize {
         a.chars()
             .zip(b.chars())

@@ -7227,6 +7227,7 @@
             },
             "links": {
               "type": "array",
+              "description": "Excelのセルのハイパーリンク、またはHTMLのブロックにある <a href> のリンク（range はリンクの文字を含むブロックのセル、url は href の値、text はリンクの文字）",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -7243,10 +7244,63 @@
                   },
                   "tooltip": {
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
                 "required": [
                   "range"
+                ]
+              }
+            },
+            "anchors": {
+              "type": "array",
+              "description": "HTMLのページ内でリンク先になる名前（要素の id、a 要素の name）と、その位置にあるブロックのセル。同じ名前は最初のものだけ",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "range"
+                ]
+              }
+            },
+            "images": {
+              "type": "array",
+              "description": "HTMLのページの <img>。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "src": {
+                    "type": "string"
+                  },
+                  "alt": {
+                    "type": "string"
+                  },
+                  "asset": {
+                    "type": "string",
+                    "pattern": "^image-[0-9]{3,}\\.[A-Za-z0-9]+$"
+                  }
+                },
+                "required": [
+                  "address",
+                  "src"
                 ]
               }
             },
@@ -9608,6 +9662,7 @@
             },
             "links": {
               "type": "array",
+              "description": "Excelのセルのハイパーリンク、またはHTMLのブロックにある <a href> のリンク（range はリンクの文字を含むブロックのセル、url は href の値、text はリンクの文字）",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -9624,10 +9679,63 @@
                   },
                   "tooltip": {
                     "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
                   }
                 },
                 "required": [
                   "range"
+                ]
+              }
+            },
+            "anchors": {
+              "type": "array",
+              "description": "HTMLのページ内でリンク先になる名前（要素の id、a 要素の name）と、その位置にあるブロックのセル。同じ名前は最初のものだけ",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "range"
+                ]
+              }
+            },
+            "images": {
+              "type": "array",
+              "description": "HTMLのページの <img>。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "src": {
+                    "type": "string"
+                  },
+                  "alt": {
+                    "type": "string"
+                  },
+                  "asset": {
+                    "type": "string",
+                    "pattern": "^image-[0-9]{3,}\\.[A-Za-z0-9]+$"
+                  }
+                },
+                "required": [
+                  "address",
+                  "src"
                 ]
               }
             },
@@ -12799,17 +12907,23 @@
         "pattern": "^[a-f0-9]{64}$",
         "type": "string"
       },
+      "reading": {
+        "description": "The hash of what the reviewed content reads as, without the versions and stored forms of its records. Adopting a proposal that reads the same, such as a re-import of an unchanged original by a version that stores documents otherwise, keeps the review.",
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
       "reviewer": {
         "minLength": 1,
         "type": "string"
       },
       "schema_version": {
-        "const": "1"
+        "const": "2"
       }
     },
     "required": [
       "schema_version",
       "content",
+      "reading",
       "reviewer",
       "formation"
     ],

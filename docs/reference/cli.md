@@ -22,12 +22,12 @@
 | --- | --- | --- |
 | doctor | 実装・機能・応答仕様 | 同じ応答 |
 | skills install / documents init | state・件数またはroot | 保存先を確認 |
-| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無）。`--adopt` で採用した場合は候補パスの代わりに `document` と `state: imported`、採用しなかった場合は `state: needs_record` と `not_adopted`（`edited` / `reviewed`）。採用に失敗した場合は `ok: false` で、エラーに段階と対象パスを含み、候補が残る（`documents adopt` で採用できる） | 再抽出が必要なら `--force`。既存候補があれば保持する |
-| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）。採用に失敗した原本はfailedに入り、候補が残る | 各候補のcontentと対応表。再抽出が必要なら `--force` |
+| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無）。`--adopt` で採用した場合は候補パスの代わりに `document` と `state: imported`（レビューを引き継いだ場合は `state: reviewed`）、採用しなかった場合は `state: needs_record` と `not_adopted`（`edited` / `reviewed`）。採用に失敗した場合は `ok: false` で、エラーに段階と対象パスを含み、候補が残る（`documents adopt` で採用できる） | 再抽出が必要なら `--force`。既存候補があれば保持する |
+| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）、採用した文書のうちレビューを引き継いだ `reviews_kept`（ある場合だけ）。採用に失敗した原本はfailedに入り、候補が残る | 各候補のcontentと対応表。再抽出が必要なら `--force` |
 | remove | 削除した文書ID | 残りの文書をstatusで確認 |
 | discard | 破棄した候補の文書ID | 原本と採用済み文書は保持する |
 | record / review | 対象ID・実行した状態 | 保存されたformation.json / review.json |
-| adopt | 変更時は文書ID・本文パス・needs_review。同じ内容なら `state: skipped`・`reason: no_changes` として候補だけを除去 | 本文と管理情報。変更時は確認後にreviewを記録する |
+| adopt | 変更時は文書ID・本文パス・needs_review。候補がレビュー済みの内容と同じ読み取りならレビューを引き継ぎ、`state: reviewed`・`review: kept`。同じ内容なら `state: skipped`・`reason: no_changes` として候補だけを除去 | 本文と管理情報。変更時は確認後にreviewを記録する |
 | record / adopt / review（フォルダIDまたは `--all`） | recorded・adopted・reviewedのいずれか、skipped（状態・blockers・error・reason付き）、failed（理由付き。1件でもあれば `ok: false` だが他の文書は処理済み）、summaryの件数。処理がなければstateは `unchanged` | 一覧が省略された場合はsummaryとstatusで確認 |
 | record / adopt / review `--dry-run` | planned（`--include-hashes` でcontent付き）・skipped・summary。`--out` 指定時は保存した計画のパス `plan` | 保存された計画（`batch-plan`）の全件 |
 | check / status | 全体の状態別件数・対象のページ。候補には採用済み文書と内容が同じかを示す `no_changes` を含む | 対象IDで絞る、または次ページ |
@@ -296,7 +296,7 @@ export は出力を読み直し、スライドとノートの順序と文字列�
 | ready_to_adopt | 候補の現在内容の記録があり、現在の検査で採用を妨げる条件がない。adoptで現在版にする |
 | needs_review | 採用直後、またはレビュー後に変更された。確認した担当者がreviewする |
 | imported | `import --adopt` で抽出したまま採用し、その後の編集がない。レビュー対象外（一括reviewはskipする）。編集するとneeds_review |
-| reviewed | 現在内容のレビュー記録がある |
+| reviewed | 現在内容のレビュー記録がある。別の版のARPが記録したレビューは失効し、needs_reviewになる |
 | blocked | blockersにsource_missing / source_changed / unresolved_mappings / authority_changedがある |
 | invalid | 証跡や文書構造の検証に失敗。errorを確認する |
 

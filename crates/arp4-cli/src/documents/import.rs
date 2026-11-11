@@ -439,7 +439,7 @@ impl Store {
                 }
             }
         }
-        assets.extend(book.word_images()?);
+        assets.extend(book.image_assets()?);
         let asset_info: Vec<_> = assets
             .iter()
             .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))

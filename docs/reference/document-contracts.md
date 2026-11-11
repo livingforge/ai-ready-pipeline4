@@ -1326,6 +1326,10 @@
 | <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells","fonts","styles"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/anchors</code> | <code>{"description":"HTMLのページ内でリンク先になる名前（要素の id、a 要素の name）と、その位置にあるブロックのセル。同じ名前は最初のものだけ","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/anchors/items</code> | <code>{"additionalProperties":false,"required":["name","range"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/anchors/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/anchors/items/properties/range</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cell_font</code> | <code>{"description":"fonts での番号。fonts の番号を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない","minimum":0,"type":"integer"}</code> |
@@ -1533,10 +1537,17 @@
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/links</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/images</code> | <code>{"description":"HTMLのページの &lt;img&gt;。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/images/items</code> | <code>{"additionalProperties":false,"required":["address","src"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/address</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/alt</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/asset</code> | <code>{"pattern":"^image-[0-9]{3,}\\.[A-Za-z0-9]+$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/src</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links</code> | <code>{"description":"Excelのセルのハイパーリンク、またはHTMLのブロックにある &lt;a href&gt; のリンク（range はリンクの文字を含むブロックのセル、url は href の値、text はリンクの文字）","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/links/items</code> | <code>{"additionalProperties":false,"required":["range"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/location</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/range</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/tooltip</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/url</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/merges</code> | <code>{"description":"結合範囲。保存時は1行に並べる","type":"array"}</code> |
@@ -1716,6 +1727,10 @@
 | <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/anchors</code> | <code>{"description":"HTMLのページ内でリンク先になる名前（要素の id、a 要素の name）と、その位置にあるブロックのセル。同じ名前は最初のものだけ","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/anchors/items</code> | <code>{"additionalProperties":false,"required":["name","range"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/anchors/items/properties/name</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/anchors/items/properties/range</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cell_font</code> | <code>{"additionalProperties":false,"description":"font を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない","required":["latin","east_asian","size","color"],"type":"object"}</code> |
@@ -1992,10 +2007,17 @@
 | <code>/properties/sheets/items/properties/hidden_columns/items</code> | <code>{"pattern":"^[A-Z]+$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows</code> | <code>{"description":"Excel rows hidden on the sheet. Their cells are still extracted.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/hidden_rows/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/links</code> | <code>{"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/images</code> | <code>{"description":"HTMLのページの &lt;img&gt;。address は画像を含むブロック（なければ直後、最後のブロック）のセル、src と alt は属性の値、asset は取込時に保存した画像（data URL の画像と、ページから相対パスで指す画像ファイル）","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/images/items</code> | <code>{"additionalProperties":false,"required":["address","src"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/address</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/alt</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/asset</code> | <code>{"pattern":"^image-[0-9]{3,}\\.[A-Za-z0-9]+$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/images/items/properties/src</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links</code> | <code>{"description":"Excelのセルのハイパーリンク、またはHTMLのブロックにある &lt;a href&gt; のリンク（range はリンクの文字を含むブロックのセル、url は href の値、text はリンクの文字）","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/links/items</code> | <code>{"additionalProperties":false,"required":["range"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/location</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/range</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/links/items/properties/text</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/tooltip</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/links/items/properties/url</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/merges</code> | <code>{"description":"結合範囲。保存時は1行に並べる","type":"array"}</code> |
@@ -2574,11 +2596,12 @@
 
 | JSON Pointer | 制約 |
 | --- | --- |
-| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","content","reviewer","formation"],"type":"object"}</code> |
+| <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","content","reading","reviewer","formation"],"type":"object"}</code> |
 | <code>/properties/content</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/formation</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
+| <code>/properties/reading</code> | <code>{"description":"The hash of what the reviewed content reads as, without the versions and stored forms of its records. Adopting a proposal that reads the same, such as a re-import of an unchanged original by a version that stores documents otherwise, keeps the review.","pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/reviewer</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"2"}</code> |
 
 ## search-batch
 
@@ -2627,7 +2650,7 @@
 | <code>/properties/formatted/items/properties/spans/items/properties/format</code> | <code>{"$ref":"#/$defs/format"}</code> |
 | <code>/properties/formatted/items/properties/spans/items/properties/start</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/formatted/items/properties/spans/items/properties/text</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/kind</code> | <code>{"enum":["row","block","comment","drawing","ocr"]}</code> |
+| <code>/properties/kind</code> | <code>{"enum":["row","block","comment","drawing","image","ocr"]}</code> |
 | <code>/properties/row</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/row_context</code> | <code>{"description":"Row headers of other rows that head this row, such as a merged item name or a section row, outermost first.","minItems":1,"type":"array"}</code> |
 | <code>/properties/row_context/items</code> | <code>{"$ref":"#/$defs/field"}</code> |

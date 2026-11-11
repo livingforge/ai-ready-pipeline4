@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     version,
-    about = "ARP Rust: Excel, Word, PPTX and PDF document workflow"
+    about = "ARP Rust: Excel, Word, PPTX, PDF and HTML document workflow"
 )]
 pub(crate) struct Cli {
     #[command(flatten)]
@@ -1397,6 +1397,18 @@ pub(crate) enum DocumentCommand {
         /// Restrict to a document ID or folder ID.
         #[arg(long)]
         document: Option<String>,
+    },
+    /// Check the links of adopted HTML documents: where each <a href> points
+    /// among the imported pages and their anchors (id, and name of a). Lists
+    /// the links that point to no page or anchor, to a file not imported or
+    /// from the site root; --all lists every link with its target.
+    LinkCheck {
+        /// Restrict to the links of a document ID or folder ID.
+        #[arg(long)]
+        document: Option<String>,
+        /// List every link, with the document and cell it points to.
+        #[arg(long)]
+        all: bool,
     },
     /// Reconcile canonical documents with the local search index.
     SearchRefresh {

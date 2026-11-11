@@ -337,7 +337,7 @@ impl Store {
         if !identity::is_excel(extraction) {
             return Err(rejection(
                 "unsupported_format",
-                "rows are moved in Excel workbooks only; insert and delete the paragraphs or table rows of Word and PowerPoint",
+                "rows are moved in Excel workbooks only; insert and delete the paragraphs or table rows of Word, PowerPoint and HTML",
             ));
         }
         if edit.count == 0 {
