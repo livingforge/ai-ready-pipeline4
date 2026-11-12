@@ -14,7 +14,7 @@ use super::*;
 pub(super) fn shell(
     document: &Document<'_>,
     layout: Layout,
-    sections: &[Section],
+    sections: &mut [Section],
     out: &Out,
 ) -> String {
     let (name, accent) = match layout {
@@ -26,7 +26,10 @@ pub(super) fn shell(
         Layout::Records => ("records", "#3b5b7d"),
     };
     let file = document.id.rsplit('/').next().unwrap_or(document.id);
-    let mut html = String::new();
+    // Room for the bodies and how they are read, so that the page of a large
+    // sheet is not copied each time it outgrows its room.
+    let bodies: usize = sections.iter().map(|s| s.body.len() + s.notes.len()).sum();
+    let mut html = String::with_capacity(bodies * 2 + (1 << 16));
     let _ = write!(
         html,
         r#"<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{}</title><style>:root{{--accent:{accent}}}{STYLE}{}</style></head><body data-layout="{name}"><header class="bar"><span class="name" title="{}">{}</span>"#,
@@ -77,7 +80,7 @@ pub(super) fn shell(
         html.push_str("</nav>");
     }
     html.push_str(r#"<main id="stage" class="stage">"#);
-    for (index, section) in sections.iter().enumerate() {
+    for (index, section) in sections.iter_mut().enumerate() {
         let one_at_a_time = matches!(layout, Layout::Sheets | Layout::Slides);
         let _ = write!(
             html,
@@ -102,29 +105,25 @@ pub(super) fn shell(
         } else {
             let _ = write!(html, r#"<div class="zoomable">{}</div>"#, section.body);
         }
+        // Written, the body is let go: the page holds it.
+        section.body = String::new();
         additions(&mut html, document, section);
         // How the part is read, and the other pages of the body drawn in it.
-        let json = |sheet: &str| {
-            document.structure.get(sheet).map(|structure| {
-                serde_json::to_string(structure)
-                    .unwrap_or_default()
-                    .replace("</", "<\\/")
-            })
-        };
-        if let Some(json) = json(&section.sheet) {
-            let _ = write!(
-                html,
-                r#"<script type="application/json" class="structure">{json}</script>"#
-            );
+        if let Some(structure) = document.structure.get(&section.sheet) {
+            html.push_str(r#"<script type="application/json" class="structure">"#);
+            script_json(&mut html, structure);
+            html.push_str("</script>");
         }
         for part in &section.parts {
-            if let Some(json) = json(&part.sheet) {
+            if let Some(structure) = document.structure.get(&part.sheet) {
                 let _ = write!(
                     html,
-                    r#"<script type="application/json" class="structure-part" data-prefix="{}" data-label="{}">{json}</script>"#,
+                    r#"<script type="application/json" class="structure-part" data-prefix="{}" data-label="{}">"#,
                     escape(&part.prefix),
                     part.label
                 );
+                script_json(&mut html, structure);
+                html.push_str("</script>");
             }
         }
         html.push_str("</section>");
@@ -192,6 +191,45 @@ fn classes(out: &Out) -> String {
         let _ = write!(css, ".grid .k{number}{{{declarations}}}");
     }
     css
+}
+
+/// Writes `value` to `html` as the JSON of a script element, `</` written
+/// `<\/` so that it closes no element; nothing when it cannot be written.
+/// It is written straight to the page: the JSON of a large sheet's reading
+/// and its copy with `</` replaced took twice its room besides the page.
+fn script_json(html: &mut String, value: &impl serde::Serialize) {
+    struct Script<'a> {
+        html: &'a mut String,
+        /// The last byte written was `<`, which `/` may follow.
+        open: bool,
+    }
+    impl std::io::Write for Script<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let mut rest = text;
+            if self.open && rest.starts_with('/') {
+                self.html.push_str("\\/");
+                rest = &rest[1..];
+            }
+            let mut parts = rest.split("</");
+            self.html.push_str(parts.next().unwrap_or_default());
+            for part in parts {
+                self.html.push_str("<\\/");
+                self.html.push_str(part);
+            }
+            self.open = text.ends_with('<');
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let start = html.len();
+    let script = Script { html, open: false };
+    if serde_json::to_writer(script, value).is_err() {
+        html.truncate(start);
+    }
 }
 
 fn additions(html: &mut String, document: &Document<'_>, section: &Section) {

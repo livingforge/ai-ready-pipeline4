@@ -85,7 +85,6 @@ impl Store {
         content: &Content,
     ) -> Result<BTreeMap<String, Structure>> {
         let (layout, interpretation) = self.interpreted_layout(id, proposal)?;
-        let mut elements = elements_view(id, proposal, &layout, &interpretation)?.into_value()?;
         // The cells of the extraction by sheet and address, their values read
         // when asked for.
         let mut cells = HashMap::default();
@@ -96,10 +95,12 @@ impl Store {
             }
         }
         let mut structures = BTreeMap::new();
-        for (page_id, page) in elements["pages"].as_object_mut().into_iter().flatten() {
-            let name = string(&page["name"])?.to_owned();
-            let name = name.as_str();
-            let typed = layout.sheet(page_id)?;
+        // The elements are read as the layout holds them, with the roles and
+        // headers of the interpretation: all of them as JSON, as
+        // elements-read writes them, took more room than the rest of a view.
+        for (page_id, typed) in &layout.sheets {
+            let name = string(&typed["name"])?;
+            let found = &interpretation[page_id];
             // A cell by the row and column the extraction gives it; none for
             // one an operation inserts.
             let address = |cell: &str| -> Option<String> {
@@ -131,79 +132,79 @@ impl Store {
                 .unwrap_or_default();
             let titles = &typed.fields["block_titles"];
             let mut structure = Structure::default();
-            for element in page["element_metadata"]
-                .as_array_mut()
-                .into_iter()
-                .flatten()
-            {
-                match element["type"].as_str() {
-                    Some("table") => {
-                        let number = structure.tables.len() + 1;
-                        let headings = element["headings"].as_u64().unwrap_or(0) as usize;
-                        // Each cell's ID, role and headers, before the element
-                        // itself goes to be read.
-                        let listed = element["rows"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|row| row["cells"].as_array().into_iter().flatten())
-                            .map(|cell| {
-                                Ok((
-                                    string(&cell["id"])?.to_owned(),
-                                    cell["role"].as_str().unwrap_or("unassigned").to_owned(),
-                                    cell["headers"]
-                                        .as_array()
-                                        .into_iter()
-                                        .flatten()
-                                        .filter_map(|h| address(h.as_str()?))
-                                        .collect::<Vec<_>>(),
-                                ))
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-                        let meta = Meta::from_value(element.take())?;
-                        let read: HashMap<String, crate::document_body::CellReading> =
-                            crate::document_body::table_reading(&meta, &value_of)?
-                                .into_iter()
-                                .map(|r| (r.id.clone(), r))
-                                .collect();
-                        drop(meta);
-                        let mut cells = vec![];
-                        for (id, role, headers) in listed {
-                            let Some(at) = address(&id) else {
-                                continue;
-                            };
-                            let reading = read.get(&id);
-                            cells.push(CellStructure {
-                                address: at,
-                                role,
-                                headers,
-                                shown: reading.is_some(),
-                                heading: reading.is_some_and(|r| r.heading),
-                                key: reading.and_then(|r| r.key.clone()),
-                                mark: reading.is_some_and(|r| r.mark),
-                                category: reading.is_some_and(|r| r.category),
-                                description: reading.and_then(|r| r.description).map(|d| d.name()),
-                                nodes: reading.map(|r| r.nodes.clone()).unwrap_or_default(),
-                            });
-                        }
-                        structure.tables.push(TableStructure {
-                            number,
-                            element: table_places.get(number - 1).copied(),
-                            title: titles[format!("table-{number}")]
-                                .as_str()
-                                .unwrap_or_default()
-                                .to_owned(),
-                            headings,
-                            cells,
-                        });
+            for element in &typed.metadata {
+                let table = element
+                    .records()
+                    .zip(element.fields())
+                    .filter(|(_, fields)| fields["type"] == "table");
+                let Some((rows, fields)) = table else {
+                    let element = element.to_value();
+                    if element["type"] == "text"
+                        && element.get("visual").is_none()
+                        && let Some(at) = element["id"].as_str().and_then(address)
+                    {
+                        structure.texts.push(at);
                     }
-                    Some("text") if element.get("visual").is_none() => {
-                        if let Some(at) = element["id"].as_str().and_then(address) {
-                            structure.texts.push(at);
+                    continue;
+                };
+                let number = structure.tables.len() + 1;
+                let headings = fields["headings"].as_u64().unwrap_or(0) as usize;
+                let heads = |cell: &str| {
+                    found.get(cell).is_some_and(|(role, _)| {
+                        matches!(role.as_str(), Some("row_header" | "column_header"))
+                    })
+                };
+                let read: HashMap<String, crate::document_body::CellReading> =
+                    crate::document_body::table_reading(element, &value_of, &heads)?
+                        .into_iter()
+                        .map(|r| (r.id.clone(), r))
+                        .collect();
+                // The cells of the table, which a cell's headers are among.
+                let present: foldhash::HashSet<&str> = rows
+                    .iter()
+                    .flat_map(|row| &row.cells)
+                    .map(|cell| cell.id())
+                    .collect::<Result<_>>()?;
+                let mut cells = vec![];
+                for cell in rows.iter().flat_map(|row| &row.cells) {
+                    let id = cell.id()?;
+                    let Some(at) = address(id) else {
+                        continue;
+                    };
+                    let (role, headers) = match found.get(id) {
+                        Some((role, headers)) => {
+                            (role.as_str().unwrap_or("unassigned"), headers.as_slice())
                         }
-                    }
-                    _ => {}
+                        None => ("unassigned", &[][..]),
+                    };
+                    let reading = read.get(id);
+                    cells.push(CellStructure {
+                        address: at,
+                        role: role.to_owned(),
+                        headers: headers
+                            .iter()
+                            .filter(|header| present.contains(header.as_str()))
+                            .filter_map(|header| address(header))
+                            .collect(),
+                        shown: reading.is_some(),
+                        heading: reading.is_some_and(|r| r.heading),
+                        key: reading.and_then(|r| r.key.clone()),
+                        mark: reading.is_some_and(|r| r.mark),
+                        category: reading.is_some_and(|r| r.category),
+                        description: reading.and_then(|r| r.description).map(|d| d.name()),
+                        nodes: reading.map(|r| r.nodes.clone()).unwrap_or_default(),
+                    });
                 }
+                structure.tables.push(TableStructure {
+                    number,
+                    element: table_places.get(number - 1).copied(),
+                    title: titles[format!("table-{number}")]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    headings,
+                    cells,
+                });
             }
             for (number, (place, diagram)) in diagram_places.iter().enumerate() {
                 let place = *place;

@@ -142,11 +142,31 @@ impl Store {
         // The layout, read when a formula edit needs its frame.
         let mut layout: Option<identity::FormulaPlaces> = None;
         for (index, e) in result.entries().enumerate() {
+            // A cell holding the value the original holds writes nothing:
+            // most entries of a large sheet, read without the JSON of each.
+            if e.writeback()? == "cell"
+                && let Some(MappingTarget::Cell { sheet, cell }) = e.target()?
+                && cells
+                    .get(&(sheet, cell))
+                    .map_or(CellValue::Null, |old| old.value())
+                    == result.content[index].value
+            {
+                continue;
+            }
+            // An entry the report lists is listed as it is made, not a copy
+            // of it: a sheet of formulas has one for each calculated value.
             let e = e.json();
+            let listed = match string(&e["writeback"])? {
+                "excluded" => Some(&mut excluded),
+                "pending" => Some(&mut pending),
+                _ => None,
+            };
+            if let Some(listed) = listed {
+                listed.push(e.into_owned());
+                continue;
+            }
             let e = &*e;
             match string(&e["writeback"])? {
-                "excluded" => excluded.push(e.clone()),
-                "pending" => pending.push(e.clone()),
                 "cell" => {
                     let new = &result.content[index].value;
                     match mapping_target(&e["target"])?.context("cell writeback requires target")? {
@@ -366,8 +386,14 @@ impl Store {
                 ),
             "--calculate applies to Excel workbooks"
         );
-        let plan = self.writeback(&dir, &result, &book)?;
-        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":plan.changes,"formula_changes":plan.formulas,"font_changes":plan.fonts,"unreflected":plan.pending,"excluded":plan.excluded,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"value_edits":result.mappings["value_edits"],"deleted_cells":plan.deleted_cells,"engine":book.engine(),"complete":plan.pending.is_empty(),"written":false});
+        let mut plan = self.writeback(&dir, &result, &book)?;
+        let complete = plan.pending.is_empty();
+        let mut report = json!({"schema_version":"1","document_id":id,"content":result.fingerprint,"source_sha256":result.meta["source"]["sha256"],"changes":plan.changes,"formula_changes":plan.formulas,"font_changes":plan.fonts,"omissions":result.mappings["omissions"],"operations":result.mappings["operations"],"value_edits":result.mappings["value_edits"],"engine":book.engine(),"complete":complete,"written":false});
+        // What only the report lists is given to it, not copied: a sheet of
+        // formulas lists an entry for each calculated value.
+        report["unreflected"] = Value::Array(std::mem::take(&mut plan.pending));
+        report["excluded"] = Value::Array(std::mem::take(&mut plan.excluded));
+        report["deleted_cells"] = Value::Array(std::mem::take(&mut plan.deleted_cells));
         // The macros to check on the candidate: their addresses stay put
         // while the operations move the cells.
         if array(&result.mappings["operations"])?
@@ -379,7 +405,7 @@ impl Store {
         let Some(output) = output else {
             return Ok(report);
         };
-        ensure!(plan.pending.is_empty(), "unresolved writeback mappings");
+        ensure!(complete, "unresolved writeback mappings");
         let output = if output.is_absolute() {
             output.to_owned()
         } else {

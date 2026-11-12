@@ -795,10 +795,12 @@ impl Store {
             }
         }
         let mut changed = BTreeSet::new();
-        for (page, block, row, column) in deleted {
+        // The deleted values of each page, taken out of it together.
+        let mut gone: BTreeMap<String, foldhash::HashSet<(&str, &str, &str)>> = BTreeMap::new();
+        for (page, block, row, column) in &deleted {
             let name = inspected
                 .page_files
-                .get(&page)
+                .get(page)
                 .cloned()
                 .context("content page missing")?;
             if !pages.contains_key(&name) {
@@ -807,9 +809,16 @@ impl Store {
                     self.read_content_grid_with(&dir, &name, extraction, &current_layout)?,
                 );
             }
-            let page = pages.get_mut(&name).unwrap();
-            ensure!(page.titles.contains_key(&block), "content rows missing");
-            page.remove(&block, &row, &column);
+            ensure!(
+                pages[&name].titles.contains_key(block),
+                "content rows missing"
+            );
+            gone.entry(name)
+                .or_default()
+                .insert((block.as_str(), row.as_str(), column.as_str()));
+        }
+        for (name, places) in gone {
+            pages.get_mut(&name).unwrap().remove_all(&places);
             changed.insert(name);
         }
         if !plan.additions.is_empty() {
@@ -823,9 +832,7 @@ impl Store {
                     ),
                 ));
             }
-            for (row, column, value) in &plan.additions {
-                page.set("table-1", row.clone(), column.clone(), value.clone());
-            }
+            page.set_all("table-1", plan.additions.iter().cloned());
             changed.insert(page_name.clone());
         }
         // Values a merge grown by the insertion would hide.
@@ -914,18 +921,22 @@ impl Store {
             let rows = identity::key_identities(layout.sheet(&page_id)?, "rows");
             let columns = identity::key_identities(layout.sheet(&page_id)?, "columns");
             let page = pages.get_mut(&page_name).context("content page missing")?;
-            for (row, column, formula) in &plan.formulas {
+            for (row, column, _) in &plan.formulas {
                 let (Some(row_id), Some(column_id)) = (rows.get(row), columns.get(column)) else {
                     bail!("{row}/{column} has no row or column identity for its formula");
                 };
                 identity::add_formula(&mut layout, &page_id, row_id, column_id)?;
-                page.set(
-                    "formulas",
-                    identity::formula_name(&page_id, row, column),
-                    "formula".to_owned(),
-                    json!(formula),
-                );
             }
+            page.set_all(
+                "formulas",
+                plan.formulas.iter().map(|(row, column, formula)| {
+                    (
+                        identity::formula_name(&page_id, row, column),
+                        "formula".to_owned(),
+                        json!(formula),
+                    )
+                }),
+            );
             if !page.titles.contains_key("formulas") {
                 page.titles.insert("formulas".into(), json!("数式原文"));
             }

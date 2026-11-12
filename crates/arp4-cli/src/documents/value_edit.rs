@@ -1,3 +1,4 @@
+use super::elements::{GridPage, GridValue};
 use super::inspection::Kept;
 use super::sheet_edit::rejection;
 use super::*;
@@ -309,10 +310,9 @@ impl Store {
                 sheet.cells.iter().map(move |cell| (name, cell.address()))
             })
             .collect();
-        let mut pages: BTreeMap<String, Value> = BTreeMap::new();
-        // The blocks of the pages whose values were cleared, which leave out
-        // the rows holding no value once all edits are made.
-        let mut emptied = BTreeSet::new();
+        // The pages the edits change, held typed as the inspection read
+        // them: a large sheet as JSON took several times its values.
+        let mut pages: BTreeMap<String, EditedPage> = BTreeMap::new();
         let mut written = BTreeSet::new();
         let mut new_cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
         // The formulas given to cells holding none, by page, row and column
@@ -535,24 +535,17 @@ impl Store {
                     new_formulas.push((page.to_owned(), row, column));
                     if !pages.contains_key(&slot.file) {
                         let page = match kept_pages.remove(&slot.page) {
-                            Some(page) => page.to_value(),
+                            Some(page) => page,
                             None => {
-                                self.read_content_with(dir, &slot.file, extraction, &current)?
+                                self.read_content_grid_with(dir, &slot.file, extraction, &current)?
                             }
                         };
-                        pages.insert(slot.file.clone(), page);
+                        pages.insert(slot.file.clone(), EditedPage::new(page));
                     }
                     let content = pages.get_mut(&slot.file).unwrap();
                     // A value given to the cell before goes; the formula takes its place.
-                    if let Some(values) = content
-                        .pointer_mut(&format!("/blocks/table-1/rows/{}", slot.row))
-                        .and_then(Value::as_object_mut)
-                    {
-                        values.remove(&slot.column);
-                    }
-                    if content["blocks"]["formulas"].is_null() {
-                        content["blocks"]["formulas"] = json!({"title":"数式原文","rows":{}});
-                    }
+                    content.remove("table-1", &slot.row, &slot.column);
+                    content.title("formulas", "数式原文");
                     slot.block = "formulas".into();
                     slot.row = key;
                     slot.column = "formula".into();
@@ -598,15 +591,17 @@ impl Store {
             }
             if !pages.contains_key(&slot.file) {
                 let page = match kept_pages.remove(&slot.page) {
-                    Some(page) => page.to_value(),
-                    None => self.read_content_with(dir, &slot.file, extraction, &current)?,
+                    Some(page) => page,
+                    None => self.read_content_grid_with(dir, &slot.file, extraction, &current)?,
                 };
-                pages.insert(slot.file.clone(), page);
+                pages.insert(slot.file.clone(), EditedPage::new(page));
             }
             let content = pages.get_mut(&slot.file).unwrap();
             if edit.get("before").is_some() {
-                let present =
-                    content["blocks"][&slot.block]["rows"][&slot.row][&slot.column].clone();
+                let present = content
+                    .value(&slot.block, &slot.row, &slot.column)
+                    .cloned()
+                    .unwrap_or_default();
                 if !same_value(&present, &edit["before"]) {
                     let mut error = json!({"code":"before_mismatch","message":"before is not the current value; read the content again","edit":index,"target":refusal_target(edit),"current":present});
                     if let Some(cell) = edit["cell"].as_str()
@@ -659,17 +654,7 @@ impl Store {
                     dropped_formulas.push((slot.page.clone(), slot.row.clone()));
                 }
                 if after.is_null() && holds_none {
-                    for pointer in [
-                        format!("/blocks/{}/rows/{}", slot.block, slot.row),
-                        format!("/fonts/{}/{}", slot.block, slot.row),
-                    ] {
-                        if let Some(values) =
-                            content.pointer_mut(&pointer).and_then(Value::as_object_mut)
-                        {
-                            values.remove(&slot.column);
-                        }
-                    }
-                    emptied.insert((slot.file.clone(), slot.block.clone()));
+                    content.remove(&slot.block, &slot.row, &slot.column);
                 } else {
                     if slot.entry.is_none() && slot.block == "formulas" {
                         let (row, column) = new_formulas
@@ -690,11 +675,9 @@ impl Store {
                                 .unwrap_or_else(|| slot.column.clone()),
                         );
                         new_cells.entry(slot.page.clone()).or_default().push(id);
-                        if content["blocks"][&slot.block].is_null() {
-                            content["blocks"][&slot.block] = json!({"title":"本文","rows":{}});
-                        }
+                        content.title(&slot.block, "本文");
                     }
-                    content["blocks"][&slot.block]["rows"][&slot.row][&slot.column] = after.clone();
+                    content.set(&slot.block, &slot.row, &slot.column, after.clone());
                 }
             }
             if edit.get("font").is_some() {
@@ -744,16 +727,7 @@ impl Store {
                 if !crate::fonts::same_font(&applied, font) && changing.last() != Some(&index) {
                     changing.push(index);
                 }
-                elements::set_grid_font(content, &slot.block, &slot.row, &slot.column, applied);
-            }
-        }
-        for (file, block) in emptied {
-            if let Some(rows) = pages
-                .get_mut(&file)
-                .and_then(|content| content.pointer_mut(&format!("/blocks/{block}/rows")))
-                .and_then(Value::as_object_mut)
-            {
-                rows.retain(|_, values| values.as_object().is_none_or(|v| !v.is_empty()));
+                content.set_font(&slot.block, &slot.row, &slot.column, applied);
             }
         }
         // The layout the edits were placed on, with the cells they reach.
@@ -779,8 +753,9 @@ impl Store {
         }
         let mut planned = Planned::new();
         for (name, page) in pages {
-            let groups = page_groups.remove(string(&page["page_id"])?);
-            let body = elements::encode(page, &mut layout, groups)?;
+            let page = page.finish();
+            let groups = page_groups.remove(string(&page.fields["page_id"])?);
+            let body = elements::encode_runtime(page, &mut layout, groups)?;
             planned.insert(name, Some(elements::content_bytes(&body, &layout)?));
         }
         planned.insert(
@@ -845,13 +820,22 @@ impl Store {
         let layout_warnings = if matches!(book, Source::Excel(_)) {
             // Each changed text at its place in the written workbook: the
             // edit's value, its entry's field, and the change of that field.
+            // Only the entries at the places the edits write are kept, of
+            // the one a large sheet has for each cell.
+            let wanted: foldhash::HashSet<(&str, &str, &str, &str)> = changing
+                .iter()
+                .filter_map(|index| places.get(index))
+                .map(|(page, block, row, column)| {
+                    (page.as_str(), block.as_str(), row.as_str(), column.as_str())
+                })
+                .collect();
             let mut fields = HashMap::default();
             for entry in checked.entries() {
                 if let Some(position) = entry.position()? {
-                    fields.insert(
-                        (entry.page()?, entry.block()?, position.row, position.column),
-                        entry.json()["field"].as_str().map(str::to_owned),
-                    );
+                    let place = (entry.page()?, entry.block()?, position.row, position.column);
+                    if wanted.contains(&place) {
+                        fields.insert(place, entry.field());
+                    }
                 }
             }
             let changes: HashMap<&str, &Value> = writeback
@@ -873,7 +857,7 @@ impl Store {
                 }
                 let Some(change) = fields
                     .get(&(page.as_str(), block.as_str(), row.as_str(), column.as_str()))
-                    .and_then(|field| field.as_deref())
+                    .and_then(|field| *field)
                     .and_then(|field| changes.get(field))
                 else {
                     continue;
@@ -908,6 +892,129 @@ impl Store {
             unchanged,
             new_cells: new_cells.values().map(Vec::len).sum(),
         })
+    }
+}
+
+/// A page the edits of a request change. The values they add and take out
+/// are kept beside the page until all are placed, so that each does not
+/// move the values after it; a block holds the rows that hold values.
+struct EditedPage {
+    page: GridPage,
+    /// The values given to places holding none, by block, row and column.
+    added: BTreeMap<(String, String, String), (Value, Option<u32>)>,
+    /// The places of the page whose values are taken out.
+    removed: BTreeSet<(String, String, String)>,
+}
+
+impl EditedPage {
+    fn new(page: GridPage) -> Self {
+        Self {
+            page,
+            added: BTreeMap::new(),
+            removed: BTreeSet::new(),
+        }
+    }
+
+    fn place(block: &str, row: &str, column: &str) -> (String, String, String) {
+        (block.to_owned(), row.to_owned(), column.to_owned())
+    }
+
+    /// The value at `row` and `column` of `block`, as the edits so far leave it.
+    fn value(&self, block: &str, row: &str, column: &str) -> Option<&Value> {
+        let place = Self::place(block, row, column);
+        if let Some((value, _)) = self.added.get(&place) {
+            return Some(value);
+        }
+        if self.removed.contains(&place) {
+            return None;
+        }
+        self.page.get(block, row, column).map(|held| &held.value)
+    }
+
+    /// Takes out the value at `row` and `column` of `block`, with its font.
+    fn remove(&mut self, block: &str, row: &str, column: &str) {
+        let place = Self::place(block, row, column);
+        self.added.remove(&place);
+        if self.page.get(block, row, column).is_some() {
+            self.removed.insert(place);
+        }
+    }
+
+    /// Gives `block` the title `title` when the page has no such block.
+    fn title(&mut self, block: &str, title: &str) {
+        if !self.page.titles.contains_key(block) {
+            self.page.titles.insert(block.to_owned(), json!(title));
+        }
+    }
+
+    /// Gives `row` and `column` of `block` the value `value`, keeping the
+    /// font of one there.
+    fn set(&mut self, block: &str, row: &str, column: &str, value: Value) {
+        if !self.page.titles.contains_key(block) {
+            self.page.titles.insert(block.to_owned(), Value::Null);
+        }
+        let place = Self::place(block, row, column);
+        if !self.removed.contains(&place)
+            && let Some(held) = self.page.get_mut(block, row, column)
+        {
+            held.value = value;
+            return;
+        }
+        self.added.entry(place).or_insert((Value::Null, None)).0 = value;
+    }
+
+    /// Gives the value at `row` and `column` of `block` the font `font`,
+    /// kept once in the page's font table.
+    fn set_font(&mut self, block: &str, row: &str, column: &str, font: Value) {
+        if !self.page.font_table.is_array() {
+            self.page.font_table = json!([]);
+        }
+        let table = self.page.font_table.as_array_mut().unwrap();
+        let index = table
+            .iter()
+            .position(|kept| *kept == font)
+            .unwrap_or_else(|| {
+                table.push(font);
+                table.len() - 1
+            });
+        let index = u32::try_from(index).ok();
+        let place = Self::place(block, row, column);
+        if let Some((_, held)) = self.added.get_mut(&place) {
+            *held = index;
+        } else if !self.removed.contains(&place)
+            && let Some(held) = self.page.get_mut(block, row, column)
+        {
+            held.font = index;
+        }
+    }
+
+    /// The page with the values taken out and those added in their places.
+    fn finish(self) -> GridPage {
+        let Self {
+            mut page,
+            added,
+            removed,
+        } = self;
+        if !removed.is_empty() {
+            let removed = removed
+                .iter()
+                .map(|(block, row, column)| (block.as_str(), row.as_str(), column.as_str()))
+                .collect();
+            page.remove_all(&removed);
+        }
+        if !added.is_empty() {
+            for ((block, row, column), (value, font)) in added {
+                page.values.push(GridValue {
+                    block: block.into(),
+                    row: row.into(),
+                    column: column.into(),
+                    value,
+                    font,
+                });
+            }
+            page.order();
+        }
+        page
     }
 }
 
@@ -982,13 +1089,10 @@ pub(super) fn font_changes(inspected: &Inspection) -> Result<Vec<Value>> {
         .filter_map(|sheet| sheet["name"].as_str())
         .collect();
     let mut changes = vec![];
+    // The entries are read as they are held: the JSON of each took most of
+    // the time for a sheet whose fonts are the original's.
     for (index, entry) in inspected.entries().enumerate() {
-        let entry = entry.json();
-        let entry = &*entry;
-        if !matches!(
-            entry["writeback"].as_str(),
-            Some("cell" | "formula" | "shape")
-        ) {
+        if !matches!(entry.writeback(), Ok("cell" | "formula" | "shape")) {
             continue;
         }
         let Some(current) = fields.get(index).and_then(|field| field.font.as_ref()) else {
@@ -996,19 +1100,13 @@ pub(super) fn font_changes(inspected: &Inspection) -> Result<Vec<Value>> {
         };
         // A slide copy has no original page; it takes the fonts of the page it
         // copies, which are written before the copy is made.
-        if entry["target"]["sheet"]
-            .as_str()
-            .is_some_and(|sheet| !originals.contains(sheet))
-        {
-            continue;
-        }
-        let (target, original) = match mapping_target(&entry["target"])? {
-            Some(MappingTarget::Cell { sheet, cell }) => (json!({"sheet":sheet,"cell":cell}), {
+        let (sheet, original) = match entry.target()? {
+            Some(MappingTarget::Cell { sheet, cell }) if originals.contains(sheet) => (sheet, {
                 let (sheet, cell) = cells.get(&(sheet, cell)).context("missing cell")?;
                 crate::extraction::font(sheet, *cell)?
             }),
-            Some(MappingTarget::Shape { sheet, shape }) => (
-                json!({"sheet":sheet,"shape":shape}),
+            Some(MappingTarget::Shape { sheet, shape }) if originals.contains(sheet) => (
+                sheet,
                 &shapes
                     .get(&(sheet, shape))
                     .with_context(|| format!("shape {shape} on {sheet} is missing"))?["font"],
@@ -1018,14 +1116,18 @@ pub(super) fn font_changes(inspected: &Inspection) -> Result<Vec<Value>> {
         ensure!(
             !original.is_null(),
             "{} has a font the original does not record; re-import the original",
-            entry["field"]
+            json!(entry.field())
         );
         let edit = FontEdit::between(original, current)?;
         if !edit.is_empty() {
-            let mut change = target;
+            let mut change = match entry.target()? {
+                Some(MappingTarget::Shape { shape, .. }) => json!({"sheet":sheet,"shape":shape}),
+                Some(MappingTarget::Cell { cell, .. }) => json!({"sheet":sheet,"cell":cell}),
+                _ => continue,
+            };
             change["before"] = original.clone();
             change["after"] = edit.json();
-            change["field"] = entry["field"].clone();
+            change["field"] = json!(entry.field());
             changes.push(change);
         }
     }

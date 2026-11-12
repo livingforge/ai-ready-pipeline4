@@ -183,7 +183,7 @@ enum Layout {
 /// The page of `document`.
 pub fn page(document: &Document<'_>) -> Result<Page> {
     let mut out = Out::default();
-    let (layout, sections) = match document.original {
+    let (layout, mut sections) = match document.original {
         Source::Excel(book) => (Layout::Sheets, sheet::sheets(document, book, &mut out)?),
         original if original.format() == "pdf" => (Layout::Pages, pdf::pages(document, &mut out)?),
         original if original.office_part("ppt/presentation.xml").is_some() => {
@@ -199,7 +199,7 @@ pub fn page(document: &Document<'_>) -> Result<Page> {
     };
     Ok(Page {
         differences: out.differences.len(),
-        html: shell::shell(document, layout, &sections, &out),
+        html: shell::shell(document, layout, &mut sections, &out),
     })
 }
 

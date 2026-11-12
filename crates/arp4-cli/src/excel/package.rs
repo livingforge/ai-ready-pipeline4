@@ -2,21 +2,23 @@ use super::*;
 
 /// The pattern of ` name="value"` (or single-quoted) in an opening tag, with the
 /// value in group 1 or 2. Relocation edits attributes of every moved cell, row,
-/// formula and range, so each name is compiled once.
-pub(super) fn attribute_pattern(name: &str) -> Result<regex::Regex> {
-    static PATTERNS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, regex::Regex>>> =
-        std::sync::LazyLock::new(Default::default);
+/// formula and range, so each name is compiled once and kept for the run: a
+/// clone of a pattern builds a matching cache of its own on its first match.
+pub(super) fn attribute_pattern(name: &str) -> Result<&'static regex::Regex> {
+    static PATTERNS: std::sync::LazyLock<
+        std::sync::Mutex<BTreeMap<String, &'static regex::Regex>>,
+    > = std::sync::LazyLock::new(Default::default);
     let mut patterns = PATTERNS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(pattern) = patterns.get(name) {
-        return Ok(pattern.clone());
+        return Ok(pattern);
     }
-    let pattern = regex::Regex::new(&format!(
+    let pattern: &'static regex::Regex = Box::leak(Box::new(regex::Regex::new(&format!(
         r#"\s+{}\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
         regex::escape(name)
-    ))?;
-    patterns.insert(name.to_owned(), pattern.clone());
+    ))?));
+    patterns.insert(name.to_owned(), pattern);
     Ok(pattern)
 }
 

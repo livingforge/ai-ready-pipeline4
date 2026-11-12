@@ -688,30 +688,39 @@ pub(super) fn unshare_formulas(
     moves: &Moves<'_>,
     edited: bool,
 ) -> Result<Option<String>> {
-    let doc = xml(original.as_bytes())?;
+    // The shared formulas are found a part of the rows at a time, each by
+    // the place of its element in the sheet.
     let mut masters = BTreeMap::new();
-    let mut groups: BTreeMap<&str, Vec<(Node<'_, '_>, u32, u32)>> = BTreeMap::new();
-    for cell in doc.descendants().filter(|n| n.has_tag_name((NS, "c"))) {
-        let Some(formula) = child(cell, "f") else {
-            continue;
-        };
-        if formula.attribute("t") != Some("shared") {
-            continue;
-        }
-        let group = formula
-            .attribute("si")
-            .context("shared formula without si")?;
-        let (column, row) = coordinate(cell.attribute("r").context("missing cell address")?)?;
-        if formula.attribute("ref").is_some()
-            && let Some(text) = formula.text()
+    let mut groups: BTreeMap<String, Vec<(std::ops::Range<usize>, u32, u32)>> = BTreeMap::new();
+    super::writeback::pieces(original, |piece| {
+        for cell in piece
+            .doc
+            .descendants()
+            .filter(|n| n.has_tag_name((NS, "c")))
         {
-            masters.insert(group, (column, row, text));
+            let Some(formula) = child(cell, "f") else {
+                continue;
+            };
+            if formula.attribute("t") != Some("shared") {
+                continue;
+            }
+            let group = formula
+                .attribute("si")
+                .context("shared formula without si")?;
+            let (column, row) = coordinate(cell.attribute("r").context("missing cell address")?)?;
+            if formula.attribute("ref").is_some()
+                && let Some(text) = formula.text()
+            {
+                masters.insert(group.to_owned(), (column, row, text.to_owned()));
+            }
+            groups.entry(group.to_owned()).or_default().push((
+                piece.at(formula.range())?,
+                column,
+                row,
+            ));
         }
-        groups
-            .entry(group)
-            .or_default()
-            .push((formula, column, row));
-    }
+        Ok(())
+    })?;
     let mut edits = vec![];
     for (group, members) in &groups {
         let Some((master_column, master_row, text)) = masters.get(group) else {
@@ -735,7 +744,7 @@ pub(super) fn unshare_formulas(
             continue;
         }
         for ((formula, _, _), text) in members.iter().zip(texts) {
-            let (opening, _) = xml_opening(&original[formula.range()])?;
+            let (opening, _) = xml_opening(&original[formula.clone()])?;
             let tag = element_tag(opening)?;
             let mut opening = opening.to_owned();
             for attribute in ["t", "ref", "si"] {
@@ -746,7 +755,7 @@ pub(super) fn unshare_formulas(
                 .trim_end_matches('/')
                 .trim_end();
             edits.push((
-                formula.range(),
+                formula.clone(),
                 format!("{opening}>{}</{tag}>", xml_attr(&text)),
             ));
         }
@@ -755,6 +764,49 @@ pub(super) fn unshare_formulas(
         return Ok(None);
     }
     splice(original, edits, "shared formula").map(Some)
+}
+
+/// What stands for the rows of a worksheet while the sheet around them is
+/// rewritten: a comment, which no rewriting reads.
+pub(super) const ROWS_HERE: &str = "<!--arp4-rows-->";
+
+/// The worksheet `text` without its rows, for what reads only the sheet
+/// around them: its tree is a small one, where the whole sheet's took
+/// several times the sheet's text.
+pub(super) fn around_rows(text: &str) -> Result<std::borrow::Cow<'_, str>> {
+    Ok(match SheetData::of(text)? {
+        Some(data) => data.rest(text).into(),
+        None => text.into(),
+    })
+}
+
+/// The worksheet `text` as `rewrite` leaves it, none when it leaves it as it
+/// is. `rewrite` changes nothing in the rows, cells, values and texts of the
+/// sheet, and is given the sheet without them. A cell with an extension list
+/// may hold what it rewrites, and a sheet holding the mark of the rows
+/// cannot be told from it: those are rewritten whole.
+pub(super) fn rewrite_around_rows(
+    text: &str,
+    rewrite: impl FnOnce(&str) -> Result<String>,
+) -> Result<Option<String>> {
+    let rows = SheetData::of(text)?
+        .map(|data| data.inner())
+        .filter(|rows| !text.contains(ROWS_HERE) && !text[rows.clone()].contains("extLst"));
+    let Some(rows) = rows else {
+        let rewritten = rewrite(text)?;
+        return Ok((rewritten != text).then_some(rewritten));
+    };
+    let around = format!("{}{ROWS_HERE}{}", &text[..rows.start], &text[rows.end..]);
+    let rewritten = rewrite(&around)?;
+    if rewritten == around {
+        return Ok(None);
+    }
+    let at = rewritten.find(ROWS_HERE).context("worksheet rows lost")?;
+    let mut result = String::with_capacity(rewritten.len() + rows.len());
+    result.push_str(&rewritten[..at]);
+    result.push_str(&text[rows]);
+    result.push_str(&rewritten[at + ROWS_HERE.len()..]);
+    Ok(Some(result))
 }
 
 /// The sqref a conditional-format or validation formula is relative to.
@@ -1274,6 +1326,59 @@ pub(super) fn rewrite_sheet_references(
         tidy_containers(apply_edits(original, edits, removals)?)?
     };
     inherit_sparklines(result, &own)
+}
+
+/// [`rewrite_sheet_references`] of a sheet no operation moves the cells of,
+/// its rows read a part at a time: the formulas of its cells are rewritten,
+/// then the sheet around its rows. A sheet [`rewrite_around_rows`] rewrites
+/// whole is rewritten whole.
+pub(super) fn rewrite_unmoved_sheet(
+    original: &str,
+    sheet: &str,
+    moves: &Moves<'_>,
+) -> Result<String> {
+    let whole = || rewrite_sheet_references(original, sheet, moves, false);
+    let Some(data) = SheetData::of(original)? else {
+        return whole();
+    };
+    if original.contains(ROWS_HERE) || original[data.inner()].contains("extLst") {
+        return whole();
+    }
+    let mut edits = vec![];
+    super::writeback::pieces(original, |piece| {
+        for formula in piece
+            .doc
+            .descendants()
+            .filter(|node| piece.rows() && node.has_tag_name((NS, "f")))
+        {
+            let (Some(text), Some(text_node)) =
+                (formula.text(), formula.children().find(Node::is_text))
+            else {
+                continue;
+            };
+            let rewritten = moves.rewrite(text, Some(sheet))?;
+            if rewritten != text {
+                edits.push((piece.at(text_node.range())?, xml_attr(&rewritten)));
+            }
+        }
+        Ok(())
+    })?;
+    // A sheet with a formula rewritten is tidied as one with a reference
+    // around its rows rewritten is.
+    let rewritten_rows = !edits.is_empty();
+    let formulas = if rewritten_rows {
+        std::borrow::Cow::Owned(splice(original, edits, "reference")?)
+    } else {
+        std::borrow::Cow::Borrowed(original)
+    };
+    let around = rewrite_around_rows(&formulas, |text| {
+        let rewritten = rewrite_sheet_references(text, sheet, moves, false)?;
+        if rewritten_rows && rewritten == text {
+            return tidy_containers(rewritten);
+        }
+        Ok(rewritten)
+    })?;
+    Ok(around.unwrap_or_else(|| formulas.into_owned()))
 }
 
 /// The pre-operation position of a final position, or `None` when it was

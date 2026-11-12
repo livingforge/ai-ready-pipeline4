@@ -2290,28 +2290,52 @@ impl GridPage {
             .map(|at| &self.values[at])
     }
 
-    /// Removes the value at `row` and `column` of `block`.
-    pub(super) fn remove(&mut self, block: &str, row: &str, column: &str) -> Option<GridValue> {
+    /// The value at `row` and `column` of `block`, to change it in place.
+    pub(super) fn get_mut(
+        &mut self,
+        block: &str,
+        row: &str,
+        column: &str,
+    ) -> Option<&mut GridValue> {
         self.place(block, row, column)
             .ok()
-            .map(|at| self.values.remove(at))
+            .map(|at| &mut self.values[at])
     }
 
-    /// Gives `row` and `column` of `block` the value `value`, keeping the
-    /// font of one there.
-    pub(super) fn set(&mut self, block: &str, row: String, column: String, value: Value) {
-        match self.place(block, &row, &column) {
-            Ok(at) => self.values[at].value = value,
-            Err(at) => self.values.insert(
-                at,
-                GridValue {
-                    block: block.into(),
+    /// Removes the values at `places`, each a block, row and column, in one
+    /// pass: taking them out one by one moved the values after each.
+    pub(super) fn remove_all(&mut self, places: &HashSet<(&str, &str, &str)>) {
+        self.values
+            .retain(|v| !places.contains(&(&*v.block, &*v.row, &*v.column)));
+    }
+
+    /// Gives each row and column of `block` its value, keeping the font of
+    /// one there; the last of any given the same place is kept. The new
+    /// values are put in order together.
+    pub(super) fn set_all(
+        &mut self,
+        block: &str,
+        values: impl IntoIterator<Item = (String, String, Value)>,
+    ) {
+        let held = self.values.len();
+        let name: Name = block.into();
+        for (row, column, value) in values {
+            let found = self.values[..held].binary_search_by(|v| {
+                (&*v.block, &*v.row, &*v.column).cmp(&(block, &row, &column))
+            });
+            match found {
+                Ok(at) => self.values[at].value = value,
+                Err(_) => self.values.push(GridValue {
+                    block: name.clone(),
                     row: row.into(),
                     column: column.into(),
                     value,
                     font: None,
-                },
-            ),
+                }),
+            }
+        }
+        if self.values.len() > held {
+            self.order();
         }
     }
 

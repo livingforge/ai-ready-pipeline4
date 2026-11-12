@@ -857,10 +857,12 @@ const NODE_NAME: usize = 24;
 
 /// How the body of the table `element` of the metadata, whose cells hold
 /// what `value_of` gives by cell ID, is read: each cell it shows, as
-/// [`table_body`] arranges them.
+/// [`table_body`] arranges them. `heads` tells by cell ID the cells heading
+/// others, a row or column header, which name the nodes.
 pub(crate) fn table_reading(
     element: &Meta,
     value_of: &dyn Fn(&str) -> Value,
+    heads: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<CellReading>> {
     let table = Table::of(element)?;
     let mut values = PerCell::new(table.rows);
@@ -894,6 +896,7 @@ pub(crate) fn table_reading(
         table: &Table,
         keys: &PerCell<Rc<str>>,
         values: &PerCell<Value>,
+        heads: &dyn Fn(&str) -> bool,
         path: &mut Path,
         read: &mut Vec<CellReading>,
     ) -> Result<()> {
@@ -911,7 +914,7 @@ pub(crate) fn table_reading(
                     Some(other) => other.to_string(),
                 };
                 let value: String = value.replace('\n', " ").chars().take(NODE_NAME).collect();
-                let heads = matches!(cell["role"].as_str(), Some("row_header" | "column_header"));
+                let heads = heads(cell.id()?);
                 pairs.push((Table::key(keys, record, j)?.to_owned(), value, heads));
             }
             let above = |pair: &(String, String, bool)| {
@@ -955,7 +958,7 @@ pub(crate) fn table_reading(
                     nodes: path.names.clone(),
                 });
             }
-            walk(table.under(slot), table, keys, values, path, read)?;
+            walk(table.under(slot), table, keys, values, heads, path, read)?;
             path.names.pop();
             path.held.pop();
         }
@@ -965,7 +968,15 @@ pub(crate) fn table_reading(
         names: vec![],
         held: vec![],
     };
-    walk(&table.roots, &table, &keys, &values, &mut path, &mut read)?;
+    walk(
+        &table.roots,
+        &table,
+        &keys,
+        &values,
+        heads,
+        &mut path,
+        &mut read,
+    )?;
     for (records, description) in [
         (table.title.as_slice(), Description::Title),
         (&table.notes, Description::Note),
@@ -2604,7 +2615,7 @@ mod tests {
         let elements = json!([{"id":"t1","type":"table","headings":1,
             "labels":{"a":"h1","b":"h2"},"columns":[{"id":"a"},{"id":"b"}],"rows":[
             {"id":"r1","cells":[{"id":"h1","column":"a"},{"id":"h2","column":"b"}]},
-            {"id":"r2","cells":[{"id":"x","column":"a","role":"row_header"},{"id":"y","column":"b"}]},
+            {"id":"r2","cells":[{"id":"x","column":"a"},{"id":"y","column":"b"}]},
             {"id":"r3","parent":"r2","cells":[{"id":"z","column":"b"},{"id":"m","column":"a","mark":true}]}
         ]}]);
         let typed = crate::documents::metadata_from(elements).unwrap();
@@ -2618,11 +2629,12 @@ mod tests {
                 _ => "+",
             })
         };
-        let read: BTreeMap<String, CellReading> = table_reading(&typed[0], &value_of)
-            .unwrap()
-            .into_iter()
-            .map(|r| (r.id.clone(), r))
-            .collect();
+        let read: BTreeMap<String, CellReading> =
+            table_reading(&typed[0], &value_of, &|id| id == "x")
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.id.clone(), r))
+                .collect();
         assert!(read["h1"].heading && read["h1"].key.is_none());
         assert_eq!(read["y"].key.as_deref(), Some("画面"));
         // A node is named by the cells heading others that the nodes above

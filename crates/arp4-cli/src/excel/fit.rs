@@ -260,7 +260,11 @@ struct Sheet {
 
 impl Sheet {
     fn read(text: &str, styles: &Styles) -> Result<Self> {
-        let doc = xml(text.as_bytes())?;
+        // The sheet is parsed without its rows, and its rows a part at a
+        // time: the tree of a large sheet took several times its text.
+        let data = SheetData::of(text)?;
+        let rest = data.as_ref().map(|data| data.rest(text));
+        let doc = xml(rest.as_deref().unwrap_or(text).as_bytes())?;
         let root = doc.root_element();
         let format = child(root, "sheetFormatPr");
         let number = |name: &str| {
@@ -286,39 +290,22 @@ impl Sheet {
             .collect();
         let mut rows = BTreeMap::new();
         let mut cells = BTreeMap::new();
-        for row in child(root, "sheetData")
-            .into_iter()
-            .flat_map(|data| data.children().filter(|n| n.has_tag_name((NS, "row"))))
-        {
-            let Some(number) = row.attribute("r").and_then(|r| r.parse::<u32>().ok()) else {
-                continue;
-            };
-            let hidden = matches!(row.attribute("hidden"), Some("1" | "true"));
-            rows.insert(
-                number,
-                (
-                    if hidden {
-                        Some(0.0)
-                    } else {
-                        row.attribute("ht").and_then(|h| h.parse().ok())
-                    },
-                    matches!(row.attribute("customHeight"), Some("1" | "true")),
-                ),
-            );
-            for cell in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
-                let Some(address) = cell.attribute("r") else {
-                    continue;
-                };
-                let (column, row) = coordinate(address)?;
-                let style = cell
-                    .attribute("s")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                let value = child(cell, "v")
-                    .is_some_and(|v| v.text().is_some_and(|t| !t.is_empty()))
-                    || child(cell, "is").is_some();
-                cells.insert((row, column), (style, value));
+        let mut read = |root: Node<'_, '_>| -> Result<()> {
+            for row in child(root, "sheetData")
+                .into_iter()
+                .flat_map(|data| data.children().filter(|n| n.has_tag_name((NS, "row"))))
+            {
+                Self::read_row(row, &mut rows, &mut cells)?;
             }
+            Ok(())
+        };
+        match &data {
+            Some(data) => {
+                for part in data.parts(text) {
+                    read(xml(part.as_bytes())?.root_element())?;
+                }
+            }
+            None => read(root)?,
         }
         let merges = child(root, "mergeCells")
             .into_iter()
@@ -349,6 +336,43 @@ impl Sheet {
             merges,
             cells,
         })
+    }
+
+    /// Reads `row` into `rows` and its cells into `cells`.
+    fn read_row(
+        row: Node<'_, '_>,
+        rows: &mut BTreeMap<u32, (Option<f64>, bool)>,
+        cells: &mut BTreeMap<(u32, u32), (usize, bool)>,
+    ) -> Result<()> {
+        let Some(number) = row.attribute("r").and_then(|r| r.parse::<u32>().ok()) else {
+            return Ok(());
+        };
+        let hidden = matches!(row.attribute("hidden"), Some("1" | "true"));
+        rows.insert(
+            number,
+            (
+                if hidden {
+                    Some(0.0)
+                } else {
+                    row.attribute("ht").and_then(|h| h.parse().ok())
+                },
+                matches!(row.attribute("customHeight"), Some("1" | "true")),
+            ),
+        );
+        for cell in row.children().filter(|n| n.has_tag_name((NS, "c"))) {
+            let Some(address) = cell.attribute("r") else {
+                continue;
+            };
+            let (column, row) = coordinate(address)?;
+            let style = cell
+                .attribute("s")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let value = child(cell, "v").is_some_and(|v| v.text().is_some_and(|t| !t.is_empty()))
+                || child(cell, "is").is_some();
+            cells.insert((row, column), (style, value));
+        }
+        Ok(())
     }
 
     /// The width of a column, in points.

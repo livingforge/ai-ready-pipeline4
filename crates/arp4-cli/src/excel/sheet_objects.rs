@@ -14,7 +14,8 @@ fn vml_drawing(
     worksheet_part: &str,
     worksheet: &str,
 ) -> Result<Option<String>> {
-    let doc = xml(worksheet.as_bytes())?;
+    let around = around_rows(worksheet)?;
+    let doc = xml(around.as_bytes())?;
     let Some(id) =
         child(doc.root_element(), "legacyDrawing").and_then(|n| n.attribute((REL, "id")))
     else {
@@ -262,7 +263,6 @@ pub(super) fn relocate_sheet_objects(
             .filter(|o| o.sheet == name)
             .cloned()
             .collect();
-        let worksheet = std::str::from_utf8(patched.get(part).unwrap_or(&parts[part]))?.to_owned();
         if !own.is_empty() {
             for (kind, element) in [
                 ("/comments", "comment"),
@@ -276,12 +276,19 @@ pub(super) fn relocate_sheet_objects(
                     }
                 }
             }
-            let moved = move_object_anchors(&worksheet, &own)?;
-            if moved != worksheet {
-                patched.insert(part.to_owned(), moved.into_bytes());
-            }
         }
-        if let Some(vml) = vml_drawing(parts, part, &worksheet)? {
+        // The anchors and the VML drawing are outside the rows of the sheet.
+        let worksheet = std::str::from_utf8(patched.get(part).unwrap_or(&parts[part]))?;
+        let vml = vml_drawing(parts, part, worksheet)?;
+        let moved = if own.is_empty() {
+            None
+        } else {
+            rewrite_around_rows(worksheet, |text| move_object_anchors(text, &own))?
+        };
+        if let Some(moved) = moved {
+            patched.insert(part.to_owned(), moved.into_bytes());
+        }
+        if let Some(vml) = vml {
             let original = std::str::from_utf8(&parts[&vml])?;
             let rewritten = rewrite_vml(original, name, &own, moves)?;
             if rewritten != original {

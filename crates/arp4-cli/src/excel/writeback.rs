@@ -237,26 +237,29 @@ impl Workbook {
                 .map(|edits| edit_formulas(source, name, edits))
                 .transpose()?;
             let original = edited.as_deref().unwrap_or(source);
-            let doc = Document::parse(original)?;
             let mut edits = vec![];
             let mut seen = BTreeSet::new();
-            for cell in doc.descendants().filter(|n| {
-                n.has_tag_name((NS, "c")) && n.parent().is_some_and(|p| p.has_tag_name((NS, "row")))
-            }) {
-                let address = cell.attribute("r").context("missing address")?;
-                if let Some(value) = updates.get(part).and_then(|u| u.get(address)) {
-                    seen.insert(address.to_owned());
-                    edits.push((
-                        cell.range(),
-                        render_cell(original, cell, address, value, &shared)?,
-                    ));
-                } else if recalc
-                    && child(cell, "f").is_some()
-                    && let Some(cache) = child(cell, "v")
-                {
-                    edits.push((cache.range(), String::new()));
+            pieces(original, |piece| {
+                for cell in piece.doc.descendants().filter(|n| {
+                    n.has_tag_name((NS, "c"))
+                        && n.parent().is_some_and(|p| p.has_tag_name((NS, "row")))
+                }) {
+                    let address = cell.attribute("r").context("missing address")?;
+                    if let Some(value) = updates.get(part).and_then(|u| u.get(address)) {
+                        seen.insert(address.to_owned());
+                        edits.push((
+                            piece.at(cell.range())?,
+                            render_cell(piece.text, cell, address, value, &shared)?,
+                        ));
+                    } else if recalc
+                        && child(cell, "f").is_some()
+                        && let Some(cache) = child(cell, "v")
+                    {
+                        edits.push((piece.at(cache.range())?, String::new()));
+                    }
                 }
-            }
+                Ok(())
+            })?;
             if let Some(wanted) = updates.get(part) {
                 ensure!(
                     seen == wanted.keys().cloned().collect(),
@@ -296,15 +299,7 @@ impl Workbook {
                 // Compared by their digests, so that one copy of the sheet is
                 // held at a time.
                 let invariants = |text: &[u8]| -> Result<String> {
-                    Ok(crate::data::hash(
-                        worksheet_invariants(
-                            std::str::from_utf8(text)?,
-                            &values,
-                            &formulas,
-                            recalc,
-                        )?
-                        .as_bytes(),
-                    ))
+                    invariants_digest(std::str::from_utf8(text)?, &values, &formulas, recalc)
                 };
                 ensure!(
                     invariants(&self.parts[part])? == invariants(after)?,
@@ -539,7 +534,7 @@ impl Workbook {
             let original = unshared.as_deref().unwrap_or(source);
             if sheet_operations.is_empty() && sheet_changes.is_empty() {
                 let rewritten = if rewriting {
-                    rewrite_sheet_references(original, name, &moves, false)?
+                    rewrite_unmoved_sheet(original, name, &moves)?
                 } else {
                     original.to_owned()
                 };
@@ -548,16 +543,32 @@ impl Workbook {
                 }
                 continue;
             }
-            let doc = xml(original.as_bytes())?;
+            // Cells shifted within a band leave their rows: the sheet is laid
+            // out cell by cell.
+            let banded = sheet_operations.iter().any(|operation| !operation.whole());
+            // The rows of the other sheets are read a part at a time, and the
+            // sheet parsed without them: the tree of a large sheet took
+            // several times its text.
+            let parted = if banded {
+                None
+            } else {
+                SheetData::of(original)?
+            };
+            let rest = parted.as_ref().map(|parted| parted.rest(original));
+            let outer = rest.as_deref().unwrap_or(original);
+            let doc = xml(outer.as_bytes())?;
             let sheet_data = child(doc.root_element(), "sheetData").context("missing sheetData")?;
-            let prefix = element_tag(&original[sheet_data.range()])?
+            ensure!(
+                parted
+                    .as_ref()
+                    .is_none_or(|parted| parted.start == sheet_data.range().start),
+                "the sheetData of {part} is not the worksheet's"
+            );
+            let prefix = element_tag(&outer[sheet_data.range()])?
                 .strip_suffix("sheetData")
                 .context("invalid sheetData tag")?
                 .to_owned();
             let mut formats = CellFormats::read(doc.root_element(), &sheet_operations)?;
-            // Cells shifted within a band leave their rows: the sheet is laid
-            // out cell by cell.
-            let banded = sheet_operations.iter().any(|operation| !operation.whole());
             let mut rows = if banded {
                 let formulas: BTreeMap<(u32, u32), &str> = table_formulas
                     .range((name.to_owned(), 0, 0)..=(name.to_owned(), u32::MAX, u32::MAX))
@@ -588,41 +599,73 @@ impl Workbook {
                 && sheet_operations
                     .iter()
                     .any(|operation| operation.style_from.is_some());
-            let mut original_rows = BTreeMap::new();
-            for row in sheet_data
-                .children()
-                .filter(|node| !banded && node.has_tag_name((NS, "row")))
-            {
-                let original_row: u32 =
-                    row.attribute("r").context("missing row number")?.parse()?;
-                if indexed_styles {
-                    original_rows
-                        .entry(original_row)
-                        .or_insert(&original[row.range()]);
+            // The original rows new rows take their formats from, by number.
+            let style_rows: BTreeSet<u32> = sheet_operations
+                .iter()
+                .filter(|operation| {
+                    indexed_styles && matches!(operation.kind, OperationKind::InsertRows)
+                })
+                .flat_map(|operation| {
+                    let turns = operation.style_rows.max(1).min(operation.count);
+                    operation
+                        .style_from
+                        .into_iter()
+                        .flat_map(move |number| number..number + turns)
+                })
+                .collect();
+            let mut original_rows: BTreeMap<u32, String> = BTreeMap::new();
+            // Moves the rows under `sheet_data`, an element of `text`.
+            let mut move_rows = |sheet_data: Node<'_, '_>, text: &str| -> Result<()> {
+                for row in sheet_data
+                    .children()
+                    .filter(|node| node.has_tag_name((NS, "row")))
+                {
+                    let original_row: u32 =
+                        row.attribute("r").context("missing row number")?.parse()?;
+                    if style_rows.contains(&original_row) {
+                        original_rows
+                            .entry(original_row)
+                            .or_insert_with(|| text[row.range()].to_owned());
+                    }
+                    let Some(final_row) = transform_index(original_row, &sheet_operations, true)
+                    else {
+                        continue;
+                    };
+                    ensure!(
+                        final_row <= MAX_ROW,
+                        "inserting rows in {name} would push row {original_row} past the last row of the sheet ({MAX_ROW}); delete rows at the bottom first"
+                    );
+                    let raw = &text[row.range()];
+                    rows.push(transform_row(
+                        row,
+                        raw,
+                        &RowTransform {
+                            shared: &shared,
+                            original: text,
+                            original_row,
+                            final_row,
+                            sheet: name,
+                            operations: &sheet_operations,
+                            moves: &moves,
+                            changes: &sheet_changes,
+                            recalc,
+                        },
+                    )?);
                 }
-                let Some(final_row) = transform_index(original_row, &sheet_operations, true) else {
-                    continue;
-                };
-                ensure!(
-                    final_row <= MAX_ROW,
-                    "inserting rows in {name} would push row {original_row} past the last row of the sheet ({MAX_ROW}); delete rows at the bottom first"
-                );
-                let raw = &original[row.range()];
-                rows.push(transform_row(
-                    row,
-                    raw,
-                    &RowTransform {
-                        shared: &shared,
-                        original,
-                        original_row,
-                        final_row,
-                        sheet: name,
-                        operations: &sheet_operations,
-                        moves: &moves,
-                        changes: &sheet_changes,
-                        recalc,
-                    },
-                )?);
+                Ok(())
+            };
+            match &parted {
+                Some(parted) => {
+                    for rows_part in parted.parts(original) {
+                        let part_doc = xml(rows_part.as_bytes())?;
+                        let part_data = child(part_doc.root_element(), "sheetData")
+                            .context("worksheet rows missing")?;
+                        formats.add_rows(part_data)?;
+                        move_rows(part_data, &rows_part)?;
+                    }
+                }
+                None if !banded => move_rows(sheet_data, original)?,
+                None => {}
             }
             for operation in sheet_operations.iter().filter(|_| !banded) {
                 if !matches!(operation.kind, OperationKind::InsertRows) {
@@ -642,8 +685,8 @@ impl Workbook {
                     let style_from = operation
                         .style_from
                         .map(|number| number + offset % operation.style_rows.max(1));
-                    let template =
-                        style_from.and_then(|number| original_rows.get(&number).copied());
+                    let template = style_from
+                        .and_then(|number| original_rows.get(&number).map(String::as_str));
                     if let Some(style_from) = style_from {
                         formats.template(row, style_from);
                     }
@@ -748,34 +791,76 @@ impl Workbook {
                     "structural operation row collision"
                 );
             }
-            let joined = rows
-                .iter()
-                .map(|row| row.raw.as_str())
-                .collect::<Vec<_>>()
-                .join("");
-            let raw_data = &original[sheet_data.range()];
-            let mut result = original.to_owned();
-            if raw_data.ends_with("/>") {
+            // The sheet around its rows, with `ROWS_HERE` where they go.
+            let data = sheet_data.range();
+            let raw_data = &outer[data.clone()];
+            let (inner_start, inner_end, tag) = if let Some(parted) = &parted {
+                let inner = parted.inner();
+                (inner.start, inner.end, None)
+            } else if raw_data.ends_with("/>") {
                 // An empty sheet writes `<sheetData/>`, which has no content to replace.
-                let tag = element_tag(raw_data)?;
-                result.replace_range(sheet_data.range(), &format!("<{tag}>{joined}</{tag}>"));
+                (data.start, data.end, Some(element_tag(raw_data)?))
             } else {
-                let inner_start =
-                    sheet_data.range().start + raw_data.find('>').context("invalid sheetData")? + 1;
-                let inner_end =
-                    sheet_data.range().start + raw_data.rfind("</").context("invalid sheetData")?;
-                result.replace_range(inner_start..inner_end, &joined);
+                (
+                    data.start + raw_data.find('>').context("invalid sheetData")? + 1,
+                    data.start + raw_data.rfind("</").context("invalid sheetData")?,
+                    None,
+                )
+            };
+            let mut around = String::with_capacity(outer.len() + 64);
+            around.push_str(&original[..inner_start]);
+            if let Some(tag) = tag {
+                around.push_str(&format!("<{tag}>"));
             }
-            if rewriting {
-                result = rewrite_sheet_references(&result, name, &moves, true)?;
+            around.push_str(ROWS_HERE);
+            if let Some(tag) = tag {
+                around.push_str(&format!("</{tag}>"));
             }
+            around.push_str(&original[inner_end..]);
+            // The parsed sheet is let go before what is written is parsed.
+            drop(original_rows);
+            drop(formats);
+            drop(doc);
+            // What is outside the rows is rewritten: the references, the
+            // merges copied and the used range.
             let copies = copied_merges(sheet, &operations)?;
-            if !copies.is_empty() {
-                result = add_merges(&result, &copies)?;
-            }
-            if let Some(used) = used {
-                result = cover_dimension(&result, used)?;
-            }
+            let outside = |mut text: String| -> Result<String> {
+                if rewriting {
+                    text = rewrite_sheet_references(&text, name, &moves, true)?;
+                }
+                if !copies.is_empty() {
+                    text = add_merges(&text, &copies)?;
+                }
+                if let Some(used) = used {
+                    text = cover_dimension(&text, used)?;
+                }
+                Ok(text)
+            };
+            let with_rows = |around: &str| -> Result<String> {
+                let at = around.find(ROWS_HERE).context("worksheet rows lost")?;
+                let size: usize = rows.iter().map(|row| row.raw.len()).sum();
+                let mut text = String::with_capacity(around.len() + size);
+                text.push_str(&around[..at]);
+                for row in &rows {
+                    text.push_str(&row.raw);
+                }
+                text.push_str(&around[at + ROWS_HERE.len()..]);
+                Ok(text)
+            };
+            // The rows hold cells, values and texts, none of which these
+            // rewrite, so the sheet is rewritten without them and its tree is
+            // a small one: with the rows it took several times the sheet. A
+            // cell with an extension list may hold what they rewrite, and a
+            // sheet holding the mark of the rows cannot be told from it:
+            // those are rewritten whole.
+            let whole =
+                original.contains(ROWS_HERE) || rows.iter().any(|row| row.raw.contains("extLst"));
+            let result = if whole {
+                outside(with_rows(&around)?)?
+            } else {
+                with_rows(&outside(around)?)?
+            };
+            drop(rows);
             patched.insert(part.to_owned(), result.into_bytes());
         }
         if let Some(styles) = borders.finish()? {
@@ -892,8 +977,9 @@ impl Workbook {
                 rows: &row_numbers(before)?,
                 recalc,
             };
+            // Compared by their digests, a part of the rows at a time.
             ensure!(
-                edits.preserved(before)? == edits.preserved(std::str::from_utf8(after)?)?,
+                edits.digest(before)? == edits.digest(std::str::from_utf8(after)?)?,
                 "non-edited worksheet content changed: {part}"
             );
             self.ensure_runs_kept(part, after, &values, &shared)?;
@@ -909,36 +995,45 @@ impl Workbook {
         values: &BTreeSet<&str>,
         shared: &SharedStrings<'_>,
     ) -> Result<()> {
+        // A sheet patched only to drop cached results has no edited cell.
+        if values.is_empty() {
+            return Ok(());
+        }
         let edited = |node: &Node<'_, '_>| {
             node.has_tag_name((NS, "c")) && values.contains(node.attribute("r").unwrap_or(""))
         };
-        // The original's run formats are read first and its sheet let go, so
-        // that one sheet is held at a time.
-        let before_text = std::str::from_utf8(&self.parts[part])?;
-        let mut before = vec![];
-        for cell in xml(before_text.as_bytes())?.descendants().filter(edited) {
-            let address = cell.attribute("r").context("missing cell address")?;
-            before.push((
-                address.to_owned(),
-                super::text_edit::run_properties(cell, before_text, shared)?,
-            ));
-        }
-        let after_text = std::str::from_utf8(after)?;
-        let after_doc = xml(after_text.as_bytes())?;
-        let after_cells: BTreeMap<_, _> = after_doc
-            .descendants()
-            .filter(edited)
-            .map(|cell| (cell.attribute("r").unwrap_or(""), cell))
-            .collect();
-        for (address, runs) in before {
-            let written = *after_cells
-                .get(address.as_str())
-                .context("edited cell disappeared")?;
-            ensure!(
-                runs == super::text_edit::run_properties(written, after_text, shared)?,
-                "rich text run properties changed: {part}!{address}"
-            );
-        }
+        // The run formats of the edited cells of the original, then those of
+        // the cells written, each sheet read a part of its rows at a time.
+        let mut before = BTreeMap::new();
+        pieces(std::str::from_utf8(&self.parts[part])?, |piece| {
+            for cell in piece.doc.descendants().filter(edited) {
+                let address = cell.attribute("r").context("missing cell address")?;
+                before.insert(
+                    address.to_owned(),
+                    super::text_edit::run_properties(cell, piece.text, shared)?,
+                );
+            }
+            Ok(())
+        })?;
+        let mut written = BTreeSet::new();
+        pieces(std::str::from_utf8(after)?, |piece| {
+            for cell in piece.doc.descendants().filter(edited) {
+                let address = cell.attribute("r").unwrap_or("");
+                let Some(runs) = before.get(address) else {
+                    continue;
+                };
+                ensure!(
+                    *runs == super::text_edit::run_properties(cell, piece.text, shared)?,
+                    "rich text run properties changed: {part}!{address}"
+                );
+                written.insert(address.to_owned());
+            }
+            Ok(())
+        })?;
+        ensure!(
+            before.keys().all(|address| written.contains(address)),
+            "edited cell disappeared"
+        );
         Ok(())
     }
 
@@ -961,6 +1056,106 @@ impl Workbook {
         }
         Ok(())
     }
+}
+
+/// A piece of a worksheet parsed on its own: the sheet without its rows, or
+/// a part of its rows ([`SheetData::parts`]), whose tree is a fraction of
+/// the whole sheet's, which took several times the sheet's text.
+pub(super) struct Piece<'a> {
+    pub(super) text: &'a str,
+    pub(super) doc: &'a Document<'a>,
+    place: Place,
+}
+
+/// Where a piece lies in its worksheet.
+enum Place {
+    /// The whole worksheet, one without rows.
+    Whole,
+    /// The worksheet without the rows it holds at this range.
+    Rest(std::ops::Range<usize>),
+    /// Rows of the worksheet at `rows`, after `head` bytes of the piece.
+    Rows {
+        head: usize,
+        rows: std::ops::Range<usize>,
+    },
+}
+
+impl Piece<'_> {
+    /// The place in the worksheet of `range` of the piece, the range of an
+    /// element inside its rows or outside them.
+    /// Whether the piece is a part of the rows.
+    pub(super) fn rows(&self) -> bool {
+        matches!(self.place, Place::Rows { .. })
+    }
+
+    pub(super) fn at(&self, range: std::ops::Range<usize>) -> Result<std::ops::Range<usize>> {
+        match &self.place {
+            Place::Whole => Ok(range),
+            Place::Rest(rows) if range.end <= rows.start => Ok(range),
+            Place::Rest(rows) if range.start >= rows.start => {
+                Ok(range.start + rows.len()..range.end + rows.len())
+            }
+            Place::Rows { head, rows }
+                if range.start >= *head && range.end <= head + rows.len() =>
+            {
+                Ok(range.start - head + rows.start..range.end - head + rows.start)
+            }
+            _ => bail!("worksheet element outside its rows"),
+        }
+    }
+}
+
+/// Gives `visit` the pieces of the worksheet `text` in turn: the sheet
+/// without its rows, then its rows a part at a time.
+pub(super) fn pieces(text: &str, mut visit: impl FnMut(&Piece<'_>) -> Result<()>) -> Result<()> {
+    let mut piece = |text: &str, place: Place| -> Result<()> {
+        let doc = xml(text.as_bytes())?;
+        visit(&Piece {
+            text,
+            doc: &doc,
+            place,
+        })
+    };
+    let Some(data) = SheetData::of(text)? else {
+        return piece(text, Place::Whole);
+    };
+    piece(&data.rest(text), Place::Rest(data.inner()))?;
+    let (head, _) = data.around();
+    for rows in data.ranges() {
+        piece(&data.part(text, rows.clone()), Place::Rows { head, rows })?;
+    }
+    Ok(())
+}
+
+/// The digest of the [`worksheet_invariants`] of the worksheet `text`, made
+/// of the sheet without its rows and of its rows a part at a time: two
+/// sheets with the same invariants have the same digest whatever parts their
+/// rows fall into.
+fn invariants_digest(
+    text: &str,
+    values: &BTreeSet<&str>,
+    formulas: &BTreeSet<&str>,
+    recalc: bool,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let kept = |text: &str| worksheet_invariants(text, values, formulas, recalc);
+    let mut digest = Sha256::new();
+    match SheetData::of(text)? {
+        None => {
+            digest.update(kept(text)?);
+            digest.update([0]);
+        }
+        Some(data) => {
+            digest.update(kept(&data.rest(text))?);
+            digest.update([0]);
+            let (head, tail) = data.around();
+            for part in data.parts(text) {
+                let kept = kept(&part)?;
+                digest.update(&kept[head..kept.len() - tail]);
+            }
+        }
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 /// Compare everything except explicitly edited values/formulas and stale caches.
@@ -1007,16 +1202,19 @@ fn worksheet_invariants(
 
 /// The numbers of the rows the worksheet `text` holds.
 fn row_numbers(text: &str) -> Result<BTreeSet<u32>> {
-    xml(text.as_bytes())?
-        .descendants()
-        .filter(|node| {
+    let mut numbers = BTreeSet::new();
+    pieces(text, |piece| {
+        for row in piece.doc.descendants().filter(|node| {
             node.has_tag_name((NS, "row"))
                 && node
                     .parent()
                     .is_some_and(|p| p.has_tag_name((NS, "sheetData")))
-        })
-        .map(|row| Ok(row.attribute("r").context("missing row number")?.parse()?))
-        .collect()
+        }) {
+            numbers.insert(row.attribute("r").context("missing row number")?.parse()?);
+        }
+        Ok(())
+    })?;
+    Ok(numbers)
 }
 
 /// What writing cells without operations may change in a worksheet: the
@@ -1040,6 +1238,33 @@ impl WorksheetEdits<'_> {
         let mut out = String::new();
         self.render(doc.root_element(), &mut out)?;
         Ok(out)
+    }
+
+    /// The digest of [`WorksheetEdits::preserved`] of the worksheet `text`,
+    /// made of the sheet without its rows and then of its rows a part at a
+    /// time: two sheets preserved alike have the same digest whatever parts
+    /// their rows fall into, and a sheet without rows that of one whose
+    /// rows are all new.
+    fn digest(&self, text: &str) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut digest = Sha256::new();
+        let data = SheetData::of(text)?;
+        let rest = data.as_ref().map(|data| data.rest(text));
+        digest.update(self.preserved(rest.as_deref().unwrap_or(text))?);
+        digest.update([0]);
+        for part in data.iter().flat_map(|data| data.parts(text)) {
+            let doc = xml(part.as_bytes())?;
+            let rows = doc
+                .root_element()
+                .first_element_child()
+                .context("worksheet rows missing")?;
+            let mut out = String::new();
+            for node in rows.children() {
+                self.render(node, &mut out)?;
+            }
+            digest.update(out);
+        }
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     fn render(&self, node: Node<'_, '_>, out: &mut String) -> Result<()> {
@@ -1421,15 +1646,6 @@ impl<'a> CellFormats<'a> {
         worksheet: Node<'_, '_>,
         operations: &'a [StructuralOperation],
     ) -> Result<Self> {
-        let mut cells = BTreeMap::new();
-        if let Some(data) = child(worksheet, "sheetData") {
-            for cell in data.descendants().filter(|n| n.has_tag_name((NS, "c"))) {
-                if let (Some(address), Some(style)) = (cell.attribute("r"), cell.attribute("s")) {
-                    let (column, row) = coordinate(address)?;
-                    cells.insert((row, column), style.to_owned());
-                }
-            }
-        }
         let mut columns = vec![];
         if let Some(cols) = child(worksheet, "cols") {
             for col in cols.children().filter(|n| n.has_tag_name((NS, "col"))) {
@@ -1443,14 +1659,30 @@ impl<'a> CellFormats<'a> {
             }
         }
         let own: Vec<_> = operations.iter().collect();
-        Ok(Self {
-            cells,
+        let mut formats = Self {
+            cells: BTreeMap::new(),
             columns,
             inserted_rows: InsertedIntervals::new(&own, true),
             inserted_columns: InsertedIntervals::new(&own, false),
             operations: own,
             templates: BTreeMap::new(),
-        })
+        };
+        if let Some(data) = child(worksheet, "sheetData") {
+            formats.add_rows(data)?;
+        }
+        Ok(formats)
+    }
+
+    /// Reads the formats of the cells under `data`, the rows of the sheet or
+    /// a part of them.
+    pub(super) fn add_rows(&mut self, data: Node<'_, '_>) -> Result<()> {
+        for cell in data.descendants().filter(|n| n.has_tag_name((NS, "c"))) {
+            if let (Some(address), Some(style)) = (cell.attribute("r"), cell.attribute("s")) {
+                let (column, row) = coordinate(address)?;
+                self.cells.insert((row, column), style.to_owned());
+            }
+        }
+        Ok(())
     }
 
     /// Formats the inserted final `row` like the original row `style_from`.

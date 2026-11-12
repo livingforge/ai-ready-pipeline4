@@ -446,7 +446,8 @@ pub(super) fn worksheet_drawing(
     worksheet_part: &str,
     worksheet_xml: &str,
 ) -> Result<Option<(String, String)>> {
-    let doc = xml(worksheet_xml.as_bytes())?;
+    let around = around_rows(worksheet_xml)?;
+    let doc = xml(around.as_bytes())?;
     let Some(drawing) = doc
         .root_element()
         .children()

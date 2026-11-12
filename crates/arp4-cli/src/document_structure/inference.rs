@@ -1180,41 +1180,48 @@ fn strip(cells: &[Cell<'_>], group: &mut Group, leftovers: &mut Vec<usize>) {
         return;
     }
     let plain = |i: &usize| !cells[*i].bordered() && cells[*i].fill() == 0;
-    loop {
-        if group.is_empty() {
-            return;
-        }
-        let (left, top, right, _) = bounds(cells, group);
-        let first: Vec<_> = group
-            .iter()
-            .copied()
-            .filter(|i| cells[*i].top == top)
-            .collect();
+    // The cells starting on each row, from the top, as the group orders
+    // them: taking one row off the whole group at a time read all of it for
+    // every row of a long run of plain rows.
+    let mut order = group.clone();
+    order.sort_by_key(|i| cells[*i].top);
+    let rows: Vec<&[usize]> = order
+        .chunk_by(|a, b| cells[*a].top == cells[*b].top)
+        .collect();
+    // The leftmost and rightmost columns of each row and those under it.
+    let mut sides = vec![(u32::MAX, 0); rows.len() + 1];
+    for (k, row) in rows.iter().enumerate().rev() {
+        let (left, right) = sides[k + 1];
+        sides[k] = (
+            left.min(row.iter().map(|i| cells[*i].left).min().unwrap()),
+            right.max(row.iter().map(|i| cells[*i].right).max().unwrap()),
+        );
+    }
+    let mut start = 0;
+    while start < rows.len() {
+        let first = rows[start];
+        let (left, right) = sides[start];
         let next = first.iter().map(|i| cells[*i].bottom).max().unwrap() + 1;
-        let under = group.iter().filter(|i| cells[**i].top == next).count();
+        let under = rows[start + 1..]
+            .binary_search_by_key(&next, |row| cells[row[0]].top)
+            .map_or(0, |at| rows[start + 1 + at].len());
         let title = first.len() == 1 && cells[first[0]].span() == (left, right) && right > left;
         if title || !first.iter().all(plain) || first.len() == under {
             break;
         }
-        group.retain(|i| !first.contains(i));
-        leftovers.extend(first);
+        start += 1;
     }
-    loop {
-        if group.is_empty() {
-            return;
-        }
-        let top = group.iter().map(|i| cells[*i].top).max().unwrap();
-        let last: Vec<_> = group
-            .iter()
-            .copied()
-            .filter(|i| cells[*i].top == top)
-            .collect();
-        if !last.iter().all(plain) {
-            break;
-        }
-        group.retain(|i| !last.contains(i));
-        leftovers.extend(last);
+    let mut end = rows.len();
+    while end > start && rows[end - 1].iter().all(plain) {
+        end -= 1;
     }
+    if start == 0 && end == rows.len() {
+        return;
+    }
+    leftovers.extend(rows[..start].iter().copied().flatten());
+    leftovers.extend(rows[end..].iter().rev().copied().flatten());
+    let kept = (start < end).then(|| (cells[rows[start][0]].top, cells[rows[end - 1][0]].top));
+    group.retain(|i| kept.is_some_and(|(top, last)| (top..=last).contains(&cells[*i].top)));
 }
 
 /// Splits a group of touching cells into the tables it holds, each with the

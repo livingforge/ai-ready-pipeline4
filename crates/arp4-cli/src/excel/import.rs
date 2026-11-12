@@ -240,14 +240,17 @@ impl<'t> SheetData<'t> {
 
     /// The rows of `text` as documents of their own, each of at least
     /// [`ROWS_PART`] bytes of whole elements but the last, inside the start
-    /// tags of the root and of `sheetData`.
-    pub(crate) fn parts(&self, text: &str) -> Vec<String> {
-        let wrap = |range: std::ops::Range<usize>| {
-            format!(
-                "{}{}{}</{}></{}>",
-                self.root_tag, self.data_tag, &text[range], self.data_name, self.root_name
-            )
-        };
+    /// tags of the root and of `sheetData`. Each is made when asked for, so
+    /// that the rows are not held a second time all at once.
+    pub(crate) fn parts(&self, text: &str) -> impl Iterator<Item = String> {
+        self.ranges()
+            .into_iter()
+            .map(move |range| self.part(text, range))
+    }
+
+    /// The rows each of the [`SheetData::parts`] holds, as their place in
+    /// the worksheet.
+    pub(crate) fn ranges(&self) -> Vec<std::ops::Range<usize>> {
         let mut parts = vec![];
         let mut start = self.inner.start;
         for &end in &self.ends {
@@ -257,7 +260,28 @@ impl<'t> SheetData<'t> {
             }
         }
         parts.push(start..self.inner.end);
-        parts.into_iter().map(wrap).collect()
+        parts
+    }
+
+    /// The rows at `range` of `text` as a document of their own.
+    pub(crate) fn part(&self, text: &str, range: std::ops::Range<usize>) -> String {
+        format!(
+            "{}{}{}</{}></{}>",
+            self.root_tag, self.data_tag, &text[range], self.data_name, self.root_name
+        )
+    }
+
+    /// How much of a part comes before its rows, and how much after them.
+    pub(crate) fn around(&self) -> (usize, usize) {
+        (
+            self.root_tag.len() + self.data_tag.len(),
+            self.data_name.len() + self.root_name.len() + 6,
+        )
+    }
+
+    /// Where `sheetData` holds its rows in the worksheet.
+    pub(crate) fn inner(&self) -> std::ops::Range<usize> {
+        self.inner.clone()
     }
 }
 
@@ -1013,6 +1037,10 @@ fn bordered_blanks(
             }
         }
     }
+    // Every range holds a blank cell and has a drawn side.
+    if blanks.is_empty() || sides.is_empty() {
+        return Ok(vec![]);
+    }
     // Whether a line runs along the top, or the bottom, of the cell.
     let over =
         |(column, row): (u32, u32)| side((column, row), 2) || row > 1 && side((column, row - 1), 3);
@@ -1214,9 +1242,8 @@ mod tests {
             .len();
         assert!(rest < text.len());
         data.parts(text)
-            .iter()
             .flat_map(|part| {
-                let doc = Document::parse(part).unwrap();
+                let doc = Document::parse(&part).unwrap();
                 let data = child(doc.root_element(), "sheetData").unwrap();
                 data.descendants()
                     .filter(|n| n.has_tag_name((NS, "c")))
@@ -1254,7 +1281,7 @@ mod tests {
             .collect();
         let text = format!(r#"<worksheet xmlns="{NS}"><sheetData>{rows}</sheetData></worksheet>"#);
         let data = SheetData::of(&text).unwrap().unwrap();
-        assert!(data.parts(&text).len() > 1);
+        assert!(data.parts(&text).count() > 1);
         assert_eq!(parted(&text), whole(&text));
         assert_eq!(whole(&text).len(), 80_000);
     }
