@@ -10,7 +10,9 @@ use anyhow::{Context, Result, bail};
 use foldhash::HashMap;
 use serde::{Serialize, Serializer};
 use serde_json::{Number, Value};
+use std::borrow::Cow;
 use std::hash::BuildHasher;
+use std::sync::Arc;
 
 /// A text in the buffer of a sheet's cells.
 #[derive(Clone, Copy, Debug)]
@@ -130,7 +132,89 @@ pub struct Cells {
     /// The formulas of the cells that have one, by cell index, in order.
     formulas: Vec<(u32, Span)>,
     /// The places in a text original, by cell index, of the cells that have one.
-    positions: Vec<(u32, Value)>,
+    positions: Vec<(u32, Place)>,
+}
+
+/// Where a cell lies in a text original. A text document has a place for
+/// each cell, and the place native text gives is held by its members, the
+/// lists of headings and columns shared with the cell before: as JSON each
+/// took about a kilobyte, several times the text of a delimited file.
+#[derive(Clone, Debug, PartialEq)]
+enum Place {
+    Text(TextPlace),
+    Other(Value),
+}
+
+/// The place of a cell as native text gives it (`native_text::TextPosition`).
+#[derive(Clone, Debug, PartialEq)]
+struct TextPlace {
+    kind: Arc<str>,
+    headings: Arc<[String]>,
+    columns: Arc<[String]>,
+    line_start: u64,
+    line_end: u64,
+    byte_start: u64,
+    byte_end: u64,
+    record: Option<u64>,
+    column: Option<u64>,
+}
+
+impl TextPlace {
+    /// The place `value` gives when it holds these members and no other,
+    /// its kind and lists those of `last` where they are the same.
+    fn of(value: &Value, last: Option<&TextPlace>) -> Option<Self> {
+        let members = value.as_object()?;
+        let number = |key: &str| members.get(key).and_then(Value::as_u64);
+        let list = |key: &str, last: Option<&Arc<[String]>>| -> Option<Arc<[String]>> {
+            let items = members.get(key)?.as_array()?;
+            if let Some(last) = last
+                && last.len() == items.len()
+                && last.iter().zip(items).all(|(a, b)| b.as_str() == Some(a))
+            {
+                return Some(last.clone());
+            }
+            items
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        };
+        let kind = members.get("kind")?.as_str()?;
+        let place = Self {
+            kind: match last {
+                Some(last) if &*last.kind == kind => last.kind.clone(),
+                _ => kind.into(),
+            },
+            headings: list("headings", last.map(|last| &last.headings))?,
+            columns: list("columns", last.map(|last| &last.columns))?,
+            line_start: number("line_start")?,
+            line_end: number("line_end")?,
+            byte_start: number("byte_start")?,
+            byte_end: number("byte_end")?,
+            record: number("record"),
+            column: number("column"),
+        };
+        // Held so only when it reads back as it was given.
+        (place.to_value() == *value).then_some(place)
+    }
+
+    fn to_value(&self) -> Value {
+        let mut members = serde_json::Map::new();
+        let mut put = |key: &str, value: Value| members.insert(key.to_owned(), value);
+        put("kind", Value::from(&*self.kind));
+        put("headings", Value::from(self.headings.to_vec()));
+        put("columns", Value::from(self.columns.to_vec()));
+        put("line_start", Value::from(self.line_start));
+        put("line_end", Value::from(self.line_end));
+        put("byte_start", Value::from(self.byte_start));
+        put("byte_end", Value::from(self.byte_end));
+        if let Some(record) = self.record {
+            put("record", Value::from(record));
+        }
+        if let Some(column) = self.column {
+            put("column", Value::from(column));
+        }
+        Value::Object(members)
+    }
 }
 
 impl Cells {
@@ -288,12 +372,27 @@ impl<'a> Cell<'a> {
     }
 
     /// Where the text of a text original lies.
-    pub fn position(&self) -> Option<&'a Value> {
+    pub fn position(&self) -> Option<Cow<'a, Value>> {
         let positions = &self.cells.positions;
-        positions
+        let at = positions
             .binary_search_by_key(&self.index, |(index, _)| *index)
-            .ok()
-            .map(|at| &positions[at].1)
+            .ok()?;
+        Some(match &positions[at].1 {
+            Place::Text(place) => Cow::Owned(place.to_value()),
+            Place::Other(place) => Cow::Borrowed(place),
+        })
+    }
+
+    /// The kind of its place in a text original, without making the place.
+    pub fn position_kind(&self) -> Option<&'a str> {
+        let positions = &self.cells.positions;
+        let at = positions
+            .binary_search_by_key(&self.index, |(index, _)| *index)
+            .ok()?;
+        match &positions[at].1 {
+            Place::Text(place) => Some(&place.kind),
+            Place::Other(place) => place["kind"].as_str(),
+        }
     }
 
     /// The cached result a cell carries in its expanded form: its value for a
@@ -621,7 +720,15 @@ impl CellsBuilder {
             style: table(cell.style)?,
         });
         if let Some(position) = cell.position {
-            self.cells.positions.push((index, position));
+            let last = match self.cells.positions.last() {
+                Some((_, Place::Text(last))) => Some(last),
+                _ => None,
+            };
+            let place = match TextPlace::of(&position, last) {
+                Some(place) => Place::Text(place),
+                None => Place::Other(position),
+            };
+            self.cells.positions.push((index, place));
         }
         Ok(())
     }

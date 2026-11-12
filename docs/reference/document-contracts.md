@@ -1323,7 +1323,7 @@
 | <code>/properties/print_settings/items/properties/parts/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/print_settings/items/properties/xml</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/properties/print_settings/items/properties/xml/items</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"6"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells","fonts","styles"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/anchors</code> | <code>{"description":"HTMLのページ内でリンク先になる名前（要素の id、a 要素の name）と、その位置にあるブロックのセル。同じ名前は最初のものだけ","type":"array"}</code> |
@@ -1333,26 +1333,26 @@
 | <code>/properties/sheets/items/properties/bordered_blanks</code> | <code>{"description":"Excel ranges holding no value or formula whose four sides all show a border line, drawn by the cell or its neighbour: empty fields of ruled tables, empty merged boxes and stamp boxes. Also the empty cells of a field holding a value written without merging, which spills over them: lines run along its top and bottom and close it at both ends, with none between. An empty merged range is listed as the merge; empty single cells are joined into rectangles. Absent when there are none. They are not cells; structure inference uses them only to see which cells a ruled table connects.","type":"array"}</code> |
 | <code>/properties/sheets/items/properties/bordered_blanks/items</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cell_font</code> | <code>{"description":"fonts での番号。fonts の番号を持たないセルのフォント（最も多くのセルが持つもの）。多くのセルがフォントを持たないシートでは持たない","minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cell_kind</code> | <code>{"description":"位置（position）が kind を書かないセルの kind（最も多くのセルが持つもの）。セルが位置を持たないシートでは持たない","minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cell_style</code> | <code>{"description":"styles での番号。styles の番号を持たないセルの書式（最も多くのセルが持つもの）。多くのセルが書式を持たないシートでは持たない","minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","value"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/address</code> | <code>{"pattern":"^[A-Z]+[1-9][0-9]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font</code> | <code>{"description":"このシートの fonts での番号。シートの cell_font と同じなら持たず、cell_font のあるシートでフォントを持たないセルは null","minimum":0,"type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/formula</code> | <code>{"description":"数式のないセルでは保存しない","type":["string","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"原本の形式から決まるID（Excelはシート番号とアドレスの c-&lt;シート番号&gt;-&lt;アドレス&gt;、ほかの形式はページの n 番目のセルの text-&lt;n&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"原本の形式から決まるID（Excelはシート番号とアドレスの c-&lt;シート番号&gt;-&lt;アドレス&gt;、区切りテキストのフィールドはレコードと列の record-&lt;レコード&gt;-column-&lt;列&gt;、ほかの形式はページの n 番目のセルの text-&lt;n&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"description":"原本の形式の既定（Excelは General、ほかの形式は空文字）は保存しない","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/column</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/columns</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/columns/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/headings</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/headings/items</code> | <code>{"type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/kind</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_end</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/line_start</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"description":"テキスト原本での位置。[byte_start, byte_end, line_start] の順に並べ、line_end が line_start と違うときだけ続けて書く。最後に、セルから決まらない項目だけをオブジェクトで置く：シートの cell_kind と違う kind、空でない headings・columns、区切りテキストのフィールド（kind が field）でアドレスの行・列と違う record・column","maxItems":5,"minItems":3,"prefixItems":[{"minimum":0,"type":"integer"},{"minimum":0,"type":"integer"},{"minimum":1,"type":"integer"}],"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items</code> | <code>{}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/0</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/column</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/columns</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/columns/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/headings</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/headings/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/kind</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position/items/anyOf/1/properties/record</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/style</code> | <code>{"description":"このシートの styles での番号。シートの cell_style と同じなら持たず、cell_style のあるシートで書式を持たないセルは null","minimum":0,"type":["integer","null"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/type</code> | <code>{"description":"数式があれば formula、なければ値の型（string・number・boolean・null）という、値と数式から決まる型は保存しない。error などそれ以外の型だけを持つ","enum":["string","number","boolean","null","formula","error"]}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/value</code> | <code>{"type":["string","number","boolean","null"]}</code> |
@@ -1724,7 +1724,7 @@
 | <code>/properties/print_settings/items/properties/parts/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/print_settings/items/properties/xml</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/properties/print_settings/items/properties/xml/items</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/schema_version</code> | <code>{"const":"4"}</code> |
+| <code>/properties/schema_version</code> | <code>{"const":"6"}</code> |
 | <code>/properties/sheets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items</code> | <code>{"additionalProperties":false,"required":["name","part","state","merges","cells"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/anchors</code> | <code>{"description":"HTMLのページ内でリンク先になる名前（要素の id、a 要素の name）と、その位置にあるブロックのセル。同じ名前は最初のものだけ","type":"array"}</code> |
@@ -1804,9 +1804,9 @@
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/0/properties/size/anyOf/2</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/font/anyOf/1</code> | <code>{"type":"null"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/formula</code> | <code>{"description":"数式のないセルでは保存しない","type":["string","null"]}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"原本の形式から決まるID（Excelはシート番号とアドレスの c-&lt;シート番号&gt;-&lt;アドレス&gt;、ほかの形式はページの n 番目のセルの text-&lt;n&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/id</code> | <code>{"description":"原本の形式から決まるID（Excelはシート番号とアドレスの c-&lt;シート番号&gt;-&lt;アドレス&gt;、区切りテキストのフィールドはレコードと列の record-&lt;レコード&gt;-column-&lt;列&gt;、ほかの形式はページの n 番目のセルの text-&lt;n&gt;）は保存しない","pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/number_format</code> | <code>{"description":"原本の形式の既定（Excelは General、ほかの形式は空文字）は保存しない","type":"string"}</code> |
-| <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"description":"テキスト原本での位置。extraction.json が省く項目も含めてすべて書く","required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/cells/items/properties/position/properties/column</code> | <code>{"minimum":1,"type":"integer"}</code> |
@@ -2074,7 +2074,7 @@
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/formula</code> | <code>{"type":["string","null"]}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/id</code> | <code>{"pattern":"^[a-zA-Z0-9][a-zA-Z0-9_-]*$","type":"string"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/number_format</code> | <code>{"type":"string"}</code> |
-| <code>/properties/slide_layouts/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
+| <code>/properties/slide_layouts/items/properties/cells/items/properties/position</code> | <code>{"additionalProperties":false,"description":"テキスト原本での位置。extraction.json が省く項目も含めてすべて書く","required":["kind","headings","line_start","line_end","byte_start","byte_end","columns"],"type":"object"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/byte_end</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/byte_start</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/slide_layouts/items/properties/cells/items/properties/position/properties/column</code> | <code>{"minimum":1,"type":"integer"}</code> |

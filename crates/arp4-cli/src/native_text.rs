@@ -1,4 +1,5 @@
 //! Read-only native text extraction with original byte and line locations.
+use crate::extraction::{CellKind, NewCell, Sheet, SheetBuilder};
 use anyhow::{Result, ensure};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
@@ -75,24 +76,60 @@ impl<'a> Text<'a> {
     }
 }
 
-fn cell(row: usize, value: &str, position: TextPosition) -> Value {
-    json!({"id":format!("text-{row}"),"address":format!("A{row}"),"type":"string",
-        "value":value,"formula":null,"cached":null,"number_format":"","position":position})
+/// The cells of a text document, put into its sheet as they are read: a
+/// cell and its place as JSON took about a kilobyte, and a delimited file
+/// has one for each field.
+struct Cells {
+    sheet: SheetBuilder,
+    count: usize,
 }
 
-fn sheet(cells: Vec<Value>, part: &str) -> Value {
-    let mut sheet = json!({"name":"text","part":part,"state":"visible","merges":[]});
-    sheet["cells"] = Value::Array(cells);
-    sheet
+impl Cells {
+    fn new(name: &str, part: &str) -> Self {
+        Self {
+            sheet: Sheet::build(json!({"name":name,"part":part,"state":"visible","merges":[]})),
+            count: 0,
+        }
+    }
+
+    /// Adds the text `value` at `position` as the cell `id` at `address`.
+    fn push(&mut self, id: &str, address: &str, value: &str, position: TextPosition) -> Result<()> {
+        self.count += 1;
+        self.sheet.push(
+            NewCell {
+                id,
+                address,
+                kind: CellKind::String,
+                value: &Value::String(value.to_owned()),
+                formula: None,
+                number_format: "",
+                font: None,
+                style: None,
+                position: Some(serde_json::to_value(position)?),
+            },
+            None,
+            None,
+        )
+    }
+
+    /// Adds `value` as the next cell of a document read down one column.
+    fn line(&mut self, value: &str, position: TextPosition) -> Result<()> {
+        let row = self.count + 1;
+        self.push(&format!("text-{row}"), &format!("A{row}"), value, position)
+    }
+
+    fn finish(self) -> Sheet {
+        self.sheet.finish()
+    }
 }
 
-pub fn lines(raw: &str) -> Result<Value> {
+pub fn lines(raw: &str) -> Result<Sheet> {
     let text = Text::new(raw);
     ensure!(
         text.starts.len() - usize::from(text.starts.last() == Some(&text.body.len())) <= 1_048_576,
         "text document exceeds line budget"
     );
-    let mut cells = vec![];
+    let mut cells = Cells::new("text", "text:lines");
     for (i, &start) in text
         .starts
         .iter()
@@ -101,16 +138,15 @@ pub fn lines(raw: &str) -> Result<Value> {
     {
         let end = text.starts.get(i + 1).copied().unwrap_or(text.body.len());
         let line = text.body[start..end].trim_end_matches(['\r', '\n']);
-        cells.push(cell(
-            i + 1,
+        cells.line(
             line,
             text.position(start..start + line.len(), "line", &[], vec![]),
-        ));
+        )?;
     }
-    Ok(sheet(cells, "text:lines"))
+    Ok(cells.finish())
 }
 
-pub fn markdown(raw: &str) -> Result<Value> {
+pub fn markdown(raw: &str) -> Result<Sheet> {
     let text = Text::new(raw);
     ensure!(
         text.starts.len() - usize::from(text.starts.last() == Some(&text.body.len())) <= 1_048_576,
@@ -211,54 +247,53 @@ pub fn markdown(raw: &str) -> Result<Value> {
             _ => {}
         }
     }
-    let mut cells = vec![];
+    let mut cells = Cells::new("text", "markdown:blocks");
     let mut cursor = 0;
     let mut preceding = vec![];
     // Keep non-event text (including link definitions) as evidence, too. Blank
     // lines are those CommonMark treats as blank: spaces and tabs only, so a
     // line of full-width spaces is text.
     let blank = |line: &str| line.trim_matches([' ', '\t', '\r', '\n']).is_empty();
-    let mut append =
-        |range: Range<usize>, kind: &str, headings: &[String], columns: Vec<String>| {
-            // Leading blank lines separate the block from the one before it.
-            let mut start = range.start;
-            let mut next = text.starts.partition_point(|line| *line <= start);
-            loop {
-                if start >= range.end {
-                    return;
-                }
-                let end = text
-                    .starts
-                    .get(next)
-                    .copied()
-                    .unwrap_or(text.body.len())
-                    .min(range.end);
-                if !blank(&text.body[start..end]) {
-                    break;
-                }
-                start = end;
-                next += 1;
+    let mut append = |range: Range<usize>,
+                      kind: &str,
+                      headings: &[String],
+                      columns: Vec<String>|
+     -> Result<()> {
+        // Leading blank lines separate the block from the one before it.
+        let mut start = range.start;
+        let mut next = text.starts.partition_point(|line| *line <= start);
+        loop {
+            if start >= range.end {
+                return Ok(());
             }
-            let value = text.body[start..range.end].trim_end_matches(['\r', '\n']);
-            let end = start + value.len();
-            cells.push(cell(
-                cells.len() + 1,
-                value,
-                text.position(start..end, kind, headings, columns),
-            ));
-        };
+            let end = text
+                .starts
+                .get(next)
+                .copied()
+                .unwrap_or(text.body.len())
+                .min(range.end);
+            if !blank(&text.body[start..end]) {
+                break;
+            }
+            start = end;
+            next += 1;
+        }
+        let value = text.body[start..range.end].trim_end_matches(['\r', '\n']);
+        let end = start + value.len();
+        cells.line(value, text.position(start..end, kind, headings, columns))
+    };
     for (range, kind, heading, columns) in spans {
         ensure!(
             range.start >= cursor && range.end <= text.body.len(),
             "overlapping Markdown blocks"
         );
-        append(cursor..range.start, "raw", &preceding, vec![]);
-        append(range.clone(), kind, &heading, columns);
+        append(cursor..range.start, "raw", &preceding, vec![])?;
+        append(range.clone(), kind, &heading, columns)?;
         cursor = range.end;
         preceding = heading;
     }
-    append(cursor..text.body.len(), "raw", &preceding, vec![]);
-    Ok(sheet(cells, "markdown:blocks"))
+    append(cursor..text.body.len(), "raw", &preceding, vec![])?;
+    Ok(cells.finish())
 }
 
 // The CSV reader decodes fields; this scanner validates quoting and retains the
@@ -333,7 +368,7 @@ fn field_ranges(body: &str, delimiter: u8) -> Result<Vec<Vec<Range<usize>>>> {
     Ok(records)
 }
 
-pub fn delimited(raw: &str, delimiter: u8) -> Result<Value> {
+pub fn delimited(raw: &str, delimiter: u8) -> Result<Sheet> {
     let text = Text::new(raw);
     let ranges = field_ranges(text.body, delimiter)?;
     let mut reader = csv::ReaderBuilder::new()
@@ -341,7 +376,7 @@ pub fn delimited(raw: &str, delimiter: u8) -> Result<Value> {
         .delimiter(delimiter)
         .flexible(false)
         .from_reader(text.body.as_bytes());
-    let mut cells = vec![];
+    let mut cells = Cells::new("records", "delimited:records");
     let mut count = 0;
     for (row, record) in reader.records().enumerate() {
         let record = record?;
@@ -353,9 +388,16 @@ pub fn delimited(raw: &str, delimiter: u8) -> Result<Value> {
             let mut position = text.position(ranges[row][column].clone(), "field", &[], vec![]);
             position.record = Some(row as u32 + 1);
             position.column = Some(column as u32 + 1);
-            cells.push(json!({"id":format!("record-{}-column-{}",row+1,column+1),
-                "address":format!("{}{}",crate::excel::column_name(column as u32+1)?,row+1),
-                "type":"string","value":value,"formula":null,"cached":null,"number_format":"","position":position}));
+            cells.push(
+                &format!("record-{}-column-{}", row + 1, column + 1),
+                &format!(
+                    "{}{}",
+                    crate::excel::column_name(column as u32 + 1)?,
+                    row + 1
+                ),
+                value,
+                position,
+            )?;
         }
         count += 1;
     }
@@ -363,8 +405,5 @@ pub fn delimited(raw: &str, delimiter: u8) -> Result<Value> {
         count == ranges.len(),
         "CSV record positions do not match parsed input"
     );
-    let mut sheet =
-        json!({"name":"records","part":"delimited:records","state":"visible","merges":[]});
-    sheet["cells"] = Value::Array(cells);
-    Ok(sheet)
+    Ok(cells.finish())
 }

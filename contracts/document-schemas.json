@@ -5907,7 +5907,7 @@
         }
       },
       "schema_version": {
-        "const": "4"
+        "const": "6"
       },
       "sheets": {
         "items": {
@@ -6064,7 +6064,7 @@
                   "id": {
                     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
                     "type": "string",
-                    "description": "原本の形式から決まるID（Excelはシート番号とアドレスの c-<シート番号>-<アドレス>、ほかの形式はページの n 番目のセルの text-<n>）は保存しない"
+                    "description": "原本の形式から決まるID（Excelはシート番号とアドレスの c-<シート番号>-<アドレス>、区切りテキストのフィールドはレコードと列の record-<レコード>-column-<列>、ほかの形式はページの n 番目のセルの text-<n>）は保存しない"
                   },
                   "number_format": {
                     "type": "string",
@@ -6090,59 +6090,65 @@
                     ]
                   },
                   "position": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "headings": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
-                      },
-                      "line_start": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "line_end": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "byte_start": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 5,
+                    "description": "テキスト原本での位置。[byte_start, byte_end, line_start] の順に並べ、line_end が line_start と違うときだけ続けて書く。最後に、セルから決まらない項目だけをオブジェクトで置く：シートの cell_kind と違う kind、空でない headings・columns、区切りテキストのフィールド（kind が field）でアドレスの行・列と違う record・column",
+                    "prefixItems": [
+                      {
                         "type": "integer",
                         "minimum": 0
                       },
-                      "byte_end": {
+                      {
                         "type": "integer",
                         "minimum": 0
                       },
-                      "columns": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
-                      },
-                      "record": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "column": {
+                      {
                         "type": "integer",
                         "minimum": 1
                       }
-                    },
-                    "required": [
-                      "kind",
-                      "headings",
-                      "line_start",
-                      "line_end",
-                      "byte_start",
-                      "byte_end",
-                      "columns"
-                    ]
+                    ],
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "headings": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "minItems": 1
+                            },
+                            "columns": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "minItems": 1
+                            },
+                            "record": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "column": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          }
+                        }
+                      ]
+                    }
                   },
                   "style": {
                     "type": [
@@ -7427,6 +7433,11 @@
                   "rules"
                 ]
               }
+            },
+            "cell_kind": {
+              "type": "string",
+              "minLength": 1,
+              "description": "位置（position）が kind を書かないセルの kind（最も多くのセルが持つもの）。セルが位置を持たないシートでは持たない"
             }
           },
           "required": [
@@ -8133,7 +8144,7 @@
         }
       },
       "schema_version": {
-        "const": "4"
+        "const": "6"
       },
       "sheets": {
         "items": {
@@ -8290,7 +8301,7 @@
                   "id": {
                     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
                     "type": "string",
-                    "description": "原本の形式から決まるID（Excelはシート番号とアドレスの c-<シート番号>-<アドレス>、ほかの形式はページの n 番目のセルの text-<n>）は保存しない"
+                    "description": "原本の形式から決まるID（Excelはシート番号とアドレスの c-<シート番号>-<アドレス>、区切りテキストのフィールドはレコードと列の record-<レコード>-column-<列>、ほかの形式はページの n 番目のセルの text-<n>）は保存しない"
                   },
                   "number_format": {
                     "type": "string",
@@ -8368,7 +8379,8 @@
                       "byte_start",
                       "byte_end",
                       "columns"
-                    ]
+                    ],
+                    "description": "テキスト原本での位置。extraction.json が省く項目も含めてすべて書く"
                   },
                   "style": {
                     "anyOf": [
@@ -10133,7 +10145,8 @@
                       "byte_start",
                       "byte_end",
                       "columns"
-                    ]
+                    ],
+                    "description": "テキスト原本での位置。extraction.json が省く項目も含めてすべて書く"
                   },
                   "style": {
                     "type": "object",

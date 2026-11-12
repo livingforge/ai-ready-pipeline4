@@ -24,7 +24,8 @@ fn units(extraction: &Extraction) -> Result<Vec<Unit>> {
             if text.trim().is_empty() {
                 continue;
             }
-            let position = cell.position().unwrap_or(&Value::Null);
+            let position = cell.position();
+            let position = position.as_deref().unwrap_or(&Value::Null);
             let kind = string(&position["kind"])?;
             units.push(Unit {
                 id: hash(&encoded(&json!([

@@ -426,7 +426,7 @@ pub(super) fn build(
             format!("/sheets/{si}/cells/{ci}/value"),
             string(&sheet["name"])?,
             cell.address(),
-            cell.position().unwrap_or(&Value::Null),
+            cell.position().as_deref().unwrap_or(&Value::Null),
             &json!(shown),
         );
         let value = cell.value().to_json();
@@ -660,18 +660,24 @@ pub(super) fn build(
     }
     for (si, sheet) in inspected.original_extraction().sheets.iter().enumerate() {
         let name = string(&sheet["name"])?;
-        let mut rows: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+        // The cells of each row by column; their sources are made a row at
+        // a time, as those of a sheet no table holds, a delimited file's,
+        // together held several times the memory of the extraction.
+        let mut placed: Vec<(u32, u32, (usize, usize))> = vec![];
         for cell in &sheet.cells {
             let address = cell.address();
             if used.contains(&(name.to_owned(), address.to_owned())) {
                 continue;
             }
-            let original = source_of(by_sheet[name][address])?;
-            let (_, row) = excel::coordinate(address)?;
-            rows.entry(row).or_default().push(original);
+            let (column, row) = excel::coordinate(address)?;
+            placed.push((row, column, by_sheet[name][address]));
         }
-        for (_, mut sources) in rows {
-            sources.sort_by_key(|s| excel::coordinate(s["address"].as_str().unwrap()).unwrap().0);
+        placed.sort_by_key(|(row, column, _)| (*row, *column));
+        for cells in placed.chunk_by(|a, b| a.0 == b.0) {
+            let sources = cells
+                .iter()
+                .map(|(_, _, cell)| source_of(*cell))
+                .collect::<Result<Vec<_>>>()?;
             // The headings in the order the document nests them.
             let mut headings: Vec<&str> = vec![];
             for heading in sources.iter().flat_map(|s| {

@@ -120,7 +120,7 @@ impl Cell<'_> {
             value["style"] = json!(style);
         }
         if let Some(position) = self.position() {
-            value["position"] = position.clone();
+            value["position"] = position.into_owned();
         }
         value
     }
@@ -221,7 +221,7 @@ impl Fields for Sheet {
                 number_format: cell.number_format(),
                 font: cell.font(),
                 style: cell.style(),
-                position: cell.position().cloned(),
+                position: cell.position().map(std::borrow::Cow::into_owned),
             })?;
         }
         Ok(Sheet {
@@ -298,18 +298,24 @@ fn table_index(value: &Value) -> Result<usize> {
 /// originals no format and the ID `text-<n>` of the `n`th cell of the page.
 /// A stored cell naming no font or style takes the `font` and `style` of its
 /// sheet's table that the sheet names ([`CELL_FONT`], [`CELL_STYLE`]).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Defaults {
     sheet: usize,
     excel: bool,
     font: Option<usize>,
     style: Option<usize>,
+    /// The kind of the place of a cell whose stored place names none
+    /// ([`CELL_KIND`]).
+    kind: Option<std::sync::Arc<str>>,
 }
 
 /// The members of a stored sheet naming the font and the style of its tables
 /// that its cells naming none have: the ones most of its cells have.
 const CELL_FONT: &str = "cell_font";
 const CELL_STYLE: &str = "cell_style";
+/// The member of a stored sheet naming the kind of place most of its cells
+/// have in a text original: a cell whose stored place names no kind has it.
+const CELL_KIND: &str = "cell_kind";
 
 impl Defaults {
     /// The defaults of the `sheet`th sheet of the extraction whose members
@@ -320,6 +326,7 @@ impl Defaults {
             excel: excel(fields),
             font: None,
             style: None,
+            kind: None,
         }
     }
 
@@ -327,23 +334,38 @@ impl Defaults {
     /// stored sheet name.
     fn with_formats(self, fields: &Map<String, Value>) -> Result<Self> {
         let index = |key: &str| fields.get(key).map(table_index).transpose();
+        let kind = match fields.get(CELL_KIND) {
+            None => None,
+            Some(Value::String(kind)) => Some(kind.as_str().into()),
+            Some(_) => bail!("sheet {CELL_KIND} must be a string"),
+        };
         Ok(Self {
             font: index(CELL_FONT)?,
             style: index(CELL_STYLE)?,
+            kind,
             ..self
         })
     }
 
-    /// The ID of the cell at `address`, the `position`th of its sheet.
-    fn id(self, address: &str, position: usize) -> String {
-        if self.excel {
+    /// The ID of the cell at `address`, the `index`th of its sheet, whose
+    /// place in a text original is `position`: a field of a delimited file
+    /// is named by its record and column.
+    fn id(&self, address: &str, index: usize, position: Option<&Value>) -> String {
+        let field = position
+            .filter(|position| position["kind"] == FIELD)
+            .and_then(|position| {
+                Some((position["record"].as_u64()?, position["column"].as_u64()?))
+            });
+        if let Some((record, column)) = field {
+            format!("record-{record}-column-{column}")
+        } else if self.excel {
             excel_cell_id(self.sheet, address)
         } else {
-            format!("text-{}", position + 1)
+            format!("text-{}", index + 1)
         }
     }
 
-    fn number_format(self) -> &'static str {
+    fn number_format(&self) -> &'static str {
         if self.excel { GENERAL } else { "" }
     }
 }
@@ -362,6 +384,7 @@ impl Sheet {
                 excel: true,
                 font: None,
                 style: None,
+                kind: None,
             },
         )
     }
@@ -389,10 +412,11 @@ impl Sheet {
             defaults = defaults.with_formats(&fields)?;
             fields.remove(CELL_FONT);
             fields.remove(CELL_STYLE);
+            fields.remove(CELL_KIND);
         }
         let mut built = CellsBuilder::default();
         for cell in cells {
-            typed_cell(cell, defaults, tabled, &mut built, &mut fonts, &mut styles)?;
+            typed_cell(cell, &defaults, tabled, &mut built, &mut fonts, &mut styles)?;
         }
         Ok(Self {
             fields: Value::Object(fields),
@@ -429,7 +453,7 @@ impl Sheet {
 /// and style, which go into `fonts` and `styles`.
 fn typed_cell(
     mut cell: Value,
-    defaults: Defaults,
+    defaults: &Defaults,
     tabled: bool,
     built: &mut CellsBuilder,
     fonts: &mut Table,
@@ -438,12 +462,16 @@ fn typed_cell(
     let Value::Object(cell) = &mut cell else {
         bail!("cell must be an object")
     };
-    let position = cell.remove("position");
-    let address = text(cell, "address")?;
+    let address = text(cell, "address")?.to_owned();
+    let address = address.as_str();
+    let position = cell
+        .remove("position")
+        .map(|position| expand_position(position, address, defaults.kind.as_deref()))
+        .transpose()?;
     let derived;
     let id = match cell.get("id") {
         None => {
-            derived = defaults.id(address, built.count());
+            derived = defaults.id(address, built.count(), position.as_ref());
             derived.as_str()
         }
         Some(_) => text(cell, "id")?,
@@ -556,6 +584,7 @@ impl Extraction {
             excel: true,
             font: None,
             style: None,
+            kind: None,
         })
     }
 
@@ -931,11 +960,144 @@ fn excel(fields: &Value) -> bool {
         .is_some_and(|parser| parser.contains(";cells/"))
 }
 
+/// The kind of the place of a field of a delimited file.
+const FIELD: &str = "field";
+
+/// The record and column the address of a field of a delimited file gives:
+/// its row and the number of its column.
+fn field_place(address: &str) -> Option<(u64, u64)> {
+    let (column, row) = crate::excel::coordinate(address).ok()?;
+    Some((u64::from(row), u64::from(column)))
+}
+
+/// The members of a place besides its bytes and lines, in the order they
+/// are written out.
+const PLACE_MEMBERS: [&str; 5] = ["kind", "headings", "columns", "record", "column"];
+
+/// The place of the cell at `address` in a text original as it is stored: a
+/// list of its first and last byte and its first line, then its last line
+/// when that is another, then an object of what the cell does not give: its
+/// `kind` when it is not the one most cells of its sheet have (`kind`), its
+/// `headings` and `columns` when it has any, and its `record` and `column`
+/// when it is not a field of a delimited file whose address gives them. A
+/// text document has a place for each cell, and written out with its
+/// members named it was half of what a delimited file stored. A place that
+/// [`expand_position`] would not give back is refused.
+fn stored_position(position: &Value, address: &str, kind: Option<&str>) -> Result<Value> {
+    let members = position
+        .as_object()
+        .context("cell position must be an object")?;
+    let number = |key: &str| {
+        members
+            .get(key)
+            .filter(|value| value.is_u64())
+            .cloned()
+            .with_context(|| format!("cell position {key} missing"))
+    };
+    let mut stored = vec![
+        number("byte_start")?,
+        number("byte_end")?,
+        number("line_start")?,
+    ];
+    if members.get("line_end") != members.get("line_start") {
+        stored.push(number("line_end")?);
+    }
+    let mut rest = Map::new();
+    let own = members.get("kind").and_then(Value::as_str);
+    if own != kind
+        && let Some(own) = own
+    {
+        rest.insert("kind".into(), json!(own));
+    }
+    for key in ["headings", "columns"] {
+        if let Some(list) = members.get(key)
+            && !list.as_array().is_some_and(Vec::is_empty)
+        {
+            rest.insert(key.into(), list.clone());
+        }
+    }
+    let of = |key: &str| members.get(key).and_then(Value::as_u64);
+    let given = own == Some(FIELD)
+        && field_place(address).is_some_and(|(record, column)| {
+            of("record") == Some(record) && of("column") == Some(column)
+        });
+    if !given {
+        for key in ["record", "column"] {
+            if let Some(value) = members.get(key) {
+                rest.insert(key.into(), value.clone());
+            }
+        }
+    }
+    if !rest.is_empty() {
+        stored.push(Value::Object(rest));
+    }
+    let stored = Value::Array(stored);
+    ensure!(
+        expand_position(stored.clone(), address, kind)? == *position,
+        "the place of cell {address} cannot be stored: it reads back as another"
+    );
+    Ok(stored)
+}
+
+/// The place [`stored_position`] stored as `position` for the cell at
+/// `address` of a sheet most of whose cells have a place of `kind`. A place
+/// given whole, as an object, is the place.
+fn expand_position(position: Value, address: &str, kind: Option<&str>) -> Result<Value> {
+    let Value::Array(mut stored) = position else {
+        ensure!(position.is_object(), "cell position must be a list");
+        return Ok(position);
+    };
+    let rest = match stored.last() {
+        Some(Value::Object(_)) => match stored.pop() {
+            Some(Value::Object(rest)) => rest,
+            _ => unreachable!("the last item is an object"),
+        },
+        _ => Map::new(),
+    };
+    ensure!(
+        matches!(stored.len(), 3 | 4) && stored.iter().all(Value::is_u64),
+        "the place of cell {address} must be its bytes and lines"
+    );
+    if let Some(key) = rest
+        .keys()
+        .find(|key| !PLACE_MEMBERS.contains(&key.as_str()))
+    {
+        bail!("unknown member {key} of the place of cell {address}");
+    }
+    let mut place = rest;
+    if !place.contains_key("kind") {
+        let kind = kind.with_context(|| format!("the place of cell {address} names no kind"))?;
+        place.insert("kind".into(), json!(kind));
+    }
+    for key in ["headings", "columns"] {
+        if !place.contains_key(key) {
+            place.insert(key.into(), json!([]));
+        }
+    }
+    if place["kind"] == FIELD
+        && !place.contains_key("record")
+        && !place.contains_key("column")
+        && let Some((record, column)) = field_place(address)
+    {
+        place.insert("record".into(), json!(record));
+        place.insert("column".into(), json!(column));
+    }
+    let mut numbers = stored.into_iter();
+    for key in ["byte_start", "byte_end", "line_start"] {
+        place.insert(key.into(), numbers.next().expect("three numbers"));
+    }
+    let line_end = numbers
+        .next()
+        .unwrap_or_else(|| place["line_start"].clone());
+    place.insert("line_end".into(), line_end);
+    Ok(Value::Object(place))
+}
+
 /// A cell as it is stored: without a null formula, the type its value and
 /// formula give ([`CellKind::of`]), or the number format, ID, font and style
 /// `defaults` give; with a null font or style when it has none of the one
-/// `defaults` give.
-fn stored_cell(cell: Cell<'_>, defaults: Defaults) -> Value {
+/// `defaults` give, and its place as [`stored_position`] gives it.
+fn stored_cell(cell: Cell<'_>, defaults: &Defaults) -> Result<Value> {
     let value = cell.value().to_json();
     let mut stored = json!({"address":cell.address()});
     if CellKind::of(cell.formula(), &value).ok() != Some(cell.kind()) {
@@ -948,7 +1110,8 @@ fn stored_cell(cell: Cell<'_>, defaults: Defaults) -> Value {
     if cell.number_format() != defaults.number_format() {
         stored["number_format"] = json!(cell.number_format());
     }
-    if cell.id() != defaults.id(cell.address(), cell.index()) {
+    let position = cell.position();
+    if cell.id() != defaults.id(cell.address(), cell.index(), position.as_deref()) {
         stored["id"] = json!(cell.id());
     }
     for (key, index, default) in [
@@ -959,16 +1122,20 @@ fn stored_cell(cell: Cell<'_>, defaults: Defaults) -> Value {
             stored[key] = json!(index);
         }
     }
-    if let Some(position) = cell.position() {
-        stored["position"] = position.clone();
+    if let Some(position) = position {
+        stored["position"] = stored_position(&position, cell.address(), defaults.kind.as_deref())?;
     }
-    stored
+    Ok(stored)
 }
 
 /// A cell as [`write_reading`] writes it: as [`stored_cell`] gives it, with
-/// the font and style it names written out in place of their indexes.
-fn reading_cell(sheet: &Sheet, cell: Cell<'_>, defaults: Defaults) -> Result<Value> {
-    let mut reading = stored_cell(cell, defaults);
+/// the font and style it names written out in place of their indexes, and
+/// its place in a text original written out whole.
+fn reading_cell(sheet: &Sheet, cell: Cell<'_>, defaults: &Defaults) -> Result<Value> {
+    let mut reading = stored_cell(cell, defaults)?;
+    if let Some(position) = cell.position() {
+        reading["position"] = position.into_owned();
+    }
     for (key, table) in [("font", &sheet.fonts), ("style", &sheet.styles)] {
         if let Some(index) = reading.get(key).and_then(Value::as_u64) {
             reading[key] = lookup(table, Some(index as usize), key)?.clone();
@@ -991,6 +1158,20 @@ fn most_used(sheet: &Sheet) -> (Option<usize>, Option<usize>) {
             .and_then(|(index, _)| index)
     };
     (most(&|c| c.font()), most(&|c| c.style()))
+}
+
+/// The kind of place most of the cells of `sheet` have in a text original,
+/// none for a sheet whose cells have no place: when as many have one as
+/// another, the first in order of their names.
+fn most_used_kind(sheet: &Sheet) -> Option<std::sync::Arc<str>> {
+    let mut counts: HashMap<&str, usize> = HashMap::default();
+    for kind in sheet.cells.iter().filter_map(|cell| cell.position_kind()) {
+        *counts.entry(kind).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|&(kind, count)| (count, std::cmp::Reverse(kind)))
+        .map(|(kind, _)| kind.into())
 }
 
 /// The merges of a sheet, which the line encodings write on one line.
@@ -1033,7 +1214,7 @@ impl StoredForm {
             Lazy::Items(Box::new(
                 extraction.sheets.iter().zip(&self.sheets).enumerate().map(
                     |(index, (sheet, fields))| {
-                        let defaults = self.defaults[index];
+                        let defaults = &self.defaults[index];
                         let mut members = sheet_members(fields);
                         members.push((
                             "cells",
@@ -1041,7 +1222,7 @@ impl StoredForm {
                                 sheet
                                     .cells
                                     .iter()
-                                    .map(move |c| Ok(Lazy::Value(stored_cell(c, defaults)))),
+                                    .map(move |c| Ok(Lazy::Value(stored_cell(c, defaults)?))),
                             )),
                         ));
                         members.push(("fonts", Lazy::Value(Value::Array(sheet.fonts.clone()))));
@@ -1063,12 +1244,16 @@ impl StoredForm {
         part["sheets"] = json!([]);
         data::validate("extraction", &part)?;
         for (index, (sheet, fields)) in extraction.sheets.iter().zip(&self.sheets).enumerate() {
-            let defaults = self.defaults[index];
+            let defaults = &self.defaults[index];
             let mut copy = fields.clone();
             copy["fonts"] = Value::Array(sheet.fonts.clone());
             copy["styles"] = Value::Array(sheet.styles.clone());
             for chunk in parts(&sheet.cells) {
-                copy["cells"] = chunk.map(|c| stored_cell(c, defaults)).collect();
+                copy["cells"] = Value::Array(
+                    chunk
+                        .map(|c| stored_cell(c, defaults))
+                        .collect::<Result<_>>()?,
+                );
                 part["sheets"] = Value::Array(vec![copy]);
                 data::validate("extraction", &part)?;
                 copy = part["sheets"][0].take();
@@ -1094,8 +1279,12 @@ impl StoredForm {
     /// cells: those stored, with the font and style its cells naming none
     /// have written out in place of their indexes.
     fn reading_sheet(&self, extraction: &Extraction, index: usize) -> Result<Value> {
-        let (sheet, defaults) = (&extraction.sheets[index], self.defaults[index]);
+        let (sheet, defaults) = (&extraction.sheets[index], &self.defaults[index]);
         let mut fields = self.sheets[index].clone();
+        // The reading form writes each place out whole, its kind with it.
+        if let Some(fields) = fields.as_object_mut() {
+            fields.remove(CELL_KIND);
+        }
         for (key, table, default) in [
             (CELL_FONT, &sheet.fonts, defaults.font),
             (CELL_STYLE, &sheet.styles, defaults.style),
@@ -1122,7 +1311,7 @@ impl StoredForm {
             Lazy::Items(Box::new(
                 extraction.sheets.iter().zip(sheets).enumerate().map(
                     move |(index, (sheet, fields))| {
-                        let defaults = self.defaults[index];
+                        let defaults = &self.defaults[index];
                         let mut members = sheet_members(fields);
                         members.push((
                             "cells",
@@ -1148,7 +1337,7 @@ impl StoredForm {
         part["sheets"] = json!([]);
         data::validate("extraction-view", &part)?;
         for (index, (sheet, fields)) in extraction.sheets.iter().zip(sheets).enumerate() {
-            let defaults = self.defaults[index];
+            let defaults = &self.defaults[index];
             let mut copy = fields.clone();
             for chunk in parts(&sheet.cells) {
                 copy["cells"] = chunk
@@ -1277,9 +1466,14 @@ fn stored_form(extraction: &Extraction) -> Result<StoredForm> {
                 members.insert(key.into(), json!(default));
             }
         }
+        let kind = most_used_kind(sheet);
+        if let Some(kind) = &kind {
+            members.insert(CELL_KIND.into(), json!(&**kind));
+        }
         defaults.push(Defaults {
             font,
             style,
+            kind,
             ..Defaults::of(fields, index)
         });
         if excel {
@@ -1361,6 +1555,18 @@ pub fn stored(extraction: &Extraction) -> Result<Vec<u8>> {
     let form = stored_form(extraction)?;
     form.check(extraction)?;
     data::encoded_lazy_lines(form.lazy(extraction), LINES)
+}
+
+/// Validates `extraction` and writes the bytes stored for it to `path`,
+/// returning their hash: [`stored`] written as it is encoded.
+pub fn write_stored(extraction: &Extraction, path: &Path) -> Result<String> {
+    ensure!(
+        extraction.fields.get(SOURCE).is_some(),
+        "extraction source missing"
+    );
+    let form = stored_form(extraction)?;
+    form.check(extraction)?;
+    data::write_hashed_lazy_lines(path, form.lazy(extraction), LINES)
 }
 
 /// The hash of the bytes stored for `extraction`: the key a document records.
@@ -1539,7 +1745,11 @@ mod known {
                 if key == "cells" {
                     // Stored in order of their names, the members naming the
                     // font and style its cells take are read by now.
-                    let defaults = self.0.with_formats(&fields).map_err(de::Error::custom)?;
+                    let defaults = self
+                        .0
+                        .clone()
+                        .with_formats(&fields)
+                        .map_err(de::Error::custom)?;
                     cells = Some(access.next_value_seed(Cells(defaults))?);
                 } else {
                     fields.insert(key, access.next_value()?);
@@ -1556,6 +1766,7 @@ mod known {
             let (fonts, styles) = (list("fonts")?, list("styles")?);
             fields.remove(CELL_FONT);
             fields.remove(CELL_STYLE);
+            fields.remove(CELL_KIND);
             Ok(Sheet {
                 fields: Value::Object(fields),
                 cells,
@@ -1585,7 +1796,7 @@ mod known {
             let (mut fonts, mut styles) = (Table::default(), Table::default());
             let mut built = CellsBuilder::default();
             while let Some(cell) = access.next_element::<Value>()? {
-                typed_cell(cell, self.0, true, &mut built, &mut fonts, &mut styles)
+                typed_cell(cell, &self.0, true, &mut built, &mut fonts, &mut styles)
                     .map_err(|error| de::Error::custom(format!("{error:#}")))?;
             }
             Ok(built.finish())
@@ -1622,7 +1833,7 @@ fn read_file(path: &Path) -> Result<String> {
 }
 
 /// The version of the stored extraction this program writes and reads.
-pub(crate) const SCHEMA_VERSION: &str = "4";
+pub(crate) const SCHEMA_VERSION: &str = "6";
 
 /// Refuses an extraction another version of ARP4 stored before anything is
 /// read of its form: it is made anew from its original, never read in a
@@ -1746,7 +1957,7 @@ mod tests {
         let drawing = json!({"id":"xl/drawings/drawing1.xml#2","part":"xl/drawings/drawing1.xml","kind":"shape",
             "macro":null,"control":null,"name":"","description":"","text":"","anchor":{"kind":"twoCellAnchor"},
             "group":null,"transform":null,"geometry":"rect","connections":[],"image":null,"linked_image":null});
-        let extraction = json!({"schema_version":"4","document_id":"book.xlsx","source":source,"parser":"arp4-rust/test;cells/1",
+        let extraction = json!({"schema_version":"6","document_id":"book.xlsx","source":source,"parser":"arp4-rust/test;cells/1",
             "findings":[{"level":"warning","code":"R001","message":note}],"assets":[],
             "print_settings":[setting("xl/worksheets/sheet1.xml","<a/>"),setting("xl/worksheets/sheet1.xml","<b/>"),
                 setting("xl/worksheets/sheet2.xml","<a/>"),setting("xl/worksheets/sheet2.xml","<b/>")],
@@ -1804,7 +2015,7 @@ mod tests {
     fn stored_cells_of_other_originals_leave_out_the_ids_of_their_places() {
         let source = json!({"path":"spec.docx","sha256":"b".repeat(64)});
         let note = crate::document_source::base_note("docx");
-        let extraction = json!({"schema_version":"4","document_id":"spec.docx","source":source,
+        let extraction = json!({"schema_version":"6","document_id":"spec.docx","source":source,
             "parser":"arp4-rust/test;word-blocks/1","findings":[{"level":"warning","code":"R001","message":note}],"assets":[],
             "sheets":[
                 {"name":"document","part":"word/document.xml","state":"visible","merges":[],"cells":[
@@ -1824,6 +2035,88 @@ mod tests {
         assert_eq!(text.matches("\"number_format\"").count(), 1);
         assert!(text.contains(r#""number_format": "General""#));
         assert!(!text.contains("\"type\""));
+    }
+
+    #[test]
+    fn stored_places_of_text_cells_leave_out_what_the_cell_gives() {
+        let text_extraction = |name: &str, sheet: Sheet| {
+            let source = json!({"path":name,"sha256":"c".repeat(64)});
+            let note = crate::document_source::base_note(name.rsplit('.').next().unwrap());
+            Extraction::from_value(json!({"schema_version":"6","document_id":name,"source":source,
+                "parser":"arp4-rust/test;native-text/1","findings":[{"level":"warning","code":"R001","message":note}],
+                "assets":[],"sheets":[sheet.to_value()]}))
+            .unwrap()
+        };
+        // A field is named by its record and column, which its address
+        // gives, and its place is its bytes and its line: its last line too
+        // when its quotes hold a line break. The kind all have is the
+        // sheet's.
+        let fields = crate::native_text::delimited(
+            "a,b
+1,\"x
+y\"
+",
+            b',',
+        )
+        .unwrap();
+        let text = stored_and_read_back(&text_extraction("data.csv", fields));
+        for left_out in [
+            "\"id\"",
+            "\"record\"",
+            "\"column\"",
+            "\"headings\"",
+            "\"columns\"",
+            "\"kind\"",
+        ] {
+            assert!(!text.contains(left_out), "{left_out} in {text}");
+        }
+        assert!(text.contains("\"cell_kind\": \"field\""), "{text}");
+        assert!(text.contains("\"position\": [0, 1, 1]"), "{text}");
+        assert!(text.contains("\"position\": [6, 11, 2, 3]"), "{text}");
+        // The headings a block lies under are kept, with the kind of a
+        // block that is not the one most have, and no empty list.
+        let blocks = crate::native_text::markdown(
+            "# 題
+
+本文
+
+続き
+",
+        )
+        .unwrap();
+        let text = stored_and_read_back(&text_extraction("spec.md", blocks));
+        assert!(text.contains("\"cell_kind\": \"paragraph\""), "{text}");
+        assert!(text.contains("{\"headings\": [\"題\"]}]"), "{text}");
+        assert!(text.contains("\"kind\": \"heading\""), "{text}");
+        assert!(!text.contains("\"headings\": []") && !text.contains("\"columns\""));
+        // A record or column the address does not give is kept, and a field
+        // without them, which would read back with those of its address, is
+        // refused, as is a place of no kind in a sheet that names none.
+        let place = |record: Value| {
+            let mut place = json!({"kind":"field","headings":[],"columns":[],"line_start":1,"line_end":1,
+                "byte_start":0,"byte_end":1});
+            if !record.is_null() {
+                place["record"] = record;
+                place["column"] = json!(1);
+            }
+            place
+        };
+        let field = Some("field");
+        assert_eq!(
+            stored_position(&place(json!(1)), "A1", field).unwrap(),
+            json!([0, 1, 1])
+        );
+        assert_eq!(
+            stored_position(&place(json!(1)), "A1", Some("line")).unwrap(),
+            json!([0, 1, 1, {"kind":"field"}])
+        );
+        assert_eq!(
+            stored_position(&place(json!(5)), "A1", field).unwrap(),
+            json!([0, 1, 1, {"record":5,"column":1}])
+        );
+        assert!(stored_position(&place(Value::Null), "A1", field).is_err());
+        assert!(expand_position(json!([0, 1, 1]), "A1", None).is_err());
+        assert!(expand_position(json!([0, 1, 1, {"line":2}]), "A1", field).is_err());
     }
 
     #[test]
@@ -1861,7 +2154,7 @@ mod tests {
         for list in SHEET_LISTS {
             sheet[list] = json!([]);
         }
-        let extraction = Extraction::from_value(json!({"schema_version":"4","document_id":"book.xlsx",
+        let extraction = Extraction::from_value(json!({"schema_version":"6","document_id":"book.xlsx",
             "source":source,"parser":"arp4-rust/test;cells/1",
             "findings":[{"level":"warning","code":"R001","message":note}],"assets":[],"sheets":[sheet]}))
         .unwrap();
@@ -1907,7 +2200,7 @@ mod tests {
         .unwrap();
         for error in [read_record(&path).unwrap_err(), read(&path).unwrap_err()] {
             let message = error.to_string();
-            assert!(message.contains("extraction schema 2, not 4"), "{message}");
+            assert!(message.contains("extraction schema 2, not 6"), "{message}");
             assert!(message.contains("documents import --force"), "{message}");
         }
     }

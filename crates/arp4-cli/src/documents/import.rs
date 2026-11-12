@@ -475,13 +475,11 @@ impl Store {
         let ready = stage.path().join("ready");
         fs::create_dir(&ready)?;
         // Encoded once, in the stored form: the record is these bytes and its
-        // key is their hash. Written at once, as they are as large as the
-        // extraction and nothing reads them again.
-        let extraction_hash = {
-            let bytes = crate::extraction::stored(&extraction)?;
-            replace(&ready.join("extraction.json"), &bytes)?;
-            hash(&bytes)
-        };
+        // key is their hash. Written as they are encoded, as they are as large
+        // as the extraction, several times it for a text document, and
+        // nothing reads them again.
+        let extraction_hash =
+            crate::extraction::write_stored(&extraction, &ready.join("extraction.json"))?;
         let mut layout = if identity::is_excel(&extraction) && earlier.is_none() {
             let identity_base = if carry.is_none()
                 && destination.join("document.yml").is_file()

@@ -481,7 +481,7 @@ mod performance_tests {
             (
                 "extraction.json".into(),
                 DiffFile::Text(
-                    json!({"parser":"arp4-rust/1.0.0-alpha.1;cells/1","schema_version":"4",
+                    json!({"parser":"arp4-rust/1.0.0-alpha.1;cells/1","schema_version":"6",
                         "sheets":[{"name":"Sheet","part":"xl/worksheets/sheet1.xml","state":"visible","merges":[],"cells":[],"fonts":[],"styles":[]}]})
                     .to_string(),
                 ),

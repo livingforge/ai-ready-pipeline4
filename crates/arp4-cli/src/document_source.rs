@@ -433,10 +433,7 @@ impl Source {
                 "tsv" => crate::native_text::delimited(text, b'\t')?,
                 _ => crate::native_text::lines(text)?,
             };
-            (
-                TextBackend::Native,
-                vec![crate::extraction::Sheet::from_value(sheet, 0)?],
-            )
+            (TextBackend::Native, vec![sheet])
         } else if html(&format) {
             let decoded = html_parse::decode(&raw)?;
             // The tree is let go before the sheet is made, which needs only

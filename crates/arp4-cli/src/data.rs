@@ -698,6 +698,40 @@ pub fn write_lazy_lines(path: &Path, lazy: Lazy<'_>, inline: &[&str]) -> Result<
         Ok(())
     })
 }
+/// [`write_lazy_lines`] of a JSON file, returning the hash of the bytes it
+/// writes, `hash(&encoded_lazy_lines(lazy, inline))`: the encoding of a
+/// large record is as large as the record, and is hashed as it is written
+/// rather than held.
+pub fn write_hashed_lazy_lines(path: &Path, lazy: Lazy<'_>, inline: &[&str]) -> Result<String> {
+    struct Both<W: Write> {
+        write: WriteSink<W>,
+        hash: HashSink,
+    }
+    impl<W: Write> Sink for Both<W> {
+        fn put(&mut self, text: &str) {
+            self.write.put(text);
+            self.hash.put(text);
+        }
+    }
+    let mut digest = None;
+    replace_streamed(path, |out| {
+        let mut sink = Both {
+            write: WriteSink { out, error: None },
+            hash: HashSink::new(),
+        };
+        render_lazy(lazy, 0, inline, &mut sink)?;
+        sink.put(
+            "
+",
+        );
+        if let Some(error) = sink.write.error {
+            return Err(error.into());
+        }
+        digest = Some(sink.hash.finish());
+        Ok(())
+    })?;
+    digest.context("record not written")
+}
 /// `items` in as much room as they take, for a list held long after it is
 /// made. `Vec::shrink_to_fit` leaves a list in its room when the list takes
 /// half of it or more, as the allocator keeps a block shrunk by no more than

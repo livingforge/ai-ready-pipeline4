@@ -105,7 +105,7 @@ pub fn capture(paths: &[PathBuf], root: Option<&std::path::Path>) -> Result<Inpu
                             number_format: cell.number_format().to_string(),
                             position: cell
                                 .position()
-                                .map(|p| serde_json::from_value(p.clone()))
+                                .map(|p| serde_json::from_value(p.into_owned()))
                                 .transpose()?,
                         });
                     }
