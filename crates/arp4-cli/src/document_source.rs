@@ -490,7 +490,7 @@ impl Source {
                 };
                 let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
                     .into_iter()
-                    .map(|(text, font, _)| (text, Some(font)))
+                    .map(|string| (string.text, Some(string.font)))
                     .collect();
                 if !read.left_out.is_empty() {
                     left_out.push((page, std::mem::take(&mut read.left_out)));
@@ -677,10 +677,10 @@ impl Source {
     }
 
     /// Each page of a PDF original: its size in points (the crop box, else
-    /// the media box), the lines and areas it paints, and where each string
-    /// of its text starts and how wide it runs, in points from its top left
-    /// corner, in the order of the extraction's cells of the page. None for
-    /// another format.
+    /// the media box), the lines and areas it paints, the images it draws,
+    /// and where each string of its text starts and how wide it runs, in
+    /// points from its top left corner, in the order of the extraction's
+    /// cells of the page. None for another format.
     pub fn pdf_pages(&self) -> Result<Option<Vec<PdfPage>>> {
         let Self::Text(TextSource {
             backend: TextBackend::Pdf { doc, .. },
@@ -692,6 +692,7 @@ impl Source {
         let mapped = pdf_mapped_fonts(doc);
         let mut read = PdfFonts::new(&mapped);
         let mut pages = vec![];
+        let mut placed = pdf_images::placements(doc, MAX_PAGE)?.pages.into_iter();
         for (_, id) in doc.get_pages() {
             let [x0, y0, x1, y1] = pdf_page_box(doc, id);
             let raw = doc.get_page_content_with_limit(id, MAX_PAGE)?;
@@ -700,16 +701,42 @@ impl Source {
                 Err(_) => Content::decode(&raw)?,
             };
             let paths = pdf_paths(&content, [x0, y1]);
-            let places = pdf_text(doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
+            let mut places = vec![];
+            let mut invisible = BTreeSet::new();
+            for (i, string) in pdf_text(doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
                 .into_iter()
-                .map(|(_, _, [x, y, width])| [x - x0, y1 - y, width])
-                .collect();
+                .enumerate()
+            {
+                let [x, y, width] = string.origin;
+                places.push([x - x0, y1 - y, width]);
+                if string.invisible {
+                    invisible.insert(i);
+                }
+            }
             read.left_out.clear();
+            // The unit square of an image, its top row at 1, onto the page
+            // from its top left: SVG draws an image from its top left down.
+            let images = placed
+                .next()
+                .map(|(_, placements)| placements)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| {
+                    let [a, b, c, d, e, f] = p.matrix;
+                    PdfImage {
+                        asset: pdf_images::stem(p.index),
+                        matrix: [a, -b, -c, d, c + e - x0, y1 - d - f],
+                        mask: p.mask,
+                    }
+                })
+                .collect();
             pages.push(PdfPage {
                 width: x1 - x0,
                 height: y1 - y0,
                 paths,
                 places,
+                invisible,
+                images,
             });
         }
         Ok(Some(pages))
@@ -1411,7 +1438,7 @@ pub fn base_note(format: &str) -> &'static str {
             "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行、合計行はtfootの行です。ブラウザの表示と同じく、theadの行は表の先頭、tfootの行は末尾に置き、rowspanは行グループ（thead・tbody・tfoot）の外へ伸ばしません。表のセルの外に書いた文字は表の前のブロックにします。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表し、ブロック末尾の<br>は表示どおり除きます。空白と&nbsp;だけのブロックは行にしません。pre内のブロック要素（行ごとに要素を置くハイライト済みのコード）は、preのブロックの中の行として改行で区切ります。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。リンクの行き先になるため、本文から除いた部分やhidden属性の要素のものも、その位置か後のブロックのセルとして記録します（templateの中は除きます）。<img>はimagesにブロックのセル・src・altを記録し、data URLの画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定のpicture_folders（.arp/config.ymlはプロジェクト内、Git管理外の.arp/local.ymlはこのマシンのプロジェクト外も可）の中にあるものは取込時にassetsへ保存し、その外の画像ファイルは読みません。保存した画像にはWindowsでOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落やpre内のブロックをまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
         }
         "pdf" => {
-            "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。フォーム・注釈・Form XObject内の文字は未抽出です。ページが描く画像（Form XObjectの中のものを含み、インライン画像は除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。JPEGとJPEG 2000はそのまま、CCITT FaxはTIFF、そのほかはPNGにします。JBIG2の画像と読めない色空間の画像は保存せず、注記にページを記録します。OCRの文字はセルの値にしません。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
+            "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。フォーム・注釈・Form XObject内の文字は未抽出です。ページが描く画像（Form XObjectの中のものとインライン画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。JPEGはそのまま、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにします。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。OCRの文字はセルの値にしません。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
         }
         format if word(format) => {
             "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表します。セル内の入れ子の表はそのセルの範囲に独自の行・列を持ち、外側のセルは入れ子の表に合わせて広がり（他のセルは結合として記録）、tablesに外側の表をparentとして記録します。罫線がなく、値のある全セルが表を持つ外側の表はレイアウト用の枠とみなし、表として記録しません。入れ子の表を持つ表の行の追加・削除は拒否します。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
@@ -3604,6 +3631,16 @@ impl<'a> PdfFonts<'a> {
     }
 }
 
+/// A string of a PDF page's text: its characters, its font as the extraction
+/// records it, where it starts and how wide it runs (`[x, y, width]` in the
+/// page's user space), and whether the page draws it invisibly.
+struct PdfString {
+    text: String,
+    font: Value,
+    origin: [f64; 3],
+    invisible: bool,
+}
+
 /// A page of a PDF original as [`Source::pdf_pages`] gives it.
 pub struct PdfPage {
     pub width: f64,
@@ -3613,6 +3650,21 @@ pub struct PdfPage {
     /// Where each string starts, and the width it runs along its line,
     /// `[x, y, width]` in points from the top left.
     pub places: Vec<[f64; 3]>,
+    /// The strings drawn invisibly (render modes 3 and 7), as the OCR text
+    /// of a scanned page is, by their index in `places`.
+    pub invisible: BTreeSet<usize>,
+    /// The images the page draws, in the order it draws them.
+    pub images: Vec<PdfImage>,
+}
+
+/// An image a PDF page draws: the asset name of its file without the
+/// extension, the SVG matrix mapping a unit square, drawn from its top left,
+/// onto the page in points from the page's top left, and whether it is a
+/// stencil mask, painting only its dark samples.
+pub struct PdfImage {
+    pub asset: String,
+    pub matrix: [f64; 6],
+    pub mask: bool,
 }
 
 /// A path a PDF page paints: its outline as SVG path data in points from
@@ -3946,7 +3998,7 @@ fn pdf_text<'a>(
     changes: &BTreeMap<usize, String>,
     glyphs: Option<&BTreeMap<usize, BTreeSet<Vec<u8>>>>,
     read: &mut PdfFonts<'a>,
-) -> Result<Vec<(String, Value, [f64; 3])>> {
+) -> Result<Vec<PdfString>> {
     const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let fonts = doc.get_page_fonts(page)?;
     let mut font = Vec::new();
@@ -4178,7 +4230,12 @@ fn pdf_text<'a>(
                         }
                         *bytes = encoded;
                     }
-                    values.push((value, look_of.clone(), origin));
+                    values.push(PdfString {
+                        text: value,
+                        font: look_of.clone(),
+                        origin,
+                        invisible: matches!(render, 3 | 7),
+                    });
                 }
             }
             _ => {}

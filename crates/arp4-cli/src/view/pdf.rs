@@ -1,16 +1,32 @@
-//! A PDF page in its size: the lines and areas it paints, and each string of
-//! its text where the page starts it, as wide as the page draws it, in its
-//! font's size and colour. A string is fitted to its width on the page, so
-//! that a font the viewer lacks does not move the strings after it; one the
-//! content changes keeps its own width.
+//! A PDF page in its size: the images it draws, the lines and areas it
+//! paints, and each string of its text where the page starts it, as wide as
+//! the page draws it, in its font's size and colour. A string is fitted to
+//! its width on the page, so that a font the viewer lacks does not move the
+//! strings after it; one the content changes keeps its own width. A string
+//! the page draws invisibly, as the OCR text over a scanned image, is kept
+//! transparent, where it can still be selected.
 use super::*;
 use crate::excel::coordinate;
+use std::collections::BTreeSet;
 
 /// Pixels of a point.
 const PX: f64 = 4.0 / 3.0;
 
 pub(super) fn pages(document: &Document<'_>, out: &mut Out) -> Result<Vec<Section>> {
     let pages = document.original.pdf_pages()?.unwrap_or_default();
+    // The file of each image saved on import, by its name without extension.
+    let files: BTreeMap<&str, &str> = document.extraction["assets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|asset| {
+            let path = asset["path"].as_str()?;
+            Some((path.split_once('.')?.0, path))
+        })
+        .collect();
+    // An image is written once, where a page first draws it; the pages
+    // drawing it again use it from there.
+    let mut written = BTreeSet::new();
     let mut sections = vec![];
     for (index, sheet) in document.extraction.sheets.iter().enumerate() {
         let name = sheet["name"].as_str().unwrap_or_default();
@@ -31,6 +47,34 @@ pub(super) fn pages(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sectio
             page.width,
             page.height
         );
+        for image in &page.images {
+            let Some(file) = files.get(image.asset.as_str()) else {
+                continue;
+            };
+            let id = format!("pdf-{}", image.asset);
+            if !written.contains(&id) {
+                let Some(url) = image_url(document.assets, file) else {
+                    continue;
+                };
+                let _ = write!(
+                    html,
+                    r#"<defs><image id="{id}" href="{url}" width="1" height="1" preserveAspectRatio="none"/></defs>"#
+                );
+                written.insert(id.clone());
+            }
+            // Adding 0 writes a negative zero as 0.
+            let [a, b, c, d, e, f] = image.matrix.map(|n| n + 0.0);
+            let _ = write!(
+                html,
+                r##"<use href="#{id}" transform="matrix({a:.4} {b:.4} {c:.4} {d:.4} {e:.4} {f:.4})"{}/>"##,
+                // A stencil mask paints its dark samples; the rest shows through.
+                if image.mask {
+                    r#" style="mix-blend-mode:multiply""#
+                } else {
+                    ""
+                }
+            );
+        }
         for path in &page.paths {
             let _ = write!(
                 html,
@@ -61,13 +105,18 @@ pub(super) fn pages(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sectio
             let font = cell_font(sheet, Some(cell), shown);
             let size = font["size"].as_f64().unwrap_or(12.0);
             let text = text_of(shown, Some(cell));
+            let hidden = if page.invisible.contains(&(row as usize - 1)) {
+                "fill-opacity:0;"
+            } else {
+                ""
+            };
             let fit = if width > 0.0 && shown.is_none_or(|s| s.original.is_none()) {
                 format!(r#" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs""#)
             } else {
                 String::new()
             };
             let string = format!(
-                r#"<text data-a="{}" x="{x:.2}" y="{y:.2}" font-size="{size:.2}" style="{}"{fit}>{}</text>"#,
+                r#"<text data-a="{}" x="{x:.2}" y="{y:.2}" font-size="{size:.2}" style="{}{hidden}"{fit}>{}</text>"#,
                 cell.address(),
                 text_css(font, cell_style(sheet, Some(cell))),
                 escape(&text)

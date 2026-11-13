@@ -2,8 +2,8 @@
 //! Windows OCR open. They are imported as assets like the pictures of Word
 //! and PowerPoint, so that a page scanned or saved from an image is read too.
 //!
-//! JPEG is kept as it is, CCITT fax data is wrapped in a TIFF, JPEG 2000 is
-//! kept as a JP2 file, and samples are written as an 8-bit gray or RGB PNG.
+//! JPEG is kept as it is; samples, CCITT fax, JBIG2 and JPEG 2000 images are
+//! decoded and written as 8-bit gray or RGB PNG, which a browser shows too.
 
 use super::ImageAssets;
 use anyhow::{Context, Result, bail, ensure};
@@ -19,51 +19,125 @@ const MAX_SAMPLES: usize = 512 * 1024 * 1024;
 const MAX_PIXELS: u64 = 100_000_000;
 /// How deep Form XObjects may draw one another.
 const MAX_FORM_DEPTH: usize = 16;
+/// The fewest pixels, and pixels along its shorter side, an inline image
+/// needs to be taken: smaller ones are bullets, rules and other marks that
+/// hold no text to read.
+const MIN_INLINE_PIXELS: i64 = 1024;
+const MIN_INLINE_SIDE: i64 = 8;
+
+/// An image a page draws: an image XObject, or an inline image with its
+/// dictionary written out in full.
+pub(super) enum Drawn {
+    Object(ObjectId),
+    Inline(Box<Stream>),
+}
+
+/// An image a page draws: its index among the images of the document, in
+/// the order the pages first draw them, the matrix that maps its unit square
+/// onto the page (in the page's user space), and whether it is a stencil
+/// mask, which paints only where its samples say.
+pub struct Placement {
+    pub index: usize,
+    pub matrix: [f64; 6],
+    pub mask: bool,
+}
+
+/// The images of a PDF by their index, and the images each page (by its
+/// number) draws.
+pub(super) struct Placements {
+    pub images: Vec<Drawn>,
+    pub pages: Vec<(u32, Vec<Placement>)>,
+}
 
 /// The images the pages of `doc` draw, directly or in the Form XObjects they
-/// draw, in the order the pages first draw them. An image drawn more than
-/// once is one file. Inline images are left out.
-pub(super) fn read(doc: &Pdf, max_page: usize) -> Result<ImageAssets> {
+/// draw, page by page, and each image by its index. An image drawn more than
+/// once, and inline images alike in data and dictionary, have one index.
+/// Inline images too small to hold text are left out.
+pub(super) fn placements(doc: &Pdf, max_page: usize) -> Result<Placements> {
     let mut order = vec![];
-    let mut drawn_on: BTreeMap<ObjectId, Vec<u32>> = BTreeMap::new();
+    let mut objects: BTreeMap<ObjectId, usize> = BTreeMap::new();
+    let mut inline: BTreeMap<(String, Vec<u8>), usize> = BTreeMap::new();
+    let mut pages = vec![];
     for (page, id) in doc.get_pages() {
         let raw = doc.get_page_content_with_limit(id, max_page)?;
         let content = match Content::decode_strict(&raw) {
             Ok(content) => content,
             Err(_) => Content::decode(&raw)?,
         };
-        let resources = page_resources(doc, id);
         let mut found = vec![];
         drawn(
             doc,
             &content,
-            &resources,
+            &raw,
+            &page_resources(doc, id),
+            IDENTITY,
             0,
             &mut BTreeSet::new(),
             &mut found,
         );
-        for image in found {
-            let pages = drawn_on.entry(image).or_insert_with(|| {
-                order.push(image);
-                vec![]
-            });
-            if pages.last() != Some(&page) {
-                pages.push(page);
+        let placed = found
+            .into_iter()
+            .map(|(image, matrix, mask)| {
+                let next = order.len();
+                let index = match &image {
+                    Drawn::Object(id) => *objects.entry(*id).or_insert(next),
+                    Drawn::Inline(stream) => *inline
+                        .entry((format!("{:?}", stream.dict), stream.content.clone()))
+                        .or_insert(next),
+                };
+                if index == next {
+                    order.push(image);
+                }
+                Placement {
+                    index,
+                    matrix,
+                    mask,
+                }
+            })
+            .collect();
+        pages.push((page, placed));
+    }
+    Ok(Placements {
+        images: order,
+        pages,
+    })
+}
+
+/// The asset name of the image of `index`, without its extension.
+pub fn stem(index: usize) -> String {
+    format!("image-{:03}", index + 1)
+}
+
+/// The images the pages of `doc` draw as files, named by their index, so
+/// that a name says which image it is whether or not the images before it
+/// could be made files.
+pub(super) fn read(doc: &Pdf, max_page: usize) -> Result<ImageAssets> {
+    let Placements {
+        images: order,
+        pages: placed,
+    } = placements(doc, max_page)?;
+    let mut drawn_on: Vec<Vec<u32>> = vec![vec![]; order.len()];
+    for (page, placements) in &placed {
+        for placement in placements {
+            let pages = &mut drawn_on[placement.index];
+            if pages.last() != Some(page) {
+                pages.push(*page);
             }
         }
     }
     let mut images = ImageAssets::default();
     let mut left_out: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-    for id in order {
-        let pages = drawn_on.remove(&id).unwrap_or_default();
-        match doc
-            .get_object(id)
-            .and_then(Object::as_stream)
+    for (index, (image, pages)) in order.into_iter().zip(drawn_on).enumerate() {
+        let stream = match &image {
+            Drawn::Object(id) => doc.get_object(*id).and_then(Object::as_stream),
+            Drawn::Inline(stream) => Ok(&**stream),
+        };
+        match stream
             .map_err(anyhow::Error::from)
             .and_then(|stream| image_file(doc, stream))
         {
             Ok((bytes, extension)) => {
-                let name = format!("image-{:03}.{extension}", images.files.len() + 1);
+                let name = format!("{}.{extension}", stem(index));
                 images.files.insert(name.clone(), bytes);
                 images.pages.insert(name, pages);
             }
@@ -122,19 +196,72 @@ fn resolved<'a>(doc: &'a Pdf, object: &'a Object) -> &'a Object {
     doc.dereference(object).map_or(object, |(_, object)| object)
 }
 
-/// The images `content` draws with `Do`, and those the Form XObjects it
-/// draws draw, each time it draws one.
+const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// The six numbers of a matrix written as operands or an array.
+fn matrix(numbers: &[Object]) -> Option<[f64; 6]> {
+    let numbers: Vec<f64> = numbers
+        .iter()
+        .map(|n| n.as_float().map(f64::from))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    numbers.try_into().ok()
+}
+
+/// The images `content` (decoded from `raw`) draws when `ctm` maps its space
+/// onto the page, with `Do` and inline, and those the Form XObjects it draws
+/// draw, each time it draws one, with the matrix mapping the image's unit
+/// square onto the page and whether it is a stencil mask.
+#[allow(clippy::too_many_arguments)]
 fn drawn(
     doc: &Pdf,
     content: &Content,
+    raw: &[u8],
     resources: &[&Dictionary],
+    ctm: [f64; 6],
     depth: usize,
     forms: &mut BTreeSet<ObjectId>,
-    found: &mut Vec<ObjectId>,
+    found: &mut Vec<(Drawn, [f64; 6], bool)>,
 ) {
+    let mut ctm = ctm;
+    let mut saved = vec![];
+    // The byte ranges of the inline images, found when the first is drawn.
+    let mut inline_ranges = None;
+    let mut inline_count = 0;
     for operation in &content.operations {
-        if operation.operator != "Do" {
-            continue;
+        match operation.operator.as_str() {
+            "q" => saved.push(ctm),
+            "Q" => ctm = saved.pop().unwrap_or(ctm),
+            "cm" => {
+                if let Some(m) = matrix(&operation.operands) {
+                    ctm = super::pdf_multiply(m, ctm);
+                }
+            }
+            "BI" => {
+                let ranges = inline_ranges.get_or_insert_with(|| {
+                    let lengths: Vec<_> = content
+                        .operations
+                        .iter()
+                        .filter(|o| o.operator == "BI")
+                        .map(|o| match o.operands.first() {
+                            Some(Object::Stream(stream)) => Some(stream.content.len()),
+                            _ => None,
+                        })
+                        .collect();
+                    super::inline_images(raw, &lengths).unwrap_or_default()
+                });
+                let range = ranges.get(inline_count).cloned();
+                inline_count += 1;
+                if let Some(stream) = range.and_then(|range| {
+                    inline_image(doc, &raw[range], operation.operands.first(), resources)
+                }) {
+                    let mask = boolean(&stream.dict, b"ImageMask").unwrap_or(false);
+                    found.push((Drawn::Inline(Box::new(stream)), ctm, mask));
+                }
+                continue;
+            }
+            "Do" => {}
+            _ => continue,
         }
         let Some(Ok(name)) = operation.operands.first().map(Object::as_name) else {
             continue;
@@ -152,7 +279,10 @@ fn drawn(
             continue;
         };
         match stream.dict.get(b"Subtype").and_then(Object::as_name) {
-            Ok(b"Image") => found.push(id),
+            Ok(b"Image") => {
+                let mask = boolean(&stream.dict, b"ImageMask").unwrap_or(false);
+                found.push((Drawn::Object(id), ctm, mask));
+            }
             Ok(b"Form") if depth < MAX_FORM_DEPTH && forms.insert(id) => {
                 if let Ok(raw) = stream.decompressed_content_with_limit(MAX_SAMPLES)
                     && let Ok(inner) = Content::decode(&raw)
@@ -168,13 +298,136 @@ fn drawn(
                         Some(own) => vec![own],
                         None => resources.to_vec(),
                     };
-                    drawn(doc, &inner, &resources, depth + 1, forms, found);
+                    let form_matrix = stream
+                        .dict
+                        .get(b"Matrix")
+                        .ok()
+                        .and_then(|m| m.as_array().ok())
+                        .and_then(|m| matrix(m))
+                        .unwrap_or(IDENTITY);
+                    drawn(
+                        doc,
+                        &inner,
+                        &raw,
+                        &resources,
+                        super::pdf_multiply(form_matrix, ctm),
+                        depth + 1,
+                        forms,
+                        found,
+                    );
                 }
                 forms.remove(&id);
             }
             _ => {}
         }
     }
+}
+
+/// The inline image `bytes` (`BI` to `EI`) holds, with its dictionary written
+/// out as an image XObject's (full keys and filter and color space names, a
+/// named color space taken from `resources`); none when it is too small to
+/// hold text or cannot be read. `parsed` is what lopdf read of it: its data
+/// when it could tell where it ends.
+fn inline_image(
+    doc: &Pdf,
+    bytes: &[u8],
+    parsed: Option<&Object>,
+    resources: &[&Dictionary],
+) -> Option<Stream> {
+    let space = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'\x0c' | b'\0');
+    // The ID that ends the dictionary: the first set off by whitespace.
+    let id = (2..bytes.len().saturating_sub(2))
+        .find(|&i| space(bytes[i - 1]) && bytes[i..].starts_with(b"ID") && space(bytes[i + 2]))?;
+    let mut written = b"<<".to_vec();
+    written.extend_from_slice(&bytes[2..id]);
+    written.extend_from_slice(b">> BI");
+    let abbreviated = Content::decode(&written)
+        .ok()?
+        .operations
+        .into_iter()
+        .next()?
+        .operands
+        .into_iter()
+        .next()?
+        .as_dict()
+        .ok()?
+        .clone();
+    let data = match parsed {
+        Some(Object::Stream(stream)) => stream.content.clone(),
+        // The data runs from after the whitespace that ends ID to the
+        // whitespace before EI.
+        _ => {
+            let end = bytes.len().checked_sub(2)?;
+            let end = if end > id + 3 && space(bytes[end - 1]) {
+                end - 1
+            } else {
+                end
+            };
+            bytes.get(id + 3..end)?.to_vec()
+        }
+    };
+    let full_name = |name: &[u8]| -> Vec<u8> {
+        match name {
+            b"AHx" => b"ASCIIHexDecode".to_vec(),
+            b"A85" => b"ASCII85Decode".to_vec(),
+            b"LZW" => b"LZWDecode".to_vec(),
+            b"Fl" => b"FlateDecode".to_vec(),
+            b"RL" => b"RunLengthDecode".to_vec(),
+            b"CCF" => b"CCITTFaxDecode".to_vec(),
+            b"DCT" => b"DCTDecode".to_vec(),
+            other => other.to_vec(),
+        }
+    };
+    let mut dict = Dictionary::new();
+    dict.set("Subtype", Object::Name(b"Image".to_vec()));
+    for (key, value) in abbreviated.iter() {
+        let key: &[u8] = match key.as_slice() {
+            b"BPC" => b"BitsPerComponent",
+            b"CS" => b"ColorSpace",
+            b"D" => b"Decode",
+            b"DP" => b"DecodeParms",
+            b"F" => b"Filter",
+            b"H" => b"Height",
+            b"IM" => b"ImageMask",
+            b"I" => b"Interpolate",
+            b"W" => b"Width",
+            other => other,
+        };
+        let value = match (key, value) {
+            (b"Filter", Object::Name(name)) => Object::Name(full_name(name)),
+            (b"Filter", Object::Array(names)) => Object::Array(
+                names
+                    .iter()
+                    .map(|n| match n {
+                        Object::Name(name) => Object::Name(full_name(name)),
+                        other => other.clone(),
+                    })
+                    .collect(),
+            ),
+            // A color space other than a device space is named in the
+            // page's resources.
+            (b"ColorSpace", Object::Name(name))
+                if !matches!(
+                    name.as_slice(),
+                    b"G" | b"RGB" | b"CMYK" | b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK"
+                ) =>
+            {
+                resources
+                    .iter()
+                    .find_map(|r| dictionary(doc, r.get(b"ColorSpace").ok()?)?.get(name).ok())
+                    .cloned()
+                    .unwrap_or_else(|| value.clone())
+            }
+            _ => value.clone(),
+        };
+        dict.set(key.to_vec(), value);
+    }
+    let width = integer(&dict, b"Width")?;
+    let height = integer(&dict, b"Height")?;
+    if width.min(height) < MIN_INLINE_SIDE || width * height < MIN_INLINE_PIXELS {
+        return None;
+    }
+    Some(Stream::new(dict, data))
 }
 
 fn integer(dict: &Dictionary, key: &[u8]) -> Option<i64> {
@@ -216,11 +469,11 @@ fn image_file(doc: &Pdf, stream: &Stream) -> Result<(Vec<u8>, &'static str)> {
     let inverted = inverted(doc, dict);
     match codec {
         Some(b"DCTDecode" | b"DCT") => Ok((data, "jpg")),
-        Some(b"JPXDecode") => Ok((data, "jp2")),
+        Some(b"JPXDecode") => Ok((jpx_png(&data)?, "png")),
         Some(b"CCITTFaxDecode" | b"CCF") => {
-            Ok((ccitt_tiff(dict, params[general], &data, inverted)?, "tif"))
+            Ok((ccitt_png(dict, params[general], &data, inverted)?, "png"))
         }
-        Some(_) => bail!("JBIG2で圧縮した画像"),
+        Some(_) => Ok((jbig2_png(doc, params[general], &data, inverted)?, "png")),
         None => Ok((samples_png(doc, dict, data, inverted)?, "png")),
     }
 }
@@ -249,16 +502,86 @@ fn inverted(doc: &Pdf, dict: &Dictionary) -> bool {
     matches!((number(0), number(1)), (Some(from), Some(to)) if from > to)
 }
 
-/// CCITT fax data as a one-strip TIFF, which Windows decodes. The pixels the
-/// data codes as black are written black when the PDF draws them dark.
-fn ccitt_tiff(
+/// Bi-level rows as 8-bit gray, black pixels `black` and white ones the other.
+struct Bilevel {
+    width: usize,
+    black: u8,
+    pixels: Vec<u8>,
+    /// Where the current row starts, for the JBIG2 decoder pushing pixels.
+    row: usize,
+}
+
+impl Bilevel {
+    fn new(width: u32, black: u8) -> Self {
+        Self {
+            width: width as usize,
+            black,
+            pixels: vec![],
+            row: 0,
+        }
+    }
+
+    fn color(&self, black: bool) -> u8 {
+        if black { self.black } else { 255 - self.black }
+    }
+
+    /// The pixels as a PNG `height` rows high, rows not decoded left white.
+    fn png(mut self, height: usize) -> Result<Vec<u8>> {
+        ensure!(!self.pixels.is_empty(), "画素を読めない画像");
+        let white = self.color(false);
+        self.pixels.resize(self.width * height, white);
+        Ok(png(self.width as u32, height as u32, 1, &self.pixels))
+    }
+}
+
+impl hayro_ccitt::Decoder for Bilevel {
+    fn push_row(&mut self, changes: &[u32]) {
+        let start = self.pixels.len();
+        let white = self.color(false);
+        self.pixels.resize(start + self.width, white);
+        let black = self.color(true);
+        let row = &mut self.pixels[start..];
+        for run in changes.chunks(2) {
+            let from = (run[0] as usize).min(row.len());
+            let to = run
+                .get(1)
+                .map_or(row.len(), |to| (*to as usize).min(row.len()));
+            row[from..to].fill(black);
+        }
+    }
+}
+
+impl hayro_jbig2::Decoder for Bilevel {
+    fn push_pixel(&mut self, black: bool) {
+        let color = self.color(black);
+        self.pixels.push(color);
+    }
+
+    fn push_pixel_chunk(&mut self, black: bool, chunk_count: u32) {
+        let color = self.color(black);
+        self.pixels
+            .extend(std::iter::repeat_n(color, chunk_count as usize * 8));
+    }
+
+    fn next_line(&mut self) {
+        // A row holds the page's width; chunks of 8 can run past it.
+        self.row += self.width;
+        let white = self.color(false);
+        self.pixels.resize(self.row, white);
+    }
+}
+
+/// CCITT fax data as a gray PNG. The pixels the data codes as black are
+/// black when the PDF draws them dark.
+fn ccitt_png(
     dict: &Dictionary,
     params: Option<&Dictionary>,
     data: &[u8],
     inverted: bool,
 ) -> Result<Vec<u8>> {
+    use hayro_ccitt::{DecodeSettings, DecoderContext, EncodingMode};
     let param = |key: &[u8]| params.and_then(|p| integer(p, key));
-    let flag = |key: &[u8]| params.and_then(|p| boolean(p, key)).unwrap_or(false);
+    let flag = |key: &[u8], default: bool| params.and_then(|p| boolean(p, key)).unwrap_or(default);
     let k = param(b"K").unwrap_or(0);
     let columns = param(b"Columns")
         .or_else(|| integer(dict, b"Width"))
@@ -269,53 +592,114 @@ fn ccitt_tiff(
         .context("高さのないCCITTの画像")?;
     let columns = u32::try_from(columns).context("幅が負のCCITTの画像")?;
     let rows = u32::try_from(rows).context("高さが負のCCITTの画像")?;
+    ensure!(
+        u64::from(columns) * u64::from(rows) <= MAX_PIXELS,
+        "画素数が多すぎる画像"
+    );
     // A coded black pixel is the sample BlackIs1 gives it, which the Decode
     // array maps to dark when it does not invert that sample (an image mask
     // paints sample 0; a gray image draws sample 0 black).
-    let dark = flag(b"BlackIs1") == inverted;
-    let photometric: u32 = if dark { 0 } else { 1 };
-    let (compression, options_tag, options): (u32, u16, u32) = if k < 0 {
-        (4, 293, 0)
-    } else {
-        (
-            3,
-            292,
-            u32::from(k > 0) | if flag(b"EncodedByteAlign") { 4 } else { 0 },
-        )
-    };
-    let length = u32::try_from(data.len()).context("大きすぎるCCITTの画像")?;
-    // Header, then the directory with its entries in tag order, then the data.
-    let entries: [(u16, u16, u32); 10] = [
-        (256, 4, columns),
-        (257, 4, rows),
-        (258, 3, 1),
-        (259, 3, compression),
-        (262, 3, photometric),
-        (273, 4, 0), // the data's offset, set below
-        (277, 3, 1),
-        (278, 4, rows),
-        (279, 4, length),
-        (options_tag, 4, options),
-    ];
-    let offset = 8 + 2 + entries.len() as u32 * 12 + 4;
-    let mut tiff = b"II*\0".to_vec();
-    tiff.extend(8u32.to_le_bytes());
-    tiff.extend((entries.len() as u16).to_le_bytes());
-    for (tag, kind, value) in entries {
-        let value = if tag == 273 { offset } else { value };
-        tiff.extend(tag.to_le_bytes());
-        tiff.extend(kind.to_le_bytes());
-        tiff.extend(1u32.to_le_bytes());
-        if kind == 3 {
-            tiff.extend((value as u16).to_le_bytes());
-            tiff.extend([0, 0]);
-        } else {
-            tiff.extend(value.to_le_bytes());
-        }
+    let dark = flag(b"BlackIs1", false) == inverted;
+    let mut context = DecoderContext::new(DecodeSettings {
+        columns,
+        rows,
+        end_of_block: flag(b"EndOfBlock", true),
+        end_of_line: flag(b"EndOfLine", false),
+        rows_are_byte_aligned: flag(b"EncodedByteAlign", false),
+        encoding: match k {
+            ..0 => EncodingMode::Group4,
+            0 => EncodingMode::Group3_1D,
+            _ => EncodingMode::Group3_2D,
+        },
+        strict: false,
+    });
+    let mut image = Bilevel::new(columns, if dark { 0 } else { 255 });
+    // Rows decoded before damaged data are drawn, as PDF readers draw them.
+    let decoded = hayro_ccitt::decode(data, &mut image, &mut context);
+    if image.pixels.is_empty() {
+        decoded.map_err(|e| anyhow::anyhow!("CCITTの画像を読めない（{e:?}）"))?;
     }
-    tiff.extend(0u32.to_le_bytes());
-    tiff.extend_from_slice(data);
-    Ok(tiff)
+    image.png(rows as usize)
+}
+
+/// JBIG2 data, with the global segments its parameters name, as a gray PNG.
+/// JBIG2 codes black as 1, which the filter gives as sample 0.
+fn jbig2_png(
+    doc: &Pdf,
+    params: Option<&Dictionary>,
+    data: &[u8],
+    inverted: bool,
+) -> Result<Vec<u8>> {
+    use hayro_jbig2::{DecodeSettings, Globals, Page};
+    let settings = DecodeSettings::default();
+    let globals = match params.and_then(|p| p.get(b"JBIG2Globals").ok()) {
+        Some(globals) => {
+            let stream = resolved(doc, globals)
+                .as_stream()
+                .context("JBIG2の共通部分を読めない画像")?;
+            let bytes = stream
+                .decompressed_content_with_limit(MAX_SAMPLES)
+                .context("JBIG2の共通部分を読めない画像")?;
+            Some(
+                Globals::new(&bytes, &settings)
+                    .map_err(|e| anyhow::anyhow!("JBIG2の共通部分を読めない画像（{e}）"))?,
+            )
+        }
+        None => None,
+    };
+    let page = Page::new_embedded(data, globals.as_ref(), &settings)
+        .map_err(|e| anyhow::anyhow!("JBIG2の画像を読めない（{e}）"))?;
+    let (width, height) = (page.width(), page.height());
+    ensure!(
+        u64::from(width) * u64::from(height) <= MAX_PIXELS,
+        "画素数が多すぎる画像"
+    );
+    let mut image = Bilevel::new(width, if inverted { 255 } else { 0 });
+    page.decode(&mut image)
+        .map_err(|e| anyhow::anyhow!("JBIG2の画像を読めない（{e}）"))?;
+    image.png(height as usize)
+}
+
+/// JPEG 2000 data as an 8-bit gray or RGB PNG, without its alpha channel.
+fn jpx_png(data: &[u8]) -> Result<Vec<u8>> {
+    use hayro_jpeg2000::{ColorSpace, DecodeSettings, DecoderContext, Image};
+    let image = Image::new(data, &DecodeSettings::default())
+        .map_err(|e| anyhow::anyhow!("JPEG 2000の画像を読めない（{e}）"))?;
+    let (width, height) = (image.width(), image.height());
+    ensure!(
+        u64::from(width) * u64::from(height) <= MAX_PIXELS,
+        "画素数が多すぎる画像"
+    );
+    let space = match image.color_space() {
+        ColorSpace::Gray => Space::Gray,
+        ColorSpace::RGB => Space::Rgb,
+        ColorSpace::CMYK => Space::Cmyk,
+        ColorSpace::Icc { num_channels, .. } | ColorSpace::Unknown { num_channels } => {
+            match num_channels {
+                1 => Space::Gray,
+                3 => Space::Rgb,
+                4 => Space::Cmyk,
+                n => bail!("色の成分が{n}個のJPEG 2000の画像"),
+            }
+        }
+    };
+    let mut context = DecoderContext::default();
+    let decoded = image
+        .decode(&mut context)
+        .map_err(|e| anyhow::anyhow!("JPEG 2000の画像を読めない（{e}）"))?;
+    let samples = decoded.data_u8();
+    let components = space.components();
+    let stride = components + usize::from(image.has_alpha());
+    let pixels = (width as usize) * (height as usize);
+    ensure!(
+        samples.len() >= pixels * stride,
+        "JPEG 2000の画像を読めない"
+    );
+    let mut out = Vec::with_capacity(pixels * space.channels());
+    for pixel in samples.chunks_exact(stride).take(pixels) {
+        space.write(&pixel[..components], &mut out);
+    }
+    Ok(png(width, height, space.channels(), &out))
 }
 
 /// A color space an image's samples are read in.
@@ -581,6 +965,125 @@ mod tests {
     }
 
     #[test]
+    fn an_image_is_placed_where_the_page_and_its_forms_map_its_unit_square() {
+        let mut doc = drawing(Stream::new(
+            dictionary! { "Subtype" => "Image", "Width" => 1, "Height" => 1, "ImageMask" => true },
+            vec![0],
+        ));
+        // The page scales the image to 200 by 100 at (10, 20) and then draws
+        // the form, whose matrix moves what it draws by (5, 0).
+        let page = doc.get_pages()[&1];
+        let contents = doc
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let content = b"q 200 0 0 100 10 20 cm /Im1 Do Q /Fm1 Do".to_vec();
+        doc.objects.insert(
+            contents,
+            Object::Stream(Stream::new(dictionary! {}, content)),
+        );
+        let resources = doc
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Resources")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .clone();
+        let form = resources
+            .get(b"XObject")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Fm1")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        doc.get_object_mut(form)
+            .unwrap()
+            .as_stream_mut()
+            .unwrap()
+            .dict
+            .set(
+                "Matrix",
+                vec![1.into(), 0.into(), 0.into(), 1.into(), 5.into(), 0.into()],
+            );
+        let Placements {
+            images: order,
+            pages,
+        } = placements(&doc, 1 << 20).unwrap();
+        assert_eq!(order.len(), 1);
+        let placed: Vec<_> = pages[0]
+            .1
+            .iter()
+            .map(|p| (p.index, p.matrix, p.mask))
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                (0, [200.0, 0.0, 0.0, 100.0, 10.0, 20.0], true),
+                (0, [1.0, 0.0, 0.0, 1.0, 5.0, 0.0], true),
+            ]
+        );
+    }
+
+    /// A one-page PDF drawing `content` with a color space `CS0`.
+    fn inline_page(content: &[u8]) -> Pdf {
+        let mut doc = drawing(Stream::new(dictionary! { "Subtype" => "Image" }, vec![]));
+        let page = doc.get_pages()[&1];
+        let dict = doc.get_dictionary_mut(page).unwrap();
+        let contents = dict.get(b"Contents").unwrap().as_reference().unwrap();
+        let palette = Object::string_literal(vec![0u8, 0, 0, 255, 255, 255]);
+        dict.set(
+            "Resources",
+            dictionary! { "ColorSpace" => dictionary! {
+                "CS0" => vec!["Indexed".into(), "DeviceRGB".into(), 1.into(), palette],
+            } },
+        );
+        doc.objects.insert(
+            contents,
+            Object::Stream(Stream::new(dictionary! {}, content.to_vec())),
+        );
+        doc
+    }
+
+    #[test]
+    fn inline_images_are_read_with_their_abbreviations_and_small_ones_left_out() {
+        // A 32 by 32 gray image, drawn twice, and a palette image in a named
+        // color space, which lopdf does not read.
+        let mut content =
+            b"q 100 0 0 100 0 0 cm BI /W 32 /H 32 /CS /G /BPC 8 /F /AHx ID\n".to_vec();
+        let hex: String = (0..32 * 32)
+            .map(|i| format!("{:02x}", (i % 2) * 255))
+            .collect();
+        content.extend(hex.as_bytes());
+        content.extend(b">\nEI Q ");
+        let again = content.clone();
+        content.extend(&again);
+        content.extend(b"BI /W 32 /H 32 /CS /CS0 /BPC 1 ID\n");
+        content.extend(vec![0b1010_1010; 4 * 32]);
+        content.extend(b"\nEI ");
+        // A bullet too small to hold text.
+        content.extend(b"BI /W 4 /H 4 /CS /G /BPC 8 ID\n0123456789abcdef\nEI");
+        let doc = inline_page(&content);
+        let images = read(&doc, 1 << 20).unwrap();
+        assert_eq!(images.files.len(), 2, "{:?}", images.files.keys());
+        let (color_type, pixels) = png_pixels(&images.files["image-001.png"]);
+        assert_eq!((color_type, &pixels[..4]), (0, &[0, 0, 255, 0][..]));
+        let (color_type, pixels) = png_pixels(&images.files["image-002.png"]);
+        assert_eq!(
+            (color_type, &pixels[..7]),
+            (2, &[0, 255, 255, 255, 0, 0, 0][..])
+        );
+        let pages = placements(&doc, 1 << 20).unwrap().pages;
+        let placed: Vec<_> = pages[0].1.iter().map(|p| (p.index, p.matrix[0])).collect();
+        assert_eq!(placed, [(0, 100.0), (0, 100.0), (1, 1.0)]);
+    }
+
+    #[test]
     fn an_image_drawn_directly_and_in_a_form_is_one_file_of_its_page() {
         let image = Stream::new(
             dictionary! {
@@ -621,32 +1124,148 @@ mod tests {
         assert_eq!(png_pixels(&png), (2, vec![0, 255, 0, 0]));
     }
 
+    /// The rows of a 16 by 3 bitmap (black where true), and their Group 4 code.
+    fn bitmap() -> (Vec<Vec<bool>>, Vec<u8>) {
+        let rows: Vec<Vec<bool>> = vec![
+            (0..16).map(|x| x < 4).collect(),
+            vec![false; 16],
+            (0..16).map(|x| x >= 8).collect(),
+        ];
+        let mut encoder = fax::encoder::Encoder::new(fax::VecWriter::new());
+        for row in &rows {
+            let pels = row.iter().map(|black| {
+                if *black {
+                    fax::Color::Black
+                } else {
+                    fax::Color::White
+                }
+            });
+            encoder.encode_line(pels, 16).unwrap();
+        }
+        (rows, encoder.finish().unwrap().finish())
+    }
+
+    /// The gray pixels of `rows`, black `black` and white the other.
+    fn gray(rows: &[Vec<bool>], black: u8) -> Vec<u8> {
+        rows.iter()
+            .flat_map(|row| {
+                std::iter::once(0).chain(
+                    row.iter()
+                        .map(move |b| if *b { black } else { 255 - black }),
+                )
+            })
+            .collect()
+    }
+
+    /// A JBIG2 segment of page 1 in the embedded organization.
+    fn segment(number: u32, kind: u8, data: &[u8]) -> Vec<u8> {
+        let mut out = number.to_be_bytes().to_vec();
+        out.extend([kind, 0, 1]);
+        out.extend((data.len() as u32).to_be_bytes());
+        out.extend(data);
+        out
+    }
+
     #[test]
-    fn jpeg_is_kept_ccitt_is_wrapped_and_jbig2_is_named_in_the_note() {
+    fn ccitt_and_jbig2_are_decoded_black_where_the_pdf_draws_dark() {
+        let (rows, code) = bitmap();
+        let fax = |black_is_1: bool, decode: Option<Object>| {
+            let mut dict = dictionary! {
+                "Subtype" => "Image", "Width" => 16, "Height" => 3, "Filter" => "CCITTFaxDecode",
+                "BitsPerComponent" => 1, "ColorSpace" => "DeviceGray",
+                "DecodeParms" => dictionary! { "K" => -1, "Columns" => 16, "BlackIs1" => black_is_1 },
+            };
+            if let Some(decode) = decode {
+                dict.set("Decode", decode);
+            }
+            let images = read(&drawing(Stream::new(dict, code.clone())), 1 << 20).unwrap();
+            png_pixels(&images.files["image-001.png"])
+        };
+        assert_eq!(fax(false, None), (0, gray(&rows, 0)));
+        // BlackIs1 gives coded black the sample 1, which gray draws white.
+        assert_eq!(fax(true, None), (0, gray(&rows, 255)));
+        let inverting = Object::Array(vec![1.into(), 0.into()]);
+        assert_eq!(fax(true, Some(inverting)), (0, gray(&rows, 0)));
+
+        // The same code as the MMR data of a JBIG2 generic region.
+        let mut page = vec![0; 8];
+        page[..4].copy_from_slice(&16u32.to_be_bytes());
+        page[4..8].copy_from_slice(&3u32.to_be_bytes());
+        page.extend([0; 11]);
+        let mut region = 16u32.to_be_bytes().to_vec();
+        region.extend(3u32.to_be_bytes());
+        region.extend([0; 9]);
+        region.push(1); // MMR
+        region.extend(&code);
+        let jbig2 = [
+            segment(0, 48, &page),
+            segment(1, 38, &region),
+            segment(2, 49, &[]),
+        ]
+        .concat();
+        let image = |decode: Option<Object>| {
+            let mut dict = dictionary! {
+                "Subtype" => "Image", "Width" => 16, "Height" => 3, "Filter" => "JBIG2Decode",
+                "BitsPerComponent" => 1, "ColorSpace" => "DeviceGray",
+            };
+            if let Some(decode) = decode {
+                dict.set("Decode", decode);
+            }
+            let images = read(&drawing(Stream::new(dict, jbig2.clone())), 1 << 20).unwrap();
+            assert!(images.note.is_empty(), "{}", images.note);
+            png_pixels(&images.files["image-001.png"])
+        };
+        assert_eq!(image(None), (0, gray(&rows, 0)));
+        assert_eq!(
+            image(Some(Object::Array(vec![1.into(), 0.into()]))),
+            (0, gray(&rows, 255))
+        );
+    }
+
+    #[test]
+    fn jpeg_is_kept_jpeg_2000_is_decoded_and_unreadable_images_are_named() {
         let jpeg = Stream::new(
             dictionary! { "Subtype" => "Image", "Width" => 1, "Height" => 1, "Filter" => "DCTDecode" },
             b"\xff\xd8jpeg".to_vec(),
         );
         let images = read(&drawing(jpeg), 1 << 20).unwrap();
         assert_eq!(images.files["image-001.jpg"], b"\xff\xd8jpeg");
-        let fax = Stream::new(
-            dictionary! {
-                "Subtype" => "Image", "Width" => 8, "Height" => 2, "Filter" => "CCITTFaxDecode",
-                "DecodeParms" => dictionary! { "K" => -1, "Columns" => 8 },
-            },
-            b"g4".to_vec(),
+        let jpx = Stream::new(
+            dictionary! { "Subtype" => "Image", "Width" => 4, "Height" => 2, "Filter" => "JPXDecode" },
+            include_bytes!("../../tests/support/pdf/rgb-4x2.jp2").to_vec(),
         );
-        let images = read(&drawing(fax), 1 << 20).unwrap();
-        let tiff = &images.files["image-001.tif"];
-        assert!(tiff.starts_with(b"II*\0") && tiff.ends_with(b"g4"));
-        let jbig2 = Stream::new(
+        let images = read(&drawing(jpx), 1 << 20).unwrap();
+        let (color_type, pixels) = png_pixels(&images.files["image-001.png"]);
+        assert_eq!(color_type, 2);
+        assert_eq!(
+            pixels,
+            [
+                0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, //
+                0, 0, 0, 0, 128, 128, 128, 255, 255, 0, 0, 255, 255,
+            ]
+        );
+        let lab = Stream::new(
+            dictionary! {
+                "Subtype" => "Image", "Width" => 1, "Height" => 1, "BitsPerComponent" => 8,
+                "ColorSpace" => vec!["Lab".into(), dictionary! {}.into()],
+            },
+            vec![0, 0, 0],
+        );
+        let images = read(&drawing(lab), 1 << 20).unwrap();
+        assert!(images.files.is_empty());
+        assert!(
+            images.note.contains("1ページ（色空間Labの画像）"),
+            "{}",
+            images.note
+        );
+        let broken = Stream::new(
             dictionary! { "Subtype" => "Image", "Width" => 1, "Height" => 1, "Filter" => "JBIG2Decode" },
             b"jb2".to_vec(),
         );
-        let images = read(&drawing(jbig2), 1 << 20).unwrap();
+        let images = read(&drawing(broken), 1 << 20).unwrap();
         assert!(images.files.is_empty());
         assert!(
-            images.note.contains("1ページ（JBIG2で圧縮した画像）"),
+            images.note.contains("JBIG2の画像を読めない"),
             "{}",
             images.note
         );
