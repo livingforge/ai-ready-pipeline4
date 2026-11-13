@@ -54,6 +54,7 @@ pub fn visuals(extraction: &Extraction) -> Result<Vec<Value>> {
     if !crate::document_source::is_excel(&extension(extraction))
         && !crate::document_source::WORD_FORMATS.contains(&extension(extraction).as_str())
         && !crate::document_source::HTML_FORMATS.contains(&extension(extraction).as_str())
+        && extension(extraction) != "pdf"
     {
         return Ok(vec![]);
     }

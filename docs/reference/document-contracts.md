@@ -1293,6 +1293,8 @@
 | <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/pages</code> | <code>{"description":"PDFでこの画像を描くページ（1から）","minItems":1,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/pages/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/chart_parts</code> | <code>{"type":"array"}</code> |
@@ -1693,6 +1695,8 @@
 | <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/pages</code> | <code>{"description":"PDFでこの画像を描くページ（1から）","minItems":1,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/pages/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/chart_parts</code> | <code>{"type":"array"}</code> |

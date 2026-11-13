@@ -421,7 +421,9 @@ impl Store {
         };
         let sha = hash(book.raw());
         let info = json!({"path":source_path,"sha256":sha});
-        let note = book.note();
+        let images = book.image_assets()?;
+        let mut note = book.note();
+        note.push_str(&images.note);
         let mut assets = BTreeMap::new();
         if let Source::Excel(workbook) = &book {
             for sheet in &workbook.sheets {
@@ -435,10 +437,16 @@ impl Store {
                 }
             }
         }
-        assets.extend(book.image_assets()?);
+        assets.extend(images.files);
         let asset_info: Vec<_> = assets
             .iter()
-            .map(|(name, bytes)| json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)}))
+            .map(|(name, bytes)| {
+                let mut info = json!({"path":name,"sha256":hash(bytes),"ocr":crate::ocr::recognize(name, bytes)});
+                if let Some(pages) = images.pages.get(name) {
+                    info["pages"] = json!(pages);
+                }
+                info
+            })
             .collect();
         let mut extraction = json!({"schema_version":crate::extraction::SCHEMA_VERSION,"document_id":id,"source":info,"parser":format!("arp4-rust/{};{};ocr=auto-images",env!("CARGO_PKG_VERSION"),book.parser()),"findings":[{"level":"warning","code":"R001","message":&note}],"assets":asset_info});
         if matches!(&book, Source::Excel(workbook) if workbook.date1904) {

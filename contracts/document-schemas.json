@@ -5756,6 +5756,15 @@
               "minLength": 1,
               "type": "string"
             },
+            "pages": {
+              "type": "array",
+              "description": "PDFでこの画像を描くページ（1から）",
+              "minItems": 1,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
             "sha256": {
               "pattern": "^[a-f0-9]{64}$",
               "type": "string"
@@ -7992,6 +8001,15 @@
             "path": {
               "minLength": 1,
               "type": "string"
+            },
+            "pages": {
+              "type": "array",
+              "description": "PDFでこの画像を描くページ（1から）",
+              "minItems": 1,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
             },
             "sha256": {
               "pattern": "^[a-f0-9]{64}$",
