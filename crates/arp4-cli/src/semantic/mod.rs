@@ -29,6 +29,24 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PROMPT: &str = include_str!("../../../../surface/prompts/semantic.md");
 pub const REVIEW_PROMPT: &str = include_str!("../../../../surface/prompts/semantic-review.md");
 
+/// The extraction protocol without its generated contract tables, for a task
+/// that delivers the reply schema those tables summarize.
+pub fn guidance() -> String {
+    let (before, rest) = PROMPT
+        .split_once("## Generated contract")
+        .expect("semantic prompt has a generated contract");
+    let (_, after) = rest
+        .split_once("<!-- generated:contract:end -->")
+        .expect("generated contract is closed");
+    format!(
+        "{}
+
+{}",
+        before.trim_end(),
+        after.trim_start()
+    )
+}
+
 pub fn remap_catalog(catalog: &mut Catalog, aliases: &BTreeMap<String, String>) -> Result<()> {
     ensure!(
         catalog.entries.keys().collect::<BTreeSet<_>>() == aliases.keys().collect(),

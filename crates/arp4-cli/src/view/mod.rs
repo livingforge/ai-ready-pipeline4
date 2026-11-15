@@ -424,6 +424,70 @@ fn text_of(shown: Option<&Shown>, cell: Option<crate::extraction::Cell<'_>>) -> 
 /// An image asset of the document as a `data:` URL, none when it is not
 /// kept or is not an image a page shows.
 fn image_url(assets: &Path, name: &str) -> Option<String> {
+    image_url_of(assets, name, false)
+}
+
+/// [`image_url`] of a picture a page turns itself, as a PDF page turns its
+/// images by their matrix: a JPEG's EXIF orientation, which a browser would
+/// turn it by again (an SVG image takes no CSS saying otherwise), is reset.
+fn unturned_image_url(assets: &Path, name: &str) -> Option<String> {
+    image_url_of(assets, name, true)
+}
+
+/// Resets the orientation the EXIF data of JPEG `bytes` names to none (1).
+fn unturn_jpeg(bytes: &mut [u8]) {
+    let word = |b: &[u8], at: usize, big: bool| {
+        b.get(at..at + 2).map(|w| {
+            if big {
+                u16::from_be_bytes([w[0], w[1]])
+            } else {
+                u16::from_le_bytes([w[0], w[1]])
+            }
+        })
+    };
+    let mut at = 2;
+    while at + 4 <= bytes.len() && bytes[at] == 0xff {
+        let marker = bytes[at + 1];
+        let Some(length) = word(bytes, at + 2, true).map(usize::from) else {
+            return;
+        };
+        // The data starts at the start of scan: no EXIF data after it.
+        if marker == 0xda {
+            return;
+        }
+        if marker == 0xe1 && bytes.get(at + 4..at + 10) == Some(b"Exif\0\0") {
+            let tiff = at + 10;
+            let big = bytes.get(tiff..tiff + 2) == Some(b"MM");
+            let Some(first) = bytes.get(tiff + 4..tiff + 8).map(|o| {
+                let o = [o[0], o[1], o[2], o[3]];
+                (if big {
+                    u32::from_be_bytes(o)
+                } else {
+                    u32::from_le_bytes(o)
+                }) as usize
+            }) else {
+                return;
+            };
+            let ifd = tiff + first;
+            let count = word(bytes, ifd, big).map_or(0, usize::from);
+            for entry in (0..count).map(|k| ifd + 2 + 12 * k) {
+                if word(bytes, entry, big) == Some(0x0112)
+                    && let Some(value) = bytes.get_mut(entry + 8..entry + 10)
+                {
+                    value.copy_from_slice(&if big {
+                        1u16.to_be_bytes()
+                    } else {
+                        1u16.to_le_bytes()
+                    });
+                }
+            }
+            return;
+        }
+        at += 2 + length;
+    }
+}
+
+fn image_url_of(assets: &Path, name: &str, unturned: bool) -> Option<String> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let kind = match name.rsplit_once('.')?.1.to_ascii_lowercase().as_str() {
         "png" => "image/png",
@@ -437,13 +501,59 @@ fn image_url(assets: &Path, name: &str) -> Option<String> {
     if name.contains(['/', '\\']) || name.starts_with('.') {
         return None;
     }
-    let bytes = std::fs::read(assets.join(name)).ok()?;
+    let mut bytes = std::fs::read(assets.join(name)).ok()?;
+    if unturned && kind == "image/jpeg" {
+        unturn_jpeg(&mut bytes);
+    }
     Some(format!("data:{kind};base64,{}", STANDARD.encode(bytes)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_jpeg_orientation_is_reset_for_a_page_that_turns_it_itself() {
+        // SOI, APP1 with EXIF data holding one entry, orientation 6, then SOS.
+        let jpeg = |big: bool| {
+            let word = |v: u16| {
+                if big {
+                    v.to_be_bytes()
+                } else {
+                    v.to_le_bytes()
+                }
+            };
+            let long = |v: u32| {
+                if big {
+                    v.to_be_bytes()
+                } else {
+                    v.to_le_bytes()
+                }
+            };
+            let mut tiff = if big { b"MM".to_vec() } else { b"II".to_vec() };
+            tiff.extend(word(42));
+            tiff.extend(long(8));
+            tiff.extend(word(1));
+            tiff.extend(word(0x0112));
+            tiff.extend(word(3));
+            tiff.extend(long(1));
+            tiff.extend(word(6));
+            tiff.extend([0, 0]);
+            tiff.extend(long(0));
+            let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
+            bytes.extend(((tiff.len() + 8) as u16).to_be_bytes());
+            bytes.extend(b"Exif\0\0");
+            bytes.extend(&tiff);
+            bytes.extend([0xff, 0xda, 0, 2]);
+            (bytes, 4 + 2 + 6 + 8 + 2 + 8)
+        };
+        for big in [false, true] {
+            let (mut bytes, value) = jpeg(big);
+            assert_eq!(bytes[value + usize::from(big)], 6);
+            unturn_jpeg(&mut bytes);
+            assert_eq!(bytes[value + usize::from(big)], 1, "big-endian: {big}");
+        }
+    }
 
     #[test]
     fn text_is_escaped_and_fonts_written_as_css() {

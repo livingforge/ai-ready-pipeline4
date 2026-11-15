@@ -29,7 +29,55 @@ pub fn open(root: &Path) -> Result<PathBuf> {
         config["sources"].as_str().context("sources required")?,
     )?;
     project_picture_folders(&root, &config)?;
+    Exclusion::of(&config)?;
     Ok(root)
+}
+
+/// The originals below the sources folder that are not documents, by the
+/// regular expressions of `exclude` in the project configuration. A pattern
+/// is searched for anywhere in a path relative to the sources folder, with
+/// `/` between names; a folder's path ends with `/`, and a folder that
+/// matches excludes everything below it.
+pub struct Exclusion(Vec<regex::Regex>);
+
+impl Exclusion {
+    /// The patterns of the project configuration `config`.
+    pub fn of(config: &Value) -> Result<Self> {
+        let patterns = config["exclude"].as_array().map_or(&[][..], Vec::as_slice);
+        patterns
+            .iter()
+            .map(|pattern| {
+                let pattern = pattern
+                    .as_str()
+                    .context("exclude pattern must be a string")?;
+                regex::Regex::new(pattern).with_context(|| {
+                    format!(
+                        "exclude pattern {pattern} of .arp/config.yml is not a regular expression"
+                    )
+                })
+            })
+            .collect::<Result<_>>()
+            .map(Self)
+    }
+
+    /// The pattern excluding `path`, relative to the sources folder: the
+    /// first that matches it or one of the folders holding it. A folder's
+    /// path ends with `/`.
+    pub fn pattern(&self, path: &str) -> Option<&str> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let folders = path
+            .match_indices('/')
+            .map(|(end, _)| &path[..=end])
+            .filter(|folder| folder.len() < path.len());
+        folders.chain([path]).find_map(|path| {
+            self.0
+                .iter()
+                .find(|pattern| pattern.is_match(path))
+                .map(regex::Regex::as_str)
+        })
+    }
 }
 
 /// The `picture_folders` of the project configuration `config`, which stay

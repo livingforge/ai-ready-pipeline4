@@ -16,7 +16,7 @@ Native text rows also carry position: kind, heading hierarchy, original line/byt
 
 Preserve every independent claim, exception, negation, boundary, unit and condition. Use row/column/sheet/merge context to interpret tables. Do not turn observations, estimates or references into requirements. Do not invent design details. Check contradictions and synonyms within the document; keep conflicting claims and report them in open_issues. Cross-document consistency is checked separately.
 
-The generated contract below defines reply and item fields. Copy packet fingerprint and document ID. packet and document may be omitted from a validate-reply/submit reply, in which case the CLI fills them from the task (a supplied value must still match).
+The reply schema supplied with the task defines reply and item fields; where the generated contract appears below, it summarizes that schema. Copy packet fingerprint and document ID. packet and document may be omitted from a validate-reply/submit reply, in which case the CLI fills them from the task (a supplied value must still match).
 
 Use a local ASCII identifier for each item key. Omit statement when it merely repeats structured fields: the CLI creates a mechanical display sentence. Include statement when it carries additional source-supported meaning (roles, exceptions or relationships) not represented by those fields; never drop that meaning.
 

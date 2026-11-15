@@ -578,15 +578,19 @@ pub(super) fn sheet(
     name: &str,
     part: &str,
     styles: &super::word_fonts::WordStyles,
+    drawn: &BTreeMap<String, String>,
 ) -> Result<crate::extraction::Sheet> {
     let mut cells = BlockCells::new();
-    let layout = laid_out(xml, &mut |mut block| {
+    let layout = laid_out(xml, drawn, &mut |mut block| {
         let font = styles.block_font(&block);
         let text = std::mem::take(&mut block.text);
         cells.push(&block, text, font);
     })?;
     cells.finish(name, part, &layout.merges, &layout.tables)
 }
+
+const DIAGRAM_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/diagram";
+const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 
 fn word_element(node: Node<'_, '_>, name: &str) -> bool {
     node.has_tag_name((WORD, name))
@@ -846,6 +850,9 @@ fn number(node: Option<Node<'_, '_>>, default: usize) -> Result<usize> {
 
 struct Text<'a, 'input, 'f> {
     text: String,
+    /// The text the SmartArt graphics and charts of the part show, by the
+    /// relationship naming each.
+    drawn: &'f BTreeMap<String, String>,
     segments: Vec<Segment<'a, 'input>>,
     runs: usize,
     bold_runs: usize,
@@ -857,9 +864,14 @@ struct Text<'a, 'input, 'f> {
 }
 
 impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
-    fn new(instructions: &'f BTreeSet<usize>, hidden: &'f HiddenBranches) -> Self {
+    fn new(
+        instructions: &'f BTreeSet<usize>,
+        hidden: &'f HiddenBranches,
+        drawn: &'f BTreeMap<String, String>,
+    ) -> Self {
         Self {
             text: String::new(),
+            drawn,
             segments: vec![],
             runs: 0,
             bold_runs: 0,
@@ -903,6 +915,22 @@ impl<'a, 'input, 'f> Text<'a, 'input, 'f> {
                 && self.run_nodes.last() != Some(&run)
             {
                 self.run_nodes.push(run);
+            }
+            // The text of a SmartArt graphic or a chart in the paragraph,
+            // which Word draws, shown on a line of its own.
+            let graphic = if node.has_tag_name((DIAGRAM_NS, "relIds")) {
+                node.attribute((REL, "dm"))
+            } else if node.has_tag_name((CHART_NS, "chart")) {
+                node.attribute((REL, "id"))
+            } else {
+                None
+            };
+            if let Some(text) = graphic.and_then(|id| self.drawn.get(id)) {
+                if self.text.len() > before {
+                    self.push(None, "\n");
+                }
+                self.push(None, text);
+                continue;
             }
             // Characters Word draws itself are shown but cannot be edited as text.
             if in_run && word_element(node, "noBreakHyphen") {
@@ -1051,6 +1079,7 @@ fn measure<'a, 'input>(
     table: Node<'a, 'input>,
     instructions: &BTreeSet<usize>,
     hidden: &HiddenBranches,
+    drawn: &BTreeMap<String, String>,
 ) -> Result<Measured<'a, 'input>> {
     let rows: Vec<_> = table
         .descendants()
@@ -1122,13 +1151,13 @@ fn measure<'a, 'input>(
         }) {
             if word_element(node, "p") {
                 paragraphs
-                    .get_or_insert_with(|| Text::new(instructions, hidden))
+                    .get_or_insert_with(|| Text::new(instructions, hidden, drawn))
                     .paragraph(node);
             } else if word_element(node, "tbl")
                 && !cell.continued
                 && nearest(node, "tc") == Some(cell.node)
             {
-                let nested = measure(node, instructions, hidden)?;
+                let nested = measure(node, instructions, hidden, drawn)?;
                 if !nested.rows.is_empty() {
                     push_text(&mut content, paragraphs.take(), cell.fill, &place);
                     content.push(Content::Table(nested));
@@ -1318,23 +1347,32 @@ fn place<'a, 'input>(
     Ok(())
 }
 
-pub(super) fn layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a, 'input>> {
+/// `drawn` gives the text of the part's SmartArt graphics and charts, by
+/// relationship ([`super::word_drawn_texts`]).
+pub(super) fn layout<'a, 'input>(
+    xml: &'a Document<'input>,
+    drawn: &BTreeMap<String, String>,
+) -> Result<Layout<'a, 'input>> {
     let mut blocks = vec![];
-    let mut layout = laid_out(xml, &mut |block| blocks.push(block))?;
+    let mut layout = laid_out(xml, drawn, &mut |block| blocks.push(block))?;
     layout.blocks = blocks;
     Ok(layout)
 }
 
 /// The [`layout`] of `xml` without its blocks: what [`Layout::restructure`]
 /// reads of it. A long document's blocks took twice the memory of its rows.
-pub(super) fn rows_layout<'a, 'input>(xml: &'a Document<'input>) -> Result<Layout<'a, 'input>> {
-    laid_out(xml, &mut |_| {})
+pub(super) fn rows_layout<'a, 'input>(
+    xml: &'a Document<'input>,
+    drawn: &BTreeMap<String, String>,
+) -> Result<Layout<'a, 'input>> {
+    laid_out(xml, drawn, &mut |_| {})
 }
 
 /// The [`layout`] of `xml`, whose blocks are handed to `laid` in their order
 /// rather than kept.
 fn laid_out<'a, 'input>(
     xml: &'a Document<'input>,
+    drawn: &BTreeMap<String, String>,
     laid: &mut dyn FnMut(Block<'a, 'input>),
 ) -> Result<Layout<'a, 'input>> {
     let mut output = Layout {
@@ -1349,14 +1387,14 @@ fn laid_out<'a, 'input>(
     let mut row = 1;
     for node in xml.descendants().filter(|n| !hidden.contains(*n)) {
         if word_element(node, "tbl") && nearest(node, "tbl").is_none() {
-            let table = measure(node, &instructions, &hidden)?;
+            let table = measure(node, &instructions, &hidden, drawn)?;
             if !table.rows.is_empty() {
                 let height = table.height();
                 place(table, (row, 0), 0, None, false, &mut output, laid)?;
                 row += height;
             }
         } else if word_element(node, "p") && nearest(node, "tc").is_none() {
-            let mut text = Text::new(&instructions, &hidden);
+            let mut text = Text::new(&instructions, &hidden, drawn);
             text.paragraph(node);
             if !text.text.is_empty() {
                 laid(text.block(format!("A{row}"), false, None));
@@ -1441,7 +1479,7 @@ pub(super) fn edit<'a, 'input>(
         "{}",
         if application == "Word" {
             format!(
-                "the edit crosses a paragraph boundary or a character Word draws itself (non-breaking hyphen, symbol, equation) in {}; line breaks and tabs can be edited within a paragraph, but paragraphs cannot be split or joined",
+                "the edit crosses a paragraph boundary or a character Word draws itself (non-breaking hyphen, symbol, equation, the text of a SmartArt graphic or chart) in {}; line breaks and tabs can be edited within a paragraph, but paragraphs cannot be split or joined",
                 block.address
             )
         } else if block.breaks {
@@ -1603,7 +1641,7 @@ mod tests {
         let xml = document(&format!("<w:tbl>{}</w:tbl>", row.repeat(rows)));
         let parsed = Document::parse(&xml).unwrap();
         let start = Instant::now();
-        let result = layout(&parsed).unwrap();
+        let result = layout(&parsed, &BTreeMap::new()).unwrap();
         eprintln!(
             "table_ms={} rows={}",
             start.elapsed().as_millis(),
@@ -1617,7 +1655,7 @@ mod tests {
         ));
         let parsed = Document::parse(&xml).unwrap();
         let start = Instant::now();
-        let result = layout(&parsed).unwrap();
+        let result = layout(&parsed, &BTreeMap::new()).unwrap();
         eprintln!(
             "alternate_ms={} blocks={}",
             start.elapsed().as_millis(),
@@ -1629,7 +1667,7 @@ mod tests {
             "<w:r><w:t>x</w:t></w:r>".repeat(1200)
         ));
         let parsed = Document::parse(&xml).unwrap();
-        let result = layout(&parsed).unwrap();
+        let result = layout(&parsed, &BTreeMap::new()).unwrap();
         let start = Instant::now();
         let edited = edit(&result.blocks[0], "replacement").unwrap();
         eprintln!(
@@ -1696,7 +1734,7 @@ mod tests {
             p("本文")
         ));
         let xml = Document::parse(&body).unwrap();
-        let layout = layout(&xml).unwrap();
+        let layout = layout(&xml, &BTreeMap::new()).unwrap();
         assert_eq!(
             cells(&layout),
             [
@@ -1731,7 +1769,14 @@ mod tests {
         );
         let styles = super::super::word_fonts::WordStyles::new(&BTreeMap::new()).unwrap();
         let sheet = crate::extraction::sheet_view(
-            &sheet(&xml, "document", "word/document.xml", &styles).unwrap(),
+            &sheet(
+                &xml,
+                "document",
+                "word/document.xml",
+                &styles,
+                &BTreeMap::new(),
+            )
+            .unwrap(),
         )
         .unwrap();
         // Made as the blocks are laid out, it is the sheet of the layout.
@@ -1808,7 +1853,7 @@ mod tests {
             let body = document(&format!("<w:tbl>{rows}</w:tbl>"));
             let xml = Document::parse(&body).unwrap();
             assert_eq!(
-                layout(&xml).unwrap().tables[0]["header_rows"],
+                layout(&xml, &BTreeMap::new()).unwrap().tables[0]["header_rows"],
                 expected,
                 "{rows}"
             );
@@ -1828,7 +1873,7 @@ mod tests {
         ));
         let xml = Document::parse(&body).unwrap();
         assert_eq!(
-            cells(&layout(&xml).unwrap()),
+            cells(&layout(&xml, &BTreeMap::new()).unwrap()),
             [("A1", "画面\n注記"), ("A2", "a\tb\nc")].map(|(a, t)| (a.to_owned(), t.to_owned()))
         );
     }
@@ -1837,7 +1882,7 @@ mod tests {
     fn edits(cell: &str, after: &str) -> Result<Vec<(String, String)>> {
         let body = document(&format!("<w:tbl><w:tr><w:tc>{cell}</w:tc></w:tr></w:tbl>"));
         let xml = Document::parse(&body).unwrap();
-        let layout = layout(&xml).unwrap();
+        let layout = layout(&xml, &BTreeMap::new()).unwrap();
         Ok(edit(&layout.blocks[0], after)?
             .into_iter()
             .map(|(node, new)| (element(node), new))
@@ -1948,7 +1993,7 @@ mod tests {
         ));
         let xml = Document::parse(&body).unwrap();
         assert_eq!(
-            cells(&layout(&xml).unwrap()),
+            cells(&layout(&xml, &BTreeMap::new()).unwrap()),
             [("A1", "漢字"), ("A2", "残移動先"), ("A3", "表示")]
                 .map(|(a, t)| (a.to_owned(), t.to_owned()))
         );
@@ -2008,7 +2053,7 @@ mod tests {
             p("後")
         ));
         let xml = Document::parse(&body).unwrap();
-        let layout = layout(&xml).unwrap();
+        let layout = layout(&xml, &BTreeMap::new()).unwrap();
         assert_eq!(
             cells(&layout),
             [
@@ -2082,7 +2127,7 @@ mod tests {
             ),
         ));
         let xml = Document::parse(&body).unwrap();
-        let names: Vec<_> = layout(&xml)
+        let names: Vec<_> = layout(&xml, &BTreeMap::new())
             .unwrap()
             .tables
             .iter()
@@ -2114,7 +2159,7 @@ mod tests {
             p("後")
         ));
         let xml = Document::parse(&body).unwrap();
-        let layout = layout(&xml).unwrap();
+        let layout = layout(&xml, &BTreeMap::new()).unwrap();
         let apply = |operations: &[StructuralOperation]| -> Result<String> {
             let operations: Vec<_> = operations.iter().collect();
             let values = InsertedText::from([(("op".into(), 0, "A".into()), "新".into())]);
@@ -2167,7 +2212,7 @@ mod tests {
             "<w:p xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"><w:r><w:t>式 </w:t></w:r><m:oMath><m:r><m:t>x=1</m:t></m:r></m:oMath></w:p>",
         ));
         let xml = Document::parse(&body).unwrap();
-        let layout = layout(&xml).unwrap();
+        let layout = layout(&xml, &BTreeMap::new()).unwrap();
         assert_eq!(
             cells(&layout),
             [

@@ -196,9 +196,12 @@ pub(super) struct Layout {
     links: Vec<Value>,
     /// The names links point to (`id`, and `name` of `a`) and the cells at them.
     anchors: Vec<Value>,
-    /// The `<img>` of the page: the cell of its block, `src`, `alt` and,
+    /// The pictures of the page (`<img>` and the others
+    /// [`picture_sources`] reads): the cell of its block, `src`, `alt` and,
     /// once [`Layout::assets`] names it, the `asset` of a picture it reads.
     images: Vec<Value>,
+    /// The `href` of the page's `<base>`, which its relative URLs start from.
+    base: Option<String>,
 }
 
 /// The extensions of pictures a page shows that are kept as assets.
@@ -259,7 +262,20 @@ impl Layout {
         let mut pictures = Pictures::default();
         // The asset of each picture already named, by file or by its bytes.
         let mut named: BTreeMap<String, String> = BTreeMap::new();
-        let directory = page.parent().unwrap_or(Path::new(""));
+        let mut directory = page.parent().unwrap_or(Path::new("")).to_path_buf();
+        // A relative `<base>` names the folder relative URLs start from: its
+        // own, or the one of the page it names.
+        if let Some(base) = &self.base {
+            let scheme = base.split_once(':').is_some_and(|(name, _)| {
+                name.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+            });
+            if !scheme && !base.starts_with('/') && !base.starts_with('\\') {
+                let folder = base.rsplit_once('/').map_or("", |(folder, _)| folder);
+                directory.push(super::percent_decode_lenient(folder));
+            }
+        }
+        let directory = directory.as_path();
         for image in &mut self.images {
             let src = image["src"].as_str().unwrap_or("").to_owned();
             let next = format!("image-{:03}", named.len() + 1);
@@ -306,6 +322,79 @@ impl Layout {
         }
         pictures
     }
+}
+
+/// The pictures element `element` shows by URL: an image's source, an image
+/// input's, an object's or embed's when it is a picture, an SVG drawing's
+/// image, and the background picture its own style sets.
+fn picture_sources(element: &html_parse::Element) -> Vec<String> {
+    let picture = |url: &str| {
+        url.trim_start().starts_with("data:image/")
+            || url
+                .split(['?', '#'])
+                .next()
+                .and_then(|path| path.rsplit_once('.'))
+                .is_some_and(|(_, extension)| {
+                    PICTURES.contains(&extension.to_ascii_lowercase().as_str())
+                })
+    };
+    let typed = || {
+        element
+            .attribute("type")
+            .is_some_and(|t| t.trim().starts_with("image/"))
+    };
+    let mut sources: Vec<&str> = vec![];
+    match &*element.name {
+        // A page loading its pictures as they are scrolled to keeps a
+        // placeholder in `src` and the picture in a data attribute.
+        "img" => sources.extend(
+            ["data-src", "data-lazy-src", "data-original", "src"]
+                .into_iter()
+                .find_map(|name| element.attribute(name).filter(|v| !v.trim().is_empty())),
+        ),
+        "input"
+            if element
+                .attribute("type")
+                .is_some_and(|t| t.trim().eq_ignore_ascii_case("image")) =>
+        {
+            sources.extend(element.attribute("src"));
+        }
+        "object" => sources.extend(element.attribute("data").filter(|d| typed() || picture(d))),
+        "embed" => sources.extend(element.attribute("src").filter(|s| typed() || picture(s))),
+        "image" if element.foreign => {
+            sources.extend(
+                element
+                    .attribute("href")
+                    .or_else(|| element.attribute("xlink:href")),
+            );
+        }
+        _ => {}
+    }
+    // `background` and `background-image` declarations naming `url(...)`.
+    if let Some(style) = element.attribute("style") {
+        for declaration in style.split(';') {
+            let Some((property, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            let property = property.trim().to_ascii_lowercase();
+            if property != "background" && property != "background-image" {
+                continue;
+            }
+            let mut rest = value;
+            while let Some(start) = rest.find("url(") {
+                let inner = &rest[start + 4..];
+                let Some(end) = inner.find(')') else {
+                    break;
+                };
+                let url = inner[..end].trim().trim_matches(['"', '\'']).trim();
+                if !url.is_empty() {
+                    sources.push(url);
+                }
+                rest = &inner[end + 1..];
+            }
+        }
+    }
+    sources.into_iter().map(str::to_owned).collect()
 }
 
 /// Whether element `node` shows no text of the document.
@@ -375,10 +464,28 @@ impl Layout {
         };
         let last = spans.last().map(|(_, _, index)| *index);
         let mut names = BTreeSet::new();
-        for (node, excluded) in excluded.iter().enumerate() {
+        for (node, left_out) in excluded.iter().enumerate() {
             let Some(element) = tree.element(node) else {
                 continue;
             };
+            if element.name == "base" && self.base.is_none() {
+                self.base = element.attribute("href").map(str::to_owned);
+            }
+            // An image input, an object, an embed and an SVG drawing hold no
+            // text of the page, but show their pictures where they are: a
+            // picture of one is read unless what holds it is left out.
+            let holder = if element.foreign && element.name == "image" {
+                tree.ancestors(node)
+                    .find(|a| tree.element(*a).is_some_and(|e| !e.foreign))
+            } else if matches!(&*element.name, "input" | "object" | "embed") {
+                Some(node)
+            } else {
+                None
+            };
+            let drawn = holder
+                .and_then(|holder| tree.parent(holder))
+                .is_some_and(|parent| !excluded[parent]);
+            let excluded = &(*left_out && !drawn);
             let range = tree.nodes[node].range.clone();
             let name = element
                 .attribute("id")
@@ -400,7 +507,8 @@ impl Layout {
                 continue;
             }
             let linking = element.name == "a" && element.attribute("href").is_some();
-            if element.name != "img" && !linking {
+            let pictures = picture_sources(element);
+            if pictures.is_empty() && !linking {
                 continue;
             }
             // The nearest block of the block element holding the element.
@@ -419,20 +527,24 @@ impl Layout {
                         .copied()
                         .filter(|(start, _, _)| container.contains(start))
                 });
-            if element.name == "img" {
+            if !pictures.is_empty() {
                 // A picture by itself is the next block's, or the last one's.
                 let index = around
                     .map(|(_, _, index)| index)
                     .or_else(|| block_at(range.start))
                     .or(last);
-                if let (Some(index), Some(src)) = (index, element.attribute("src")) {
-                    let mut image = json!({"address":self.blocks[index].address,"src":src});
-                    if let Some(alt) = element.attribute("alt") {
-                        image["alt"] = json!(alt);
+                if let Some(index) = index {
+                    for src in pictures {
+                        let mut image = json!({"address":self.blocks[index].address,"src":src});
+                        if let Some(alt) = element.attribute("alt") {
+                            image["alt"] = json!(alt);
+                        }
+                        self.images.push(image);
                     }
-                    self.images.push(image);
                 }
-                continue;
+                if !linking {
+                    continue;
+                }
             }
             let Some(url) = element.attribute("href").filter(|_| element.name == "a") else {
                 continue;
@@ -1205,6 +1317,7 @@ pub(super) fn layout(tree: &Tree, text: &str) -> Result<Layout> {
             links: vec![],
             anchors: vec![],
             images: vec![],
+            base: None,
         },
         run: Run::new(),
         row: 1,

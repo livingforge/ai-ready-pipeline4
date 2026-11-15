@@ -85,8 +85,12 @@ pub(super) fn refresh(
                 ensure!(parts.contains(part), "visual chart part missing");
                 reference["chart_part"] = json!(part);
             }
-            // Slide text is laid out with the slide's paragraphs, not as shape text.
-            if !slide && drawing["text"].as_str().is_some_and(|s| !s.is_empty()) {
+            // Slide text is laid out with the slide's paragraphs, not as shape
+            // text; a chart's titles are not edited as its frame's text.
+            if !slide
+                && drawing["chart_part"].is_null()
+                && drawing["text"].as_str().is_some_and(|s| !s.is_empty())
+            {
                 let (_, raw) = drawing_id
                     .rsplit_once('#')
                     .context("drawing ID without part")?;

@@ -150,7 +150,7 @@ impl Workflow {
                 !directory.exists(),
                 "existing run directory; recover before retrying"
             );
-            let data = self.interactive_data(&task)?;
+            let data = self.interactive_data(&task, interaction::Reader::Once)?;
             let format = crate::project::agent_read_format(&self.store.root)?;
             let text = format.prompt(&data)?;
             // `task` is the complete reading view. Structured fields are for

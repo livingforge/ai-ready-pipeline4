@@ -518,6 +518,7 @@ mod tests {
             skipped_sheets: vec![],
             date1904: false,
             rich_values: vec![],
+            other_images: BTreeMap::new(),
         };
         let looks = drawing_looks(&book).unwrap();
         let plain = &looks["xl/drawings/drawing1.xml#2"];

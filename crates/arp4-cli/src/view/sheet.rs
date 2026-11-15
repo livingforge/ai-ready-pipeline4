@@ -907,6 +907,21 @@ fn drawing_rect(
             emu(&anchor["ext"]["cy"]).unwrap_or(0.0),
         ),
     };
+    // Excel anchors a shape turned about a quarter (45° to 135°, 225° to
+    // 315°) by the box it covers as turned: its own box is that box with its
+    // width and height swapped about its centre, which the turn turns back.
+    let quarter = transform["rot"]
+        .as_str()
+        .and_then(|r| r.parse::<f64>().ok())
+        .is_some_and(|r| (45.0..135.0).contains(&(r / 60_000.0).rem_euclid(180.0)));
+    if quarter {
+        return Some(Rect {
+            x: x + (w - h) / 2.0,
+            y: y + (h - w) / 2.0,
+            w: h,
+            h: w,
+        });
+    }
     Some(Rect { x, y, w, h })
 }
 
@@ -976,6 +991,25 @@ mod tests {
         assert_eq!(excel_font(&theme)["latin"], "游ゴシック");
         let own = json!({"latin":"Arial","east_asian":"Arial"});
         assert!(matches!(excel_font(&own), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_shape_turned_a_quarter_is_drawn_in_its_own_box_turned() {
+        let lines = Lines {
+            x: vec![40.0, 40.0, 140.0, 240.0, 340.0],
+            y: vec![20.0, 20.0, 40.0, 60.0, 80.0],
+        };
+        // Its anchor covers 200 by 40 pixels as turned: its own box is 40 by
+        // 200 about the same centre, which the turn of 90 degrees lays down.
+        let turned = |rot: &str| {
+            let drawing = json!({"anchor":{"kind":"twoCellAnchor","from":{"col":0,"row":0},"to":{"col":2,"row":2}},
+                "transform":{"rot":rot}});
+            let rect = drawing_rect(&drawing, &HashMap::default(), &lines, 0).unwrap();
+            (rect.x, rect.y, rect.w, rect.h)
+        };
+        assert_eq!(turned("5400000"), (120.0, -60.0, 40.0, 200.0));
+        assert_eq!(turned("16200000"), (120.0, -60.0, 40.0, 200.0));
+        assert_eq!(turned("1800000"), (40.0, 20.0, 200.0, 40.0));
     }
 
     #[test]

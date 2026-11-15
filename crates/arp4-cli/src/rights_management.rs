@@ -5,7 +5,7 @@
 //! right to remove it (owner or export) and to access the content
 //! programmatically.
 
-use crate::document_source::{EXCEL_FORMATS, WORD_FORMATS, encryption};
+use crate::document_source::{EXCEL_FORMATS, WORD_FORMATS, encryption, is_powerpoint};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
@@ -31,7 +31,7 @@ impl Application {
             Self::Excel
         } else if WORD_FORMATS.contains(&format) {
             Self::Word
-        } else if format == "pptx" {
+        } else if is_powerpoint(format) {
             Self::PowerPoint
         } else {
             bail!("protection is only removed from Excel, Word and PowerPoint files, not .{format}")
@@ -227,8 +227,21 @@ pub(crate) mod office {
                     call(document, "SaveAs2", vec![Arg::Text(path), Arg::Int(format)])?;
                 }
                 Application::PowerPoint => {
-                    // ppSaveAsOpenXMLPresentation
-                    call(document, "SaveAs", vec![Arg::Text(path), Arg::Int(24)])?;
+                    // PowerPoint keeps no file format to save in again: the
+                    // copy's extension names it (ppSaveAsOpenXMLPresentation,
+                    // its macro-enabled form, and the two template forms).
+                    let format = match output
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                    {
+                        Some("pptm") => 25,
+                        Some("potx") => 26,
+                        Some("potm") => 27,
+                        _ => 24,
+                    };
+                    call(document, "SaveAs", vec![Arg::Text(path), Arg::Int(format)])?;
                 }
             }
             Ok(())

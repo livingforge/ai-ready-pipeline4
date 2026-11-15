@@ -346,6 +346,9 @@ struct Rows<'w> {
     cell_formats: &'w [CellFormat],
     date1904: bool,
     rich_values: &'w mut Vec<String>,
+    /// The cells holding rich values, with their value metadata index:
+    /// pictures placed in them among them.
+    rich_cells: Vec<(String, usize)>,
     cells: Vec<Cell>,
     /// The places of the cells read, by column and row: a large sheet has a
     /// cell for each of its values, and their addresses took several times
@@ -432,8 +435,11 @@ impl Rows<'_> {
                 let raw_value = child(c, "v").and_then(|n| n.text()).unwrap_or("");
                 // A picture placed in the cell or a linked data type keeps
                 // its value in rich data; the cell holds only `#VALUE!`.
-                if c.attribute("vm").is_some() {
+                if let Some(metadata) = c.attribute("vm") {
                     self.rich_values.push(format!("{}!{address}", self.sheet));
+                    if let Ok(metadata) = metadata.parse() {
+                        self.rich_cells.push((address.to_owned(), metadata));
+                    }
                 }
                 let mut runs = vec![];
                 let (kind, value) = match c.attribute("t").unwrap_or("n") {
@@ -765,6 +771,8 @@ impl Workbook {
             .and_then(|properties| properties.attribute("date1904"))
             .is_some_and(|flag| matches!(flag, "1" | "true" | "on"));
         let mut rich_values = vec![];
+        let cell_pictures = visuals::cell_pictures(&parts);
+        let mut picture_cells = BTreeSet::new();
         let mut sheets = vec![];
         let mut sheet_cells = vec![];
         let (worksheets, skipped_sheets) = sheet_parts(&parts)?;
@@ -809,6 +817,7 @@ impl Workbook {
                 cell_formats: &cell_formats,
                 date1904,
                 rich_values: &mut rich_values,
+                rich_cells: vec![],
                 cells: vec![],
                 places: HashSet::default(),
                 sides: HashMap::default(),
@@ -860,6 +869,7 @@ impl Workbook {
                 filled,
                 hidden_rows,
                 heights,
+                rich_cells,
                 ..
             } = rows;
             let mut merges = child(doc.root_element(), "mergeCells")
@@ -882,12 +892,19 @@ impl Workbook {
             // extraction independent of it so a save alone changes nothing.
             merges.sort();
             let merges: Vec<String> = merges.into_iter().map(|(_, range)| range).collect();
-            let drawings = visuals::extract_visuals(
+            let mut drawings = visuals::extract_visuals(
                 &parts,
                 &part,
                 doc.root_element(),
                 palette.theme.as_ref(),
             )?;
+            // A picture placed in a cell is a picture over the cell.
+            for (address, metadata) in rich_cells {
+                if let Some(media) = cell_pictures.get(&metadata) {
+                    drawings.push(visuals::cell_picture(&parts, &part, &address, media)?);
+                    picture_cells.insert(format!("{name}!{address}"));
+                }
+            }
             let tables = visuals::extract_tables(&parts, &part, doc.root_element())?;
             let comments = visuals::extract_comments(&parts, &persons, &part)?;
             let links = super::cell_objects::extract_links(&parts, &part, doc.root_element())?;
@@ -907,6 +924,9 @@ impl Workbook {
             sheets.push(sheet);
             sheet_cells.push(crate::data::exact(cells));
         }
+        // The cells holding pictures are read; those of other rich values
+        // (linked data types) are not.
+        rich_values.retain(|cell| !picture_cells.contains(cell));
         // Name unique images in first-use order across the workbook. Hashes remain
         // integrity metadata rather than names that readers must copy.
         let mut image_names = BTreeMap::new();
@@ -927,6 +947,50 @@ impl Workbook {
                 }
             }
         }
+        // The images the sheets show apart from their drawings, which the
+        // relationships of the sheets, of their VML drawings (printed header
+        // and footer, notes) and of the charts name; named after the drawings'.
+        let mut other_images = BTreeMap::new();
+        let mut taken: BTreeSet<String> = image_names.keys().cloned().collect();
+        for (rels, bytes) in &parts {
+            let Some(source) = rels
+                .strip_suffix(".rels")
+                .map(|source| source.replacen("/_rels/", "/", 1))
+            else {
+                continue;
+            };
+            let shown = source.starts_with("xl/worksheets/")
+                || source.starts_with("xl/charts/")
+                || (source.starts_with("xl/drawings/") && source.ends_with(".vml"));
+            if !shown {
+                continue;
+            }
+            let Ok(doc) = xml(bytes) else { continue };
+            for rel in doc
+                .descendants()
+                .filter(|n| n.has_tag_name((PKG_REL, "Relationship")))
+                .filter(|n| n.attribute("Type").is_some_and(|t| t.ends_with("/image")))
+                .filter(|n| n.attribute("TargetMode") != Some("External"))
+            {
+                let Some(image) = rel
+                    .attribute("Target")
+                    .and_then(|t| relationship_target(&source, t).ok())
+                    .filter(|image| parts.contains_key(image))
+                else {
+                    continue;
+                };
+                let sha = hash(&parts[&image]);
+                if !taken.insert(sha) {
+                    continue;
+                }
+                let extension = Path::new(&image)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()))
+                    .unwrap_or("bin");
+                other_images.insert(format!("image-{:03}.{extension}", taken.len()), image);
+            }
+        }
         Ok(Self {
             raw,
             parts,
@@ -936,6 +1000,7 @@ impl Workbook {
             skipped_sheets,
             date1904,
             rich_values,
+            other_images,
         })
     }
 }

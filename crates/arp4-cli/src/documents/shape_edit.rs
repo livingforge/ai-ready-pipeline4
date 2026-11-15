@@ -39,10 +39,11 @@ impl Store {
             ));
         }
         let source_path = string(&inspected.meta["source"]["path"])?;
-        if !Path::new(source_path)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pptx"))
-        {
+        if !Path::new(source_path).extension().is_some_and(|extension| {
+            extension
+                .to_str()
+                .is_some_and(|e| crate::document_source::is_powerpoint(&e.to_ascii_lowercase()))
+        }) {
             return Err(rejection(
                 "unsupported_format",
                 "shape edits apply to PowerPoint presentations (.pptx)",

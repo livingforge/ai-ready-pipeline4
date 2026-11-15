@@ -33,6 +33,7 @@ pub(crate) use layout::{
 mod object_edit;
 mod operation_edit;
 mod reading;
+mod relocation;
 mod render;
 mod shape_edit;
 mod slide_edit;
@@ -375,6 +376,21 @@ impl Store {
             Some("project-config"),
         )?;
         under(&self.root, string(&config["sources"])?)
+    }
+    /// The originals below the sources folder that are not documents.
+    pub fn exclusion(&self) -> Result<crate::project::Exclusion> {
+        crate::project::Exclusion::of(&read(
+            &under(&self.root, ".arp/config.yml")?,
+            Some("project-config"),
+        )?)
+    }
+    /// Fails when `path`, relative to the sources folder and ending with `/`
+    /// for a folder, is excluded by the project configuration.
+    pub(crate) fn ensure_included(&self, path: &str) -> Result<()> {
+        if let Some(pattern) = self.exclusion()?.pattern(path) {
+            bail!("{path} is excluded by the pattern {pattern} of exclude in .arp/config.yml");
+        }
+        Ok(())
     }
     /// The original named by a document ID, if it exists under exactly that name.
     /// Windows and macOS would also open a file whose name differs in letter case.

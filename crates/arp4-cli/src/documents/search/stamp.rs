@@ -151,3 +151,124 @@ impl Store {
         Ok((hash(&encoded(&json!(hashes))), references))
     }
 }
+
+/// The name, size and modification time of each file a refresh reads, as a
+/// search compares them with the index before reading it. Reading only the
+/// folders' entries keeps the comparison cheap: the bytes are hashed by a
+/// refresh alone, which a difference here starts.
+pub(super) type Listing = Vec<(String, u64, u128)>;
+
+/// The entries of the folder `dir` with their metadata, which on Windows the
+/// folder's listing carries: no file is opened. A link is listed as an entry,
+/// not followed: the refresh refuses the document holding it.
+fn entries(dir: &Path) -> Result<Vec<(PathBuf, fs::Metadata)>> {
+    let mut entries = vec![];
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        entries.push((entry.path(), entry.metadata()?));
+    }
+    Ok(entries)
+}
+
+fn listed(name: String, meta: &fs::Metadata) -> (String, u64, u128) {
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_nanos());
+    (name, meta.len(), modified)
+}
+
+impl Store {
+    /// The [`Listing`] of the adopted documents' records, of their originals
+    /// and of the project configuration, without the region images.
+    pub(super) fn search_listing(&self) -> Result<Listing> {
+        let mut listing = Listing::new();
+        let config = under(&self.arp, "config.yml")?;
+        listing.push(listed("@config".into(), &fs::metadata(&config)?));
+        let base = under(&self.arp, "documents")?;
+        let mut ids = vec![];
+        // The folders are read a depth at a time, those of one depth on
+        // several threads: a project has a folder or two for each document.
+        let mut level = if base.is_dir() {
+            vec![base.clone()]
+        } else {
+            vec![]
+        };
+        while !level.is_empty() {
+            let mut next = vec![];
+            for read in crate::data::in_order(&level, |dir| entries(dir)) {
+                for (path, meta) in read? {
+                    if meta.is_dir() && !is_link(&meta) {
+                        next.push(path);
+                        continue;
+                    }
+                    let name = path
+                        .strip_prefix(&base)?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if let Some(id) = name.strip_suffix("/document.yml") {
+                        ids.push(id.to_owned());
+                    }
+                    listing.push(listed(name, &meta));
+                }
+            }
+            level = next;
+        }
+        // The originals, by the folder each is in: one listing a folder. Their
+        // paths are joined, not checked a component at a time as `under`
+        // does: a refresh checks each path it reads.
+        let sources = self.sources()?;
+        let mut folders: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+        for id in &ids {
+            let path = sources.join(id);
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            folders
+                .entry(path.parent().unwrap_or(&self.root).to_owned())
+                .or_default()
+                .insert(name);
+        }
+        let folders: Vec<_> = folders.into_iter().collect();
+        let read = crate::data::in_order(&folders, |(folder, _)| {
+            // A folder gone leaves its originals out, as missing.
+            if folder.is_dir() {
+                entries(folder)
+            } else {
+                Ok(vec![])
+            }
+        });
+        for ((_, names), read) in folders.iter().zip(read) {
+            for (path, meta) in read? {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if meta.is_file() && names.contains(name.as_ref()) {
+                    let name = path
+                        .strip_prefix(&self.root)?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    listing.push(listed(format!("@original/{name}"), &meta));
+                }
+            }
+        }
+        listing.sort();
+        Ok(listing)
+    }
+
+    /// The hash a search compares with the one the index keeps: of
+    /// `listing` and of the region images `images`, project paths.
+    pub(super) fn search_files(
+        &self,
+        mut listing: Listing,
+        images: &BTreeSet<String>,
+    ) -> Result<String> {
+        for image in images {
+            if let Ok(meta) = fs::metadata(under(&self.root, image)?) {
+                listing.push(listed(format!("@region/{image}"), &meta));
+            }
+        }
+        Ok(hash(&encoded(&json!(listing))))
+    }
+}

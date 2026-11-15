@@ -1,0 +1,27 @@
+# 取り込みと採用
+
+原本の配置、import、候補の確認、record・adopt・review、原本の移動と削除。形式ごとの抽出範囲は [対応形式](formats.md)、候補の成形は [値の編集](value-edits.md) と [行・列](layout-edits.md)、[Excelの書式・シート・セル](excel-edits.md)、[PowerPointのスライドと図形](slide-edits.md) の操作、応答の読み方は [CLI応答の読み方](responses.md)。
+
+利用者が取り込みをAIに委任した場合は、原本の配置と初期化を確認し、import、候補の成形と検査、record、adoptまで進める。成形もレビューも求められず、原本を取り込んで採用データを作るだけなら `documents import <原本またはフォルダ> --adopt` を使う。各CLI段階のたびに利用者を呼び戻さず、処理件数、採用済み文書、確認が必要な文書と原本位置・理由をまとめて報告する。取り込みの失敗・未対応形式、原本でしか確認できない未抽出情報、曖昧な対応、検査のblockers、判断に必要な権限や情報の不足は対象文書を明示して利用者へ確認する。確認できない内容を読めたことにしない。
+
+adoptは候補を現在版にする操作であり、確認済みの証跡ではない。採用直後の状態は `needs_review`。AIが実際に内容を確認した場合は実際の確認者名でreviewを記録できるが、人による確認を行っていない文書を人の名前でreviewしない。利用者に確認を求める場合は、該当文書と確認箇所・理由を提示し、その文書のreviewを残す。未レビュー文書が残る場合は件数を報告する。
+
+原本は既定で `docs/`、設定は `.arp/config.yml`。初期化は既存の原本やAGENTS.mdを変更せず、Gitに改行を変換させないためsourcesフォルダと `.arp/` の `.gitattributes` に `* -text` を追記する（削除しない）。文書IDはsourcesフォルダ（既定 `docs/`）からの原本の相対パス（拡張子込み、例 `xxx/yyy/仕様.xlsx`）で、採用データは `.arp/documents/<文書ID>/`、候補は `.arp/changes/<文書ID>/` と原本のフォルダ構造をそのまま映す。候補は文書ごとに1つで、再importで置き換わる。原本コピーと版別保存は作らない。原本・変換結果・要件や判断をGitへコミットする。`.arp/work/` と `.arp/cache/` はGit対象外。
+
+最初に `arp4 doctor` を確認する。`implementation: rust` の場合はこれらの資料の範囲で作業する。
+起動できない場合はARPソースの `docs/guides/install.md` を参照する。
+
+- 初期化は `documents init --root <project>`、取り込みは `documents import <原本またはフォルダ>`。原本はsourcesフォルダの中に置く（外は拒否）。ファイル・フォルダのどちらも、ハッシュが同じ候補・採用済み文書はunchangedとして保持する。ファイル応答の `pending_proposal` とフォルダ応答の `pending_proposals` は残っている候補を示す。再抽出するときだけ `--force` を使う。取り込んだ結果が採用済み文書と同じ場合（`--force` の再抽出や、原本を採用済みの版へ戻した場合）は候補を残さずunchangedを返す。フォルダ指定は配下の対応形式をまとめて取り込み、未対応形式はskipped、原本が消えた文書はmissing、手で動かされた原本はmovedとして返す（movedは取り込まない）。`.arp/config.yml` の `exclude`（正規表現のリスト）に該当する原本は飛ばして応答に挙げず、直接指定すると拒否される。除外の設定は利用者が決め、Agentは書き換えない。取り込み済みの文書が除外に該当するとフォルダ応答の `excluded` に挙がるので、利用者の了承を得て `documents remove <文書ID>` で記録を消す（原本は残る）。破損などで読めない原本はfailedに文書IDと理由を返し、他の原本の取り込みは続ける。failedがあれば `ok: false`・終了コード2になるので、該当原本を直して再importする。不要な候補だけを消すときは `documents discard <文書ID>` を使う。
+- 成形・レビューが不要で原本を取り込むだけの場合は `documents import <原本またはフォルダ> --adopt`。新しく作った候補をrecordせず抽出したまま採用し、`.arp/documents/<文書ID>/` を作る。formation.jsonは `by: import`（actor・model・promptなし）で、状態は `imported`（レビュー対象外。reviewもされていない）。単一ファイルの応答は `document` と `state: imported`、フォルダの応答は `adopted` に文書IDを返す。採用済み文書にレビュー記録がある（`reviewed`）か、取り込み後の編集・recordした成形がある（`edited`）場合は採用せず（レビューした内容と読み取りが同じ候補は採用してレビューを引き継ぎ、`state: reviewed`。フォルダは `reviews_kept` に文書ID）、候補を `needs_record` で残して `not_adopted`（フォルダは文書IDと `reason` の組）を返すので、diffで確認してからrecord・adoptする。既存の候補（`pending_proposal(s)`）は採用しない。採用に失敗すると `ok: false` で、エラーに失敗した段階と対象パスが入る（フォルダはfailedの `reason`）。候補はimportが作ったまま（`by: import` の成形記録付き）残るので、原因（ウイルス対策ソフトや同期ソフトが `.arp/` のファイルを開いている等）を除いてから `documents check --proposal <文書ID>` が `ready_to_adopt` なのを確かめ、`documents adopt <文書ID>` で採用する。同じ原本の再 `import --adopt` はunchangedを返し、残った候補を採用しない。エラーが採用済みで候補の削除だけ失敗したと示す場合（`was adopted, but what remains of its proposal is to be discarded`）は、`documents discard <文書ID>` で残りを消す。`imported` の文書を編集すると `needs_review` になる。実際に内容を確認した場合は単一のreviewで `reviewed` にできるが、一括reviewは `imported` を対象にしない。
+- 原本の移動・リネームは `documents move <移動元> <移動先> --actor <担当> --reason <理由>` で行う（文書IDまたはフォルダ。原本・記録・候補・registryの引用をまとめて移し、内容が同じなので本文・構造解釈のレビューと承認は維持される）。原本・`.arp/` の記録を手で動かさない。利用者が原本を先に動かしていても同じコマンドで記録が追随する（`original: already_moved`）。importの応答の `moved` は手で動かされた原本で、取り込まれていないので、示された `from`・`to` で `documents move` を実行する。未完了のworkflowが文書を含むと拒否されるので先に完了させる。応答の `reimport` のHTMLは `documents import <パス> --force` で取り込み直す。`structure_review: lapsed` は原本も編集されていたため、再取込後に構造解釈をレビューする。
+- 原本の削除は `documents remove <文書IDまたはフォルダ>`。原本が残っていれば拒否され、原本ごと消すときは利用者の了承を得て `--delete-originals` を付ける（取り込んでいない変更を持つ原本は拒否）。応答の `registry_entries` の記録は削除した文書を引用しているので、廃止または根拠の差し替えを `spec registry apply` で行う。
+- Windowsで使えない名前（末尾の `.`・空白、`CON` 等の予約名）の原本は取込を拒否する。原本のフォルダ名・ファイル名の変更を利用者に依頼する。
+- 取込やシート・スライドの追加が `document path too long for Git on Windows` / `document folder too long for Git on Windows`（追加は `path_too_long`）で拒否されたら、そのcloneのGitが長いパスを扱えない。利用者に次のいずれかを依頼する: `git config core.longpaths true` の設定（共有する全員のWindowsのcloneで必要）、短いフォルダへのclone、原本のフォルダ名・ファイル名の短縮。Agentの判断でGitの設定を変えない。
+- `documents check --proposal <文書ID>` と `documents diff <文書ID>` で確認し、
+  実際に作業したactor/model/promptを `documents record <文書ID> --model <モデル> --actor <担当> --prompt <ファイル>` で記録する。
+  実施していない成形を記録しない。委任された範囲で `documents adopt <文書ID>` を行い、確認後に `documents review <文書ID> --reviewer <実際の確認者>` を行う。
+- record・adopt・reviewは文書IDの代わりにフォルダID、または `--all` で一括処理できる。対象はその操作を待つ状態（`needs_record`・`ready_to_adopt`・`needs_review`）の文書だけで、他は `skipped` に状態・blockers・error・reason（`no_changes`・`not_planned`・`changed_since_plan`）を付けて返す。`failed` があれば他を処理したうえで終了コード2になり、同じコマンドの再実行で残りだけを処理する。
+  - 一括処理では先に `--dry-run --out <計画.json>` で対象とcontentハッシュを保存し、確認後に `--expect <計画.json>` を付けて実行する。利用者から一括処理を委任されている場合はAIが計画を確認し、判断が必要な文書だけ利用者へ示す。計画外の文書（`not_planned`）と計画後に内容が変わった文書（`changed_since_plan`）は処理されない。
+  - 一括recordは全件に同じactor/model/promptを記録する。全件で実際に同じ作業をした場合だけ使う。一括adopt・reviewも利用者から与えられた権限の範囲で行う。reviewは実際に確認した文書だけに記録する。
+- 中断時は `documents status`。`resume`、`edit-base/plan` は未対応なので呼び出さない。
+- `--root` は `documents`・`skills install`・`spec structure`・`spec semantic`・`spec registry`・`spec capture` で指定できる。`spec workflow` では `workflow` の直後（サブコマンドの前）に置く。その他の `spec` サブコマンドは受け付けない（`doctor` では無視される）。importの相対パスはプロジェクト基準、prompt・outの相対パスは実行ディレクトリ基準。

@@ -58,6 +58,8 @@ handoffは予約を行いません。親が同じtaskの重複割当を防ぎま
 
 続きは `page.next_command.bash` / `.powershell` のサブコマンドを、同じ実行ファイルの `spec workflow` と `--root`・`--run-id` の後ろに付けて実行します。offset・revision・limit・max-bytes・選択pointerをCLIが埋め込みます。作業ディレクトリも維持してください。`page.complete: true` の最終ページではnext_commandとnext_offsetがnullになります。これは選択部分の配送完了であり、画面での読了や意味判断の完了を保証しません。個別確認のpointer読取だけで全節を読んだことにはなりません。
 
+同じ担当が続けて複数のタスクを読むときは、instructionsの末尾にある `Contract <参照>` を、そのタスクを全ページ読み終えた後に後続タスクのreadへ `--known-contract <参照>` として付けられます。instructionsと返信schemaが同じ内容なら短い印に置き換わり、原文・文脈・診断などタスク固有の資料はそのまま返ります。内容が異なる参照は無視され、全文が返ります。CLIは担当が実際に読んだかを確かめられないので、参照は自分で読んだものだけを使い、親や他の担当から受け取りません。抽出タスクの指示と返信schemaは合わせて約24 KBで、原文の量によらず毎回かかる分です。
+
 担当タスクの全文を読んだら返信を検証・提出して次へ進みます。全タスクの原文を先にダンプせず、共通語彙はmodule_vocabularyを使い、文書間の関連はlink・レビュー工程で判断します。
 
 `read --task <ID>` はinstructions、packet、context、scope、reply_schema、module_vocabulary、references、previous_error、previous_reply、draft、reply_templateをこの順に返します。

@@ -10,6 +10,8 @@ use mutation::apply_with;
 pub use mutation::{apply, import, preflight};
 mod render;
 pub use render::{render, summary};
+mod relocation;
+pub use relocation::{Moved, citing, relocate};
 
 use crate::{
     data::{encoded, hash, read},
@@ -137,6 +139,11 @@ pub struct ChangeRecord {
     /// place of an earlier one holding the same sources.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repointed: Vec<String>,
+    /// The documents `documents move` moved, by their earlier IDs: the
+    /// records citing them were re-pointed (`repointed`) at the same capture
+    /// of each at its new ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moved_documents: BTreeMap<String, String>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

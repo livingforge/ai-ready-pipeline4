@@ -59,6 +59,15 @@ impl<'a> Relationships<'a> {
         Ok((rel.kind.clone(), resolved))
     }
 
+    /// The image part a picture's `r:embed` names; none when the package
+    /// does not hold it (the relationship missing, naming a file outside the
+    /// package, or a missing part, as in a damaged file), as a reader shows
+    /// such a picture empty while showing the rest of the sheet.
+    fn image(&mut self, base: &str, id: &str) -> Option<String> {
+        let (kind, part) = self.related(base, id).ok()?;
+        kind.ends_with("/image").then_some(part)
+    }
+
     fn target(&mut self, base: &str, id: &str, kind: &str) -> Result<String> {
         let (relationship, part) = self.related(base, id)?;
         ensure!(
@@ -345,6 +354,146 @@ fn in_unshown_branch(node: Node<'_, '_>, anchor: Node<'_, '_>) -> bool {
         })
 }
 
+const RICH_DATA: &str = "http://schemas.microsoft.com/office/spreadsheetml/2017/richdata";
+const RICH_VALUE_RELATIONSHIPS: &str =
+    "http://schemas.microsoft.com/office/spreadsheetml/2022/richvaluerel";
+
+/// The elements of `root` named `name` in `namespace`, in order.
+fn elements<'a, 'input>(
+    root: Node<'a, 'input>,
+    namespace: &str,
+    name: &str,
+) -> Vec<Node<'a, 'input>> {
+    root.children()
+        .filter(|n| n.has_tag_name((namespace, name)))
+        .collect()
+}
+
+/// The image part of each picture placed in a cell (Excel's Place in Cell),
+/// by the value metadata index (`vm`, from 1) its cells name. The value of
+/// such a cell is a rich value of a local image structure, naming one of the
+/// workbook's rich value relationships. Pictures that cannot be followed are
+/// left out, as are the other rich values (linked data types).
+pub(super) fn cell_pictures(parts: &BTreeMap<String, Vec<u8>>) -> BTreeMap<usize, String> {
+    let read = || -> Option<BTreeMap<usize, String>> {
+        let rels = xml(parts.get("xl/_rels/workbook.xml.rels")?).ok()?;
+        let related = |kind: &str| {
+            rels.descendants()
+                .filter(|n| n.has_tag_name((PKG_REL, "Relationship")))
+                .find(|n| n.attribute("Type").is_some_and(|t| t.ends_with(kind)))
+                .and_then(|n| n.attribute("Target"))
+                .and_then(|t| relationship_target("xl/workbook.xml", t).ok())
+                .filter(|part| parts.contains_key(part))
+        };
+        // The rich value each value metadata index names.
+        let metadata = xml(&parts[&related("/sheetMetadata")?]).ok()?;
+        let root = metadata.root_element();
+        let types: Vec<&str> = elements(root, NS, "metadataTypes")
+            .into_iter()
+            .flat_map(|n| elements(n, NS, "metadataType"))
+            .map(|n| n.attribute("name").unwrap_or(""))
+            .collect();
+        let future: Vec<Option<usize>> = elements(root, NS, "futureMetadata")
+            .into_iter()
+            .filter(|n| n.attribute("name") == Some("XLRICHVALUE"))
+            .flat_map(|n| elements(n, NS, "bk"))
+            .map(|bk| {
+                bk.descendants()
+                    .find(|n| n.has_tag_name((RICH_DATA, "rvb")))
+                    .and_then(|n| n.attribute("i")?.parse().ok())
+            })
+            .collect();
+        let values: Vec<Option<usize>> = elements(root, NS, "valueMetadata")
+            .into_iter()
+            .flat_map(|n| elements(n, NS, "bk"))
+            .map(|bk| {
+                let record = elements(bk, NS, "rc").into_iter().next()?;
+                let kind: usize = record.attribute("t")?.parse().ok()?;
+                let index: usize = record.attribute("v")?.parse().ok()?;
+                if types.get(kind.checked_sub(1)?) == Some(&"XLRICHVALUE") {
+                    future.get(index).copied().flatten()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // The rich values, by the structure each has, and the position of a
+        // local image's relationship among the keys of its structure.
+        let rich = xml(&parts[&related("/rdRichValue")?]).ok()?;
+        let rich_values: Vec<(usize, Vec<&str>)> = elements(rich.root_element(), RICH_DATA, "rv")
+            .into_iter()
+            .map(|rv| {
+                let structure = rv.attribute("s").and_then(|s| s.parse().ok()).unwrap_or(0);
+                let fields = elements(rv, RICH_DATA, "v")
+                    .into_iter()
+                    .map(|v| v.text().unwrap_or(""))
+                    .collect();
+                (structure, fields)
+            })
+            .collect();
+        let structures = xml(&parts[&related("/rdRichValueStructure")?]).ok()?;
+        let image_keys: Vec<Option<usize>> = elements(structures.root_element(), RICH_DATA, "s")
+            .into_iter()
+            .map(|s| {
+                if s.attribute("t") != Some("_localImage") {
+                    return None;
+                }
+                elements(s, RICH_DATA, "k")
+                    .iter()
+                    .position(|k| k.attribute("n") == Some("_rvRel:LocalImageIdentifier"))
+            })
+            .collect();
+        let relationships_part = related("/richValueRel")?;
+        let relationships_doc = xml(&parts[&relationships_part]).ok()?;
+        let ids: Vec<&str> = elements(
+            relationships_doc.root_element(),
+            RICH_VALUE_RELATIONSHIPS,
+            "rel",
+        )
+        .into_iter()
+        .map(|n| n.attribute((REL, "id")).unwrap_or(""))
+        .collect();
+        let mut relationships = Relationships::new(parts);
+        let mut pictures = BTreeMap::new();
+        for (index, value) in values.iter().enumerate() {
+            let Some((structure, fields)) = value.and_then(|v| rich_values.get(v)) else {
+                continue;
+            };
+            let image = image_keys
+                .get(*structure)
+                .copied()
+                .flatten()
+                .and_then(|key| fields.get(key)?.parse::<usize>().ok())
+                .and_then(|image| ids.get(image))
+                .and_then(|id| relationships.image(&relationships_part, id));
+            if let Some(image) = image {
+                pictures.insert(index + 1, image);
+            }
+        }
+        Some(pictures)
+    };
+    read().unwrap_or_default()
+}
+
+/// A picture placed in cell `address` of sheet `part`, showing `media`: a
+/// picture over the cell.
+pub(super) fn cell_picture(
+    parts: &BTreeMap<String, Vec<u8>>,
+    part: &str,
+    address: &str,
+    media: &str,
+) -> Result<Value> {
+    let (column, row) = coordinate(address)?;
+    let at = |column: u32, row: u32| json!({"col":column,"row":row});
+    Ok(
+        json!({"id":format!("{part}#{address}"),"part":part,"kind":"picture",
+        "macro":null,"control":null,"name":"","description":"","text":"",
+        "anchor":{"kind":"twoCellAnchor","from":at(column - 1, row - 1),"to":at(column, row)},
+        "group":null,"transform":null,"geometry":null,"connections":[],
+        "image":{"part":media,"sha256":hash(&parts[media])},"linked_image":null}),
+    )
+}
+
 pub(super) fn extract_visuals(
     parts: &BTreeMap<String, Vec<u8>>,
     sheet_part: &str,
@@ -474,13 +623,17 @@ pub(super) fn extract_visuals(
                 }
                 let mut image = Value::Null;
                 let mut linked_image = Value::Null;
-                if kind == "picture"
-                    && let Some(blip) = node
-                        .descendants()
-                        .find(|n| n.has_tag_name((DRAWING, "blip")))
+                // The picture a picture shows, or a shape fills itself with:
+                // its own, not those of the objects of a group.
+                if kind != "group"
+                    && let Some(blip) = node.descendants().find(|n| {
+                        n.has_tag_name((DRAWING, "blip"))
+                            && n.ancestors().skip(1).find(|a| drawing_object(*a)) == Some(node)
+                    })
                 {
-                    if let Some(id) = blip.attribute((REL, "embed")) {
-                        let media = relationships.target(&part, id, "/image")?;
+                    if let Some(media) = crate::document_source::blip_embed(blip)
+                        .and_then(|id| relationships.image(&part, id))
+                    {
                         let sha = hashes
                             .entry(media.clone())
                             .or_insert_with(|| hash(&parts[&media]))
@@ -506,6 +659,14 @@ pub(super) fn extract_visuals(
                         )
                     })
                     .transpose()?;
+                // A chart shows its titles: the text of its frame, which no
+                // edit of shape text writes.
+                let text = match &chart_part {
+                    Some(chart) if text.is_empty() => {
+                        crate::document_source::chart_titles(parts, chart)
+                    }
+                    _ => text,
+                };
                 let control = controls.get(raw_id);
                 let assigned = node
                     .attribute("macro")
@@ -530,7 +691,10 @@ pub(super) fn extract_visuals(
                 }
                 // Shape text is edited with its font; SmartArt text is not edited.
                 let object = objects.last_mut().unwrap();
-                if diagram.is_none() && object["text"].as_str().is_some_and(|t| !t.is_empty()) {
+                if diagram.is_none()
+                    && object["chart_part"].is_null()
+                    && object["text"].as_str().is_some_and(|t| !t.is_empty())
+                {
                     let (runs, empty) = super::fonts::shape_runs(node, theme);
                     object["font"] = crate::fonts::element_font(&runs, &empty);
                     if let Some(style) = crate::fonts::element_emphasis(&runs, &empty).style() {

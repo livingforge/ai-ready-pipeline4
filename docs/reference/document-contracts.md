@@ -2584,6 +2584,8 @@
 | --- | --- |
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","sources"],"type":"object"}</code> |
 | <code>/properties/agent_read_format</code> | <code>{"default":"toon","description":"Presentation of agent reading material; storage and reply protocols remain JSON.","enum":["toon","json"],"type":"string"}</code> |
+| <code>/properties/exclude</code> | <code>{"description":"Regular expressions (Rust regex syntax) of the files and folders below sources that are not documents. Each is searched for anywhere in a path relative to sources, with / between names; a folder's path ends with /, and a folder that matches excludes everything below it. Folder import leaves excluded originals out without listing them, and importing or moving a document to an excluded path is refused.","type":"array","uniqueItems":true}</code> |
+| <code>/properties/exclude/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/picture_folders</code> | <code>{"description":"Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.","type":"array","uniqueItems":true}</code> |
 | <code>/properties/picture_folders/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |

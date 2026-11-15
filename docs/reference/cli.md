@@ -23,8 +23,8 @@
 | doctor | 実装・機能・応答仕様 | 同じ応答 |
 | skills install / documents init | state・件数またはroot | 保存先を確認 |
 | import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無）。`--adopt` で採用した場合は候補パスの代わりに `document` と `state: imported`（レビューを引き継いだ場合は `state: reviewed`）、採用しなかった場合は `state: needs_record` と `not_adopted`（`edited` / `reviewed`）。採用に失敗した場合は `ok: false` で、エラーに段階と対象パスを含み、候補が残る（`documents adopt` で採用できる） | 再抽出が必要なら `--force`。既存候補があれば保持する |
-| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）、採用した文書のうちレビューを引き継いだ `reviews_kept`（ある場合だけ）。採用に失敗した原本はfailedに入り、候補が残る | 各候補のcontentと対応表。再抽出が必要なら `--force` |
-| remove | 削除した文書ID | 残りの文書をstatusで確認 |
+| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）と、暗号化を解除した原本の `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）、採用した文書のうちレビューを引き継いだ `reviews_kept`（ある場合だけ）。採用に失敗した原本はfailedに入り、候補が残る。`.arp/config.yml` の `exclude` に該当する原本は飛ばしてどこにも挙げず、該当するのに取り込み済みの文書を `excluded` に返す（ある場合だけ） | 各候補のcontentと対応表。再抽出が必要なら `--force`。`excluded` は `remove` で記録を削除する |
+| remove | 削除した文書ID。`exclude` に該当して原本を残した文書は `kept_originals` | 残りの文書をstatusで確認 |
 | discard | 破棄した候補の文書ID | 原本と採用済み文書は保持する |
 | record / review | 対象ID・実行した状態 | 保存されたformation.json / review.json |
 | adopt | 変更時は文書ID・本文パス・needs_review。候補がレビュー済みの内容と同じ読み取りならレビューを引き継ぎ、`state: reviewed`・`review: kept`。同じ内容なら `state: skipped`・`reason: no_changes` として候補だけを除去 | 本文と管理情報。変更時は確認後にreviewを記録する |
@@ -266,7 +266,7 @@ operations:
 
 ## スライドの追加・削除
 
-PowerPoint文書のスライドは `documents slides insert|delete` で複製・削除します。レイアウトからの追加（`slides add`）、移動（`slides move`）、表示・非表示（`slides hide|show`）、図形の変更（`documents shapes`）の引数は [CLIコマンド・引数一覧](commands.md) と[操作リファレンス](../../surface/skills/arp4/references/operations.md)を参照してください。行の操作と同じく、採用済み文書（文書ID）または候補（`--proposal <文書ID>`）を対象に、`mappings.yml` の `operations` への追記と本文のページの追加・削除を1回の実行で行い、`check` と同じ検証と export の事前確認に通った場合だけ書き込みます。
+PowerPoint文書のスライドは `documents slides insert|delete` で複製・削除します。レイアウトからの追加（`slides add`）、移動（`slides move`）、表示・非表示（`slides hide|show`）、図形の変更（`documents shapes`）の引数は [CLIコマンド・引数一覧](commands.md) と[PowerPointのスライドと図形の操作](../../surface/skills/arp4/references/slide-edits.md)を参照してください。行の操作と同じく、採用済み文書（文書ID）または候補（`--proposal <文書ID>`）を対象に、`mappings.yml` の `operations` への追記と本文のページの追加・削除を1回の実行で行い、`check` と同じ検証と export の事前確認に通った場合だけ書き込みます。
 
 - 追加: `documents slides insert <文書ID> --from <スライド> --after|--before <スライド> --reason <理由>` は、`--from` のスライドを PowerPoint の「スライドの複製」と同じく複製して、指定した位置に置きます。追加したスライドの名前は操作ID（`--id`、省略時は `add-slide-<番号>`）です。本文には `content/<操作ID>.yml` を作り、複製元のページの現在の値（編集済みの値を含む）を写します。複製元にノートがあれば、ノートも複製して `content/notes-<操作ID>.yml` を作ります。追加したスライドの文字は、`documents values` で `sheet` に操作ID、`element` に `documents elements-read` のそのページの要素IDを指定して変えます。行の操作を記録したスライドは複製元にできません（`invalid_slide`）。先に複製してから行を追加・削除するか、`documents operations remove` でその操作を取り除いてください。
 - 削除: `documents slides delete <文書ID> --slide slide-<番号> --reason <理由>` は、原本のスライドを、そのノートと本文のページとともに削除します。そのスライドとノートに記録した行の操作も取り除き、応答の `dropped_operations` に操作IDを返します。追加したスライドは削除せず、それを追加した操作を `documents operations remove` で取り除いてください。

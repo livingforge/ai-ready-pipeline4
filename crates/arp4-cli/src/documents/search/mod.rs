@@ -1,6 +1,8 @@
 //! Local, derived full-text index. It never substitutes edited YAML for source
-//! evidence. Explicit refresh checks canonical bytes and reindexes changed
-//! documents; search reads the last saved snapshot.
+//! evidence. A refresh checks canonical bytes and reindexes changed documents.
+//! A search reads the saved snapshot, refreshing it first when there is none,
+//! this version did not make it, or the files it was made from were added,
+//! removed or changed size or modification time since.
 mod analyzer;
 mod corpus;
 mod format;
@@ -45,6 +47,8 @@ pub struct SearchResult {
     pub failed: Vec<Value>,
     pub indexed_documents: usize,
     pub refreshed_documents: usize,
+    /// Whether this search refreshed the index first, reading every byte.
+    pub index_refreshed: bool,
     pub indexed_at_unix: u64,
     pub query_terms: Vec<Vec<String>>,
 }
@@ -55,6 +59,8 @@ pub struct FormatInventory {
     pub failed: Vec<Value>,
     pub indexed_documents: usize,
     pub indexed_at_unix: u64,
+    /// The documents the refresh before listing reindexed, when there was one.
+    pub refreshed: Option<usize>,
 }
 
 pub struct SearchRefreshResult {
@@ -136,10 +142,10 @@ fn snapshot(db: &Connection, signature: &str) -> Result<(String, Vec<Value>, u64
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
-        .context("invalid search index; run documents search-refresh")?;
+        .context("invalid search index; run documents search-refresh --rebuild")?;
     ensure!(
         saved == signature,
-        "search index version changed; run documents search-refresh"
+        "another version of ARP refreshed the search index while searching; search again"
     );
     Ok((
         corpus_revision,
@@ -320,6 +326,20 @@ fn ranking_sql(query: bool, paged: bool) -> (String, String) {
     }
 }
 
+/// The region images the indexed documents read, project paths.
+fn indexed_images(db: &Connection) -> Result<BTreeSet<String>> {
+    let mut images = BTreeSet::new();
+    let mut statement = db.prepare("SELECT refs FROM documents")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let refs: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        for image in refs["images"].as_array().into_iter().flatten() {
+            images.insert(string(image)?.to_owned());
+        }
+    }
+    Ok(images)
+}
+
 fn delete_document(db: &Connection, id: &str) -> Result<()> {
     db.execute(
         "DELETE FROM passage_formats WHERE passage IN (SELECT id FROM passages WHERE document = ?1)",
@@ -366,17 +386,58 @@ impl Store {
         Ok(self.search_stamp(dir, config_hash, None, buffer)?.0)
     }
 
+    /// Whether the saved index can be read as it is: this version made it,
+    /// and the files it was made from have the names, sizes and modification
+    /// times they had. A missing or unreadable index cannot.
+    fn search_index_current(&self) -> Result<bool> {
+        let path = under(&self.arp, "cache/search/index.sqlite")?;
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let listing = self.search_listing()?;
+        let Ok(db) = Connection::open_with_flags(
+            crate::data::verbatim(&path)?,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
+            return Ok(false);
+        };
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        let saved = db
+            .query_row("SELECT signature,files FROM metadata", [], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .ok();
+        let Some((saved, files)) = saved else {
+            return Ok(false);
+        };
+        if saved != signature() {
+            return Ok(false);
+        }
+        Ok(self.search_files(listing, &indexed_images(&db)?)? == files)
+    }
+
+    /// Refreshes the index unless it can be read as it is (see
+    /// [`Self::search_index_current`]), giving what the refresh did.
+    fn refresh_stale_search_index(&self) -> Result<Option<SearchRefreshResult>> {
+        if self.search_index_current()? {
+            return Ok(None);
+        }
+        Ok(Some(self.refresh_search_index(false)?))
+    }
+
     /// Each font color, theme color, font name, size and emphasis of the text
     /// indexed in `scope` (every document for none), with the hits a search
-    /// filtering by it alone returns and the cells in it.
+    /// filtering by it alone returns and the cells in it. The index is
+    /// refreshed first when it is stale, as for a search.
     pub fn search_formats(&self, scope: Option<&str>) -> Result<FormatInventory> {
         if let Some(scope) = scope {
             document_id(scope)?;
         }
+        let refreshed = self.refresh_stale_search_index()?;
         // SQLite gives Windows the path as it is.
         let path = crate::data::verbatim(&under(&self.arp, "cache/search/index.sqlite")?)?;
         let mut db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .context("search index unavailable; run documents search-refresh")?;
+            .context("search index unavailable; run documents search-refresh --rebuild")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let tx = db.transaction()?;
         let (_, failed, indexed_at_unix, indexed_documents) = snapshot(&tx, &signature())?;
@@ -397,10 +458,12 @@ impl Store {
                 .collect(),
             indexed_documents,
             indexed_at_unix,
+            refreshed: refreshed.map(|r| r.refreshed_documents),
         })
     }
 
-    /// Explicitly reconcile canonical files with the disposable index.
+    /// Reconcile canonical files with the disposable index, reading every
+    /// byte of them.
     pub fn refresh_search_index(&self, rebuild: bool) -> Result<SearchRefreshResult> {
         let result = self.search_many_internal(
             &["index"],
@@ -433,6 +496,13 @@ impl Store {
         );
         let started = Instant::now();
         let mut timings = SearchTimings::default();
+        // A search reads the index once it is current, refreshing it first.
+        let auto = if refresh {
+            None
+        } else {
+            self.refresh_stale_search_index()?
+        };
+        let index_refreshed = refresh || auto.is_some();
         let default_dictionary = under(&self.arp, "search-synonyms.yml")?;
         let synonyms = if refresh {
             None
@@ -471,9 +541,15 @@ impl Store {
             Connection::open(&path).context("open search index")?
         } else {
             Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .context("search index unavailable; run documents search-refresh")?
+                .context("search index unavailable; run documents search-refresh --rebuild")?
         };
-        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Searches can refresh at once: a refresh waits for the one before it
+        // rather than failing, and then finds the documents it indexed.
+        db.busy_timeout(if refresh {
+            std::time::Duration::from_secs(600)
+        } else {
+            std::time::Duration::from_secs(5)
+        })?;
         let signature = signature();
         if refresh {
             // A table row of a few KiB leaves most of a 4 KiB page empty; 16 KiB
@@ -482,7 +558,7 @@ impl Store {
             db.execute_batch(
                 "PRAGMA page_size=16384; PRAGMA journal_mode=DELETE; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;",
             )?;
-            let tx = db.transaction()?;
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let saved: Option<String> = tx
                 .query_row("SELECT signature FROM metadata", [], |r| r.get(0))
                 .optional()
@@ -490,14 +566,21 @@ impl Store {
             if saved.as_deref() != Some(&signature) {
                 tx.execute_batch("DROP TABLE IF EXISTS terms; DROP TABLE IF EXISTS passage_formats; DROP TABLE IF EXISTS passage_values; DROP TABLE IF EXISTS formats; DROP TABLE IF EXISTS passages; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS metadata;")?;
                 tx.execute_batch(SQL)?;
-                tx.execute("INSERT INTO metadata VALUES (?1,'[]',0,'',0)", [&signature])?;
+                tx.execute(
+                    "INSERT INTO metadata VALUES (?1,'[]',0,'',0,'')",
+                    [&signature],
+                )?;
             }
             tx.commit()?;
             if saved.is_some() && saved.as_deref() != Some(&signature) {
                 db.execute_batch("VACUUM")?;
             }
         }
-        let tx = db.transaction()?;
+        let tx = if refresh {
+            db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?
+        } else {
+            db.transaction()?
+        };
         timings.setup = started.elapsed();
         let integrity_started = Instant::now();
         if let Some(scope) = options.document {
@@ -506,6 +589,10 @@ impl Store {
         let selected = |id: &str| within(id, options.document);
         let (corpus_revision, indexed_documents, failed, refreshed, indexed_at_unix, config_hash) =
             if refresh {
+                // Listed before any byte is read: a file changed while the
+                // refresh reads it differs from the listing, and the next
+                // search refreshes again.
+                let listing = self.search_listing()?;
                 let base = under(&self.arp, "documents")?;
                 let config_hash = hash(&fs::read(under(&self.arp, "config.yml")?)?);
                 let ids = self.ids("documents", None)?;
@@ -633,9 +720,10 @@ impl Store {
                 let corpus_revision = hash(&encoded(
                     &json!({"index":signature,"documents":stamps,"failed":failed}),
                 ));
+                let files = self.search_files(listing, &indexed_images(&tx)?)?;
                 tx.execute(
-                "UPDATE metadata SET failed=?1,refreshed_unix=?2,corpus_revision=?3,indexed_documents=?4",
-                params![serde_json::to_string(&failed)?, indexed_at_unix, corpus_revision, stamps.len()],
+                "UPDATE metadata SET failed=?1,refreshed_unix=?2,corpus_revision=?3,indexed_documents=?4,files=?5",
+                params![serde_json::to_string(&failed)?, indexed_at_unix, corpus_revision, stamps.len(), files],
             )?;
                 (
                     corpus_revision,
@@ -652,7 +740,7 @@ impl Store {
                     corpus_revision,
                     indexed_documents,
                     failed,
-                    0,
+                    auto.as_ref().map_or(0, |auto| auto.refreshed_documents),
                     indexed_at_unix,
                     None,
                 )
@@ -718,6 +806,7 @@ impl Store {
                         .collect(),
                     indexed_documents,
                     refreshed_documents: refreshed,
+                    index_refreshed,
                     indexed_at_unix,
                     query_terms: terms,
                 });
@@ -831,6 +920,7 @@ impl Store {
                     .collect(),
                 indexed_documents,
                 refreshed_documents: refreshed,
+                index_refreshed,
                 indexed_at_unix,
                 query_terms: terms,
             });

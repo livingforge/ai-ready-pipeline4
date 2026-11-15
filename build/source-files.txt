@@ -75,6 +75,7 @@ crates/arp4-cli/src/documents/move_edit.rs
 crates/arp4-cli/src/documents/object_edit.rs
 crates/arp4-cli/src/documents/operation_edit.rs
 crates/arp4-cli/src/documents/reading.rs
+crates/arp4-cli/src/documents/relocation.rs
 crates/arp4-cli/src/documents/render.rs
 crates/arp4-cli/src/documents/result_cache.rs
 crates/arp4-cli/src/documents/search/analyzer.rs
@@ -140,6 +141,7 @@ crates/arp4-cli/src/project.rs
 crates/arp4-cli/src/registry/mod.rs
 crates/arp4-cli/src/registry/mutation.rs
 crates/arp4-cli/src/registry/persistence.rs
+crates/arp4-cli/src/registry/relocation.rs
 crates/arp4-cli/src/registry/render.rs
 crates/arp4-cli/src/registry/validation.rs
 crates/arp4-cli/src/rights_management.rs
@@ -245,5 +247,18 @@ surface/skills/arp4/frontmatter.claude.yaml
 surface/skills/arp4/frontmatter.codex.yaml
 surface/skills/arp4/frontmatter.common.yaml
 surface/skills/arp4/frontmatter.github.yaml
-surface/skills/arp4/references/operations.md
+surface/skills/arp4/references/excel-edits.md
+surface/skills/arp4/references/formats.md
+surface/skills/arp4/references/import.md
+surface/skills/arp4/references/layout-edits.md
 surface/skills/arp4/references/orchestration.md
+surface/skills/arp4/references/reading.md
+surface/skills/arp4/references/registry.md
+surface/skills/arp4/references/responses.md
+surface/skills/arp4/references/slide-edits.md
+surface/skills/arp4/references/spec-cli.md
+surface/skills/arp4/references/structure.md
+surface/skills/arp4/references/task-replies.md
+surface/skills/arp4/references/value-edits.md
+surface/skills/arp4/references/workflow-cli.md
+surface/skills/arp4/references/writeback.md

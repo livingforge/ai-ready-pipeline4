@@ -53,7 +53,7 @@ pub(super) fn pages(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sectio
             };
             let id = format!("pdf-{}", image.asset);
             if !written.contains(&id) {
-                let Some(url) = image_url(document.assets, file) else {
+                let Some(url) = unturned_image_url(document.assets, file) else {
                     continue;
                 };
                 let _ = write!(

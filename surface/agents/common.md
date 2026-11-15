@@ -6,7 +6,7 @@
 
 読取資料はreadが返す設定形式（既定TOON、JSONも選択可）を直接参照する。内部JSONを代わりに開いたり変換スクリプトを作ったりしない。返信・差分・提出はJSONで行う。
 
-1. `read --task <task_ref> --max-bytes 12000` から始め、pointerを指定せず全節を読む。`page.next_command.bash` / `.powershell` を同じCLIとworkflow引数に付けて `page.complete: true` まで続ける。表示が省略・退避されたら上限を下げ、revisionなし・offset 0から読み直す。表示加工用スクリプト、head/tail、子pointer探索を使わない。版が変わった場合も先頭から読む。
+1. `read --task <task_ref> --max-bytes 12000` から始め、pointerを指定せず全節を読む。`page.next_command.bash` / `.powershell` を同じCLIとworkflow引数に付けて `page.complete: true` まで続ける。表示が省略・退避されたら上限を下げ、revisionなし・offset 0から読み直す。表示加工用スクリプト、head/tail、子pointer探索を使わない。版が変わった場合も先頭から読む。instructionsの末尾の `Contract <参照>` は、そのタスクの全ページを自分で読み終えた後に限り、同じ実行の中で後続タスクのreadへ `--known-contract <参照>` として付けてよい。同じ内容のinstructionsとreply_schemaが短い印に置き換わる。親や他の担当から受け取った参照、読み終えていない参照は使わない。
 2. 当該taskのinstructions・reply_schema・module_vocabulary・context・scope・診断に従い判断する。実際に供給された原文だけを根拠にし、前のタスクの記憶で不足を補わない。画像のパスだけで閲覧済みにしない。必要な視覚情報を取得できなければ未確認として報告する。
 3. taskごとに別のUTF-8返信ファイルと理由ファイルを作り、`validate-reply --task <ID> --reply <返信>`、`submit --task <ID> --reply <返信> --origin interactive-agent --actor <担当固有ID> --reason-file <理由>` を行う。実際のモデル・usageが取得できる場合だけ記録する。返信の結合、修正適用、採番はCLIに任せる。
 4. 拒否されたら診断一式を確認し、複数項目の修正をまとめる。submit拒否でdraftがある場合はそのschema・revisionに従い、一つの差分返信で変更を渡す。CLIが結合して全体を再検証する。validate-replyのみではdraftを保存しないため、draftがなければ返信ファイルを一括修正する。数量をtext、平均をscalar、明示条件をunspecifiedへ変えて検証を回避しない。同じ返信の再送を繰り返さず、原文不足や対応不能は理由を残して親へ返す。state.jsonやobjectsを直接編集しない。

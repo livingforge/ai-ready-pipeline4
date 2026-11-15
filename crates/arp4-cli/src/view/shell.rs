@@ -346,7 +346,7 @@ svg.lines{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
 .shape{position:absolute;cursor:default}
 .shape>svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 .shape>.t{position:absolute;inset:0;display:flex;flex-direction:column;padding:3px 6px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.2;overflow:hidden}
-.shape img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill}
+.shape img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;image-orientation:none}
 .shape.ph{border:1px dashed #adb5bd;background:repeating-linear-gradient(45deg,#f8f9fa,#f8f9fa 6px,#eef0f2 6px,#eef0f2 12px);color:var(--muted);font-size:11px;display:flex;align-items:center;justify-content:center;text-align:center}
 .slide{position:relative;background:#fff;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.3);font-family:'Yu Gothic','游ゴシック',sans-serif}
 .slide table,.paper table{border-collapse:collapse;table-layout:fixed}

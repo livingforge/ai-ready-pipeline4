@@ -112,6 +112,7 @@ fn run(cli: Cli) -> Result<bool> {
                 DocumentCommand::Init { .. }
                     | DocumentCommand::Import { .. }
                     | DocumentCommand::Remove { .. }
+                    | DocumentCommand::Move { .. }
                     | DocumentCommand::Discard { .. }
                     | DocumentCommand::Record { .. }
                     | DocumentCommand::Adopt { .. }
@@ -229,7 +230,8 @@ fn run(cli: Cli) -> Result<bool> {
                     let first = &batch.results[0];
                     let summary = json!({"indexed_documents":first.indexed_documents,
                         "indexed_at_unix":first.indexed_at_unix,
-                        "source_checked_this_search":false});
+                        "source_checked_this_search":first.index_refreshed,
+                        "refreshed_documents":first.refreshed_documents});
                     let failed = first.failed.clone();
                     let mut responses = Vec::with_capacity(query.len());
                     let mut tables = response::SearchTables::default();
@@ -312,7 +314,8 @@ fn run(cli: Cli) -> Result<bool> {
                     let mut result = output.page(inventory.items);
                     result["summary"] = json!({"indexed_documents":inventory.indexed_documents,
                         "indexed_at_unix":inventory.indexed_at_unix,
-                        "source_checked_this_search":false});
+                        "source_checked_this_search":inventory.refreshed.is_some(),
+                        "refreshed_documents":inventory.refreshed.unwrap_or(0)});
                     result["failed"] = json!(inventory.failed);
                     result["scope"] = json!("adopted_extraction");
                     if !ok {
@@ -340,7 +343,7 @@ fn run(cli: Cli) -> Result<bool> {
                         "failed_documents":refreshed.failed.len(),
                         "indexed_at_unix":refreshed.indexed_at_unix,
                         "failed":refreshed.failed,
-                        "detail":"Search reads this index until the next search-refresh. External file changes are not checked during search."
+                        "detail":"Every byte was checked. A search refreshes this index itself when files are added or removed or change size or modification time; run search-refresh after a change that keeps both."
                     }), ok);
                     return Ok(ok);
                 }
@@ -526,11 +529,20 @@ fn run(cli: Cli) -> Result<bool> {
                         result
                     }
                 }
-                DocumentCommand::Remove { document } => {
-                    let mut result = store.remove(&document)?;
+                DocumentCommand::Remove {
+                    document,
+                    delete_originals,
+                } => {
+                    let mut result = store.remove(&document, delete_originals)?;
                     result["state"] = json!("removed");
                     result
                 }
+                DocumentCommand::Move {
+                    from,
+                    to,
+                    actor,
+                    reason,
+                } => store.relocate(&from, &to, &actor, &reason)?,
                 DocumentCommand::Discard { document } => store.discard(&document)?,
                 DocumentCommand::StructureRead {
                     document,

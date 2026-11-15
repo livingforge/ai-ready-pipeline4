@@ -10,7 +10,10 @@ CREATE TABLE IF NOT EXISTS metadata (
     failed TEXT NOT NULL,
     refreshed_unix INTEGER NOT NULL,
     corpus_revision TEXT NOT NULL,
-    indexed_documents INTEGER NOT NULL
+    indexed_documents INTEGER NOT NULL,
+    -- The hash of the names, sizes and modification times of the files the
+    -- refresh read; a search refreshes the index first when they differ.
+    files TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS passages (
     id INTEGER PRIMARY KEY,

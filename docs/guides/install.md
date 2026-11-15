@@ -30,7 +30,7 @@ arp4 skills install --root <project> --agent <agent>
 arp4 documents init --root <project>
 ```
 
-`<project>` は文書プロジェクトの絶対パス。空白を含むパスはシェルに合わせて引用する。`<agent>` の選択肢は `arp4 skills install --help` で確認する。スキル・操作リファレンス・カスタムAgentをまとめて導入する。導入後はホストに設定を再読込させ、親がarp4スキルから担当Agentを呼び出す。対応形式と委任の仕組みは `docs/guides/custom-agents.md` を参照する。未対応ホストでは原稿を独立した担当セッションに読み込ませ、未対応のAgent名をCLIに渡さない。
+`<project>` は文書プロジェクトの絶対パス。空白を含むパスはシェルに合わせて引用する。`<agent>` の選択肢は `arp4 skills install --help` で確認する。スキル・参照資料・カスタムAgentをまとめて導入する。導入後はホストに設定を再読込させ、親がarp4スキルから担当Agentを呼び出す。対応形式と委任の仕組みは `docs/guides/custom-agents.md` を参照する。未対応ホストでは原稿を独立した担当セッションに読み込ませ、未対応のAgent名をCLIに渡さない。
 
 導入後、Cargo のインストール先 `bin` がユーザーの PATH に登録されているか確認する。Windows は `[Environment]::GetEnvironmentVariable('Path','User')`、Linux はログインシェルの設定で確認する。未登録なら、Windows はユーザー環境変数の Path に追加し（管理者権限は不要）、Linux は `~/.cargo/env` を読み込む設定をシェルの起動ファイルに追加する。既存の PATH を上書きせず追記する。変更できない場合だけ実行ファイルを絶対パスで使う。既定は Windows の `%USERPROFILE%/.cargo/bin/arp4.exe`、Linux の `$HOME/.cargo/bin/arp4`。`CARGO_HOME` やインストール先を変更している場合は実際の場所を確認し、別バージョンを誤って実行しない。
 

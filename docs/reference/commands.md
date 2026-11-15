@@ -647,6 +647,9 @@ Options:
       --revision <REVISION>
           Copy page.revision when continuing; changed content requires restarting at offset 0
 
+      --known-contract <KNOWN_CONTRACT>
+          The contract reference at the end of instructions you already read in full in this session. Identical instructions and reply_schema become a short marker; any other reference is ignored and the task is read in full
+
   -h, --help
           Print help
 ```
@@ -1753,13 +1756,14 @@ Usage: arp4 documents [OPTIONS] <COMMAND>
 Commands:
   schema               Print a JSON contract by name, as a list of its properties; --pointer selects one node and --full prints all of it. An unknown name lists the contracts
   init                 Make the project's .arp folder and configuration
-  import               Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
-  remove               Remove the documents at or below an ID whose originals were moved, renamed or deleted
+  import               Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. Originals matching exclude of .arp/config.yml are left out of a folder unlisted and refused when named. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
+  move                 Move or rename an original, or a folder of originals, with its records
+  remove               Remove the documents and proposals at or below an ID
   discard              Discard one proposal, leaving the original and adopted document untouched
-  search               Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+  search               Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the local index. The index is refreshed first when there is none, another version made it, or the files it was made from were added, removed or changed size or modification time since
   search-formats       List the font colors, theme colors, fonts, sizes and emphasis of the indexed text, each with the hits a search filtering by it alone returns
   link-check           Check the links of adopted HTML documents: where each <a href> points among the imported pages and their anchors (id, and name of a). Lists the links that point to no page or anchor, to a file not imported or from the site root; --all lists every link with its target
-  search-refresh       Reconcile canonical documents with the local search index
+  search-refresh       Reconcile canonical documents with the local search index, checking every byte, as a search does by itself when files change size or modification time
   structure-read       Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
   elements-read        Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
   view                 Write a page that shows the content laid out as the original lays it out, for a person to read: values where the original shows them, with its sizes, merges, fills, borders, fonts, shapes and pictures, and the values and fonts the content changes marked with the original's, and a structure view of how the content YAML reads each table cell. Saved to .arp/view/<document>.html, which is not tracked; the content and the original are not changed
@@ -1881,7 +1885,7 @@ Options:
 ## `arp4 documents import`
 
 ```text
-Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
+Import an original, or every original below a folder, as proposals. The document ID is the original's path below the sources folder. Unchanged originals are skipped. Originals matching exclude of .arp/config.yml are left out of a folder unlisted and refused when named. An encrypted Office original is decrypted and saved over without its encryption first: a password with --password-stdin, IRM and sensitivity labels by desktop Office on Windows with the signed-in account's rights
 
 Usage: arp4 documents import [OPTIONS] <SOURCE>
 
@@ -1918,10 +1922,54 @@ Options:
           Print help
 ```
 
+## `arp4 documents move`
+
+```text
+Move or rename an original, or a folder of originals, with its records.
+
+Moves the original (a folder with every file in it) below the sources folder, the adopted documents and proposals, and the registry records citing them, which follow in one revision with their approvals. Reviews of content and structure are kept. An original already moved by hand is found at the new path. Refused while a workflow run not complete holds one of the documents.
+
+Usage: arp4 documents move [OPTIONS] --actor <ACTOR> --reason <REASON> <FROM> <TO>
+
+Arguments:
+  <FROM>
+          Document ID, or folder of documents, to move
+
+  <TO>
+          New document ID, or folder, below the sources folder
+
+Options:
+      --actor <ACTOR>
+          Who moves it, recorded in the registry revision
+
+      --full
+          Return all details (not supported by spec workflow; use read pagination there)
+
+      --root <ROOT>
+
+
+      --include-hashes
+          Include verification hashes in output: the content hash and the original's SHA-256 in check and status, and those of edits, reviews and exports
+
+      --limit <LIMIT>
+          Maximum items per page (default: 20)
+
+      --reason <REASON>
+          Why it moves, recorded in the registry revision
+
+      --offset <OFFSET>
+          Zero-based item offset (default: 0); use page.next_offset for the next page
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
 ## `arp4 documents remove`
 
 ```text
-Remove the documents at or below an ID whose originals were moved, renamed or deleted
+Remove the documents and proposals at or below an ID.
+
+Their originals must be deleted already, or are deleted with --delete-originals when each holds what was imported; originals matching exclude of .arp/config.yml are kept. Lists the registry records citing them. Use move for a moved or renamed original.
 
 Usage: arp4 documents remove [OPTIONS] <DOCUMENT>
 
@@ -1930,6 +1978,9 @@ Arguments:
 
 
 Options:
+      --delete-originals
+          Also delete the originals that still exist
+
       --full
           Return all details (not supported by spec workflow; use read pagination there)
 
@@ -1946,7 +1997,7 @@ Options:
           Zero-based item offset (default: 0); use page.next_offset for the next page
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `arp4 documents discard`
@@ -1983,7 +2034,7 @@ Options:
 ## `arp4 documents search`
 
 ```text
-Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the last explicitly refreshed local index
+Search adopted extraction passages with Japanese segmentation, BM25 and source locations from the local index. The index is refreshed first when there is none, another version made it, or the files it was made from were added, removed or changed size or modification time since
 
 Usage: arp4 documents search [OPTIONS] [QUERY]...
 
@@ -2116,7 +2167,7 @@ Options:
 ## `arp4 documents search-refresh`
 
 ```text
-Reconcile canonical documents with the local search index
+Reconcile canonical documents with the local search index, checking every byte, as a search does by itself when files change size or modification time
 
 Usage: arp4 documents search-refresh [OPTIONS]
 

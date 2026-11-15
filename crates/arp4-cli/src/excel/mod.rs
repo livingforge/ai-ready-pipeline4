@@ -124,6 +124,11 @@ pub struct Workbook {
     /// Cells (`Sheet!A1`) whose value is a picture placed in the cell or a linked
     /// data type, kept as rich data outside the cell.
     pub rich_values: Vec<String>,
+    /// The images the sheets show apart from their drawings (a sheet's
+    /// background, the pictures of its printed header and footer and of its
+    /// notes' fills, those its charts fill with), by asset name, each with
+    /// its part.
+    pub other_images: BTreeMap<String, String>,
 }
 /// A cell that holds a value or a formula. Cells are typed rather than JSON
 /// because a workbook has far more of them than any other fact, and writeback

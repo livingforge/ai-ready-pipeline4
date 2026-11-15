@@ -1310,6 +1310,8 @@ pub(crate) enum DocumentCommand {
     },
     /// Import an original, or every original below a folder, as proposals. The document
     /// ID is the original's path below the sources folder. Unchanged originals are skipped.
+    /// Originals matching exclude of .arp/config.yml are left out of a folder unlisted
+    /// and refused when named.
     /// An encrypted Office original is decrypted and saved over without its encryption
     /// first: a password with --password-stdin, IRM and sensitivity labels by desktop
     /// Office on Windows with the signed-in account's rights.
@@ -1328,12 +1330,44 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         adopt: bool,
     },
-    /// Remove the documents at or below an ID whose originals were moved, renamed or deleted.
-    Remove { document: String },
+    /// Move or rename an original, or a folder of originals, with its records.
+    ///
+    /// Moves the original (a folder with every file in it) below the sources
+    /// folder, the adopted documents and proposals, and the registry records
+    /// citing them, which follow in one revision with their approvals. Reviews
+    /// of content and structure are kept. An original already moved by hand is
+    /// found at the new path. Refused while a workflow run not complete holds
+    /// one of the documents.
+    Move {
+        /// Document ID, or folder of documents, to move.
+        from: String,
+        /// New document ID, or folder, below the sources folder.
+        to: String,
+        /// Who moves it, recorded in the registry revision.
+        #[arg(long)]
+        actor: String,
+        /// Why it moves, recorded in the registry revision.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Remove the documents and proposals at or below an ID.
+    ///
+    /// Their originals must be deleted already, or are deleted with
+    /// --delete-originals when each holds what was imported; originals matching
+    /// exclude of .arp/config.yml are kept. Lists the registry
+    /// records citing them. Use move for a moved or renamed original.
+    Remove {
+        document: String,
+        /// Also delete the originals that still exist.
+        #[arg(long)]
+        delete_originals: bool,
+    },
     /// Discard one proposal, leaving the original and adopted document untouched.
     Discard { document: String },
     /// Search adopted extraction passages with Japanese segmentation, BM25 and
-    /// source locations from the last explicitly refreshed local index.
+    /// source locations from the local index. The index is refreshed first when
+    /// there is none, another version made it, or the files it was made from
+    /// were added, removed or changed size or modification time since.
     Search {
         /// One to 32 quoted queries against one saved index snapshot. Within each query,
         /// whitespace separates literal AND terms; punctuation is not query syntax.
@@ -1410,7 +1444,8 @@ pub(crate) enum DocumentCommand {
         #[arg(long)]
         all: bool,
     },
-    /// Reconcile canonical documents with the local search index.
+    /// Reconcile canonical documents with the local search index, checking every
+    /// byte, as a search does by itself when files change size or modification time.
     SearchRefresh {
         /// Recreate the disposable index before refreshing all documents.
         #[arg(long)]

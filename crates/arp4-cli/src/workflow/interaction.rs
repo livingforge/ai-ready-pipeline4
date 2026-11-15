@@ -169,7 +169,7 @@ impl Workflow {
             "Keep the same repository --root, --run-id and working directory for every command, including delegated agents. Configuration is .arp/config.yml."
         );
         brief["sections"] = json!(SECTIONS.map(|key| format!("/{key}")));
-        let data = self.interactive_data(task)?;
+        let data = self.interactive_data(task, Reader::Returning(None))?;
         let format = crate::project::agent_read_format(&self.store.root)?;
         brief["agent_read_format"] = json!(format);
         brief["section_bytes"] = json!(
@@ -179,7 +179,7 @@ impl Workflow {
                 .collect::<Result<BTreeMap<_, _>>>()?
         );
         brief["cli_usage"] = json!(
-            "Start with read --task ID --max-bytes 12000 without --pointer and read output directly. Append page.next_command.bash or .powershell to the same executable and workflow root/run-id prefix until page.complete. Do not create display-processing files/scripts or slice output. --max-bytes sets the response byte budget in the configured TOON or JSON format (4096..48000, default 48000); A larger budget may be selected at offset 0 only after verifying that this host displays it completely; choose a smaller budget if the host truncates or spills output. A revision mismatch requires restarting at offset 0. A truncated or spilled response is not a completed read; restart with a smaller budget. Entries contain actual values; pointers label locations, not retrieval instructions. Array chunks carry zero-based array_offset and array_total; long strings carry string_offset and string_total_bytes in UTF-8 bytes. Do not explore child pointers or truncate reading material. Optional --pointer selects a subtree for targeted inspection (omit the leading slash in Git Bash). No --full. Lock contention waits up to 30 seconds inside the CLI."
+            "Start with read --task ID --max-bytes 12000 without --pointer and read output directly. Append page.next_command.bash or .powershell to the same executable and workflow root/run-id prefix until page.complete. Do not create display-processing files/scripts or slice output. --max-bytes sets the response byte budget in the configured TOON or JSON format (4096..48000, default 48000); A larger budget may be selected at offset 0 only after verifying that this host displays it completely; choose a smaller budget if the host truncates or spills output. A revision mismatch requires restarting at offset 0. A truncated or spilled response is not a completed read; restart with a smaller budget. Entries contain actual values; pointers label locations, not retrieval instructions. Array chunks carry zero-based array_offset and array_total; long strings carry string_offset and string_total_bytes in UTF-8 bytes. Do not explore child pointers or truncate reading material. Optional --pointer selects a subtree for targeted inspection (omit the leading slash in Git Bash). Instructions end with a contract reference: a reader that has read that contract in full in the same session may pass --known-contract REF on a later task to receive a short marker in place of identical instructions and reply_schema. No --full. Lock contention waits up to 30 seconds inside the CLI."
         );
         brief["workflow"] = json!(
             "Read all pages of read --task ID directly in the configured TOON (default) or JSON format; do not open internal JSON objects instead: instructions, packet, context, scope, reply_schema, module_vocabulary, references, previous_error, previous_reply, draft and reply_template are included. Source rows use sources.columns order and sources.tables metadata. Submit semantic JSON with validate-reply/submit --reply FILE or --reply - (UTF-8 stdin). After rejection read draft and diagnostics; submit only changed fields using draft.revision and draft.schema. The CLI merges and revalidates the whole reply. Use submit --reason-file FILE for UTF-8 reasons containing quotes, JSON fragments or newlines; --reason is for short inline text and cannot be combined with --reason-file. No helper scripts or manual merging. A template is incomplete, not a completed review."
@@ -187,7 +187,45 @@ impl Workflow {
         Ok(brief)
     }
 
-    pub(super) fn interactive_data(&self, task: &Task) -> Result<Value> {
+    /// The instructions and reply schema of a task, and the reference naming
+    /// exactly that pair. Tasks of one stage usually share it.
+    fn contract(&self, task: &Task) -> Result<(String, Value, String)> {
+        let instructions = match task.stage {
+            Stage::Extract => format!(
+                "{}\nWhen scope is present, extract scope.sources only; scope.context is context, not a target; sources.tables merges and structure cover only their cells and the headers they name, and omitted_cells counts element cells left out. If context is insufficient return only packet, document, request_tables (sources.tables indexes), reason. Keep local keys; the CLI namespaces partitions. In modules, define new slugs only (or use an empty object); the CLI fills registered names for referenced slugs from module_vocabulary. Explicit conflicting names and undefined slugs are rejected.",
+                crate::semantic::guidance()
+            ),
+            Stage::Link => linking::instructions().to_owned(),
+            Stage::Repair => patch::instructions(),
+            Stage::Restructure => format!(
+                "{}\n{}",
+                restructure::instructions(),
+                crate::semantic::guidance()
+            ),
+            Stage::Review | Stage::GlobalReview => crate::semantic::REVIEW_PROMPT.to_owned(),
+        };
+        let instructions = if task.incremental == Some(true) {
+            format!(
+                "{instructions}\nThis is incremental extraction: read context.previous_items and context.reserved_keys. Re-extract the entire owned scope from current sources, preserving keys only for retained claims. Previous items are not authoritative facts. Do not reuse reserved keys. Omit relationships for the linking stage; retained items are merged by the CLI."
+            )
+        } else {
+            instructions
+        };
+        let instructions = if self.references()?.is_empty() {
+            instructions
+        } else {
+            format!("{instructions}\n{REFERENCE_GUIDANCE}")
+        };
+        let instructions = format!(
+            "{instructions}\nIdentity fields use workflow-local references. Copy them unchanged from this task; never calculate hashes or reuse references from another run."
+        );
+        let schema = crate::semantic_contract::workflow_reply_schema(self.reply_schema(task));
+        let reference = hash(&encode(&json!([instructions, schema])))[..12].to_owned();
+        Ok((instructions, schema, reference))
+    }
+
+    /// The task as an agent reads it.
+    pub(super) fn interactive_data(&self, task: &Task, reader: Reader<'_>) -> Result<Value> {
         let mut packet = if task.packet.is_some() {
             self.artifact(&task.packet)?
         } else {
@@ -225,36 +263,28 @@ impl Workflow {
         } else {
             Value::Null
         };
-        let instructions = match stage {
-            Stage::Extract => format!(
-                "{}\nWhen scope is present, extract scope.sources only; scope.context is context, not a target; sources.tables merges and structure cover only their cells and the headers they name, and omitted_cells counts element cells left out. If context is insufficient return only packet, document, request_tables (sources.tables indexes), reason. Keep local keys; the CLI namespaces partitions. In modules, define new slugs only (or use an empty object); the CLI fills registered names for referenced slugs from module_vocabulary. Explicit conflicting names and undefined slugs are rejected.",
-                crate::semantic::PROMPT
-            ),
-            Stage::Link => linking::instructions().to_owned(),
-            Stage::Repair => patch::instructions(),
-            Stage::Restructure => format!(
-                "{}\n{}",
-                restructure::instructions(),
-                crate::semantic::PROMPT
-            ),
-            Stage::Review | Stage::GlobalReview => crate::semantic::REVIEW_PROMPT.to_owned(),
-        };
-        let instructions = if task.incremental == Some(true) {
-            format!(
-                "{instructions}\nThis is incremental extraction: read context.previous_items and context.reserved_keys. Re-extract the entire owned scope from current sources, preserving keys only for retained claims. Previous items are not authoritative facts. Do not reuse reserved keys. Omit relationships for the linking stage; retained items are merged by the CLI."
-            )
-        } else {
-            instructions
-        };
         let references = self.references()?;
-        let instructions = if references.is_empty() {
-            instructions
-        } else {
-            format!("{instructions}\n{REFERENCE_GUIDANCE}")
+        let (instructions, schema, contract) = self.contract(task)?;
+        let (instructions, schema) = match reader {
+            Reader::Once => (instructions, schema),
+            Reader::Returning(Some(known)) if known == contract => (
+                format!(
+                    "Unchanged: these instructions are contract {contract}, which you read in full earlier in this session and which still applies to this task. If you did not read it yourself, read again without --known-contract."
+                ),
+                json!(format!(
+                    "Unchanged: the reply schema of contract {contract}, which you read in full earlier in this session."
+                )),
+            ),
+            Reader::Returning(_) => (
+                format!(
+                    "{instructions}\nContract {contract}: after reading every page of this task, you may add --known-contract {contract} to read on a later task in this same session; instructions and reply_schema identical to these are then replaced by a short marker. Do not pass a reference you did not read yourself or received from another agent."
+                ),
+                schema,
+            ),
         };
         Ok(
-            json!({"instructions":format!("{instructions}\nIdentity fields use workflow-local references. Copy them unchanged from this task; never calculate hashes or reuse references from another run."),"packet":self.compact_payload(packet)?,"context":self.compact_payload(context)?,"scope":self.compact_payload(scope)?,
-            "reply_schema":crate::semantic_contract::workflow_reply_schema(self.reply_schema(task)),"module_vocabulary":self.module_vocabulary()?,"references":references,
+            json!({"instructions":instructions,"packet":self.compact_payload(packet)?,"context":self.compact_payload(context)?,"scope":self.compact_payload(scope)?,
+            "reply_schema":schema,"module_vocabulary":self.module_vocabulary()?,"references":references,
             "previous_error":if task.diagnostics.is_null() { json!(task.error) } else { task.diagnostics.clone() },"previous_reply":if task.rejected_reply.is_some() {self.compact_payload(self.artifact(&task.rejected_reply)?)?} else {Value::Null},
             "draft":self.draft_info(task)?,"reply_template":self.compact_payload(self.template(task)?)?}),
         )
@@ -334,15 +364,20 @@ impl Workflow {
         Ok(Value::Object(fields))
     }
 
-    pub(super) fn read_section(
-        &self,
-        task: &Task,
-        pointer: &str,
-        offset: usize,
-        limit: usize,
-        max_bytes: usize,
-        revision: Option<&str>,
-    ) -> Result<Value> {
+    pub(super) fn read_section(&self, task: &Task, read: &Read<'_>) -> Result<Value> {
+        let &Read {
+            pointer,
+            offset,
+            limit,
+            max_bytes,
+            revision,
+            known,
+        } = read;
+        // A reference to another contract changes nothing: the task is read in full.
+        let known = match known {
+            Some(known) if self.contract(task)?.2 == known => Some(known),
+            _ => None,
+        };
         // Slash-free section names survive Git Bash's native argument conversion.
         let normalized = if pointer.is_empty() || pointer.starts_with('/') {
             pointer.to_owned()
@@ -363,7 +398,7 @@ impl Workflow {
         let cache = super::read_cache::ReadCache::new(
             &self.store.root,
             &task.id,
-            self.read_key(task, &options)?,
+            self.read_key(task, &options, known)?,
         );
         if let Some(index) = cache.load() {
             let mut missing = false;
@@ -375,10 +410,10 @@ impl Workflow {
             );
             // A layout another reader is replacing is laid out again.
             if !missing {
-                return page;
+                return page.map(|page| continue_known(page, known));
             }
         }
-        let data = self.interactive_data(task)?;
+        let data = self.interactive_data(task, Reader::Returning(known))?;
         let layout = super::paging::layout(&data, &SECTIONS, &options)?;
         let open: BTreeSet<&str> = self
             .state
@@ -397,11 +432,17 @@ impl Workflow {
             |range| Ok(layout.fragments[range].to_vec()),
             &options,
         )
+        .map(|page| continue_known(page, known))
     }
 
     /// Everything the task view is built from (see `interactive_data`), the page
     /// shape, and this executable, whose prompts and schemas are part of the view.
-    fn read_key(&self, task: &Task, options: &super::paging::ReadOptions<'_>) -> Result<String> {
+    fn read_key(
+        &self,
+        task: &Task,
+        options: &super::paging::ReadOptions<'_>,
+        known: Option<&str>,
+    ) -> Result<String> {
         let completed: Vec<_> = self
             .state
             .tasks
@@ -425,9 +466,46 @@ impl Workflow {
             options.pointer,
             options.max_bytes,
             options.format,
+            known,
             env!("CARGO_PKG_VERSION"),
             executable.len(),
             modified,
         ]))))
     }
+}
+
+/// Who a task is laid out for.
+#[derive(Clone, Copy)]
+pub(super) enum Reader<'a> {
+    /// A provider run: one task, read once, with no command line to come back to.
+    Once,
+    /// An agent using `read`, which may go on to other tasks. It is told this
+    /// task's contract reference; when the reference it says it has already read
+    /// in full is that one, the instructions and reply schema are a marker
+    /// instead of a second copy.
+    Returning(Option<&'a str>),
+}
+
+/// What `read` was asked for, as given on the command line.
+pub(super) struct Read<'a> {
+    pub pointer: &'a str,
+    pub offset: usize,
+    pub limit: usize,
+    pub max_bytes: usize,
+    pub revision: Option<&'a str>,
+    /// The contract reference the reader says it has read in full.
+    pub known: Option<&'a str>,
+}
+
+/// The next page of a read that omitted a known contract omits it too.
+fn continue_known(mut page: Value, known: Option<&str>) -> Value {
+    if let (Some(known), Some(commands)) = (known, page["page"]["next_command"].as_object_mut()) {
+        for command in commands.values_mut() {
+            *command = json!(format!(
+                "{} --known-contract {known}",
+                command.as_str().unwrap_or_default()
+            ));
+        }
+    }
+    page
 }

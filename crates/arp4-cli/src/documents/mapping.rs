@@ -688,6 +688,7 @@ pub(super) fn shape_texts(sheet: &Value) -> Result<Vec<(String, &Value)>> {
 /// The content key of a drawing of [`shape_texts`], none for one it leaves out.
 fn shape_key(drawing: &Value) -> Result<Option<String>> {
     if drawing["anchor"]["kind"] == "slide"
+        || !drawing["chart_part"].is_null()
         || !drawing["text"]
             .as_str()
             .is_some_and(|text| !text.is_empty())

@@ -261,6 +261,33 @@ pub fn json_content_hash(value: &Value) -> String {
     crate::data::hash_encoded_without(value, "review")
 }
 
+/// Gives the structure `value`, given as JSON, of a document moved to the
+/// ID `document` with its original at the project path `path` that ID and
+/// path. A review of the structure as it was stays one of it: nothing else
+/// of it changes.
+pub fn relocate(value: &mut Value, document: &str, path: &str) {
+    let reviewed = value["review"]["content_hash"].is_string()
+        && value["review"]["content_hash"] == json_content_hash(value);
+    value["document"] = json!(document);
+    value["source"]["path"] = json!(path);
+    if reviewed {
+        value["review"]["content_hash"] = json!(json_content_hash(value));
+    }
+}
+
+/// The review hash ([`content_hash`]) `structure` has as the structure of
+/// the document `document` with its original at the project path `path`.
+pub fn content_hash_at(structure: &mut Structure, document: &str, path: &str) -> String {
+    let saved = (
+        std::mem::replace(&mut structure["document"], json!(document)),
+        std::mem::replace(&mut structure["source"]["path"], json!(path)),
+    );
+    let hash = content_hash(structure);
+    structure["document"] = saved.0;
+    structure["source"]["path"] = saved.1;
+    hash
+}
+
 fn validate_schema(value: &Value) -> Result<()> {
     // Compiled once: every replay validates the interpretation.
     static VALIDATOR: std::sync::LazyLock<jsonschema::Validator> = std::sync::LazyLock::new(|| {

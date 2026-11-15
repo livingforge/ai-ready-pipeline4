@@ -66,6 +66,7 @@ pub fn import(
         aliases: BTreeMap::new(),
         resolved_issues: BTreeMap::new(),
         repointed: vec![],
+        moved_documents: BTreeMap::new(),
     };
     let archives: BTreeMap<String, Value> = BTreeMap::from([("judgments".into(), judgments)]);
     let mut r = Registry {
@@ -478,6 +479,7 @@ pub(super) fn apply_with(
         aliases,
         resolved_issues: change.resolve_issues,
         repointed,
+        moved_documents: BTreeMap::new(),
     };
     refresh(&mut r)?;
     validate_with(&r, &mut snapshots)?;

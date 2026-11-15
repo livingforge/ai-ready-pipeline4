@@ -5,16 +5,24 @@
 端末から自分で検索する場合の手順と結果の読み方は[設計書を検索する](document-search-manual.md)を参照してください。この文書は索引と順位付けの詳細、Agentが従う読み取り規則を扱います。
 
 ```powershell
-arp4 documents search-refresh --root C:/project
 arp4 documents search "注文登録 タイムアウト" --root C:/project
 arp4 documents search "/v1/orders" --document 設計 --root C:/project
 ```
 
-検索対象は `.arp/documents/` にある採用済みの `extraction.json` と、その抽出に対応する構造解釈です。`content/*.yml` の未反映の編集、`.arp/changes/` の候補、registry項目は索引に混ぜません。原本を変更しても、再import・adoptまでは採用された抽出結果が検索されます。`state.source_current`、`state.source_missing`、`state.reviewed` などの状態は最後の `search-refresh` 時点の値です。`structure_reviewed` は検索の文脈に使った構造解釈のレビュー状態です。
+検索対象は `.arp/documents/` にある採用済みの `extraction.json` と、その抽出に対応する構造解釈です。`content/*.yml` の未反映の編集、`.arp/changes/` の候補、registry項目は索引に混ぜません。原本を変更しても、再import・adoptまでは採用された抽出結果が検索されます。`state.source_current`、`state.source_missing`、`state.reviewed` などの状態は索引を最後に更新した時点の値です（下記のとおり、検索は古い索引を先に更新します）。`structure_reviewed` は検索の文脈に使った構造解釈のレビュー状態です。
 
-`documents search-refresh` がローカルの `.arp/cache/search/index.sqlite` を作成・更新します。初回、文書の採用・削除・編集後、外部アプリで原本を変更した後に実行してください。更新操作は管理ファイル・原本・登録済み領域画像の全バイトを照合し、変更文書だけを再索引化します。検索は保存済み索引を読み取るだけで、原本の変更を検出しません。索引がない場合や形式が古い場合は更新操作を案内して失敗します。破損時は `documents search-refresh --rebuild` で作り直せます。キャッシュはGit管理しません。
+索引はローカルの `.arp/cache/search/index.sqlite` です。索引の更新は管理ファイル・原本・登録済み領域画像の全バイトを照合し、変更文書だけを再索引化します。キャッシュはGit管理しません。
 
-検索応答の `summary.indexed_at_unix` は最後の更新時刻（Unix秒）、`summary.source_checked_this_search` は検索時の原本照合有無です。後者は常に `false`。索引の更新結果には更新件数と失敗文書を返し、失敗文書があればコマンドは失敗終了します。外部変更の有無を知りたいときは更新操作を実行してください。
+`documents search` と `documents search-formats` は、次のどれかに当たると先に索引を更新してから検索します。
+
+- 索引がない、読めない、または別の版のARPが作った
+- 索引を作ったときと比べて、採用済み文書の記録（`.arp/documents/` のファイル）・その原本・登録済み領域画像・`.arp/config.yml` のファイルが増えた・減った、またはサイズか更新日時が変わった
+
+この判定はフォルダの一覧から名前・サイズ・更新日時を読むだけで、ファイルの中身は読みません。毎回全バイトを照合すると、検索のたびに全文書を読むことになるためです（[2026-09-27の計測](../records/document-search-explicit-20260927.md)で1,000件の検索が平均546ms）。合成した1,000件のプロジェクト（Markdown、文書あたり1フォルダ）で、変更がない場合の判定は約45ms、検索全体（CLIの起動を含む）は平均77msでした。原本1件の変更後は、自動更新を含めて440msでした（[計測記録](../records/search-auto-refresh-20261115.md)）。サイズと更新日時を保ったまま内容だけが変わった場合は検出しないため、`documents search-refresh` で全バイトを照合します。破損した索引は自動更新では直らないので、`documents search-refresh --rebuild` で作り直します。
+
+複数の検索が同時に古い索引を見つけた場合、後の更新は前の更新の終了を待ち（最大10分）、変わった文書だけを処理します。
+
+検索応答の `summary.indexed_at_unix` は最後の更新時刻（Unix秒）、`summary.source_checked_this_search` はその検索が索引を更新した（全バイトを照合した）かどうか、`summary.refreshed_documents` はそのとき再索引化した文書数です。`documents search-refresh` の結果には更新件数と失敗文書を返し、失敗文書があればコマンドは失敗終了します。
 
 更新操作ではハッシュが同じ文書メタデータ・マッピングの参照先一覧を再利用し、変更のないYAMLの解析を省きます。FTS索引には検索用文字列を重複保存せず、結果の本文・出典は別の表に保持します。本文・出典はdeflateで圧縮して保存し、返す結果だけを展開します。表の行はセルごとに同じキー・シート名・見出しを繰り返すため、圧縮で数分の1になります。検索語は空白を含まないので、空白をまたぐ2文字の組は索引に入れません。空白の位置には区切りを1つ置き、前後の文字が隣り合うと誤認しないようにします。1行が数KiBになる表の行をまとめて格納できるよう、ページサイズは16KiBです。10000行×30列の表では、索引が117MBから51MBになりました。索引の実装が変わった場合、次の更新操作で索引を作り直します。
 

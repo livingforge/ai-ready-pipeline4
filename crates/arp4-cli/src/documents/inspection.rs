@@ -252,7 +252,11 @@ impl Store {
         });
         let presentation = Path::new(string(&meta["source"]["path"])?)
             .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pptx"));
+            .is_some_and(|extension| {
+                extension
+                    .to_str()
+                    .is_some_and(|e| crate::document_source::is_powerpoint(&e.to_ascii_lowercase()))
+            });
         ensure!(
             !validate
                 || array(&mappings["operations"])?.iter().all(|o| {

@@ -80,9 +80,11 @@ impl Store {
     }
 
     /// Import every original below a folder of the sources. Originals whose proposal or
-    /// adopted document already has their hash are left alone, and documents whose
-    /// original is gone are listed for `documents remove`. An original that cannot be
-    /// imported is listed under `failed` and the others are still imported.
+    /// adopted document already has their hash are left alone, originals moved by hand
+    /// are listed under `moved` for `documents move` (see [`Self::moved_originals`]),
+    /// and documents whose original is gone are listed for `documents remove`. An
+    /// original that cannot be imported is listed under `failed` and the others are
+    /// still imported.
     pub fn import_folder(
         &self,
         source: &Path,
@@ -91,6 +93,11 @@ impl Store {
     ) -> Result<Value> {
         let (dir, scope) = self.resolve(source)?;
         ensure!(dir.is_dir(), "import a folder or use a file: {scope}");
+        if !scope.is_empty() {
+            self.ensure_included(&format!("{scope}/"))?;
+        }
+        let sources = crate::data::canonicalize(self.sources()?)?;
+        let exclusion = self.exclusion()?;
         let dir = dir.as_path();
         let formats = crate::document_source::input_formats();
         let mut imported = vec![];
@@ -110,6 +117,17 @@ impl Store {
                     continue;
                 }
                 let meta = fs::symlink_metadata(&path)?;
+                // Excluded originals are not documents and are not listed.
+                let relative = path
+                    .strip_prefix(&sources)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let folder = meta.is_dir() || is_link(&meta);
+                if exclusion.pattern(&relative).is_some()
+                    || folder && exclusion.pattern(&format!("{relative}/")).is_some()
+                {
+                    continue;
+                }
                 ensure!(!is_link(&meta), "links are not allowed: {}", path.display());
                 if meta.is_dir() {
                     pending.push(path);
@@ -119,8 +137,13 @@ impl Store {
             }
         }
         originals.sort();
+        let moved = self.moved_originals(&originals)?;
+        let moved_to: BTreeSet<&str> = moved.values().map(String::as_str).collect();
         for path in originals {
             let (path, id) = self.resolve(&path)?;
+            if moved_to.contains(id.as_str()) {
+                continue;
+            }
             let ext = extension(&path);
             if let Some(replacement) = crate::document_source::binary_office_replacement(&ext) {
                 skipped.push(json!({"document_id":id,"reason":format!("binary Office format; save as {replacement}")}));
@@ -150,9 +173,79 @@ impl Store {
                 }
             }
         }
-        Ok(
-            json!({"imported":imported,"unchanged":unchanged,"pending_proposals":pending_proposals,"skipped":skipped,"failed":failed,"unprotected":unprotected,"missing":self.missing(Some(scope.as_str()).filter(|s| !s.is_empty()))?}),
-        )
+        let missing: Vec<String> = self
+            .missing(Some(scope.as_str()).filter(|s| !s.is_empty()))?
+            .into_iter()
+            .filter(|id| !moved.contains_key(id))
+            .collect();
+        let mut result = json!({"imported":imported,"unchanged":unchanged,"pending_proposals":pending_proposals,"skipped":skipped,"failed":failed,"unprotected":unprotected,"missing":missing});
+        // Documents imported before their originals were excluded, for
+        // `documents remove`, which keeps the originals.
+        let scope = Some(scope.as_str()).filter(|s| !s.is_empty());
+        let mut held: BTreeSet<String> = self.ids("documents", scope)?.into_iter().collect();
+        held.extend(self.ids("changes", scope)?);
+        let excluded: Vec<&String> = held
+            .iter()
+            .filter(|id| exclusion.pattern(id).is_some() && !missing.contains(id))
+            .collect();
+        if !excluded.is_empty() {
+            result["excluded"] = json!(excluded);
+        }
+        if !moved.is_empty() {
+            result["moved"] = json!(
+                moved
+                    .iter()
+                    .map(|(from, to)| json!({"from":from,"to":to}))
+                    .collect::<Vec<_>>()
+            );
+        }
+        Ok(result)
+    }
+
+    /// The originals among `originals` that are documents moved by hand, by
+    /// the documents' IDs: an original no document or proposal has, holding
+    /// the bytes that one document whose original is gone, and only that
+    /// one, was imported from. Import leaves them for `documents move`,
+    /// which keeps their records, reviews and the registry records citing
+    /// them; imported, they would be documents of their own.
+    fn moved_originals(&self, originals: &[PathBuf]) -> Result<BTreeMap<String, String>> {
+        let mut gone: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for id in self.missing(None)? {
+            for area in ["documents", "changes"] {
+                let meta = under(&self.arp, &format!("{area}/{id}/document.yml"))?;
+                if meta.is_file() {
+                    let sha = read(&meta, Some("document"))?["source"]["sha256"].clone();
+                    gone.entry(string(&sha)?.to_owned())
+                        .or_default()
+                        .insert(id.clone());
+                }
+            }
+        }
+        if gone.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        // Each document gone with the new originals holding its bytes.
+        let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for path in originals {
+            let (path, id) = self.resolve(path)?;
+            if self.document(&id)?.join("document.yml").is_file()
+                || self.proposal_path(&id)?.exists()
+            {
+                continue;
+            }
+            if let Some(ids) = gone.get(&hash(&fs::read(&path)?))
+                && let [from] = ids.iter().collect::<Vec<_>>()[..]
+            {
+                found.entry(from.clone()).or_default().push(id);
+            }
+        }
+        Ok(found
+            .into_iter()
+            .filter_map(|(from, to)| match &to[..] {
+                [to] => Some((from, to.clone())),
+                _ => None,
+            })
+            .collect())
     }
 
     /// Import an original unless its proposal or adopted document already has its hash.
@@ -283,53 +376,6 @@ impl Store {
         Ok((plain, record))
     }
 
-    /// Documents and proposals at or below `scope` whose original no longer exists.
-    pub fn missing(&self, scope: Option<&str>) -> Result<Vec<String>> {
-        let mut ids: BTreeSet<String> = self.ids("documents", scope)?.into_iter().collect();
-        ids.extend(self.ids("changes", scope)?);
-        let mut missing = vec![];
-        for id in ids {
-            if self.original(&self.source_path(&id)?)?.is_none() {
-                missing.push(id);
-            }
-        }
-        Ok(missing)
-    }
-
-    /// Remove the documents and proposals at or below `scope` whose originals were
-    /// moved, renamed or deleted. A moved original is imported again as a new document.
-    pub fn remove(&self, scope: &str) -> Result<Value> {
-        document_id(scope)?;
-        let mut ids: BTreeSet<String> = self.ids("documents", Some(scope))?.into_iter().collect();
-        ids.extend(self.ids("changes", Some(scope))?);
-        ensure!(!ids.is_empty(), "no document at or below {scope}");
-        let missing: BTreeSet<_> = self.missing(Some(scope))?.into_iter().collect();
-        let present: Vec<_> = ids.iter().filter(|id| !missing.contains(*id)).collect();
-        ensure!(
-            present.is_empty(),
-            "originals still exist; move or delete them first: {}",
-            present
-                .iter()
-                .map(|id| id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        for area in ["documents", "changes"] {
-            let base = under(&self.arp, area)?;
-            for id in &ids {
-                let dir = under(&base, id)?;
-                if dir.exists() {
-                    remove_folder(&dir, "remove the document of a missing original")?;
-                    remove_empty_directories(dir.parent().unwrap(), &self.arp);
-                }
-            }
-        }
-        for id in &ids {
-            self.remove_views(id, true)?;
-        }
-        Ok(json!({"removed":ids}))
-    }
-
     /// Discard one pending proposal without changing its adopted document or original.
     pub fn discard(&self, id: &str) -> Result<Value> {
         let proposal = self.proposal(id)?;
@@ -359,6 +405,7 @@ impl Store {
     ) -> Result<Value> {
         let (source, id) = self.resolve(source)?;
         ensure!(source.is_file(), "import a file or use a folder: {id}");
+        self.ensure_included(&id)?;
         match self.import_changed(&source, &id, force, unprotection)? {
             Some(result) => Ok(result),
             None => Ok(
@@ -886,7 +933,7 @@ fn not_carried(carrier: Carrier, error: &anyhow::Error) -> Value {
     json!({"by":carrier.name(),"review":"pending","reasons":[format!("not carried: {error:#}")]})
 }
 
-fn extension(path: &Path) -> String {
+pub(super) fn extension(path: &Path) -> String {
     path.extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")

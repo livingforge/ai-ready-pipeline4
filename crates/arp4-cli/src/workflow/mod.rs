@@ -37,6 +37,64 @@ use std::{
     path::{Path, PathBuf},
 };
 use store::{Store, encode};
+/// The workflow runs of the project at `root` whose input holds one of
+/// `documents`: each with its ID, status and the documents it holds. A run
+/// keeps its input as it was captured, so what it finalizes cites the
+/// documents by the IDs they had then.
+pub fn runs_holding(root: &Path, documents: &BTreeSet<String>) -> Result<Vec<Value>> {
+    let base = crate::data::under(root, ".arp/work/workflow")?;
+    if !base.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut runs = vec![];
+    for entry in fs::read_dir(&base)? {
+        let dir = entry?.path();
+        if !dir.join("state.json").is_file() {
+            continue;
+        }
+        let store = Store::open_mode(&dir, true)?;
+        let state = store.load()?;
+        let input = store.json(s(&state["input"])?)?;
+        let held: Vec<&String> = documents
+            .iter()
+            .filter(|document| input["revisions"].get(document.as_str()).is_some())
+            .collect();
+        if !held.is_empty() {
+            runs.push(json!({"run_id":dir.file_name().unwrap().to_string_lossy(),
+                "status":state["status"],"documents":held}));
+        }
+    }
+    runs.sort_by(|a, b| a["run_id"].as_str().cmp(&b["run_id"].as_str()));
+    Ok(runs)
+}
+
+/// Fails when a workflow run not complete holds one of `documents`, which
+/// `action` would leave it citing by IDs they no longer have.
+pub fn ensure_no_open_run(
+    root: &Path,
+    documents: &BTreeSet<String>,
+    action: &str,
+) -> Result<Vec<Value>> {
+    let runs = runs_holding(root, documents)?;
+    let open: Vec<&Value> = runs
+        .iter()
+        .filter(|run| run["status"] != "complete")
+        .collect();
+    ensure!(
+        open.is_empty(),
+        "workflow runs not complete hold the documents to {action}; complete them first: {}",
+        open.iter()
+            .map(|run| format!(
+                "{} ({})",
+                run["run_id"].as_str().unwrap_or(""),
+                run["documents"]
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(runs)
+}
+
 pub(crate) fn s(v: &Value) -> Result<&str> {
     v.as_str().context("expected string")
 }

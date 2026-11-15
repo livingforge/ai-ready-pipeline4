@@ -12902,6 +12902,15 @@
           "type": "string",
           "minLength": 1
         }
+      },
+      "exclude": {
+        "description": "Regular expressions (Rust regex syntax) of the files and folders below sources that are not documents. Each is searched for anywhere in a path relative to sources, with / between names; a folder's path ends with /, and a folder that matches excludes everything below it. Folder import leaves excluded originals out without listing them, and importing or moving a document to an excluded path is refused.",
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "required": [

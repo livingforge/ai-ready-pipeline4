@@ -19,25 +19,21 @@ ARPに取り込んだ設計書を、端末から `arp4 documents search` で検�
 - **画像の中の文字を新たに読み取ることはしません。** 取り込み時に保存されたOCRの文字、図形の文字、コメントは検索されます。
 - **検索順位は正しさを保証しません。** 上位の結果が承認済みの仕様という意味ではありません。採否は正本管理（registry）で確認します。
 
-## 準備：索引を作る
+## 索引について
 
-検索は、事前に作った索引（`.arp/cache/search/index.sqlite`）を読むだけです。最初に一度、索引を作ります。
+検索は索引（`.arp/cache/search/index.sqlite`）を読みます。索引の準備は不要です。索引がないとき、文書の採用・削除・編集、外部アプリでの原本の変更、`git pull` などでファイルが変わったときは、検索が先に索引を更新します。最初の検索や大量の文書が変わった後の検索は、そのぶん時間がかかります。
+
+検索がファイルの変化を確かめるのは、ファイルの増減・サイズ・更新日時だけです。サイズも更新日時も変えずに中身だけを書き換えるツールを使った場合は、次のコマンドで全ファイルの中身を照合して更新します。
 
 ```powershell
 arp4 documents search-refresh --root C:/project
 ```
 
 ```json
-{"detail":"Search reads this index until the next search-refresh. External file changes are not checked during search.","failed":[],"failed_documents":0,"indexed_at_unix":1791596348,"indexed_documents":2,"ok":true,"refreshed_documents":2,"state":"indexed"}
+{"detail":"Every byte was checked. A search refreshes this index itself when files are added or removed or change size or modification time; run search-refresh after a change that keeps both.","failed":[],"failed_documents":0,"indexed_at_unix":1791596348,"indexed_documents":2,"ok":true,"refreshed_documents":2,"state":"indexed"}
 ```
 
-`indexed_documents` が索引に入っている文書数、`refreshed_documents` が今回更新した文書数です。2回目以降は変わった文書だけを更新するので、すぐ終わります。
-
-**検索の前に索引を更新する習慣をつけてください。** 検索コマンドは原本の変更を確認しません。次の操作の後は `search-refresh` を実行しないと、検索結果が古いままになります。
-
-- 文書を採用（`documents adopt`）・削除・編集した後
-- Excelなど外部のアプリで原本を変更した後
-- `git pull` などで他の人の変更を取り込んだ後
+`indexed_documents` が索引に入っている文書数、`refreshed_documents` が今回更新した文書数です。変わった文書だけを更新します。
 
 索引は各自の手元にだけ作るキャッシュで、Gitでは管理しません。他の人と共有する必要はありません。
 
@@ -95,7 +91,7 @@ arp4 documents search "注文" --document 設計 --root C:/project
   ],
   "page": {"offset": 0, "returned": 1, "total": 1, "next_offset": null},
   "revision": "7356723b…",
-  "summary": {"indexed_at_unix": 1791596348, "indexed_documents": 2, "source_checked_this_search": false}
+  "summary": {"indexed_at_unix": 1791596348, "indexed_documents": 2, "refreshed_documents": 0, "source_checked_this_search": false}
 }
 ```
 
@@ -248,7 +244,7 @@ arp4 documents search-formats --root C:/project
 注意点:
 
 - **見つかるのはセルまでです。** セルの一部だけが赤い場合も見つかりますが、どの文字が赤いかは原本で確認してください。
-- **以前に取り込んだ文書は取り込み直してください。** 一部の文字だけの書式は取り込み時に記録します。この機能より前に取り込んだ文書は `documents import --force` で取り込み直し、`search-refresh` を実行するまで、一部だけの書式では見つかりません。
+- **以前に取り込んだ文書は取り込み直してください。** 一部の文字だけの書式は取り込み時に記録します。この機能より前に取り込んだ文書は、`documents import --force` で取り込み直して採用するまで、一部だけの書式では見つかりません。
 - 条件付き書式で赤く見えるセルや、表示形式（`[赤]`）で赤く表示される数値は対象外です。
 - Markdown・CSVなどフォント情報のない文書、コメント、画像のOCR文字は書式では絞れません。
 - 太字は、取り込み時にセルの書式として記録される形式（Excelのセル、Word・PowerPointの段落と表のセル）だけが対象です。図形の文字の太字は対象外です。
@@ -309,7 +305,7 @@ groups:
 
 ## 結果の状態を確認する
 
-各結果の `state` と `structure_reviewed` は、**最後に `search-refresh` した時点**の状態です。構造解釈のある表の行では、`tables` の表の項目に載ります。
+各結果の `state` と `structure_reviewed` は、**索引を最後に更新した時点**の状態です。ファイルが変わっていれば検索が先に索引を更新するので、通常は検索した時点の状態です。構造解釈のある表の行では、`tables` の表の項目に載ります。
 
 | 項目 | `true` / `false` のとき注意すること |
 |---|---|
@@ -319,7 +315,7 @@ groups:
 | `state.content_differs_from_extraction` | `true` なら、ARP上で値を編集しており、原本へ書き戻していない変更があります。検索結果は編集前の内容です。 |
 | `structure_reviewed` | `false` なら、表見出しの対応付けがレビュー前です。 |
 
-例えば原本のMarkdownで「30秒」を「60秒」に書き換えた場合、`search-refresh` の後も「タイムアウトは30秒とする。」が返り、`source_current` が `false` になります。「60秒」で検索できるようになるのは、`documents import`・`record`・`adopt` で採用し直し、`search-refresh` した後です。
+例えば原本のMarkdownで「30秒」を「60秒」に書き換えた場合、次の検索でも「タイムアウトは30秒とする。」が返り、`source_current` が `false` になります。「60秒」で検索できるようになるのは、`documents import`・`record`・`adopt` で採用し直した後です。
 
 `summary.indexed_at_unix` は索引を最後に更新した時刻（Unix時間の秒）です。
 
@@ -327,15 +323,14 @@ groups:
 
 | 症状・メッセージ | 対処 |
 |---|---|
-| `search index unavailable; run documents search-refresh` | 索引がまだありません。`documents search-refresh` を実行します。 |
-| `search index version changed; run documents search-refresh`（または `invalid search index; …`） | 索引の形式が古いか、読めません。`documents search-refresh` を実行します。 |
-| 原本を直したのに古い内容が出る | `search-refresh` をしていないか、変更した原本を採用し直していません。[結果の状態を確認する](#結果の状態を確認する)を参照してください。 |
+| `search index unavailable; run documents search-refresh --rebuild`（または `invalid search index; …`） | 索引が壊れていて、検索が更新できません。`documents search-refresh --rebuild` を実行します。 |
+| 原本を直したのに古い内容が出る | 変更した原本を採用し直していません。[結果の状態を確認する](#結果の状態を確認する)を参照してください。サイズと更新日時を変えないツールで書き換えた場合は `search-refresh` を実行します。 |
 | 表の列見出しの語で見つからない | その表に構造解釈がありません。[表を見出し込みで探す](#表を見出し込みで探す)を参照してください。 |
 | `search revision changed; restart at offset 0 without --revision` | ページ送りの途中で索引が更新されました。`--offset` と `--revision` を外して最初から検索し直します。 |
 | `the argument '--full' cannot be used with '--limit <LIMIT>'`（指定順により逆の文言。`--offset` も同様） | `--full` は全件を返すため、件数の指定とは併用できません。どちらかを外します。 |
 | `search query must contain 1..256 characters` | 検索語が空か、長すぎます。書式だけで探す場合は検索語を省きます。 |
 | `unknown color …` | `--color` に指定できない値です。`RRGGBB`、色の系統（`red` など）、テーマの色枠（`accent1` など）、`auto` のいずれかを指定します。 |
-| `ok: false` で `failed` に文書が並ぶ | 一部の文書の検証に失敗し、その文書を除いた結果が返っています。**「該当なし」と判断しないでください。** `search-refresh` を実行し、それでも失敗する場合は該当文書の状態を `documents status` で確認します。 |
+| `ok: false` で `failed` に文書が並ぶ | 一部の文書の検証に失敗し、その文書を除いた結果が返っています。**「該当なし」と判断しないでください。** 該当文書の状態を `documents status` で確認し、直してから検索し直します。 |
 | 索引が壊れた様子がある | `documents search-refresh --rebuild` で索引を作り直します。索引は再生成できるキャッシュなので、作り直しても文書は失われません。 |
 
 検索の時間を測りたい場合は `documents search` に `--profile` を付けます。検索結果とは別に、処理時間が標準エラーへ1行のJSONで出力されます。項目の意味は[採用済み文書の検索](document-search.md#処理時間の計測)を参照してください。

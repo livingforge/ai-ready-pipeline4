@@ -19,6 +19,19 @@ fn object(node: Node<'_, '_>) -> bool {
         )
 }
 
+/// Whether `node` is in an `mc:AlternateContent` branch after one holding a
+/// drawing object. A reader shows the first branch it reads, and PowerPoint
+/// writes the object again in the fallback for older readers.
+fn in_later_branch(node: Node<'_, '_>) -> bool {
+    node.ancestors().any(|branch| {
+        alternate_branch(branch)
+            && branch
+                .prev_siblings()
+                .skip(1)
+                .any(|earlier| alternate_branch(earlier) && earlier.descendants().any(object))
+    })
+}
+
 /// The non-visual properties (`p:cNvPr`) of an object.
 fn properties<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
     node.children()
@@ -190,7 +203,7 @@ pub(super) fn drawings(
     };
     for node in tree
         .descendants()
-        .filter(|n| object(*n) && !hidden_copy(*n, "pptx"))
+        .filter(|n| object(*n) && !hidden_copy(*n, "pptx") && !in_later_branch(*n))
     {
         let property = properties(node);
         let raw_id = property.and_then(|p| p.attribute("id")).unwrap_or("0");
@@ -270,16 +283,19 @@ pub(super) fn drawings(
         }
         let mut image = Value::Null;
         let mut linked_image = Value::Null;
-        if kind == "picture"
-            && let Some(blip) = node
-                .descendants()
-                .find(|n| n.has_tag_name((DRAWING, "blip")))
+        // The picture a picture shows, or a shape or table fills itself with:
+        // its own, not those of the objects of a group. A picture whose image
+        // the package does not hold (missing, or outside it) shows none.
+        if kind != "group"
+            && let Some(blip) = node.descendants().find(|n| {
+                n.has_tag_name((DRAWING, "blip"))
+                    && n.ancestors().skip(1).find(|a| object(*a)) == Some(node)
+            })
         {
-            if let Some(id) = blip.attribute((REL, "embed")) {
-                let media = relation_target(id)?;
-                if let Some(bytes) = images.get(&media).or_else(|| parts.get(&media)) {
-                    image = json!({"part":media,"sha256":hash(bytes)});
-                }
+            if let Some(media) = blip_embed(blip).and_then(|id| relation_target(id).ok())
+                && let Some(bytes) = images.get(&media).or_else(|| parts.get(&media))
+            {
+                image = json!({"part":media,"sha256":hash(bytes)});
             }
             linked_image = json!(blip.attribute((REL, "link")));
         }
@@ -289,6 +305,18 @@ pub(super) fn drawings(
             .and_then(|n| n.attribute((REL, "id")))
             .map(&relation_target)
             .transpose()?;
+        // A SmartArt graphic keeps its text in a data part, a chart its
+        // titles in the chart: the text the object shows.
+        let diagram = node
+            .descendants()
+            .find(|n| n.tag_name().name() == "relIds")
+            .and_then(|n| n.attribute((REL, "dm")))
+            .and_then(|id| relation_target(id).ok());
+        let text = match (&diagram, &chart_part) {
+            (Some(data), _) => super::diagram_text(parts, data),
+            (None, Some(chart)) => super::chart_titles(parts, chart),
+            (None, None) => text,
+        };
         let placeholder = node
             .children()
             .find(|n| n.tag_name().name().starts_with("nv"))
@@ -384,6 +412,87 @@ fn relation_target_with(
     resolve_target(part, target, |name| {
         parts.contains_key(name) || images.contains_key(name)
     })
+}
+
+/// The images a part shows, by part, and the parts its relationships name,
+/// with the type of each.
+type ShownImages = (Vec<String>, Vec<(String, String)>);
+
+/// The images `part` shows, by part: those of its background, and with
+/// `objects` those of its objects too, leaving out the branches of
+/// `mc:AlternateContent` a reader does not show; and the parts its
+/// relationships of each type name.
+fn shown_images(
+    parts: &BTreeMap<String, Vec<u8>>,
+    media: &BTreeMap<String, Vec<u8>>,
+    part: &str,
+    objects: bool,
+) -> ShownImages {
+    let read = || -> Option<ShownImages> {
+        let text = xml_part(parts, part).ok()?;
+        let xml = Document::parse(&text).ok()?;
+        let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+        let rels_text = xml_part(parts, &format!("{directory}/_rels/{filename}.rels")).ok()?;
+        let rels = Document::parse(&rels_text).ok()?;
+        let by_id = relationships_by_id(&rels);
+        let target = |id: &str| relation_target_with(parts, media, part, &by_id, id).ok();
+        let images = xml
+            .descendants()
+            .filter(|n| {
+                n.has_tag_name((DRAWING, "blip"))
+                    && !in_later_branch(*n)
+                    && !hidden_copy(*n, "pptx")
+                    && (objects || n.ancestors().any(|a| a.has_tag_name((PRESENTATION, "bg"))))
+            })
+            .filter_map(|blip| target(blip_embed(blip)?))
+            .collect();
+        let related = by_id
+            .iter()
+            .filter_map(|(id, rel)| Some((rel.attribute("Type")?.to_owned(), target(id)?)))
+            .collect();
+        Some((images, related))
+    };
+    read().unwrap_or_default()
+}
+
+/// The images a presentation shows around the objects of its slides: the
+/// background of each slide, the pictures and backgrounds of the layouts and
+/// masters its slides use, and the pictures of their notes pages; by part,
+/// each once, in the order the slides first show them.
+pub(super) fn surrounding_images(
+    parts: &BTreeMap<String, Vec<u8>>,
+    media: &BTreeMap<String, Vec<u8>>,
+    slides: &[String],
+) -> Vec<String> {
+    let mut found = vec![];
+    let mut read = BTreeSet::new();
+    let related = |relations: &[(String, String)], kind: &str| {
+        relations
+            .iter()
+            .find(|(relation, _)| relation.ends_with(kind))
+            .map(|(_, part)| part.clone())
+    };
+    for slide in slides {
+        let (images, relations) = shown_images(parts, media, slide, false);
+        found.extend(images);
+        if let Some(layout) = related(&relations, "/slideLayout")
+            && read.insert(layout.clone())
+        {
+            let (images, relations) = shown_images(parts, media, &layout, true);
+            found.extend(images);
+            if let Some(master) = related(&relations, "/slideMaster")
+                && read.insert(master.clone())
+            {
+                found.extend(shown_images(parts, media, &master, true).0);
+            }
+        }
+        if let Some(notes) = related(&relations, "/notesSlide") {
+            found.extend(shown_images(parts, media, &notes, true).0);
+        }
+    }
+    let mut seen = BTreeSet::new();
+    found.retain(|part| seen.insert(part.clone()));
+    found
 }
 
 /// The media parts of a presentation (`ppt/media/`), which the XML parts leave out.

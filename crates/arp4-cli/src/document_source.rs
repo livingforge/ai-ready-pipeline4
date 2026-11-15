@@ -64,13 +64,24 @@ pub const EXCEL_FORMATS: &[&str] = &["xlsx", "xlsm", "xltx", "xltm"];
 /// Word packages sharing the WordprocessingML body. VBA and template parts are
 /// never read and are copied unchanged on writeback.
 pub const WORD_FORMATS: &[&str] = &["docx", "docm", "dotx", "dotm"];
+/// PowerPoint packages sharing the PresentationML body: macro-enabled
+/// presentations and templates too. VBA and template parts are never read and
+/// are copied unchanged on writeback.
+pub const POWERPOINT_FORMATS: &[&str] = &["pptx", "pptm", "potx", "potm"];
 const NATIVE_FORMATS: &[&str] = &["txt", "md", "csv", "tsv"];
 /// HTML pages, laid out as Word text is and written back in their encoding.
 pub const HTML_FORMATS: &[&str] = &["html", "htm"];
 
 /// Formats whose extraction supports document structure interpretation.
 pub fn structure_formats() -> Vec<&'static str> {
-    [EXCEL_FORMATS, WORD_FORMATS, &["pptx", "pdf"], HTML_FORMATS].concat()
+    [
+        EXCEL_FORMATS,
+        WORD_FORMATS,
+        POWERPOINT_FORMATS,
+        &["pdf"],
+        HTML_FORMATS,
+    ]
+    .concat()
 }
 
 pub fn input_formats() -> Vec<&'static str> {
@@ -81,12 +92,17 @@ pub fn is_excel(format: &str) -> bool {
     EXCEL_FORMATS.contains(&format)
 }
 
+/// Whether `format` (a lowercase extension) is a PowerPoint package's.
+pub fn is_powerpoint(format: &str) -> bool {
+    POWERPOINT_FORMATS.contains(&format)
+}
+
 /// The Open XML formats to resave a binary Office file as, which ARP does not parse.
 pub fn binary_office_replacement(format: &str) -> Option<&'static str> {
     match format {
         "xls" | "xlsb" | "xlt" => Some(".xlsx/.xlsm"),
         "doc" | "dot" => Some(".docx/.docm"),
-        "ppt" | "pot" | "pps" => Some(".pptx"),
+        "ppt" | "pot" | "pps" => Some(".pptx/.pptm"),
         _ => None,
     }
 }
@@ -130,10 +146,13 @@ enum TextBackend {
     /// `left_out` lists pages with text in fonts whose codes cannot be read
     /// as characters, with those fonts; that text is missing, and kept as it
     /// is when the page is written back.
+    /// `repaired` says the file's cross-reference table did not lead to its
+    /// pages, and its objects were found by reading it through.
     Pdf {
         doc: Box<Pdf>,
         unparsed: Vec<u32>,
         left_out: Vec<(u32, BTreeSet<String>)>,
+        repaired: bool,
     },
     /// An HTML page, with the encoding its text is read in.
     Html(&'static encoding_rs::Encoding),
@@ -164,13 +183,21 @@ impl Source {
             files,
             ..ImageAssets::default()
         };
-        let Self::Text(doc) = self else {
-            return Ok(ImageAssets::default());
+        let doc = match self {
+            Self::Excel(book) => {
+                return Ok(files(
+                    book.other_images
+                        .iter()
+                        .map(|(name, part)| (name.clone(), book.parts[part].clone()))
+                        .collect(),
+                ));
+            }
+            Self::Text(doc) => doc,
         };
         if let TextBackend::Pdf { doc, .. } = &doc.backend {
             return pdf_images::read(doc, MAX_PAGE);
         }
-        if doc.format == "pptx" {
+        if is_powerpoint(&doc.format) {
             return Ok(files(doc.images.clone()));
         }
         if html(&doc.format) {
@@ -191,11 +218,22 @@ impl Source {
         if !word(&doc.format) {
             return Ok(ImageAssets::default());
         }
+        // The images of the media folder and those the document's parts
+        // name elsewhere, but not an SVG drawn with the PNG beside it that
+        // Word draws of it, which is the same picture.
+        let (wanted, drawn_twice) = match &doc.backend {
+            TextBackend::Office(parts) => word_images(parts),
+            _ => Default::default(),
+        };
         let mut archive = office_archive(&doc.raw)?;
         let mut images = BTreeMap::new();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
-            if !entry.name().starts_with("word/media/") || entry.is_dir() {
+            let name = entry.name();
+            if entry.is_dir()
+                || drawn_twice.contains(name)
+                || !(name.starts_with("word/media/") || wanted.contains(name))
+            {
                 continue;
             }
             ensure!(
@@ -205,16 +243,81 @@ impl Source {
             let bytes = read_entry(&mut entry)?;
             images.insert(entry.name().to_owned(), bytes);
         }
+        // Word keeps a copy of a picture for older readers (the VML of an
+        // `mc:Fallback`): the same bytes are one picture.
         let mut named = BTreeMap::new();
-        for (index, (part, bytes)) in images.into_iter().enumerate() {
+        let mut seen = BTreeSet::new();
+        for (part, bytes) in images {
+            if !seen.insert(hash(&bytes)) {
+                continue;
+            }
             let extension = Path::new(&part)
                 .extension()
                 .and_then(|s| s.to_str())
                 .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()))
                 .unwrap_or("bin");
-            named.insert(format!("image-{:03}.{extension}", index + 1), bytes);
+            named.insert(format!("image-{:03}.{extension}", seen.len()), bytes);
         }
         Ok(files(named))
+    }
+
+    /// The pictures a document shows that are not kept as assets: those
+    /// linked to files outside it (by sheet or slide and name, or for Word by
+    /// file name), and the pictures of an HTML page that could not be read
+    /// (by `src`).
+    fn unkept_pictures(&self) -> (Vec<String>, Vec<String>) {
+        let mut linked = vec![];
+        let mut unread = vec![];
+        let drawn = |sheets: &mut dyn Iterator<Item = (&str, &Value)>, linked: &mut Vec<String>| {
+            for (sheet, drawings) in sheets {
+                for drawing in drawings.as_array().into_iter().flatten() {
+                    if drawing["linked_image"].is_string() && drawing["image"].is_null() {
+                        let name = drawing["name"].as_str().unwrap_or("");
+                        linked.push(format!("{sheet}の「{name}」"));
+                    }
+                }
+            }
+        };
+        match self {
+            Self::Excel(book) => drawn(
+                &mut book
+                    .sheets
+                    .iter()
+                    .map(|s| (s["name"].as_str().unwrap_or(""), &s["drawings"])),
+                &mut linked,
+            ),
+            Self::Text(doc) if is_powerpoint(&doc.format) => drawn(
+                &mut doc
+                    .extraction
+                    .iter()
+                    .map(|s| (s["name"].as_str().unwrap_or(""), &s["drawings"])),
+                &mut linked,
+            ),
+            Self::Text(doc) if html(&doc.format) => {
+                for sheet in &doc.extraction {
+                    for image in sheet["images"].as_array().into_iter().flatten() {
+                        if image["asset"].is_null()
+                            && let Some(src) = image["src"].as_str()
+                        {
+                            // A data URL is named by its kind, not its bytes.
+                            let shown = if src.trim_start().starts_with("data:") {
+                                src.split(',').next().unwrap_or("data:").to_owned()
+                            } else {
+                                src.to_owned()
+                            };
+                            unread.push(shown);
+                        }
+                    }
+                }
+            }
+            Self::Text(TextSource {
+                format,
+                backend: TextBackend::Office(parts),
+                ..
+            }) if word(format) => linked = word_linked_images(parts),
+            _ => {}
+        }
+        (linked, unread)
     }
 
     /// Word field instructions are read-only metadata, separate from the
@@ -320,15 +423,27 @@ impl Source {
         Ok(result)
     }
 
-    /// Expose complete chart XML and its source formulas for read-only review.
-    /// Chart editing continues through Excel.
+    /// Expose complete chart XML and its source formulas for read-only review,
+    /// those of a workbook and of a presentation's slides. Chart editing
+    /// continues through Excel and PowerPoint.
     pub fn chart_parts(&self) -> Result<Vec<Value>> {
-        let Self::Excel(book) = self else {
-            return Ok(vec![]);
+        let (parts, folder) = match self {
+            Self::Excel(book) => (&book.parts, "xl/charts/"),
+            Self::Text(TextSource {
+                format,
+                backend: TextBackend::Office(parts),
+                ..
+            }) if is_powerpoint(format) => (parts, "ppt/charts/"),
+            Self::Text(TextSource {
+                format,
+                backend: TextBackend::Office(parts),
+                ..
+            }) if word(format) => (parts, "word/charts/"),
+            _ => return Ok(vec![]),
         };
         let mut result = Vec::new();
-        for (part, bytes) in &book.parts {
-            if !part.starts_with("xl/charts/") || !part.ends_with(".xml") {
+        for (part, bytes) in parts {
+            if !part.starts_with(folder) || !part.ends_with(".xml") {
                 continue;
             }
             let (text, _) = part_text(bytes)?;
@@ -432,7 +547,7 @@ impl Source {
             );
         }
         // A presentation's pictures, which the XML parts leave out.
-        let media = if format == "pptx" {
+        let media = if is_powerpoint(&format) {
             slide_drawings::media(&raw)?
         } else {
             BTreeMap::new()
@@ -463,7 +578,7 @@ impl Source {
                 vec![html::sheet(&layout, &raw, &decoded)?],
             )
         } else if format == "pdf" {
-            let doc = Pdf::load_mem(&raw)?;
+            let (doc, repaired) = pdf_load(&raw)?;
             ensure!(
                 !doc.is_encrypted() && doc.trailer.get(b"Encrypt").is_err(),
                 "encrypted PDF is not supported"
@@ -481,13 +596,10 @@ impl Source {
                 let raw_content = doc.get_page_content_with_limit(id, MAX_PAGE)?;
                 // The lenient decoder stops quietly at the first token it cannot
                 // read; keep what it read but report the page.
-                let mut content = match Content::decode_strict(&raw_content) {
-                    Ok(content) => content,
-                    Err(_) => {
-                        unparsed.push(page);
-                        Content::decode(&raw_content)?
-                    }
-                };
+                let (mut content, whole) = pdf_content(&raw_content)?;
+                if !whole {
+                    unparsed.push(page);
+                }
                 let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
                     .into_iter()
                     .map(|string| (string.text, Some(string.font)))
@@ -505,6 +617,7 @@ impl Source {
                     doc: Box::new(doc),
                     unparsed,
                     left_out,
+                    repaired,
                 },
                 sheets,
             )
@@ -526,7 +639,8 @@ impl Source {
                         name != "document" || xml.root_element().has_tag_name((WORD, "document")),
                         "not a supported Word document"
                     );
-                    sheets.push(word::sheet(&xml, &name, &part, styles)?);
+                    let drawn = word_drawn_texts(&parts, &part);
+                    sheets.push(word::sheet(&xml, &name, &part, styles, &drawn)?);
                 } else {
                     let fonts = slide_fonts::SlideFonts::new(&parts, &part, &xml, &presentation)?;
                     let layout = slide_text::layout(&xml)?;
@@ -564,13 +678,13 @@ impl Source {
             "document has no pages or text containers"
         );
         let layouts = match &backend {
-            TextBackend::Office(parts) if format == "pptx" => slides::layouts(parts)?,
+            TextBackend::Office(parts) if is_powerpoint(&format) => slides::layouts(parts)?,
             _ => vec![],
         };
         // Pictures are named in first-use order across the slides, as Excel's are.
         let mut images = BTreeMap::new();
         let mut names: BTreeMap<String, String> = BTreeMap::new();
-        if format == "pptx" {
+        if is_powerpoint(&format) {
             for sheet in &mut sheets {
                 for drawing in sheet
                     .fields
@@ -603,6 +717,33 @@ impl Source {
                         images.insert(name.clone(), bytes.clone());
                     }
                     drawing["image"]["asset"] = json!(name);
+                }
+            }
+            // The images around the slides' objects (backgrounds, layouts,
+            // masters, notes pages) are assets of no object.
+            if let TextBackend::Office(parts) = &backend {
+                let slides: Vec<String> = sheets
+                    .iter()
+                    .filter_map(|sheet| sheet["part"].as_str())
+                    .filter(|part| part.starts_with("ppt/slides/"))
+                    .map(str::to_owned)
+                    .collect();
+                for part in slide_drawings::surrounding_images(parts, &media, &slides) {
+                    let Some(bytes) = media.get(&part).or_else(|| parts.get(&part)) else {
+                        continue;
+                    };
+                    let next = names.len() + 1;
+                    let extension = Path::new(&part)
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()))
+                        .unwrap_or("bin")
+                        .to_owned();
+                    let name = names
+                        .entry(hash(bytes))
+                        .or_insert_with(|| format!("image-{next:03}.{extension}"))
+                        .clone();
+                    images.entry(name).or_insert_with(|| bytes.clone());
                 }
             }
         }
@@ -696,10 +837,7 @@ impl Source {
         for (_, id) in doc.get_pages() {
             let [x0, y0, x1, y1] = pdf_page_box(doc, id);
             let raw = doc.get_page_content_with_limit(id, MAX_PAGE)?;
-            let mut content = match Content::decode_strict(&raw) {
-                Ok(content) => content,
-                Err(_) => Content::decode(&raw)?,
-            };
+            let (mut content, _) = pdf_content(&raw)?;
             let paths = pdf_paths(&content, [x0, y1]);
             let mut places = vec![];
             let mut invisible = BTreeSet::new();
@@ -721,13 +859,13 @@ impl Source {
                 .map(|(_, placements)| placements)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|p| {
-                    let [a, b, c, d, e, f] = p.matrix;
-                    PdfImage {
+                .filter_map(|p| {
+                    let [a, b, c, d, e, f] = p.matrix?;
+                    Some(PdfImage {
                         asset: pdf_images::stem(p.index),
                         matrix: [a, -b, -c, d, c + e - x0, y1 - d - f],
                         mask: p.mask,
-                    }
+                    })
                 })
                 .collect();
             pages.push(PdfPage {
@@ -777,7 +915,7 @@ impl Source {
             Self::Excel(_) => "cells/1",
             Self::Text(doc) if matches!(doc.backend, TextBackend::Native) => "native-text/1",
             Self::Text(doc) if word(&doc.format) => "word-blocks/1",
-            Self::Text(doc) if doc.format == "pptx" => "slide-blocks/1",
+            Self::Text(doc) if is_powerpoint(&doc.format) => "slide-blocks/1",
             Self::Text(doc) if html(&doc.format) => "html-blocks/1",
             Self::Text(_) => "text-runs/1",
         }
@@ -807,6 +945,39 @@ impl Source {
                 "次のセルはセル内の画像またはリンクされたデータ型（株価・地理など）で、値はセル外に保存されているため抽出していません（セルの値は#VALUE!と記録されます）: {}。",
                 book.rich_values.join("、")
             ));
+        }
+        let (linked, unread) = self.unkept_pictures();
+        // The first of a long list, and how many more.
+        let listed = |items: &[String]| {
+            let mut list = items
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("、");
+            if items.len() > 10 {
+                list.push_str(&format!("ほか{}件", items.len() - 10));
+            }
+            list
+        };
+        if !linked.is_empty() {
+            note.push_str(&format!(
+                "次の画像は文書の外のファイルへのリンクで、文書に保存されていないため、assetsに保存せずOCRもしていません: {}。画像を文書に埋め込んで保存し直すと取り込めます。",
+                listed(&linked)
+            ));
+        }
+        if !unread.is_empty() {
+            note.push_str(&format!(
+                "次の画像は読めないため、assetsに保存せずOCRもしていません（ファイルがない、取り込み元フォルダとpicture_foldersの外にある、Web上にある、画像の形式でない）: {}。",
+                listed(&unread)
+            ));
+        }
+        if let Self::Text(TextSource {
+            backend: TextBackend::Pdf { repaired: true, .. },
+            ..
+        }) = self
+        {
+            note.push_str("このPDFは相互参照表からページをたどれないため、ファイルを先頭から読んでオブジェクトを探しました。PDFの閲覧ソフトで開いて保存し直すと直ります。");
         }
         if let Self::Text(TextSource {
             backend: TextBackend::Pdf { unparsed, .. },
@@ -904,7 +1075,7 @@ impl Source {
                     return html::ensure_rows(&doc.raw, &operations);
                 }
                 ensure!(
-                    word(&doc.format) || doc.format == "pptx",
+                    word(&doc.format) || is_powerpoint(&doc.format),
                     "row operations apply to Excel, Word, PowerPoint and HTML documents only"
                 );
                 let TextBackend::Office(parts) = &doc.backend else {
@@ -912,7 +1083,7 @@ impl Source {
                 };
                 // Read by their names and parts: their cells as JSON took
                 // several times the memory of the typed ones.
-                let slide_operations = if doc.format == "pptx" {
+                let slide_operations = if is_powerpoint(&doc.format) {
                     parse_slide_operations(all, &doc.extraction)?
                 } else {
                     vec![]
@@ -977,7 +1148,7 @@ impl Source {
         };
         let sheets = doc.sheets();
         ensure!(
-            format == "pptx",
+            is_powerpoint(format),
             "slide operations apply to PowerPoint presentations only"
         );
         let operations = parse_slide_operations(operations, sheets)?;
@@ -1002,7 +1173,7 @@ impl Source {
                     "text formats support text edits only; formulas are Excel-only"
                 );
                 ensure!(
-                    edits.assets.is_empty() || doc.format == "pptx",
+                    edits.assets.is_empty() || is_powerpoint(&doc.format),
                     "images are added to Excel workbooks and PowerPoint slides only"
                 );
                 // Fonts are written to the original text first, so that copied
@@ -1026,7 +1197,7 @@ impl Source {
     pub fn font_edits_supported(&self) -> bool {
         match self {
             Self::Excel(_) => true,
-            Self::Text(doc) => word(&doc.format) || doc.format == "pptx",
+            Self::Text(doc) => word(&doc.format) || is_powerpoint(&doc.format),
         }
     }
 }
@@ -1114,6 +1285,7 @@ fn office_binary(name: &str) -> bool {
                 | "docx"
                 | "docm"
                 | "pptx"
+                | "pptm"
                 | "pdf"
                 | "mp3"
                 | "mp4"
@@ -1435,16 +1607,16 @@ pub fn base_note(format: &str) -> &'static str {
             "セル値・数式原文・結合範囲・書式の識別情報・Excelテーブル定義とDrawingMLの図形文字・配置・明示的な接続を抽出します。埋込み画像はassetsに保存し、WindowsではOCRを自動実行して結果を記録します。表・見出しの推定はstructure initで行い、レビューが必要です。グループ内位置は変換情報を保持します。メモ・スレッドコメント、図形に割り当てたマクロ、フォームコントロールの種類・リンク先セル・選択肢範囲も抽出します。接続のない矢印の意味とActiveXコントロールの内部設定は未抽出です。印刷設定とグラフXMLは読み取り専用で抽出し、ActiveX部品はハッシュで記録します。"
         }
         format if html(format) => {
-            "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行、合計行はtfootの行です。ブラウザの表示と同じく、theadの行は表の先頭、tfootの行は末尾に置き、rowspanは行グループ（thead・tbody・tfoot）の外へ伸ばしません。表のセルの外に書いた文字は表の前のブロックにします。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表し、ブロック末尾の<br>は表示どおり除きます。空白と&nbsp;だけのブロックは行にしません。pre内のブロック要素（行ごとに要素を置くハイライト済みのコード）は、preのブロックの中の行として改行で区切ります。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。リンクの行き先になるため、本文から除いた部分やhidden属性の要素のものも、その位置か後のブロックのセルとして記録します（templateの中は除きます）。<img>はimagesにブロックのセル・src・altを記録し、data URLの画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定のpicture_folders（.arp/config.ymlはプロジェクト内、Git管理外の.arp/local.ymlはこのマシンのプロジェクト外も可）の中にあるものは取込時にassetsへ保存し、その外の画像ファイルは読みません。保存した画像にはWindowsでOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落やpre内のブロックをまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
+            "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行、合計行はtfootの行です。ブラウザの表示と同じく、theadの行は表の先頭、tfootの行は末尾に置き、rowspanは行グループ（thead・tbody・tfoot）の外へ伸ばしません。表のセルの外に書いた文字は表の前のブロックにします。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表し、ブロック末尾の<br>は表示どおり除きます。空白と&nbsp;だけのブロックは行にしません。pre内のブロック要素（行ごとに要素を置くハイライト済みのコード）は、preのブロックの中の行として改行で区切ります。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。リンクの行き先になるため、本文から除いた部分やhidden属性の要素のものも、その位置か後のブロックのセルとして記録します（templateの中は除きます）。<img>（遅延読み込みのdata-srcを優先）と、画像の<input>・<object>・<embed>、SVGの中の<image>、style属性の背景画像はimagesにブロックのセル・src・altを記録し（相対パスは<base>からたどります）、data URLの画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定のpicture_folders（.arp/config.ymlはプロジェクト内、Git管理外の.arp/local.ymlはこのマシンのプロジェクト外も可）の中にあるものは取込時にassetsへ保存し、その外の画像ファイルは読みません。保存した画像にはWindowsでOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落やpre内のブロックをまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
         }
         "pdf" => {
-            "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。フォーム・注釈・Form XObject内の文字は未抽出です。ページが描く画像（Form XObjectの中のものとインライン画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。JPEGはそのまま、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにします。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。OCRの文字はセルの値にしません。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
+            "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。Form XObjectの中の文字は描く位置に、注釈の表示の文字（コメント・入力済みのフォーム欄。チェックボックス等のボタンを除く）はページの文字の後に抽出しますが、書き戻せません。ページが描く画像（Form XObjectの中のもの、インライン画像、スタンプ・署名など注釈の表示に描く画像、タイリングパターン・ソフトマスク・Type3フォントの字形の中の画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。帯状・格子状に分けて描かれた1枚の画像と、ページのType3フォントの字形の画像は、それぞれ1枚の画像にまとめます。JPEGはそのまま（Decodeで反転するものは解読してPNG）、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにし、ソフトマスク・マスク・JPEG 2000のアルファによる透明度はPNGの透明度として保ちます。OCRは透明な部分を画像と見分けられる背景色の上で読み、OCRの上限より大きい画像は縮小して読みます。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。相互参照表からページをたどれないPDFは、ファイル内のオブジェクトを探して読み、注記に記録します。OCRの文字はセルの値にしません。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
         }
         format if word(format) => {
             "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表します。セル内の入れ子の表はそのセルの範囲に独自の行・列を持ち、外側のセルは入れ子の表に合わせて広がり（他のセルは結合として記録）、tablesに外側の表をparentとして記録します。罫線がなく、値のある全セルが表を持つ外側の表はレイアウト用の枠とみなし、表として記録しません。入れ子の表を持つ表の行の追加・削除は拒否します。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
         }
         _ => {
-            "PPTXの各スライドの本文・表を段落と表のセル単位で抽出し、スライドのノートはスライドの後にnotes-N（Nはスライド番号）として抽出します。表の外の段落は図形をまたいでスライドの上から1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。セル内の段落は改行で表します。ノートのスライド番号・日付・ヘッダー・フッターはノートマスターから表示されるため抽出しません。書き戻しは変更箇所を含むrunだけを書き換え、段落内の改行・タブを追加・削除・置換できます。段落の分割・結合となる変更は拒否し、段落・表の行はdocuments rowsで追加・削除します。スライドはdocuments slidesで複製・削除でき、複製したスライドは操作IDの名前で本文を編集します。マスター・画像・OCR・グラフ内部の文字は未抽出です。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
+            "PPTXの各スライドの本文・表を段落と表のセル単位で抽出し、スライドのノートはスライドの後にnotes-N（Nはスライド番号）として抽出します。表の外の段落は図形をまたいでスライドの上から1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。セル内の段落は改行で表します。ノートのスライド番号・日付・ヘッダー・フッターはノートマスターから表示されるため抽出しません。書き戻しは変更箇所を含むrunだけを書き換え、段落内の改行・タブを追加・削除・置換できます。段落の分割・結合となる変更は拒否し、段落・表の行はdocuments rowsで追加・削除します。スライドはdocuments slidesで複製・削除でき、複製したスライドは操作IDの名前で本文を編集します。マスターの文字と画像内の文字（OCRはassetsに記録）は本文に含めません。SmartArtの文字とグラフのタイトルは図形のtextに、グラフのXMLはchart_partsに読み取り専用で記録します。自動サイズ調整を行わないため、出力PPTXではみ出しを確認してください。"
         }
     }
 }
@@ -1508,7 +1680,8 @@ fn pages_take_rows(
         let xml = Document::parse(&text)?;
         let values = word::InsertedText::new();
         if word_parts {
-            word::rows_layout(&xml)?.restructure(&text, &own, &values)
+            let drawn = word_drawn_texts(parts, &part(name)?);
+            word::rows_layout(&xml, &drawn)?.restructure(&text, &own, &values)
         } else {
             slide_text::layout(&xml)?.restructure(&text, &own, &values)
         }
@@ -1553,6 +1726,248 @@ fn word_field_results(xml: &Document<'_>) -> BTreeSet<usize> {
 
 fn text_node(node: Node<'_, '_>, format: &str) -> bool {
     node.has_tag_name((if word(format) { WORD } else { DRAWING }, "t"))
+}
+
+const DIAGRAM: &str = "http://schemas.openxmlformats.org/drawingml/2006/diagram";
+const CHART: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+
+/// The text a SmartArt graphic shows, from its data part `part`: that of each
+/// of its nodes (not of the connections between them), a line each.
+pub(crate) fn diagram_text(parts: &BTreeMap<String, Vec<u8>>, part: &str) -> String {
+    let read = || -> Option<String> {
+        let (text, _) = part_text(parts.get(part)?).ok()?;
+        let xml = Document::parse(&text).ok()?;
+        let lines: Vec<String> = xml
+            .descendants()
+            .filter(|n| {
+                n.has_tag_name((DIAGRAM, "pt"))
+                    && matches!(n.attribute("type"), None | Some("node" | "asst"))
+            })
+            .flat_map(|point| {
+                point
+                    .descendants()
+                    .filter(|n| {
+                        n.tag_name().name() == "p" && n.tag_name().namespace() == Some(DRAWING)
+                    })
+                    .map(|p| {
+                        p.descendants()
+                            .filter(|n| n.tag_name().name() == "t")
+                            .filter_map(|n| n.text())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|line| !line.is_empty())
+            .collect();
+        Some(lines.join("\n"))
+    };
+    read().unwrap_or_default()
+}
+
+/// The titles a chart (part `part`) shows: its own and its axes', written
+/// or taken from cells, a line each.
+pub(crate) fn chart_titles(parts: &BTreeMap<String, Vec<u8>>, part: &str) -> String {
+    let read = || -> Option<String> {
+        let (text, _) = part_text(parts.get(part)?).ok()?;
+        let xml = Document::parse(&text).ok()?;
+        let titles: Vec<String> = xml
+            .descendants()
+            .filter(|n| n.has_tag_name((CHART, "title")))
+            .map(|title| {
+                let written: Vec<String> = title
+                    .descendants()
+                    .filter(|n| {
+                        n.tag_name().name() == "p" && n.tag_name().namespace() == Some(DRAWING)
+                    })
+                    .map(|p| {
+                        p.descendants()
+                            .filter(|n| n.tag_name().name() == "t")
+                            .filter_map(|n| n.text())
+                            .collect::<String>()
+                    })
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                if written.is_empty() {
+                    // A title taken from a cell keeps the cell's text.
+                    title
+                        .descendants()
+                        .filter(|n| n.has_tag_name((CHART, "v")))
+                        .filter_map(|n| n.text())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    written.join("\n")
+                }
+            })
+            .filter(|title| !title.is_empty())
+            .collect();
+        Some(titles.join("\n"))
+    };
+    read().unwrap_or_default()
+}
+
+/// The text the SmartArt graphics and charts of the Word part `part` show,
+/// by the relationship naming each's data part (SmartArt) or chart: Word
+/// draws it, and shows it in the paragraph the graphic is in.
+pub(super) fn word_drawn_texts(
+    parts: &BTreeMap<String, Vec<u8>>,
+    part: &str,
+) -> BTreeMap<String, String> {
+    let mut texts = BTreeMap::new();
+    let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+    let Some(Ok((rels_text, _))) = parts
+        .get(&format!("{directory}/_rels/{filename}.rels"))
+        .map(|r| part_text(r))
+    else {
+        return texts;
+    };
+    let Ok(rels) = Document::parse(&rels_text) else {
+        return texts;
+    };
+    for rel in rels
+        .descendants()
+        .filter(|n| n.has_tag_name((PACKAGE_REL, "Relationship")))
+    {
+        let (Some(id), Some(kind)) = (rel.attribute("Id"), rel.attribute("Type")) else {
+            continue;
+        };
+        let Ok(target) = relationship_target(parts, part, rel) else {
+            continue;
+        };
+        let text = if kind.ends_with("/diagramData") {
+            diagram_text(parts, &target)
+        } else if kind.ends_with("/chart") {
+            chart_titles(parts, &target)
+        } else {
+            continue;
+        };
+        if !text.is_empty() {
+            texts.insert(id.to_owned(), text);
+        }
+    }
+    texts
+}
+
+/// The files the pictures of a Word document link to without keeping them
+/// (`r:link` with no `r:embed`), by file name, each once.
+fn word_linked_images(parts: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
+    let mut found = vec![];
+    for (part, bytes) in parts {
+        if !part.starts_with("word/")
+            || !part.ends_with(".xml")
+            || !bytes.windows(5).any(|w| w == b":link")
+        {
+            continue;
+        }
+        let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+        let (Some(Ok((rels_text, _))), Ok((text, _))) = (
+            parts
+                .get(&format!("{directory}/_rels/{filename}.rels"))
+                .map(|r| part_text(r)),
+            part_text(bytes),
+        ) else {
+            continue;
+        };
+        let (Ok(rels), Ok(xml)) = (Document::parse(&rels_text), Document::parse(&text)) else {
+            continue;
+        };
+        for blip in xml.descendants().filter(|n| {
+            n.tag_name().name() == "blip"
+                && n.attribute((REL, "link")).is_some()
+                && n.attribute((REL, "embed")).is_none()
+        }) {
+            let id = blip.attribute((REL, "link")).unwrap_or("");
+            let Some(target) = rels
+                .descendants()
+                .find(|n| {
+                    n.has_tag_name((PACKAGE_REL, "Relationship")) && n.attribute("Id") == Some(id)
+                })
+                .and_then(|rel| rel.attribute("Target"))
+            else {
+                continue;
+            };
+            let name = percent_decode_lenient(target.rsplit(['/', '\\']).next().unwrap_or(target));
+            if !found.contains(&name) {
+                found.push(name);
+            }
+        }
+    }
+    found
+}
+
+/// The image parts the parts of a Word document name (its body, headers,
+/// footers, notes and comments), and of those the SVGs a picture shows with
+/// a PNG beside it: Word keeps both, drawing the PNG of the SVG for readers
+/// without SVG.
+fn word_images(parts: &BTreeMap<String, Vec<u8>>) -> (BTreeSet<String>, BTreeSet<String>) {
+    const SVG: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
+    let mut named = BTreeSet::new();
+    let mut drawn_twice = BTreeSet::new();
+    for (part, bytes) in parts {
+        if !part.starts_with("word/") || !part.ends_with(".xml") {
+            continue;
+        }
+        let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+        let Some(Ok(rels_text)) = parts
+            .get(&format!("{directory}/_rels/{filename}.rels"))
+            .map(|r| part_text(r).map(|(text, _)| text))
+        else {
+            continue;
+        };
+        let Ok(rels) = Document::parse(&rels_text) else {
+            continue;
+        };
+        let target = |id: &str| {
+            rels.descendants()
+                .find(|n| {
+                    n.has_tag_name((PACKAGE_REL, "Relationship")) && n.attribute("Id") == Some(id)
+                })
+                .and_then(|rel| relationship_target(parts, part, rel).ok())
+        };
+        for rel in rels.descendants().filter(|n| {
+            n.has_tag_name((PACKAGE_REL, "Relationship"))
+                && n.attribute("Type").is_some_and(|t| t.ends_with("/image"))
+        }) {
+            if let Ok(image) = relationship_target(parts, part, rel) {
+                named.insert(image);
+            }
+        }
+        if !bytes.windows(7).any(|w| w == b"svgBlip") {
+            continue;
+        }
+        let Ok((text, _)) = part_text(bytes) else {
+            continue;
+        };
+        let Ok(xml) = Document::parse(&text) else {
+            continue;
+        };
+        for svg in xml
+            .descendants()
+            .filter(|n| n.has_tag_name((SVG, "svgBlip")))
+        {
+            let blip = svg
+                .ancestors()
+                .find(|n| n.tag_name().name() == "blip" && n.attribute((REL, "embed")).is_some());
+            if blip.is_some()
+                && let Some(image) = svg.attribute((REL, "embed")).and_then(target)
+            {
+                drawn_twice.insert(image);
+            }
+        }
+    }
+    (named, drawn_twice)
+}
+
+/// The image a picture's `a:blip` embeds: its own, or the SVG its
+/// extension names when the picture is an SVG written with no PNG beside it,
+/// as PowerPoint 365 writes one.
+pub(crate) fn blip_embed<'a>(blip: Node<'a, '_>) -> Option<&'a str> {
+    const SVG: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
+    blip.attribute((REL, "embed")).or_else(|| {
+        blip.descendants()
+            .find(|n| n.has_tag_name((SVG, "svgBlip")))?
+            .attribute((REL, "embed"))
+    })
 }
 
 fn alternate_branch(node: Node<'_, '_>) -> bool {
@@ -2267,8 +2682,9 @@ impl TextSource {
         for (part, edits) in by_part {
             let (text, encoding) = part_text(parts.get(part).context("missing document part")?)?;
             let xml = Document::parse(&text)?;
+            let drawn = word_drawn_texts(parts, part);
             let blocks = if word(&self.format) {
-                word::layout(&xml)?.blocks
+                word::layout(&xml, &drawn)?.blocks
             } else {
                 slide_text::layout(&xml)?.blocks
             };
@@ -2349,9 +2765,9 @@ impl TextSource {
             operations
                 .iter()
                 .all(|operation| if is_presentation_operation(operation) {
-                    self.format == "pptx"
+                    is_powerpoint(&self.format)
                 } else {
-                    word(&self.format) || self.format == "pptx" || html(&self.format)
+                    word(&self.format) || is_powerpoint(&self.format) || html(&self.format)
                 }),
             "row operations apply to Excel, Word, PowerPoint and HTML documents, slide and shape operations to PowerPoint"
         );
@@ -2569,7 +2985,8 @@ impl TextSource {
                     let xml = &docs[index];
                     if word(&self.format) {
                         let fields = word_field_results(xml);
-                        let layout = word::layout(xml)?;
+                        let drawn = word_drawn_texts(parts, part);
+                        let layout = word::layout(xml, &drawn)?;
                         structural[index] = layout
                             .restructure(
                                 &texts[index].0,
@@ -3155,6 +3572,7 @@ fn inline_images(raw: &[u8], lengths: &[Option<usize>]) -> Result<Vec<std::ops::
             .get(images.len())
             .copied()
             .flatten()
+            .or_else(|| inline_length(&raw[start + 2..i]))
             .and_then(|length| {
                 while data < raw.len() && space(raw[data]) {
                     data += 1;
@@ -3176,6 +3594,359 @@ fn inline_images(raw: &[u8], lengths: &[Option<usize>]) -> Result<Vec<std::ops::
         i = end;
     }
     Ok(images)
+}
+
+/// The PDF `raw` holds, and whether it had to be repaired. A file whose
+/// cross-reference table does not lead to its pages (offsets moved by bytes
+/// before its header or by an edit, a table that is missing, an encryption
+/// dictionary written in the trailer, which lopdf does not take) is read as
+/// PDF readers read it: its objects found by reading it through, and its
+/// trailer's entries kept.
+fn pdf_load(raw: &[u8]) -> Result<(Pdf, bool)> {
+    let loaded = Pdf::load_mem(raw);
+    if loaded.as_ref().is_ok_and(|doc| !doc.get_pages().is_empty()) {
+        return Ok((loaded?, false));
+    }
+    if let Some(rebuilt) = pdf_rebuilt(raw)
+        && let Ok(doc) = Pdf::load_mem(&rebuilt)
+        && !doc.get_pages().is_empty()
+    {
+        return Ok((doc, true));
+    }
+    Ok((loaded?, false))
+}
+
+/// `raw` from its header on, with a cross-reference table of the objects
+/// found in it (the last of each number) and a trailer naming the root,
+/// information, ID and encryption of its last trailer (or cross-reference
+/// stream), or the catalog found; none when it holds no catalog.
+fn pdf_rebuilt(raw: &[u8]) -> Option<Vec<u8>> {
+    let start = raw.windows(5).position(|w| w == b"%PDF-")?;
+    let mut out = raw[start..].to_vec();
+    let body = out.clone();
+    let space = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'\x0c' | b'\0');
+    let digits_before = |end: usize| -> Option<(usize, u64)> {
+        let from = body[..end]
+            .iter()
+            .rposition(|b| !b.is_ascii_digit())
+            .map_or(0, |p| p + 1);
+        let number = std::str::from_utf8(&body[from..end]).ok()?.parse().ok()?;
+        (from < end).then_some((from, number))
+    };
+    // "N G obj" at the start of a line or after whitespace.
+    let mut objects: BTreeMap<u64, (u64, usize)> = BTreeMap::new();
+    let mut at = 0;
+    while let Some(found) = body[at..].windows(3).position(|w| w == b"obj") {
+        let obj = at + found;
+        at = obj + 3;
+        if body
+            .get(obj + 3)
+            .is_some_and(|b| !space(*b) && !b"<[/(%".contains(b))
+        {
+            continue;
+        }
+        let mut end = obj;
+        while end > 0 && space(body[end - 1]) {
+            end -= 1;
+        }
+        let Some((gen_start, generation)) = digits_before(end) else {
+            continue;
+        };
+        let mut end = gen_start;
+        while end > 0 && space(body[end - 1]) {
+            end -= 1;
+        }
+        if end == gen_start {
+            continue;
+        }
+        let Some((number_start, number)) = digits_before(end) else {
+            continue;
+        };
+        if number_start > 0 && !space(body[number_start - 1]) {
+            continue;
+        }
+        objects.insert(number, (generation, number_start));
+    }
+    // The entries of the last trailer, else of the last cross-reference
+    // stream, else the catalog.
+    let dictionary_at = |from: usize| -> Option<&[u8]> {
+        let open = from + body[from..].windows(2).position(|w| w == b"<<")?;
+        let end = pdf_value_end(&body[open..])?;
+        Some(&body[open..open + end])
+    };
+    let mut trailer = body
+        .windows(7)
+        .rposition(|w| w == b"trailer")
+        .and_then(dictionary_at);
+    if trailer.is_none_or(|t| entry(t, b"/Root").is_none()) {
+        // The cross-reference stream written last in the file.
+        trailer = objects
+            .values()
+            .filter_map(|(_, offset)| Some((*offset, dictionary_at(*offset)?)))
+            .filter(|(_, d)| {
+                let d = String::from_utf8_lossy(d).replace(' ', "");
+                d.contains("/Type/XRef") && d.contains("/Root")
+            })
+            .max_by_key(|(offset, _)| *offset)
+            .map(|(_, d)| d);
+    }
+    let root = match trailer.and_then(|t| entry(t, b"/Root")) {
+        Some(root) => root.to_vec(),
+        None => {
+            let (number, (generation, _)) = objects.iter().find(|(_, (_, offset))| {
+                dictionary_at(*offset).is_some_and(|d| {
+                    String::from_utf8_lossy(d)
+                        .replace(' ', "")
+                        .contains("/Type/Catalog")
+                })
+            })?;
+            format!("{number} {generation} R").into_bytes()
+        }
+    };
+    let mut entries = b"/Root ".to_vec();
+    entries.extend_from_slice(&root);
+    for key in [b"/Info".as_slice(), b"/ID"] {
+        if let Some(value) = trailer.and_then(|t| entry(t, key)) {
+            entries.extend_from_slice(b" ");
+            entries.extend_from_slice(key);
+            entries.extend_from_slice(b" ");
+            entries.extend_from_slice(value);
+        }
+    }
+    let mut size = objects.keys().next_back().map_or(1, |n| n + 1);
+    if let Some(encrypt) = trailer.and_then(|t| entry(t, b"/Encrypt")) {
+        // A dictionary written in the trailer is made an object of its own.
+        let reference = if encrypt.starts_with(b"<<") {
+            let number = size;
+            size += 1;
+            out.extend_from_slice(b"\n");
+            objects.insert(number, (0, out.len()));
+            out.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+            out.extend_from_slice(encrypt);
+            out.extend_from_slice(b"\nendobj\n");
+            format!("{number} 0 R").into_bytes()
+        } else {
+            encrypt.to_vec()
+        };
+        entries.extend_from_slice(b" /Encrypt ");
+        entries.extend_from_slice(&reference);
+    }
+    out.extend_from_slice(b"\n");
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f\r\n").as_bytes());
+    for number in 1..size {
+        match objects.get(&number) {
+            Some((generation, offset)) => {
+                out.extend_from_slice(format!("{offset:010} {generation:05} n\r\n").as_bytes())
+            }
+            None => out.extend_from_slice(b"0000000000 65535 f\r\n"),
+        }
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} ").as_bytes());
+    out.extend_from_slice(&entries);
+    out.extend_from_slice(format!(" >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    Some(out)
+}
+
+/// The value of `key` in the dictionary `dict` as written: a reference
+/// (`N G R`), a dictionary or an array.
+fn entry<'a>(dict: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let at = dict
+        .windows(key.len())
+        .position(|w| w == key)
+        .filter(|at| {
+            dict.get(at + key.len())
+                .is_some_and(|b| !b.is_ascii_alphanumeric())
+        })?
+        + key.len();
+    let rest = &dict[at..];
+    let start = rest.iter().position(|b| !b.is_ascii_whitespace())?;
+    let rest = &rest[start..];
+    match rest.first()? {
+        b'0'..=b'9' => {
+            let end = rest.iter().position(|b| *b == b'R')?;
+            Some(&rest[..=end])
+        }
+        b'<' | b'[' => Some(&rest[..pdf_value_end(rest)?]),
+        _ => None,
+    }
+}
+
+/// Where the dictionary or array starting `text` ends, past its strings
+/// (a hex string's `>` before a dictionary's `>>` ends the string).
+pub(super) fn pdf_value_end(text: &[u8]) -> Option<usize> {
+    let (mut depth, mut i) = (0usize, 0);
+    while i < text.len() {
+        match text[i] {
+            b'<' if text.get(i + 1) == Some(&b'<') => {
+                depth += 1;
+                i += 2;
+                continue;
+            }
+            b'<' => i += text[i..].iter().position(|b| *b == b'>')?,
+            b'(' => {
+                let mut nested = 0usize;
+                while i < text.len() {
+                    match text[i] {
+                        b'\\' => i += 1,
+                        b'(' => nested += 1,
+                        b')' => {
+                            nested -= 1;
+                            if nested == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            b'[' => depth += 1,
+            b'>' if text.get(i + 1) == Some(&b'>') => {
+                depth = depth.checked_sub(1)?;
+                i += 2;
+                if depth == 0 {
+                    return Some(i);
+                }
+                continue;
+            }
+            b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The length of the data of an inline image without a filter, from the
+/// entries `dictionary` (between BI and ID) gives: lopdf leaves it out when
+/// the image names its color space abbreviated (`/G`) or in the resources,
+/// and the data can hold bytes that look like its EI. None for a filtered
+/// image, or one whose color space it does not tell.
+pub(super) fn inline_length(dictionary: &[u8]) -> Option<usize> {
+    let mut written = b"<<".to_vec();
+    written.extend_from_slice(dictionary);
+    written.extend_from_slice(b">> BI");
+    let operations = Content::decode(&written).ok()?.operations;
+    let dict = operations.first()?.operands.first()?.as_dict().ok()?;
+    let entry = |short: &[u8], long: &[u8]| dict.get(short).or_else(|_| dict.get(long)).ok();
+    if entry(b"F", b"Filter").is_some() {
+        return None;
+    }
+    let number = |short: &[u8], long: &[u8]| {
+        entry(short, long)?
+            .as_i64()
+            .ok()
+            .and_then(|n| usize::try_from(n).ok())
+    };
+    let (width, height) = (number(b"W", b"Width")?, number(b"H", b"Height")?);
+    let mask = entry(b"IM", b"ImageMask").is_some_and(|m| matches!(m.as_bool(), Ok(true)));
+    let (components, bits) = if mask {
+        (1, 1)
+    } else {
+        let components = match entry(b"CS", b"ColorSpace")? {
+            Object::Name(name) => match name.as_slice() {
+                b"G" | b"DeviceGray" | b"CalGray" => 1,
+                b"RGB" | b"DeviceRGB" | b"CalRGB" => 3,
+                b"CMYK" | b"DeviceCMYK" => 4,
+                _ => return None,
+            },
+            // An indexed space written out: one index a sample.
+            Object::Array(space)
+                if space
+                    .first()
+                    .is_some_and(|f| matches!(f.as_name(), Ok(b"I" | b"Indexed"))) =>
+            {
+                1
+            }
+            _ => return None,
+        };
+        (components, number(b"BPC", b"BitsPerComponent")?)
+    };
+    width
+        .checked_mul(components)?
+        .checked_mul(bits)?
+        .div_ceil(8)
+        .checked_mul(height)
+}
+
+/// The operations of the content stream `raw`, and whether all of it was
+/// read: strictly, else as far as lopdf's lenient reader goes. lopdf finds
+/// the end of an inline image it cannot read by the whitespace after its EI,
+/// which a stream ending with the image lacks, so a newline is read after a
+/// stream that does not end with whitespace.
+fn pdf_content(raw: &[u8]) -> Result<(Content, bool)> {
+    let padded;
+    let raw = if raw.last().is_some_and(|b| !b.is_ascii_whitespace()) {
+        padded = [raw, b"\n"].concat();
+        &padded[..]
+    } else {
+        raw
+    };
+    Ok(match Content::decode_strict(raw) {
+        Ok(content) => (content, true),
+        Err(_) => (Content::decode(raw)?, false),
+    })
+}
+
+/// The resource dictionaries page `id` uses: its own, then each of the page
+/// tree nodes above it, nearest first, as a page inherits Resources. lopdf's
+/// own lookup leaves out an inherited dictionary written in its node.
+fn pdf_page_resources(doc: &Pdf, id: lopdf::ObjectId) -> Vec<&lopdf::Dictionary> {
+    let mut found = vec![];
+    let mut seen = BTreeSet::from([id]);
+    let mut node = doc.get_dictionary(id).ok();
+    while let Some(dict) = node {
+        if let Some(resources) = dict.get(b"Resources").ok().and_then(|r| match r {
+            Object::Reference(id) => doc.get_dictionary(*id).ok(),
+            r => r.as_dict().ok(),
+        }) {
+            found.push(resources);
+        }
+        node = dict
+            .get(b"Parent")
+            .and_then(Object::as_reference)
+            .ok()
+            .filter(|parent| seen.insert(*parent))
+            .and_then(|parent| doc.get_dictionary(parent).ok());
+    }
+    found
+}
+
+/// The fonts page `id` names, by name, from the nearest resources naming each.
+fn pdf_page_fonts(doc: &Pdf, id: lopdf::ObjectId) -> BTreeMap<Vec<u8>, &lopdf::Dictionary> {
+    pdf_resource_fonts(doc, &pdf_page_resources(doc, id))
+}
+
+/// The fonts `resources` name, by name, from the first naming each.
+fn pdf_resource_fonts<'a>(
+    doc: &'a Pdf,
+    resources: &[&'a lopdf::Dictionary],
+) -> BTreeMap<Vec<u8>, &'a lopdf::Dictionary> {
+    let mut fonts = BTreeMap::new();
+    for resources in resources {
+        let Some(named) = resources.get(b"Font").ok().and_then(|f| match f {
+            Object::Reference(id) => doc.get_dictionary(*id).ok(),
+            f => f.as_dict().ok(),
+        }) else {
+            continue;
+        };
+        for (name, font) in named.iter() {
+            let font = match font {
+                Object::Reference(id) => doc.get_dictionary(*id).ok(),
+                font => font.as_dict().ok(),
+            };
+            if let Some(font) = font {
+                fonts.entry(name.clone()).or_insert(font);
+            }
+        }
+    }
+    fonts
 }
 
 /// Encodes `content` decoded from `raw`, copying its inline images from `raw`
@@ -3435,7 +4206,7 @@ fn code_width(font: &lopdf::Dictionary) -> usize {
 fn subset_glyphs(doc: &Pdf) -> Result<BTreeMap<usize, BTreeSet<Vec<u8>>>> {
     let mut used: BTreeMap<usize, BTreeSet<Vec<u8>>> = BTreeMap::new();
     for (_, id) in doc.get_pages() {
-        let fonts = doc.get_page_fonts(id)?;
+        let fonts = pdf_page_fonts(doc, id);
         let Ok(content) = Content::decode_strict(&doc.get_page_content_with_limit(id, MAX_PAGE)?)
         else {
             continue;
@@ -3574,11 +4345,7 @@ fn pdf_font_name(font: &lopdf::Dictionary) -> Option<String> {
 fn pdf_mapped_fonts(doc: &Pdf) -> BTreeMap<usize, lopdf::Dictionary> {
     let mut mapped = BTreeMap::new();
     for id in doc.get_pages().into_values() {
-        for font in doc
-            .get_page_fonts(id)
-            .into_iter()
-            .flat_map(BTreeMap::into_values)
-        {
+        for font in pdf_page_fonts(doc, id).into_values() {
             let composite = code_width(font) == 2
                 && font
                     .get_deref(b"Encoding", doc)
@@ -3958,8 +4725,26 @@ impl PdfWidths {
                 }
             }
         } else {
+            // A Type3 font's widths are in its glyph space, which its font
+            // matrix maps onto text space; other fonts' are thousandths.
+            let scale = font
+                .get_deref(b"FontMatrix", doc)
+                .and_then(Object::as_array)
+                .ok()
+                .filter(|_| {
+                    font.get(b"Subtype")
+                        .and_then(Object::as_name)
+                        .is_ok_and(|s| s == b"Type3")
+                })
+                .and_then(|m| m.first())
+                .and_then(number)
+                .map_or(1.0, |a| a * 1000.0);
             widths.first = font.get(b"FirstChar").ok().and_then(number).unwrap_or(0.0) as i64;
-            widths.simple = array(font, b"Widths").iter().filter_map(number).collect();
+            widths.simple = array(font, b"Widths")
+                .iter()
+                .filter_map(number)
+                .map(|w| w * scale)
+                .collect();
             if let Some(missing) = font
                 .get_deref(b"FontDescriptor", doc)
                 .and_then(Object::as_dict)
@@ -3990,7 +4775,11 @@ impl PdfWidths {
 
 /// The strings of the text a page shows, in the order it shows them, each
 /// with its font, where it starts on the page (in default user space) and
-/// how far along its line it runs.
+/// how far along its line it runs: those of its content, with those of the
+/// Form XObjects it draws where it draws them, then those of the
+/// appearances of its annotations other than buttons. Only strings of the
+/// page's content are rewritten by `changes`; a change to another is
+/// refused.
 fn pdf_text<'a>(
     doc: &'a Pdf,
     page: lopdf::ObjectId,
@@ -3999,253 +4788,460 @@ fn pdf_text<'a>(
     glyphs: Option<&BTreeMap<usize, BTreeSet<Vec<u8>>>>,
     read: &mut PdfFonts<'a>,
 ) -> Result<Vec<PdfString>> {
-    const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    let fonts = doc.get_page_fonts(page)?;
-    let mut font = Vec::new();
-    // Text render mode (Tr): 3 draws nothing and 7 only clips, as in the OCR
-    // layer of a scanned page.
-    let mut render = 0;
-    let mut look = PdfLook::default();
-    let mut text_matrix = IDENTITY;
-    // The start of the current line, which Td, TD and T* move from.
-    let mut line_matrix = IDENTITY;
-    let mut stack = vec![];
-    let mut values = vec![];
-    for operation in &mut content.operations {
-        let numbers = pdf_numbers(&operation.operands);
-        // ' and " move to the next line before they show their string.
-        let next_line = |look: &PdfLook, line_matrix: &mut [f64; 6]| {
-            *line_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, 0.0, -look.leading], *line_matrix);
-            *line_matrix
+    let fonts = pdf_page_fonts(doc, page);
+    let resources = pdf_page_resources(doc, page);
+    let mut texts = PdfTexts {
+        doc,
+        changes,
+        glyphs,
+        read,
+        values: vec![],
+        open: BTreeSet::new(),
+        refused: None,
+    };
+    texts.content(
+        content,
+        &fonts,
+        &resources,
+        PdfTextState::default(),
+        None,
+        0,
+    )?;
+    // An appearance without resources of its own, as many a form field's
+    // is written, uses the form's default resources after the page's, as
+    // PDF readers let it.
+    let dictionary = |object: &'a Object| match object {
+        Object::Reference(id) => doc.get_dictionary(*id).ok(),
+        object => object.as_dict().ok(),
+    };
+    let mut shown_with = resources.clone();
+    shown_with.extend(
+        doc.catalog()
+            .ok()
+            .and_then(|catalog| dictionary(catalog.get(b"AcroForm").ok()?))
+            .and_then(|form| dictionary(form.get(b"DR").ok()?)),
+    );
+    let fonts = pdf_resource_fonts(doc, &shown_with);
+    for (appearance, onto) in pdf_images::appearances(doc, page)
+        .into_iter()
+        .filter(|(_, _, button)| !button)
+        .map(|(appearance, onto, _)| (appearance, onto))
+    {
+        let state = PdfTextState {
+            look: PdfLook {
+                matrix: onto,
+                ..PdfLook::default()
+            },
+            ..PdfTextState::default()
         };
-        match operation.operator.as_str() {
-            "cm" if numbers.len() == 6 => {
-                let m = [
-                    numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
-                ];
-                look.matrix = pdf_multiply(m, look.matrix);
-            }
-            "BT" => (text_matrix, line_matrix) = (IDENTITY, IDENTITY),
-            "Tm" if numbers.len() == 6 => {
-                text_matrix = [
-                    numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
-                ];
-                line_matrix = text_matrix;
-            }
-            "Td" | "TD" if numbers.len() == 2 => {
-                if operation.operator == "TD" {
-                    look.leading = -numbers[1];
-                }
-                line_matrix =
-                    pdf_multiply([1.0, 0.0, 0.0, 1.0, numbers[0], numbers[1]], line_matrix);
-                text_matrix = line_matrix;
-            }
-            "T*" => text_matrix = next_line(&look, &mut line_matrix),
-            "Tc" if numbers.len() == 1 => look.char_spacing = numbers[0],
-            "Tw" if numbers.len() == 1 => look.word_spacing = numbers[0],
-            "Tz" if numbers.len() == 1 => look.scale = numbers[0] / 100.0,
-            "TL" if numbers.len() == 1 => look.leading = numbers[0],
-            "g" | "rg" | "k" => {
-                look.fill_space = match operation.operator.as_str() {
-                    "g" => b"DeviceGray".to_vec(),
-                    "rg" => b"DeviceRGB".to_vec(),
-                    _ => b"DeviceCMYK".to_vec(),
-                };
-                look.fill = pdf_color(&look.fill_space, &numbers);
-            }
-            "G" | "RG" | "K" => {
-                look.stroke_space = match operation.operator.as_str() {
-                    "G" => b"DeviceGray".to_vec(),
-                    "RG" => b"DeviceRGB".to_vec(),
-                    _ => b"DeviceCMYK".to_vec(),
-                };
-                look.stroke = pdf_color(&look.stroke_space, &numbers);
-            }
-            "cs" | "CS" => {
-                let space = operation
-                    .operands
-                    .first()
-                    .and_then(|o| o.as_name().ok())
-                    .unwrap_or(b"")
-                    .to_vec();
-                // A new colour space starts at its initial colour; device spaces start black.
-                let black = match space.as_slice() {
-                    b"DeviceGray" | b"G" | b"CalGray" => pdf_color(&space, &[0.0]),
-                    b"DeviceRGB" | b"RGB" | b"CalRGB" => pdf_color(&space, &[0.0, 0.0, 0.0]),
-                    b"DeviceCMYK" | b"CMYK" => pdf_color(&space, &[0.0, 0.0, 0.0, 1.0]),
-                    _ => None,
-                };
-                if operation.operator == "cs" {
-                    look.fill_space = space;
-                    look.fill = black;
-                } else {
-                    look.stroke_space = space;
-                    look.stroke = black;
-                }
-            }
-            "sc" | "scn" => look.fill = pdf_color(&look.fill_space, &numbers),
-            "SC" | "SCN" => look.stroke = pdf_color(&look.stroke_space, &numbers),
-            "Tf" => {
-                font = operation
-                    .operands
-                    .first()
-                    .context("missing PDF font")?
-                    .as_name()?
-                    .to_vec();
-                look.size = numbers.last().copied().unwrap_or(0.0);
-            }
-            "Tr" => {
-                render = operation
-                    .operands
-                    .first()
-                    .and_then(|mode| mode.as_i64().ok())
-                    .unwrap_or(0);
-            }
-            "q" => stack.push((font.clone(), render, look.clone())),
-            "Q" => {
-                (font, render, look) = stack.pop().context("unbalanced PDF graphics state")?;
-            }
-            "Tj" | "TJ" | "'" | "\"" => {
-                if operation.operator == "\"" && numbers.len() >= 2 {
-                    look.word_spacing = numbers[0];
-                    look.char_spacing = numbers[1];
-                }
-                if matches!(operation.operator.as_str(), "'" | "\"") {
-                    text_matrix = next_line(&look, &mut line_matrix);
-                }
-                let operand = operation
-                    .operands
-                    .last_mut()
-                    .context("missing PDF text operand")?;
-                // The strings and the adjustments between them (TJ), in order.
-                let strings: Vec<&mut Object> = match operand {
-                    Object::Array(items) => items
-                        .iter_mut()
-                        .filter(|o| matches!(o, Object::String(..)) || o.as_float().is_ok())
-                        .collect(),
-                    Object::String(..) => vec![operand],
-                    _ => bail!("invalid PDF text operand"),
-                };
-                let font_dictionary = *fonts.get(&font).context("PDF text font not found")?;
-                let key = font_key(font_dictionary);
-                if !read.encodings.contains_key(&key) {
-                    let encoding = PdfEncoding::for_font(
-                        read.mapped.get(&key).unwrap_or(font_dictionary),
-                        doc,
-                    )?;
-                    if matches!(encoding, PdfEncoding::Unreadable) {
-                        read.unreadable
-                            .insert(key, unreadable_font(doc, &font, font_dictionary));
-                    }
-                    read.encodings.insert(key, encoding);
-                }
-                // Text in a font whose codes say no characters is left out,
-                // and kept as it is when the page is written.
-                if let Some(name) = read.unreadable.get(&key) {
-                    read.left_out.insert(name.clone());
-                    continue;
-                }
-                let encoding = &read.encodings[&key];
-                // The size on the page: the font size scaled by the text and
-                // transformation matrices; the colour of what the render mode draws.
-                let shown = pdf_multiply(text_matrix, look.matrix);
-                let size = look.size.abs() * (shown[2] * shown[2] + shown[3] * shown[3]).sqrt();
-                let name = pdf_font_name(font_dictionary);
-                let color = match render {
-                    1 | 5 => look.stroke.clone(),
-                    3 | 7 => None,
-                    _ => look.fill.clone(),
-                };
-                let look_of = crate::fonts::element_font(
-                    &[],
-                    &crate::fonts::RunFont {
-                        latin: name.clone(),
-                        east_asian: name,
-                        size: (size > 0.0).then_some(size),
-                        color: color.map(crate::fonts::Color::rgb),
-                        ..crate::fonts::RunFont::default()
-                    },
-                );
-                let widths = read
-                    .widths
-                    .entry(key)
-                    .or_insert_with(|| PdfWidths::for_font(font_dictionary, doc));
-                for object in strings {
-                    let Object::String(bytes, _) = object else {
-                        // A number of a TJ array moves the next string back
-                        // by thousandths of the text size.
-                        let adjustment = f64::from(object.as_float()?);
-                        let tx = -adjustment / 1000.0 * look.size * look.scale;
-                        text_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, tx, 0.0], text_matrix);
-                        continue;
-                    };
-                    let start = pdf_multiply(text_matrix, look.matrix);
-                    // Each code moves the text by its glyph's width, with the
-                    // character spacing and, for a single-byte space, the word spacing.
-                    let tx: f64 = bytes
-                        .chunks(widths.code)
-                        .map(|code| {
-                            let space = if code == b" " { look.word_spacing } else { 0.0 };
-                            (widths.advance(code) / 1000.0 * look.size + look.char_spacing + space)
-                                * look.scale
-                        })
-                        .sum();
-                    text_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, tx, 0.0], text_matrix);
-                    let origin = [start[4], start[5], tx * start[0].hypot(start[1])];
-                    let value = encoding
-                        .decode(bytes)
-                        .context("PDF font encoding cannot be decoded")?;
-                    if let Some(replacement) = changes.get(&values.len()) {
-                        ensure!(
-                            !matches!(render, 3 | 7),
-                            "PDF text {value:?} is drawn invisibly (such as the OCR text layer of a scanned page), so an edit would not change what the page shows; edit it in a PDF editor"
-                        );
-                        ensure!(
-                            !replacement.contains(['\n', '\r', '\t']),
-                            "PDF text replacement cannot contain line breaks or tabs; layout operations are not supported"
-                        );
-                        // The string must be what its codes say: codes the encoding
-                        // drops, or several codes for one character (such as the
-                        // vertical forms of a Japanese font), would change on re-encoding.
-                        ensure!(
-                            encoding.encode(&value)? == *bytes,
-                            "PDF text {value:?} uses character codes its font does not map one-to-one to text, so rewriting it would change the unedited characters; edit it in a PDF editor"
-                        );
-                        let encoded = encoding.encode(replacement)?;
-                        ensure!(
-                            encoding.decode(&encoded)? == *replacement,
-                            "replacement contains characters unavailable in the original PDF font encoding"
-                        );
-                        if let Some(glyphs) = glyphs
-                            && subset_font(font_dictionary)
-                        {
-                            let known = glyphs.get(&font_key(font_dictionary));
-                            for code in encoded.chunks(code_width(font_dictionary)) {
-                                let text = encoding.decode(code).unwrap_or_default();
-                                ensure!(
-                                    known.is_some_and(|codes| codes.contains(code)),
-                                    "the embedded font subset has no known glyph for {text:?}, which the document never draws in that font; use characters the PDF already shows in that text, or edit it in a PDF editor"
-                                );
-                            }
-                        }
-                        *bytes = encoded;
-                    }
-                    values.push(PdfString {
-                        text: value,
-                        font: look_of.clone(),
-                        origin,
-                        invisible: matches!(render, 3 | 7),
-                    });
-                }
-            }
-            _ => {}
-        }
+        texts.form(appearance, &fonts, &shown_with, state, "an annotation", 0);
+    }
+    if let Some(refused) = texts.refused {
+        return Err(refused);
     }
     ensure!(
-        changes.keys().all(|i| *i < values.len()),
+        changes.keys().all(|i| *i < texts.values.len()),
         "PDF text target missing"
     );
-    Ok(values)
+    Ok(texts.values)
+}
+
+/// The graphics state text is shown in, which a Form XObject inherits from
+/// what draws it: the font (by its resource name), the text render mode
+/// (Tr: 3 draws nothing and 7 only clips, as in the OCR layer of a scanned
+/// page) and the look.
+#[derive(Clone, Default)]
+struct PdfTextState {
+    font: Vec<u8>,
+    render: i64,
+    look: PdfLook,
+}
+
+/// Reads the strings a page shows, as [`pdf_text`] does.
+struct PdfTexts<'a, 'b> {
+    doc: &'a Pdf,
+    changes: &'b BTreeMap<usize, String>,
+    glyphs: Option<&'b BTreeMap<usize, BTreeSet<Vec<u8>>>>,
+    read: &'b mut PdfFonts<'a>,
+    values: Vec<PdfString>,
+    /// The forms being read, which may not draw themselves.
+    open: BTreeSet<lopdf::ObjectId>,
+    /// Why a change to a string outside the page's content is refused.
+    refused: Option<anyhow::Error>,
+}
+
+/// How deep Form XObjects may draw one another for their text.
+const MAX_TEXT_FORM_DEPTH: usize = 16;
+
+impl<'a> PdfTexts<'a, '_> {
+    /// The strings of the Form XObject (or appearance) `id`, drawn in
+    /// `state` by what has `fonts` and `resources`. A form that cannot be
+    /// read gives none, the same whenever the page is read, so that the
+    /// strings after it keep their places.
+    fn form(
+        &mut self,
+        id: lopdf::ObjectId,
+        fonts: &BTreeMap<Vec<u8>, &'a lopdf::Dictionary>,
+        resources: &[&'a lopdf::Dictionary],
+        mut state: PdfTextState,
+        inside: &'static str,
+        depth: usize,
+    ) {
+        let doc = self.doc;
+        let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
+            return;
+        };
+        if depth >= MAX_TEXT_FORM_DEPTH || !self.open.insert(id) {
+            return;
+        }
+        let read = stream
+            .decompressed_content_with_limit(MAX_PAGE)
+            .ok()
+            .and_then(|raw| pdf_content(&raw).ok());
+        if let Some((mut content, _)) = read {
+            // A form without resources of its own uses those of what draws it.
+            let own = stream.dict.get(b"Resources").ok().and_then(|r| match r {
+                Object::Reference(id) => doc.get_dictionary(*id).ok(),
+                r => r.as_dict().ok(),
+            });
+            let (fonts, resources) = match own {
+                Some(own) => (pdf_resource_fonts(doc, &[own]), vec![own]),
+                None => (fonts.clone(), resources.to_vec()),
+            };
+            let matrix = stream
+                .dict
+                .get(b"Matrix")
+                .ok()
+                .and_then(|m| doc.dereference(m).ok())
+                .and_then(|(_, m)| m.as_array().ok())
+                .map(|m| pdf_numbers(m))
+                .and_then(|m| <[f64; 6]>::try_from(m).ok())
+                .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+            state.look.matrix = pdf_multiply(matrix, state.look.matrix);
+            let mark = self.values.len();
+            if self
+                .content(
+                    &mut content,
+                    &fonts,
+                    &resources,
+                    state,
+                    Some(inside),
+                    depth + 1,
+                )
+                .is_err()
+            {
+                self.values.truncate(mark);
+            }
+        }
+        self.open.remove(&id);
+    }
+
+    /// The strings of `content`, drawn in `state` with `fonts` and
+    /// `resources`; `inside` names what draws them when they are not the
+    /// page's content, which is not rewritten.
+    fn content(
+        &mut self,
+        content: &mut Content<Vec<lopdf::content::Operation>>,
+        fonts: &BTreeMap<Vec<u8>, &'a lopdf::Dictionary>,
+        resources: &[&'a lopdf::Dictionary],
+        state: PdfTextState,
+        inside: Option<&'static str>,
+        depth: usize,
+    ) -> Result<()> {
+        const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let doc = self.doc;
+        let changes = self.changes;
+        let glyphs = self.glyphs;
+        let PdfTextState {
+            mut font,
+            mut render,
+            mut look,
+        } = state;
+        let mut text_matrix = IDENTITY;
+        // The start of the current line, which Td, TD and T* move from.
+        let mut line_matrix = IDENTITY;
+        let mut stack = vec![];
+        for operation in &mut content.operations {
+            let numbers = pdf_numbers(&operation.operands);
+            // ' and " move to the next line before they show their string.
+            let next_line = |look: &PdfLook, line_matrix: &mut [f64; 6]| {
+                *line_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, 0.0, -look.leading], *line_matrix);
+                *line_matrix
+            };
+            match operation.operator.as_str() {
+                "cm" if numbers.len() == 6 => {
+                    let m = [
+                        numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
+                    ];
+                    look.matrix = pdf_multiply(m, look.matrix);
+                }
+                "BT" => (text_matrix, line_matrix) = (IDENTITY, IDENTITY),
+                "Tm" if numbers.len() == 6 => {
+                    text_matrix = [
+                        numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
+                    ];
+                    line_matrix = text_matrix;
+                }
+                "Td" | "TD" if numbers.len() == 2 => {
+                    if operation.operator == "TD" {
+                        look.leading = -numbers[1];
+                    }
+                    line_matrix =
+                        pdf_multiply([1.0, 0.0, 0.0, 1.0, numbers[0], numbers[1]], line_matrix);
+                    text_matrix = line_matrix;
+                }
+                "T*" => text_matrix = next_line(&look, &mut line_matrix),
+                "Tc" if numbers.len() == 1 => look.char_spacing = numbers[0],
+                "Tw" if numbers.len() == 1 => look.word_spacing = numbers[0],
+                "Tz" if numbers.len() == 1 => look.scale = numbers[0] / 100.0,
+                "TL" if numbers.len() == 1 => look.leading = numbers[0],
+                "g" | "rg" | "k" => {
+                    look.fill_space = match operation.operator.as_str() {
+                        "g" => b"DeviceGray".to_vec(),
+                        "rg" => b"DeviceRGB".to_vec(),
+                        _ => b"DeviceCMYK".to_vec(),
+                    };
+                    look.fill = pdf_color(&look.fill_space, &numbers);
+                }
+                "G" | "RG" | "K" => {
+                    look.stroke_space = match operation.operator.as_str() {
+                        "G" => b"DeviceGray".to_vec(),
+                        "RG" => b"DeviceRGB".to_vec(),
+                        _ => b"DeviceCMYK".to_vec(),
+                    };
+                    look.stroke = pdf_color(&look.stroke_space, &numbers);
+                }
+                "cs" | "CS" => {
+                    let space = operation
+                        .operands
+                        .first()
+                        .and_then(|o| o.as_name().ok())
+                        .unwrap_or(b"")
+                        .to_vec();
+                    // A new colour space starts at its initial colour; device spaces start black.
+                    let black = match space.as_slice() {
+                        b"DeviceGray" | b"G" | b"CalGray" => pdf_color(&space, &[0.0]),
+                        b"DeviceRGB" | b"RGB" | b"CalRGB" => pdf_color(&space, &[0.0, 0.0, 0.0]),
+                        b"DeviceCMYK" | b"CMYK" => pdf_color(&space, &[0.0, 0.0, 0.0, 1.0]),
+                        _ => None,
+                    };
+                    if operation.operator == "cs" {
+                        look.fill_space = space;
+                        look.fill = black;
+                    } else {
+                        look.stroke_space = space;
+                        look.stroke = black;
+                    }
+                }
+                "sc" | "scn" => look.fill = pdf_color(&look.fill_space, &numbers),
+                "SC" | "SCN" => look.stroke = pdf_color(&look.stroke_space, &numbers),
+                "Tf" => {
+                    font = operation
+                        .operands
+                        .first()
+                        .context("missing PDF font")?
+                        .as_name()?
+                        .to_vec();
+                    look.size = numbers.last().copied().unwrap_or(0.0);
+                }
+                "Tr" => {
+                    render = operation
+                        .operands
+                        .first()
+                        .and_then(|mode| mode.as_i64().ok())
+                        .unwrap_or(0);
+                }
+                "q" => stack.push((font.clone(), render, look.clone())),
+                // A Q without its q restores nothing, as PDF readers take it.
+                "Q" => {
+                    if let Some(saved) = stack.pop() {
+                        (font, render, look) = saved;
+                    }
+                }
+                "Do" => {
+                    let Some(id) = operation
+                        .operands
+                        .first()
+                        .and_then(|name| name.as_name().ok())
+                        .and_then(|name| {
+                            resources.iter().find_map(|r| {
+                                let named = match r.get(b"XObject").ok()? {
+                                    Object::Reference(id) => doc.get_dictionary(*id).ok()?,
+                                    named => named.as_dict().ok()?,
+                                };
+                                named.get(name).ok()?.as_reference().ok()
+                            })
+                        })
+                    else {
+                        continue;
+                    };
+                    let form = doc
+                        .get_object(id)
+                        .and_then(Object::as_stream)
+                        .is_ok_and(|s| {
+                            s.dict
+                                .get(b"Subtype")
+                                .and_then(Object::as_name)
+                                .is_ok_and(|s| s == b"Form")
+                        });
+                    if form {
+                        let state = PdfTextState {
+                            font: font.clone(),
+                            render,
+                            look: look.clone(),
+                        };
+                        self.form(id, fonts, resources, state, "a Form XObject", depth);
+                    }
+                }
+                "Tj" | "TJ" | "'" | "\"" => {
+                    if operation.operator == "\"" && numbers.len() >= 2 {
+                        look.word_spacing = numbers[0];
+                        look.char_spacing = numbers[1];
+                    }
+                    if matches!(operation.operator.as_str(), "'" | "\"") {
+                        text_matrix = next_line(&look, &mut line_matrix);
+                    }
+                    let operand = operation
+                        .operands
+                        .last_mut()
+                        .context("missing PDF text operand")?;
+                    // The strings and the adjustments between them (TJ), in order.
+                    let strings: Vec<&mut Object> = match operand {
+                        Object::Array(items) => items
+                            .iter_mut()
+                            .filter(|o| matches!(o, Object::String(..)) || o.as_float().is_ok())
+                            .collect(),
+                        Object::String(..) => vec![operand],
+                        _ => bail!("invalid PDF text operand"),
+                    };
+                    let font_dictionary = *fonts.get(&font).context("PDF text font not found")?;
+                    let key = font_key(font_dictionary);
+                    if !self.read.encodings.contains_key(&key) {
+                        let encoding = PdfEncoding::for_font(
+                            self.read.mapped.get(&key).unwrap_or(font_dictionary),
+                            doc,
+                        )?;
+                        if matches!(encoding, PdfEncoding::Unreadable) {
+                            self.read
+                                .unreadable
+                                .insert(key, unreadable_font(doc, &font, font_dictionary));
+                        }
+                        self.read.encodings.insert(key, encoding);
+                    }
+                    // Text in a font whose codes say no characters is left out,
+                    // and kept as it is when the page is written.
+                    if let Some(name) = self.read.unreadable.get(&key) {
+                        self.read.left_out.insert(name.clone());
+                        continue;
+                    }
+                    let encoding = &self.read.encodings[&key];
+                    // The size on the page: the font size scaled by the text and
+                    // transformation matrices; the colour of what the render mode draws.
+                    let shown = pdf_multiply(text_matrix, look.matrix);
+                    let size = look.size.abs() * (shown[2] * shown[2] + shown[3] * shown[3]).sqrt();
+                    let name = pdf_font_name(font_dictionary);
+                    let color = match render {
+                        1 | 5 => look.stroke.clone(),
+                        3 | 7 => None,
+                        _ => look.fill.clone(),
+                    };
+                    let look_of = crate::fonts::element_font(
+                        &[],
+                        &crate::fonts::RunFont {
+                            latin: name.clone(),
+                            east_asian: name,
+                            size: (size > 0.0).then_some(size),
+                            color: color.map(crate::fonts::Color::rgb),
+                            ..crate::fonts::RunFont::default()
+                        },
+                    );
+                    let widths = self
+                        .read
+                        .widths
+                        .entry(key)
+                        .or_insert_with(|| PdfWidths::for_font(font_dictionary, doc));
+                    for object in strings {
+                        let Object::String(bytes, _) = object else {
+                            // A number of a TJ array moves the next string back
+                            // by thousandths of the text size.
+                            let adjustment = f64::from(object.as_float()?);
+                            let tx = -adjustment / 1000.0 * look.size * look.scale;
+                            text_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, tx, 0.0], text_matrix);
+                            continue;
+                        };
+                        let start = pdf_multiply(text_matrix, look.matrix);
+                        // Each code moves the text by its glyph's width, with the
+                        // character spacing and, for a single-byte space, the word spacing.
+                        let tx: f64 = bytes
+                            .chunks(widths.code)
+                            .map(|code| {
+                                let space = if code == b" " { look.word_spacing } else { 0.0 };
+                                (widths.advance(code) / 1000.0 * look.size
+                                    + look.char_spacing
+                                    + space)
+                                    * look.scale
+                            })
+                            .sum();
+                        text_matrix = pdf_multiply([1.0, 0.0, 0.0, 1.0, tx, 0.0], text_matrix);
+                        let origin = [start[4], start[5], tx * start[0].hypot(start[1])];
+                        let value = encoding
+                            .decode(bytes)
+                            .context("PDF font encoding cannot be decoded")?;
+                        let replacement = changes.get(&self.values.len());
+                        if let (Some(_), Some(inside)) = (replacement, inside) {
+                            // Refused once the page is read, so that the strings
+                            // keep their places whatever stops reading a form.
+                            self.refused.get_or_insert_with(|| anyhow::anyhow!(
+                            "PDF text {value:?} is drawn by {inside}, not the page's own content, which is all ARP rewrites; edit it in a PDF editor"
+                        ));
+                        } else if let Some(replacement) = replacement {
+                            ensure!(
+                                !matches!(render, 3 | 7),
+                                "PDF text {value:?} is drawn invisibly (such as the OCR text layer of a scanned page), so an edit would not change what the page shows; edit it in a PDF editor"
+                            );
+                            ensure!(
+                                !replacement.contains(['\n', '\r', '\t']),
+                                "PDF text replacement cannot contain line breaks or tabs; layout operations are not supported"
+                            );
+                            // The string must be what its codes say: codes the encoding
+                            // drops, or several codes for one character (such as the
+                            // vertical forms of a Japanese font), would change on re-encoding.
+                            ensure!(
+                                encoding.encode(&value)? == *bytes,
+                                "PDF text {value:?} uses character codes its font does not map one-to-one to text, so rewriting it would change the unedited characters; edit it in a PDF editor"
+                            );
+                            let encoded = encoding.encode(replacement)?;
+                            ensure!(
+                                encoding.decode(&encoded)? == *replacement,
+                                "replacement contains characters unavailable in the original PDF font encoding"
+                            );
+                            if let Some(glyphs) = glyphs
+                                && subset_font(font_dictionary)
+                            {
+                                let known = glyphs.get(&font_key(font_dictionary));
+                                for code in encoded.chunks(code_width(font_dictionary)) {
+                                    let text = encoding.decode(code).unwrap_or_default();
+                                    ensure!(
+                                        known.is_some_and(|codes| codes.contains(code)),
+                                        "the embedded font subset has no known glyph for {text:?}, which the document never draws in that font; use characters the PDF already shows in that text, or edit it in a PDF editor"
+                                    );
+                                }
+                            }
+                            *bytes = encoded;
+                        }
+                        self.values.push(PdfString {
+                            text: value,
+                            font: look_of.clone(),
+                            origin,
+                            invisible: matches!(render, 3 | 7),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -4444,10 +5440,18 @@ mod tests {
                 "BI /F /AHx ID 00> EI"
             ]
         );
-        // Without the length, the first EI set off by whitespace ends the data.
+        // Without lopdf's length, the dictionary gives it.
         assert_eq!(
             text(inline_images(raw, &[None, None]).unwrap())[0],
-            "BI /W 4 /H 1 /BPC 8 /CS /G ID  EI"
+            "BI /W 4 /H 1 /BPC 8 /CS /G ID  EI  EI"
+        );
+        // A color space named in the resources does not: the first EI set
+        // off by whitespace ends the data.
+        let named = b"BI /W 4 /H 1 /BPC 8 /CS /CS0 ID  EI  EI";
+        let ranges = inline_images(named, &[None]).unwrap();
+        assert_eq!(
+            &named[ranges[0].clone()],
+            b"BI /W 4 /H 1 /BPC 8 /CS /CS0 ID  EI"
         );
     }
 
