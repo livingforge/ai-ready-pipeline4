@@ -277,7 +277,7 @@ impl Workflow {
             ),
             Reader::Returning(_) => (
                 format!(
-                    "{instructions}\nContract {contract}: after reading every page of this task, you may add --known-contract {contract} to read on a later task in this same session; instructions and reply_schema identical to these are then replaced by a short marker. Do not pass a reference you did not read yourself or received from another agent."
+                    "{instructions}\nContract {contract}: after reading every page of this task, you may add --known-contract {contract} to read on a later task in this same session; instructions and reply_schema identical to these are then replaced by a short marker. Stages have different contracts: repeat the option for each one you have read. Do not pass a reference you did not read yourself or received from another agent."
                 ),
                 schema,
             ),
@@ -374,9 +374,14 @@ impl Workflow {
             known,
         } = read;
         // A reference to another contract changes nothing: the task is read in full.
-        let known = match known {
-            Some(known) if self.contract(task)?.2 == known => Some(known),
-            _ => None,
+        let known = if known.is_empty() {
+            None
+        } else {
+            let contract = self.contract(task)?.2;
+            known
+                .iter()
+                .map(String::as_str)
+                .find(|known| *known == contract)
         };
         // Slash-free section names survive Git Bash's native argument conversion.
         let normalized = if pointer.is_empty() || pointer.starts_with('/') {
@@ -493,8 +498,8 @@ pub(super) struct Read<'a> {
     pub limit: usize,
     pub max_bytes: usize,
     pub revision: Option<&'a str>,
-    /// The contract reference the reader says it has read in full.
-    pub known: Option<&'a str>,
+    /// The contract references the reader says it has read in full.
+    pub known: &'a [String],
 }
 
 /// The next page of a read that omitted a known contract omits it too.

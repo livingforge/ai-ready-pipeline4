@@ -95,11 +95,12 @@ pub enum WorkflowCommand {
         /// Copy page.revision when continuing; changed content requires restarting at offset 0.
         #[arg(long)]
         revision: Option<String>,
-        /// The contract reference at the end of instructions you already read in full in
-        /// this session. Identical instructions and reply_schema become a short marker;
-        /// any other reference is ignored and the task is read in full.
+        /// A contract reference from the end of instructions you already read in full in
+        /// this session; repeat for each. When one names this task's contract, its
+        /// instructions and reply_schema become a short marker. Otherwise the task is
+        /// read in full.
         #[arg(long)]
-        known_contract: Option<String>,
+        known_contract: Vec<String>,
     },
     /// Check a complete reply or draft correction without saving artifacts or history.
     ValidateReply {
@@ -426,7 +427,7 @@ pub fn execute(root: &Path, mut command: WorkflowCommand) -> Result<Value> {
                 limit: limit as usize,
                 max_bytes: max_bytes as usize,
                 revision: revision.as_deref(),
-                known: known_contract.as_deref(),
+                known: &known_contract,
             },
         ),
         WorkflowCommand::ValidateReply { task, reply, json } => {

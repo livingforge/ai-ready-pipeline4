@@ -648,7 +648,7 @@ Options:
           Copy page.revision when continuing; changed content requires restarting at offset 0
 
       --known-contract <KNOWN_CONTRACT>
-          The contract reference at the end of instructions you already read in full in this session. Identical instructions and reply_schema become a short marker; any other reference is ignored and the task is read in full
+          A contract reference from the end of instructions you already read in full in this session; repeat for each. When one names this task's contract, its instructions and reply_schema become a short marker. Otherwise the task is read in full
 
   -h, --help
           Print help
