@@ -519,16 +519,14 @@ impl<'a> Walker<'a> {
             && let Ok(inner) = operations(&raw)
         {
             // A form without resources of its own uses those of the page
-            // drawing it, as older PDFs write.
+            // drawing it, as older PDFs write; so does one whose own lack a
+            // name, as some writers leave an image in the page's.
             let own = stream
                 .dict
                 .get(b"Resources")
                 .ok()
                 .and_then(|r| dictionary(doc, r));
-            let resources = match own {
-                Some(own) => vec![own],
-                None => resources.to_vec(),
-            };
+            let resources: Vec<_> = own.into_iter().chain(resources.iter().copied()).collect();
             self.content(
                 &inner,
                 &raw,
@@ -650,12 +648,10 @@ impl<'a> Walker<'a> {
             font_matrix,
             super::pdf_multiply(rendering, super::pdf_multiply(tm, ctm)),
         );
-        // A Type3 font without resources of its own uses those of the page.
+        // A Type3 font without resources of its own uses those of the page,
+        // as does one whose own lack a name.
         let own = font.get(b"Resources").ok().and_then(|r| dictionary(doc, r));
-        let resources = match own {
-            Some(own) => vec![own],
-            None => resources.to_vec(),
-        };
+        let resources: Vec<_> = own.into_iter().chain(resources.iter().copied()).collect();
         let glyph = std::mem::replace(&mut self.glyph, true);
         self.content(&procedure.1, &procedure.0, &resources, onto, depth + 1);
         self.glyph = glyph;
@@ -1136,7 +1132,9 @@ const MAX_STRIP_CANDIDATES: usize = 4000;
 /// `found` with the images drawn edge to edge as the strips or tiles of one
 /// picture made one: images upright on the page, each sharing a whole edge
 /// with another, with as many pixels along it, together covering a box
-/// without gaps or overlaps. The picture is where its first part is drawn.
+/// once. Parts may overlap or stand apart by up to a pixel (an eighth of a
+/// part at most), as writers that avoid seams draw them. The picture is
+/// where its first part is drawn.
 fn joined(doc: &Pdf, found: Vec<Found>) -> Vec<Found> {
     // The box and the pixel width and height of each image that may be a part.
     let parts: Vec<Option<([f64; 4], i64, i64)>> = found
@@ -1170,6 +1168,11 @@ fn joined(doc: &Pdf, found: Vec<Found>) -> Vec<Found> {
         i
     }
     let near = |p: f64, q: f64, extent: f64| (p - q).abs() <= (0.01 * extent).max(0.05);
+    // How far a part `extent` long and `pixels` across may overlap the next
+    // or stand apart from it.
+    let slack = |extent: f64, pixels: i64| (extent / pixels.max(1) as f64).min(extent / 8.0);
+    let meets =
+        |p: f64, q: f64, extent: f64, slack: f64| near(p, q, extent) || (p - q).abs() <= slack;
     for (n, &i) in candidates.iter().enumerate() {
         for &j in &candidates[n + 1..] {
             let (Some((r, w, h)), Some((s, v, g))) = (parts[i], parts[j]) else {
@@ -1180,14 +1183,16 @@ fn joined(doc: &Pdf, found: Vec<Found>) -> Vec<Found> {
             }
             let width = (r[2] - r[0]).min(s[2] - s[0]);
             let height = (r[3] - r[1]).min(s[3] - s[1]);
+            let across = slack(r[2] - r[0], w).max(slack(s[2] - s[0], v));
+            let down = slack(r[3] - r[1], h).max(slack(s[3] - s[1], g));
             let column = w == v
                 && near(r[0], s[0], width)
                 && near(r[2], s[2], width)
-                && (near(r[3], s[1], height) || near(s[3], r[1], height));
+                && (meets(r[3], s[1], height, down) || meets(s[3], r[1], height, down));
             let row = h == g
                 && near(r[1], s[1], height)
                 && near(r[3], s[3], height)
-                && (near(r[2], s[0], width) || near(s[2], r[0], width));
+                && (meets(r[2], s[0], width, across) || meets(s[2], r[0], width, across));
             if column || row {
                 let (a, b) = (root(&mut parent, i), root(&mut parent, j));
                 parent[a.max(b)] = a.min(b);
@@ -1210,6 +1215,15 @@ fn joined(doc: &Pdf, found: Vec<Found>) -> Vec<Found> {
             .filter_map(|i| parts[*i])
             .map(|p| p.0)
             .collect();
+        // The area the parts may overlap by or leave between them.
+        let seams: f64 = members
+            .iter()
+            .filter_map(|i| parts[*i])
+            .map(|(r, w, h)| {
+                let (width, height) = (r[2] - r[0], r[3] - r[1]);
+                width * slack(height, h) + height * slack(width, w)
+            })
+            .sum();
         let area = |r: &[f64; 4]| (r[2] - r[0]) * (r[3] - r[1]);
         let whole = boxes
             .iter()
@@ -1224,12 +1238,57 @@ fn joined(doc: &Pdf, found: Vec<Found>) -> Vec<Found> {
             })
             .unwrap_or([0.0; 4]);
         let covered: f64 = boxes.iter().map(area).sum();
-        if (covered - area(&whole)).abs() <= 0.02 * area(&whole) {
+        if (covered - area(&whole)).abs() <= 0.02 * area(&whole) + seams {
             joined.insert(first, members);
         }
     }
     if joined.is_empty() {
         return found;
+    }
+    // The parts laid edge to edge: edges that overlap or stand apart are put
+    // at their middle, so the picture has no seam and no row drawn twice.
+    let mut laid: BTreeMap<usize, [f64; 6]> = BTreeMap::new();
+    for members in joined.values() {
+        let boxes = || members.iter().filter_map(|i| Some((*i, parts[*i]?)));
+        let snap = |axis: usize| {
+            let reach = boxes()
+                .map(|(_, (r, w, h))| slack(r[axis + 2] - r[axis], [w, h][axis]))
+                .fold(0.05, f64::max);
+            let mut edges: Vec<f64> = boxes()
+                .flat_map(|(_, (r, ..))| [r[axis], r[axis + 2]])
+                .collect();
+            edges.sort_by(f64::total_cmp);
+            let mut snapped = Vec::with_capacity(edges.len());
+            let mut from = 0;
+            for at in 1..=edges.len() {
+                if at == edges.len() || edges[at] - edges[at - 1] > reach {
+                    let middle = edges[from..at].iter().sum::<f64>() / (at - from) as f64;
+                    snapped.extend(edges[from..at].iter().map(|edge| (*edge, middle)));
+                    from = at;
+                }
+            }
+            move |edge: f64| {
+                let at = snapped.partition_point(|(e, _)| *e < edge);
+                snapped.get(at).map_or(edge, |(_, middle)| *middle)
+            }
+        };
+        let (across, down) = (snap(0), snap(1));
+        for (i, (r, ..)) in boxes() {
+            let [a, _, _, d, ..] = found[i].matrix;
+            let (x0, x1, y0, y1) = (across(r[0]), across(r[2]), down(r[1]), down(r[3]));
+            // A negative scale draws from the far edge back.
+            let (a, e) = if a < 0.0 {
+                (x0 - x1, x1)
+            } else {
+                (x1 - x0, x0)
+            };
+            let (d, f) = if d < 0.0 {
+                (y0 - y1, y1)
+            } else {
+                (y1 - y0, y0)
+            };
+            laid.insert(i, [a, 0.0, 0.0, d, e, f]);
+        }
     }
     let part_of: BTreeMap<usize, usize> = joined
         .iter()
@@ -1246,7 +1305,7 @@ fn joined(doc: &Pdf, found: Vec<Found>) -> Vec<Found> {
                 }
                 pieces.entry(*first).or_default().push(Piece {
                     image: f.image,
-                    matrix: f.matrix,
+                    matrix: laid.get(&i).copied().unwrap_or(f.matrix),
                     mask: f.mask,
                 });
             }
@@ -3092,6 +3151,87 @@ mod tests {
         assert_eq!(
             png_pixels(&images.files["image-001.png"]),
             (0, vec![0, 0, 255, 0, 255, 0])
+        );
+    }
+
+    #[test]
+    fn strips_overlapping_or_apart_by_less_than_a_pixel_are_one_image() {
+        // Three strips 8 high, each overlapping the one above by half a
+        // point, and a fourth 2 points above them, more than an eighth of it.
+        let content =
+            b"q 20 0 0 8 0 15 cm /A Do Q q 20 0 0 8 0 7.5 cm /B Do Q q 20 0 0 8 0 0 cm /C Do Q q 20 0 0 8 0 25 cm /D Do Q";
+        let mut doc = page_of(content, None, dictionary! {}, dictionary! {});
+        let strips: Vec<_> = [[0, 255], [255, 0], [0, 0], [255, 255]]
+            .into_iter()
+            .map(|samples| doc.add_object(gray_row(2, samples.to_vec())))
+            .collect();
+        let page = doc.get_pages()[&1];
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "XObject" => dictionary! {
+                "A" => strips[0], "B" => strips[1], "C" => strips[2], "D" => strips[3],
+            } },
+        );
+        let placed = placements(&doc, 1 << 20).unwrap();
+        let found: Vec<_> = placed.pages[0]
+            .1
+            .iter()
+            .map(|p| (p.index, p.matrix.unwrap()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (0, [20.0, 0.0, 0.0, 23.0, 0.0, 0.0]),
+                (1, [20.0, 0.0, 0.0, 8.0, 0.0, 25.0])
+            ]
+        );
+        // Strips a quarter of a point apart are one image too.
+        let content =
+            b"q 20 0 0 8 0 8.25 cm /A Do Q q 20 0 0 8 0 0 cm /B Do Q q 20 0 0 8 0 25 cm /D Do Q";
+        let contents = doc
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        doc.objects.insert(
+            contents,
+            Object::Stream(Stream::new(dictionary! {}, content.to_vec())),
+        );
+        let placed = placements(&doc, 1 << 20).unwrap();
+        assert_eq!(placed.images.len(), 2);
+        assert_eq!(
+            placed.pages[0].1[0].matrix.unwrap(),
+            [20.0, 0.0, 0.0, 16.25, 0.0, 0.0]
+        );
+        // Laid edge to edge, they leave no transparent seam: a gray PNG
+        // without alpha.
+        let images = read(&doc, 1 << 20).unwrap();
+        assert_eq!(png_pixels(&images.files["image-001.png"]).0, 0);
+    }
+
+    #[test]
+    fn a_form_draws_an_image_its_own_resources_lack_from_those_of_its_page() {
+        let mut doc = page_of(b"/Fm Do", None, dictionary! {}, dictionary! {});
+        let image = doc.add_object(gray_row(2, vec![0, 255]));
+        let form = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => form_box(),
+                "Resources" => dictionary! { "ProcSet" => vec![Object::Name(b"PDF".to_vec())] },
+            },
+            b"q 10 0 0 10 0 0 cm /Im Do Q".to_vec(),
+        ));
+        let page = doc.get_pages()[&1];
+        doc.get_dictionary_mut(page).unwrap().set(
+            "Resources",
+            dictionary! { "XObject" => dictionary! { "Im" => image, "Fm" => form } },
+        );
+        let placed = placements(&doc, 1 << 20).unwrap();
+        assert_eq!(placed.images.len(), 1);
+        assert_eq!(
+            placed.pages[0].1[0].matrix.unwrap(),
+            [10.0, 0.0, 0.0, 10.0, 0.0, 0.0]
         );
     }
 
