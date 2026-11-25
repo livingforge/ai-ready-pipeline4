@@ -583,6 +583,12 @@ impl Source {
                 !doc.is_encrypted() && doc.trailer.get(b"Encrypt").is_err(),
                 "encrypted PDF is not supported"
             );
+            if let Some(protection) = pdf_encrypted_payload(&doc) {
+                bail!(
+                    "the PDF wraps an encrypted document ({protection}) in a cover page whose text is only a notice that it is protected; \
+                     import a copy whose protection was removed by an account allowed to remove it"
+                );
+            }
             let mut sheets = vec![];
             let mut unparsed = vec![];
             let mut left_out = vec![];
@@ -3594,6 +3600,38 @@ fn inline_images(raw: &[u8], lengths: &[Option<usize>]) -> Result<Vec<std::ops::
         i = end;
     }
     Ok(images)
+}
+
+/// The protection of the encrypted document `doc` wraps, when `doc` is an
+/// unencrypted wrapper (ISO 32000-2, 7.6.7): a cover page shown by readers
+/// that cannot open the document, which is embedded as a file whose
+/// relationship is EncryptedPayload. Sensitivity labels and IRM protect PDFs
+/// so (`MicrosoftIRMServices`). The name is the payload's cryptographic
+/// filter, or `encrypted payload` without one.
+fn pdf_encrypted_payload(doc: &Pdf) -> Option<String> {
+    doc.objects.values().find_map(|object| {
+        let specification = match object {
+            Object::Dictionary(dictionary) => dictionary,
+            Object::Stream(stream) => &stream.dict,
+            _ => return None,
+        };
+        let payload = specification
+            .get(b"AFRelationship")
+            .and_then(Object::as_name)
+            .is_ok_and(|name| name == b"EncryptedPayload");
+        payload.then(|| {
+            specification
+                .get(b"EP")
+                .and_then(|ep| doc.dereference(ep))
+                .and_then(|(_, ep)| ep.as_dict())
+                .and_then(|ep| ep.get(b"Subtype"))
+                .and_then(Object::as_name)
+                .map_or_else(
+                    |_| "encrypted payload".to_owned(),
+                    |name| String::from_utf8_lossy(name).into_owned(),
+                )
+        })
+    })
 }
 
 /// The PDF `raw` holds, and whether it had to be repaired. A file whose
