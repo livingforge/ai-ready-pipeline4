@@ -12,9 +12,11 @@
 //! written to the strings it changes.
 //!
 //! Where a page says which of its strings are one paragraph (as a tagged
-//! PDF does), they are one text however many lines they take, their lines
-//! joined as running text is; and a table it names by its rows and cells is
-//! that table, wherever its rulings are.
+//! PDF does), they are one text however many lines and columns they take,
+//! their lines joined as running text is. Paragraphs side by side on a
+//! line are then cells, however close they stand. A table the page names by
+//! its rows and cells is that table where the page does not rule it; where
+//! it does, the rulings show it as it is drawn.
 use super::PdfPath;
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
@@ -266,6 +268,16 @@ fn fragments(line: &[Word], shown: &[Shown<'_>], split: bool) -> Vec<Fragment> {
         if let Some(first) = fragment.pieces.first_mut() {
             first.before = "";
         }
+        // The text reaches as far as the strings left of it do.
+        let reach = |pick: fn(&Word) -> f64| {
+            fragment
+                .pieces
+                .iter()
+                .filter_map(|piece| line.iter().find(|word| word.string == piece.string))
+                .map(pick)
+        };
+        fragment.x0 = reach(|word| word.x0).fold(fragment.x1, f64::min);
+        fragment.x1 = reach(|word| word.x1).fold(fragment.x0, f64::max);
     }
     out.retain(|fragment| !fragment.pieces.is_empty());
     out
@@ -337,22 +349,86 @@ fn line_texts(words: Vec<Word>, shown: &[Shown<'_>]) -> Vec<Fragment> {
         .collect()
 }
 
+/// The lines of the `words` of a paragraph, in the order the page draws
+/// them, which is the order they are read in: a string at another height
+/// than the one before it begins a line, unless it stands a little higher
+/// or lower to its right, as an index does. A paragraph that runs on into
+/// the next column goes back up the page to the right of what it has
+/// drawn, where sorting its lines by height would mix the columns. Lines
+/// drawn back up the page elsewhere were not drawn in the order they are
+/// read: they are then taken top to bottom.
+fn drawn_lines(words: Vec<Word>, shown: &[Shown<'_>]) -> Vec<Fragment> {
+    let mut lines: Vec<Vec<Word>> = vec![];
+    for word in &words {
+        let same = lines.last().is_some_and(|line| {
+            let (first, last) = (line[0], line[line.len() - 1]);
+            let apart = (word.y - first.y).abs();
+            word.upright
+                && first.upright
+                && (apart <= 0.3 * word.size.min(first.size).max(1.0)
+                    || (apart <= 0.6 * word.size.max(first.size) && word.x0 >= last.x0))
+        });
+        match lines.last_mut() {
+            Some(line) if same => line.push(*word),
+            _ => lines.push(vec![*word]),
+        }
+    }
+    // How far right the column being drawn reaches.
+    let mut reach = f64::MIN;
+    for (i, line) in lines.iter().enumerate() {
+        let left = line.iter().map(|word| word.x0).fold(f64::MAX, f64::min);
+        if i > 0 && line[0].y < lines[i - 1][0].y - 0.5 * line[0].size {
+            if left < reach {
+                return line_texts(words, shown);
+            }
+            reach = f64::MIN;
+        }
+        reach = line.iter().map(|word| word.x1).fold(reach, f64::max);
+    }
+    lines
+        .iter_mut()
+        .flat_map(|line| {
+            line.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+            fragments(line, shown, false)
+        })
+        .collect()
+}
+
 /// The one text of the `lines` of a paragraph (at least one), which may
-/// run as far as `right`, or as far as its longest line when none is given.
-/// A line that the first word of the next would not have fitted on was
-/// wrapped: the two are joined as running text is, with a space where one
+/// run as far as `right`, or as far as the longest line of its column when
+/// none is given. A line that the first word of the next would not have
+/// fitted on was wrapped, as was one the paragraph leaves for the next
+/// column: the two are joined as running text is, with a space where one
 /// ends and the next begins in letters written with spaces, and nothing
 /// otherwise. A line with room for it was ended: a line break follows it.
 /// Lines of a character each are text written downwards.
 fn paragraph(lines: Vec<Fragment>, shown: &[Shown<'_>], right: Option<f64>) -> Fragment {
-    let right = right.unwrap_or_else(|| lines.iter().map(|l| l.x1).fold(f64::MIN, f64::max));
+    // The column each line is of: a line higher up the page than the one
+    // before it begins another. How far the lines of each column run.
+    let mut column = 0;
+    let mut reaches: Vec<f64> = vec![f64::MIN];
+    let columns: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i > 0 && line.y < lines[i - 1].y - 0.5 * line.size {
+                column += 1;
+                reaches.push(f64::MIN);
+            }
+            reaches[column] = reaches[column].max(line.x1);
+            column
+        })
+        .collect();
     let text = |line: &Fragment| composed(&line.pieces, |i| shown[i].text);
     let down = lines.len() > 1 && lines.iter().all(|line| text(line).chars().count() == 1);
-    let mut lines = lines.into_iter();
-    let mut whole = lines.next().expect("a line of the paragraph");
+    let mut lines = lines.into_iter().zip(columns);
+    let (mut whole, mut before) = lines.next().expect("a line of the paragraph");
     // How far the last line joined runs, and its last character.
     let mut reach = whole.x1;
-    for line in lines {
+    for (line, column) in lines {
+        let right = right.unwrap_or(reaches[before]);
+        let onward = column != before;
+        before = column;
         let ends = whole
             .pieces
             .last()
@@ -366,7 +442,7 @@ fn paragraph(lines: Vec<Fragment>, shown: &[Shown<'_>], right: Option<f64>) -> F
             _ => next.chars().take_while(|c| !c.is_whitespace()).count(),
         };
         let wide = (line.x1 - line.x0) * word as f64 / next.chars().count().max(1) as f64;
-        let wrapped = down || reach + wide > right - 0.5 * line.size;
+        let wrapped = down || onward || reach + wide > right - 0.5 * line.size;
         let apart = ends.zip(begins).is_some_and(|(a, b)| {
             !a.is_whitespace()
                 && !b.is_whitespace()
@@ -384,6 +460,7 @@ fn paragraph(lines: Vec<Fragment>, shown: &[Shown<'_>], right: Option<f64>) -> F
         reach = line.x1;
         whole.x0 = whole.x0.min(line.x0);
         whole.x1 = whole.x1.max(line.x1);
+        whole.y = whole.y.min(line.y);
         whole.last = whole.last.max(line.y);
         whole.size = whole.size.max(line.size);
     }
@@ -958,12 +1035,12 @@ impl Free<'_> {
                     line.clone()
                 }
             };
-            // The gaps of this line that the lines after it leave open.
-            let mut gaps: Vec<(f64, f64)> = line.windows(2).map(|w| (w[0].x1, w[1].x0)).collect();
+            // The lines after this one whose texts stand in its columns.
+            let mut run = vec![line.clone()];
             let mut end = at + 1;
             let mut set = 1;
             let mut pitch = f64::MAX;
-            while !gaps.is_empty() && end < lines.len() {
+            while line.len() > 1 && end < lines.len() {
                 let (Ok(next), Ok(last)) = (&lines[end].1, &lines[end - 1].1) else {
                     break;
                 };
@@ -971,49 +1048,34 @@ impl Free<'_> {
                 if step > 2.5 * pitch.min(4.0 * next[0].size) {
                     break;
                 }
-                let open: Vec<(f64, f64)> = gaps
-                    .iter()
-                    .flat_map(|(from, to)| {
-                        // What of the gap is left of, between and right of
-                        // the texts of the next line.
-                        let mut parts = vec![];
-                        let mut start = *from;
-                        let mut texts: Vec<&Fragment> = next.iter().collect();
-                        texts.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-                        for text in texts {
-                            if text.x0 > start {
-                                parts.push((start, text.x0.min(*to)));
-                            }
-                            start = start.max(text.x1);
-                        }
-                        parts.push((start, *to));
-                        parts
-                    })
-                    .filter(|(from, to)| to - from >= 0.8 * line[0].size)
-                    .collect();
-                if open.is_empty() {
+                let mut next = next.clone();
+                next.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+                let several = next.len() > 1;
+                run.push(next);
+                if grid(&run).is_none() {
+                    run.pop();
                     break;
                 }
-                gaps = open;
-                if next.len() > 1 {
-                    set += 1;
-                }
+                set += usize::from(several);
                 pitch = pitch.min(step);
                 end += 1;
             }
             // A last line with one text may be what follows the table.
-            while end > at + 1 && matches!(&lines[end - 1].1, Ok(l) if l.len() < 2) {
+            while end > at + 1 && run.last().is_some_and(|line| line.len() < 2) {
+                run.pop();
                 end -= 1;
             }
-            if set >= 2 && end > at + 1 {
-                let mut columns: Vec<Vec<Fragment>> = vec![vec![]; gaps.len() + 1];
-                for (_, line) in &lines[at..end] {
-                    for text in line.as_ref().into_iter().flatten() {
-                        let column = gaps.partition_point(|(from, _)| *from < text.x1 - 0.5);
-                        columns[column.min(gaps.len())].push(text.clone());
+            if set >= 2
+                && end > at + 1
+                && let Some(placed) = grid(&run)
+            {
+                let width = placed.iter().flatten().max().map_or(0, |last| last + 1);
+                let mut columns: Vec<Vec<Fragment>> = vec![vec![]; width];
+                for (line, placed) in run.iter().zip(&placed) {
+                    for (text, column) in line.iter().zip(placed) {
+                        columns[*column].push(text.clone());
                     }
                 }
-                columns.retain(|column| !column.is_empty());
                 if let Columns::Table(table) = unruled(columns) {
                     self.out.push(Block::Table(table));
                     at = end;
@@ -1026,10 +1088,60 @@ impl Free<'_> {
     }
 }
 
+/// The column of each text of `rows` (each left to right), when they
+/// stand in columns: a text is of the column whose texts it stands over or
+/// under, a text over or under none is a column of its own, and no text
+/// stands across two columns nor two of a row in one. The rows with most
+/// texts say first where the columns are. None when they do not.
+fn grid(rows: &[Vec<Fragment>]) -> Option<Vec<Vec<usize>>> {
+    // The columns left to right: how far their texts reach, and a number
+    // each keeps as columns are put in between.
+    let mut columns: Vec<(f64, f64, usize)> = vec![];
+    let mut placed: Vec<Vec<usize>> = rows.iter().map(|row| vec![0; row.len()]).collect();
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by_key(|row| std::cmp::Reverse(rows[*row].len()));
+    for row in order {
+        let mut last = None;
+        for (i, text) in rows[row].iter().enumerate() {
+            let mut over = columns
+                .iter()
+                .enumerate()
+                .filter(|(_, (left, right, _))| right.min(text.x1) - left.max(text.x0) > 0.5);
+            let column = match (over.next(), over.next()) {
+                (Some(_), Some(_)) => return None,
+                (Some((at, _)), None) => at,
+                (None, _) => {
+                    let at = columns.partition_point(|(left, ..)| *left < text.x0);
+                    columns.insert(at, (text.x0, text.x1, columns.len()));
+                    at
+                }
+            };
+            let (left, right, id) = &mut columns[column];
+            (*left, *right) = (left.min(text.x0), right.max(text.x1));
+            if last.replace(*id) == Some(*id) {
+                return None;
+            }
+            placed[row][i] = *id;
+        }
+    }
+    // Columns grown into one another are not columns.
+    if columns.windows(2).any(|pair| pair[0].1 > pair[1].0 + 0.5) {
+        return None;
+    }
+    let mut index = vec![0; columns.len()];
+    for (at, (.., id)) in columns.iter().enumerate() {
+        index[*id] = at;
+    }
+    for id in placed.iter_mut().flatten() {
+        *id = index[*id];
+    }
+    Some(placed)
+}
+
 /// What texts with gaps running down between them are.
 enum Columns {
-    /// A table: the columns share their lines, and two lines or more have
-    /// texts in several of them.
+    /// A table: the columns share their lines, and half the lines (two or
+    /// more), the first and the last among them, have texts in several.
     Table(Table),
     /// Columns read one after another: side by side they each have lines
     /// of their own, or are filled to their width line after line, as
@@ -1113,27 +1225,51 @@ fn unruled(columns: Vec<Vec<Fragment>>) -> Columns {
     if running {
         return Columns::Apart;
     }
+    // The texts of each line, and the column each is of. A text standing
+    // across columns shows they are not the columns of a table: the lines
+    // are then read one by one, those of a table among them found there.
+    let mut lines: Vec<Vec<Fragment>> = vec![vec![]; rows.len()];
+    for text in columns.iter().flatten() {
+        let row = rows
+            .partition_point(|y| *y <= text.y + 0.01)
+            .saturating_sub(1);
+        lines[row].push(text.clone());
+    }
+    for line in &mut lines {
+        line.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    }
+    let Some(placed) = grid(&lines) else {
+        return Columns::Lines;
+    };
+    let width = placed.iter().flatten().max().map_or(0, |last| last + 1);
+    let lines = lines
+        .into_iter()
+        .zip(placed)
+        .map(|(line, placed)| placed.into_iter().zip(line));
     let mut cells: BTreeMap<(usize, usize), Vec<Fragment>> = BTreeMap::new();
     let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    for (column, texts) in columns.iter().enumerate() {
-        for text in texts {
-            let row = rows
-                .partition_point(|y| *y <= text.y + 0.01)
-                .saturating_sub(1);
-            cells.entry((row, column)).or_default().push(text.clone());
+    for (row, line) in lines.into_iter().enumerate() {
+        for (column, text) in line {
             bounds = [
                 bounds[0].min(text.x0),
                 bounds[1].min(text.top()),
                 bounds[2].max(text.x1),
                 bounds[3].max(text.bottom()),
             ];
+            cells.entry((row, column)).or_default().push(text);
         }
     }
     let mut filled = vec![0usize; rows.len()];
     for (row, _) in cells.keys() {
         filled[*row] += 1;
     }
-    if filled.iter().filter(|columns| **columns > 1).count() < 2 {
+    // A table has texts in several columns on two lines or more, on half
+    // its lines, and on its first and last: fewer are lines with a text
+    // set apart here and there, and a line of one text over or under a
+    // table is what stands before or after it.
+    let several = filled.iter().filter(|columns| **columns > 1).count();
+    let ends = filled.first().is_some_and(|n| *n > 1) && filled.last().is_some_and(|n| *n > 1);
+    if several < 2 || 2 * several < rows.len() || !ends {
         return Columns::Lines;
     }
     let cells: Vec<([usize; 4], Vec<Piece>)> = cells
@@ -1151,10 +1287,10 @@ fn unruled(columns: Vec<Vec<Fragment>>) -> Columns {
             ([column, row, column, row], pieces)
         })
         .collect();
-    let header_rows = header_rows(&cells, &vec![false; cells.len()], columns.len(), rows.len());
+    let header_rows = header_rows(&cells, &vec![false; cells.len()], width, rows.len());
     Columns::Table(Table {
         bounds,
-        columns: columns.len(),
+        columns: width,
         rows: rows.len(),
         cells,
         header_rows,
@@ -1176,35 +1312,146 @@ pub(super) fn layout(shown: &[Shown<'_>], paths: &[PdfPath], marked: &[Marked]) 
 
 /// The table a page names by its rows and cells, whose text is that of the
 /// paragraphs whose lines `units` holds; those it takes are taken from
-/// `units`. None when it shows no text.
+/// `units`. None when it shows no text, or when the page rules the table:
+/// each of its cells is in a ruled cell of its own (`ruled` names the ruled
+/// cell a point is in, and `claims` counts the cells of the page's tables
+/// in each). The rulings then show the table as it is drawn,
+/// with its merged cells and the heading it repeats on a page, and its
+/// paragraphs are left to them. Tables drawn into one another's rulings
+/// are not ruled so, and are taken as the page names them.
+///
+/// Writers leave out the cells a merged cell covers, so a row may have
+/// fewer cells than the table has columns. The rows with all of them say
+/// where each column stands; a cell of a shorter row is of the column its
+/// text stands in.
 fn marked_table(
     marked: &Marked,
     units: &mut BTreeMap<usize, Vec<Fragment>>,
     shown: &[Shown<'_>],
+    ruled: impl Fn([f64; 2]) -> Option<(usize, usize)>,
+    claims: &BTreeMap<(usize, usize), usize>,
 ) -> Option<Table> {
+    let mut any = false;
+    let own = marked.rows.iter().flatten().all(|cell| {
+        let mut within = cell
+            .units
+            .iter()
+            .filter_map(|unit| units.get(unit))
+            .map(|lines| ruled(start(&lines[0])));
+        match within.next() {
+            // A cell without text is in no one's way.
+            None => true,
+            Some(None) => false,
+            Some(Some(first)) => {
+                any = true;
+                within.all(|next| next == Some(first)) && claims.get(&first) == Some(&1)
+            }
+        }
+    });
+    if own && any {
+        return None;
+    }
+    // Each row's cells with their text, the columns each spans and how far
+    // down it reaches.
+    let rows: Vec<Vec<(Vec<Fragment>, usize, usize)>> = marked
+        .rows
+        .iter()
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|cell| {
+                    let texts = cell
+                        .units
+                        .iter()
+                        .filter_map(|unit| units.remove(unit))
+                        .map(|lines| paragraph(lines, shown, None))
+                        .collect();
+                    (texts, cell.columns.max(1), cell.rows.max(1))
+                })
+                .collect()
+        })
+        .collect();
+    // Where each cell stands going by its place in its row, past the cells
+    // reaching down into the row.
     let mut taken: std::collections::BTreeSet<(usize, usize)> = Default::default();
-    let mut cells = vec![];
-    let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    let (mut columns, mut rows) = (0, marked.rows.len());
-    for (row, row_cells) in marked.rows.iter().enumerate() {
+    let mut placed: Vec<Vec<usize>> = vec![];
+    let mut widths = vec![];
+    for (row, cells) in rows.iter().enumerate() {
         let mut column = 0;
-        for cell in row_cells {
+        let mut at = vec![];
+        for (_, columns, deep) in cells {
             while taken.contains(&(row, column)) {
                 column += 1;
             }
-            let (right, bottom) = (column + cell.columns.max(1), row + cell.rows.max(1));
-            for r in row..bottom {
-                for c in column..right {
+            for r in row..row + deep {
+                for c in column..column + columns {
                     taken.insert((r, c));
                 }
             }
-            (columns, rows) = (columns.max(right), rows.max(bottom));
-            let texts: Vec<Fragment> = cell
-                .units
-                .iter()
-                .filter_map(|unit| units.remove(unit))
-                .map(|lines| paragraph(lines, shown, None))
-                .collect();
+            at.push(column);
+            column += columns;
+        }
+        while taken.contains(&(row, column)) {
+            column += 1;
+        }
+        placed.push(at);
+        widths.push(column);
+    }
+    let columns = widths.iter().copied().max().unwrap_or(0);
+    if columns == 0 || columns > MAX_COLUMNS {
+        return None;
+    }
+    if widths.iter().any(|width| *width != columns) {
+        // How far the text of each column reaches in the rows that have
+        // every cell.
+        let mut reach: Vec<Option<(f64, f64)>> = vec![None; columns];
+        for ((cells, at), _) in rows
+            .iter()
+            .zip(&placed)
+            .zip(&widths)
+            .filter(|(_, width)| **width == columns)
+        {
+            for ((texts, spans, _), column) in cells.iter().zip(at) {
+                for text in texts.iter().filter(|_| *spans == 1) {
+                    let (left, right) = reach[*column].unwrap_or((text.x0, text.x1));
+                    reach[*column] = Some((left.min(text.x0), right.max(text.x1)));
+                }
+            }
+        }
+        for ((cells, at), _) in rows
+            .iter()
+            .zip(&mut placed)
+            .zip(&widths)
+            .filter(|(_, width)| **width != columns)
+        {
+            let mut least = 0;
+            for ((texts, spans, _), column) in cells.iter().zip(at.iter_mut()) {
+                let extent = texts.iter().fold(None, |extent: Option<(f64, f64)>, text| {
+                    let (left, right) = extent.unwrap_or((text.x0, text.x1));
+                    Some((left.min(text.x0), right.max(text.x1)))
+                });
+                // The column whose text the cell's overlaps most, else the
+                // nearest; never left of the cell before it.
+                let best = extent.and_then(|(left, right)| {
+                    (least..columns)
+                        .filter_map(|c| Some((c, reach[c]?)))
+                        .map(|(c, (l, r))| {
+                            let apart = (l - right).max(left - r);
+                            (c, apart)
+                        })
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(c, _)| c)
+                });
+                *column = best.unwrap_or((*column).max(least)).min(columns - 1);
+                least = (*column + spans).min(columns - 1);
+            }
+        }
+    }
+    let mut cells = vec![];
+    let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    let mut depth = rows.len();
+    for (row, (row_cells, at)) in rows.into_iter().zip(placed).enumerate() {
+        for ((texts, spans, deep), column) in row_cells.into_iter().zip(at) {
             for text in &texts {
                 bounds = [
                     bounds[0].min(text.x0),
@@ -1214,26 +1461,36 @@ fn marked_table(
                 ];
             }
             if !texts.is_empty() {
+                let (right, bottom) = ((column + spans).min(columns), row + deep);
+                depth = depth.max(bottom);
                 cells.push(([column, row, right - 1, bottom - 1], cell_pieces(texts)));
             }
-            column = right;
         }
     }
-    if cells.is_empty() || columns > MAX_COLUMNS {
+    if cells.is_empty() {
         return None;
     }
-    let header_rows = if marked.header_rows > 0 && marked.header_rows < rows {
+    let header_rows = if marked.header_rows > 0 && marked.header_rows < depth {
         marked.header_rows
     } else {
-        header_rows(&cells, &vec![false; cells.len()], columns, rows)
+        header_rows(&cells, &vec![false; cells.len()], columns, depth)
     };
     Some(Table {
         bounds,
         columns,
-        rows,
+        rows: depth,
         cells,
         header_rows,
     })
+}
+
+/// The point by which a text is in a ruled cell: a little into its first
+/// line.
+fn start(text: &Fragment) -> [f64; 2] {
+    [
+        text.x0 + (0.25 * text.size).min((text.x1 - text.x0) / 2.0),
+        text.y - 0.3 * text.size,
+    ]
 }
 
 /// The sheet of a page that shows `shown`, is ruled by `rules`, has the
@@ -1271,15 +1528,38 @@ pub(crate) fn ruled_layout(
         }
     }
     for (unit, words) in held {
-        let lines = line_texts(words, shown);
+        let lines = drawn_lines(words, shown);
         if !lines.is_empty() {
             units.insert(unit, lines);
         }
     }
-    for marked in marked {
-        tables.extend(marked_table(marked, &mut units, shown));
-    }
     let mut lattices = lattices(rules);
+    let ruled = |[x, y]: [f64; 2]| {
+        lattices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, lattice)| Some((i, lattice.region_at(x, y)?)))
+            .min_by(|a, b| lattices[a.0].area(a.1).total_cmp(&lattices[b.0].area(b.1)))
+    };
+    // How many cells of the tables the page names start in each ruled cell.
+    let mut claims: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for cell in marked
+        .iter()
+        .flat_map(|marked| marked.rows.iter().flatten())
+    {
+        let within: std::collections::BTreeSet<(usize, usize)> = cell
+            .units
+            .iter()
+            .filter_map(|unit| units.get(unit))
+            .filter_map(|lines| ruled(start(&lines[0])))
+            .collect();
+        for region in within {
+            *claims.entry(region).or_default() += 1;
+        }
+    }
+    for marked in marked {
+        tables.extend(marked_table(marked, &mut units, shown, ruled, &claims));
+    }
     // A string, or a paragraph, is of the smallest ruled cell it starts in.
     let within = |lattices: &[Lattice], [x, y]: [f64; 2]| {
         lattices
@@ -1298,9 +1578,7 @@ pub(crate) fn ruled_layout(
     }
     let mut items = vec![];
     for lines in units.into_values() {
-        let first = &lines[0];
-        let x = first.x0 + (0.25 * first.size).min((first.x1 - first.x0) / 2.0);
-        match within(&lattices, [x, first.y - 0.3 * first.size]) {
+        match within(&lattices, start(&lines[0])) {
             Some((lattice, region)) => {
                 // The paragraph may run to the right edge of its cell.
                 let lattice = &mut lattices[lattice];
@@ -1784,6 +2062,27 @@ mod tests {
     }
 
     #[test]
+    fn a_paragraph_running_into_the_next_column_is_read_column_by_column() {
+        // One paragraph in two columns whose lines stand at the same
+        // heights, drawn in the order it is read.
+        let shown = held(&[
+            ("Running text set in two", 50.0, 100.0, Some(0)),
+            ("columns goes down the", 50.0, 114.0, Some(0)),
+            ("first and then on up", 50.0, 128.0, Some(0)),
+            ("into the second, where", 300.0, 100.0, Some(0)),
+            ("it ends.", 300.0, 114.0, Some(0)),
+        ]);
+        let layout = layout(&shown, &[]);
+        assert_eq!(
+            texts(&layout, &shown),
+            pairs(&[(
+                "A1",
+                "Running text set in two columns goes down the first and then on up into the second, where it ends."
+            )])
+        );
+    }
+
+    #[test]
     fn a_paragraph_in_a_ruled_cell_wraps_at_the_edge_of_the_cell() {
         // A cell 28 wide and one 372 wide. Each string is 5 wide a
         // character: after "NOT", "NULL" does not fit in the narrow cell,
@@ -1862,6 +2161,139 @@ mod tests {
             layout.tables,
             [json!({"name":"table-1","range":"A2:B4","header_rows":2,"totals_rows":0})]
         );
+    }
+
+    #[test]
+    fn paragraphs_side_by_side_are_the_cells_of_a_table_however_close() {
+        // Cells that touch, as a table without rulings sets them when its
+        // columns are as narrow as their text; a row lacks its first cell.
+        let shown = held(&[
+            ("Kind", 50.0, 100.0, Some(0)),
+            ("Name", 80.0, 100.0, Some(1)),
+            ("Need", 150.0, 100.0, Some(2)),
+            ("Note", 171.0, 100.0, Some(3)),
+            ("Head", 50.0, 114.0, Some(4)),
+            ("Customer code", 80.0, 114.0, Some(5)),
+            ("must", 150.0, 114.0, Some(6)),
+            ("shown at once", 171.0, 114.0, Some(7)),
+            ("Customer", 80.0, 128.0, Some(8)),
+            ("read only", 171.0, 128.0, Some(9)),
+            (
+                "A paragraph under the table that runs across its columns.",
+                50.0,
+                150.0,
+                Some(10),
+            ),
+        ]);
+        let layout = layout(&shown, &[]);
+        assert_eq!(
+            texts(&layout, &shown),
+            pairs(&[
+                ("A1", "Kind"),
+                ("B1", "Name"),
+                ("C1", "Need"),
+                ("D1", "Note"),
+                ("A2", "Head"),
+                ("B2", "Customer code"),
+                ("C2", "must"),
+                ("D2", "shown at once"),
+                ("B3", "Customer"),
+                ("D3", "read only"),
+                (
+                    "A4",
+                    "A paragraph under the table that runs across its columns."
+                ),
+            ])
+        );
+        assert_eq!(
+            layout.tables,
+            [json!({"name":"table-1","range":"A1:D3","header_rows":1,"totals_rows":0})]
+        );
+    }
+
+    #[test]
+    fn a_few_lines_with_a_text_set_apart_do_not_make_the_page_a_table() {
+        // A heading, a title and a footer over and under a table of two
+        // lines: the table is those two lines, in their three columns.
+        let shown = shown(&[
+            ("Header", 90.0, 46.0),
+            ("A title wider than a column", 90.0, 96.0),
+            ("Product", 90.0, 160.0),
+            ("Quantity", 234.0, 160.0),
+            ("Price", 378.0, 160.0),
+            ("Original product", 90.0, 184.0),
+            ("2", 234.0, 184.0),
+            ("1200.5", 378.0, 184.0),
+            ("Footer", 90.0, 750.0),
+        ]);
+        let layout = layout(&shown, &[]);
+        assert_eq!(
+            texts(&layout, &shown),
+            pairs(&[
+                ("A1", "Header"),
+                ("A2", "A title wider than a column"),
+                ("A3", "Product"),
+                ("B3", "Quantity"),
+                ("C3", "Price"),
+                ("A4", "Original product"),
+                ("B4", "2"),
+                ("C4", "1200.5"),
+                ("A5", "Footer"),
+            ])
+        );
+        assert_eq!(layout.tables.len(), 1);
+        assert_eq!(layout.tables[0]["range"], "A3:C4");
+    }
+
+    #[test]
+    fn a_named_table_takes_its_columns_from_its_full_rows_and_yields_to_rulings() {
+        // The second row lacks the cell a merged cell above covers: its
+        // cells are of the columns their text stands in.
+        let strings = [
+            ("Group", 50.0, 100.0, Some(0)),
+            ("Item", 120.0, 100.0, Some(1)),
+            ("Count", 200.0, 100.0, Some(2)),
+            ("Parts", 50.0, 114.0, Some(3)),
+            ("Bolt", 120.0, 114.0, Some(4)),
+            ("7", 200.0, 114.0, Some(5)),
+            ("Nut", 120.0, 128.0, Some(6)),
+            ("9", 200.0, 128.0, Some(7)),
+        ];
+        let shown = held(&strings);
+        let cell = |unit: usize| MarkedCell {
+            units: vec![unit],
+            columns: 1,
+            rows: 1,
+        };
+        let marked = [Marked {
+            rows: vec![
+                vec![cell(0), cell(1), cell(2)],
+                vec![cell(3), cell(4), cell(5)],
+                vec![cell(6), cell(7)],
+            ],
+            header_rows: 1,
+        }];
+        let named = super::layout(&shown, &[], &marked);
+        assert_eq!(
+            texts(&named, &shown)[6..],
+            pairs(&[("B3", "Nut"), ("C3", "9")])
+        );
+        assert_eq!(named.tables[0]["range"], "A1:C3");
+        assert!(named.merges.is_empty());
+
+        // Ruled, each cell in a ruled cell of its own, the table is read
+        // from its rulings, which show the merged cell.
+        let mut paths = vec![];
+        for y in [88.0, 104.0, 118.0, 132.0] {
+            let from = if y == 118.0 { 110.0 } else { 40.0 };
+            paths.push(line(from, y, 260.0, y));
+        }
+        for x in [40.0, 110.0, 190.0, 260.0] {
+            paths.push(line(x, 88.0, x, 132.0));
+        }
+        let ruled = super::layout(&shown, &paths, &marked);
+        assert_eq!(ruled.merges, ["A2:A3"]);
+        assert_eq!(texts(&ruled, &shown), texts(&named, &shown));
     }
 
     #[test]

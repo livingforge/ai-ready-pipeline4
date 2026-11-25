@@ -9,11 +9,11 @@
 //! is read for that alone: where the elements stand on the page is still
 //! read from the page.
 //!
-//! A table is taken from the tree when its rows agree on their columns and
-//! no table is nested in it. A workbook's sheet, which Excel tags as one
-//! table of all its cells, and a table holding another are left to the
-//! rulings of the page, which show the tables as they are drawn; their
-//! cells' paragraphs are still known from the tree.
+//! A table is taken from the tree when no table is nested in it. A
+//! workbook's sheet, which Excel tags as one table of all its cells, and a
+//! table holding another are left to the rulings of the page, which show
+//! the tables as they are drawn; their cells' paragraphs are still known
+//! from the tree.
 use super::page_layout::{Marked, MarkedCell};
 use lopdf::{Dictionary, Document as Pdf, Object, ObjectId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -370,8 +370,7 @@ impl<'a> Reader<'a> {
 
     /// Records a table read from the tree on each page its rows are on. A
     /// row is of the page its first content is on, a row without content of
-    /// the page of the row before it. The rows of a page must agree on
-    /// their columns.
+    /// the page of the row before it.
     fn table(&mut self, table: Table) {
         let mut by_page: Vec<(ObjectId, Vec<Row>)> = vec![];
         for (cells, head) in table.rows {
@@ -386,32 +385,12 @@ impl<'a> Reader<'a> {
             }
         }
         for (page, rows) in by_page {
-            // Where each cell stands, past the cells spanning down into
-            // its row.
-            let mut taken: BTreeSet<(usize, usize)> = BTreeSet::new();
-            let mut width = None;
-            let mut agree = true;
-            for (row, (cells, _)) in rows.iter().enumerate() {
-                let mut column = 0;
-                for cell in cells {
-                    while taken.contains(&(row, column)) {
-                        column += 1;
-                    }
-                    for r in row..row + cell.rows {
-                        for c in column..column + cell.columns {
-                            taken.insert((r, c));
-                        }
-                    }
-                    column += cell.columns;
-                }
-                while taken.contains(&(row, column)) {
-                    column += 1;
-                }
-                agree &= *width.get_or_insert(column) == column;
-            }
-            let width = width.unwrap_or(0);
-            let deep = taken.iter().map(|(row, _)| row + 1).max().unwrap_or(0);
-            if !agree || width == 0 || deep != rows.len() || (width < 2 && rows.len() < 2) {
+            let width = rows
+                .iter()
+                .map(|(cells, _)| cells.iter().map(|cell| cell.columns).sum::<usize>())
+                .max()
+                .unwrap_or(0);
+            if width == 0 || (width < 2 && rows.len() < 2) {
                 continue;
             }
             let leading = |of: &dyn Fn(&Row) -> bool| {
