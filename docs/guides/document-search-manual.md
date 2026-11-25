@@ -113,7 +113,7 @@ arp4 documents search "注文" --document 設計 --root C:/project
 |---|---|
 | Excel | `sheet`（シート名）と `address`（セル番地）。表の行は、その行の各セルが並びます。 |
 | Markdown・テキスト | `position.line_start`〜`line_end`（行番号）と `position.headings`（属する見出し）。`sheet: "text"` と `address` はARP内部の通し番号です。 |
-| Word・PowerPoint・PDF | `address` は文字列の通し番号で、ページ上の位置ではありません。`title` に含まれる見出しや本文を手がかりに原本を探してください。 |
+| Word・PowerPoint・PDF | `address` は段落・表を並べた行と列で、ページ上の座標ではありません。PDFはページごとに、上から読む順の行と表の列です。`title` に含まれる見出しや本文を手がかりに原本を探してください。 |
 
 ### 一覧で見る（PowerShell）
 

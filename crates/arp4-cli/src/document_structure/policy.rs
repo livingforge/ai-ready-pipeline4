@@ -117,11 +117,13 @@ pub fn visuals(extraction: &Extraction) -> Result<Vec<Value>> {
                         .as_str()
                         .or_else(|| source["path"].as_str())
                 });
+            // The reading is carried over; its layout stays with the asset.
             if let Some(ocr) = asset_name
                 .and_then(|name| assets_by_path.get(name))
                 .and_then(|asset| asset.get("ocr"))
             {
-                v["ocr"] = ocr.clone();
+                v["ocr"] =
+                    json!({"status":ocr["status"],"text":ocr["text"],"reason":ocr["reason"]});
             }
         }
     }
@@ -137,7 +139,8 @@ mod word_image_tests {
         let extraction = json!({
             "source":{"path":"docs/illustrated.docx"},
             "sheets":[{"name":"document"}],
-            "assets":[{"path":"image-001.png","ocr":{"status":"available","text":"label","reason":"Windows OCR"}}]
+            "assets":[{"path":"image-001.png","ocr":{"status":"available","text":"label","reason":"Windows OCR",
+                "layout":{"size":[10,10],"cells":[{"address":"A1","text":"label","box":[1,1,8,8]}],"merges":[],"tables":[]}}}]
         });
         let found = visuals(&crate::extraction::sample(extraction.clone())).unwrap();
         assert_eq!(found.len(), 1);

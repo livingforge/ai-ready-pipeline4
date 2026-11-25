@@ -3,8 +3,9 @@
 //! The existing mapping contract uses sheets/cells. For text formats these are
 //! logical text containers, not physical spreadsheet coordinates: Word and
 //! PowerPoint lay paragraphs and table rows out as rows and table columns as
-//! columns, and PDF numbers its text runs A1, A2, ... `part` identifies the
-//! original container.
+//! columns, and PDF lays the lines and tables of a page out as rows and
+//! columns from where the page draws them. `part` identifies the original
+//! container.
 //! Native text carries original byte/line positions within the hashed revision;
 //! its derived views are read-only and edits happen in the original file.
 use crate::{data::*, excel::Workbook};
@@ -23,7 +24,9 @@ pub mod encryption;
 mod html;
 mod html_parse;
 mod package;
+pub(crate) mod page_layout;
 mod pdf_images;
+mod pdf_tags;
 mod slide_drawings;
 mod slide_fonts;
 mod slide_shapes;
@@ -34,6 +37,7 @@ mod word_fonts;
 
 pub use html::BlockShape;
 pub(crate) use package::{office_archive, office_package, read_entry, uncompressed_size};
+pub use page_layout::Piece as PdfPiece;
 pub use slide_shapes::{
     ConnectorEnd, ShapeEdit, ShapeOperation, ShapeProperties, is_shape_operation,
     parse_shape_operations,
@@ -598,6 +602,7 @@ impl Source {
             );
             let mapped = pdf_mapped_fonts(&doc);
             let mut read = PdfFonts::new(&mapped);
+            let tags = pdf_tags::read(&doc);
             for (page, id) in doc.get_pages() {
                 let raw_content = doc.get_page_content_with_limit(id, MAX_PAGE)?;
                 // The lenient decoder stops quietly at the first token it cannot
@@ -606,15 +611,13 @@ impl Source {
                 if !whole {
                     unparsed.push(page);
                 }
-                let values = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
-                    .into_iter()
-                    .map(|string| (string.text, Some(string.font)))
-                    .collect();
+                let strings = pdf_text(&doc, id, &mut content, &BTreeMap::new(), None, &mut read)?;
                 if !read.left_out.is_empty() {
                     left_out.push((page, std::mem::take(&mut read.left_out)));
                 }
+                let layout = pdf_page_layout(&doc, id, &content, &strings, &tags);
                 sheets.push(crate::extraction::Sheet::from_value(
-                    text_sheet(&format!("page-{page}"), &format!("pdf:{page}"), values),
+                    pdf_sheet(page, &strings, &layout),
                     sheets.len(),
                 )?);
             }
@@ -825,9 +828,10 @@ impl Source {
 
     /// Each page of a PDF original: its size in points (the crop box, else
     /// the media box), the lines and areas it paints, the images it draws,
-    /// and where each string of its text starts and how wide it runs, in
-    /// points from its top left corner, in the order of the extraction's
-    /// cells of the page. None for another format.
+    /// each string of its text with its font, where it starts and how wide
+    /// it runs, in points from its top left corner, and the strings each
+    /// cell of the page's sheet in the extraction is made of. None for
+    /// another format.
     pub fn pdf_pages(&self) -> Result<Option<Vec<PdfPage>>> {
         let Self::Text(TextSource {
             backend: TextBackend::Pdf { doc, .. },
@@ -838,6 +842,7 @@ impl Source {
         };
         let mapped = pdf_mapped_fonts(doc);
         let mut read = PdfFonts::new(&mapped);
+        let tags = pdf_tags::read(doc);
         let mut pages = vec![];
         let mut placed = pdf_images::placements(doc, MAX_PAGE)?.pages.into_iter();
         for (_, id) in doc.get_pages() {
@@ -845,17 +850,24 @@ impl Source {
             let raw = doc.get_page_content_with_limit(id, MAX_PAGE)?;
             let (mut content, _) = pdf_content(&raw)?;
             let paths = pdf_paths(&content, [x0, y1]);
+            let strings = pdf_text(doc, id, &mut content, &BTreeMap::new(), None, &mut read)?;
+            let cells = pdf_page_layout(doc, id, &content, &strings, &tags)
+                .cells
+                .into_iter()
+                .map(|cell| cell.pieces)
+                .collect();
             let mut places = vec![];
             let mut invisible = BTreeSet::new();
-            for (i, string) in pdf_text(doc, id, &mut content, &BTreeMap::new(), None, &mut read)?
-                .into_iter()
-                .enumerate()
-            {
+            let mut texts = vec![];
+            let mut fonts = vec![];
+            for (i, string) in strings.into_iter().enumerate() {
                 let [x, y, width] = string.origin;
                 places.push([x - x0, y1 - y, width]);
                 if string.invisible {
                     invisible.insert(i);
                 }
+                fonts.push(crate::fonts::element_font(&[], &string.font));
+                texts.push(string.text);
             }
             read.left_out.clear();
             // The unit square of an image, its top row at 1, onto the page
@@ -879,6 +891,9 @@ impl Source {
                 height: y1 - y0,
                 paths,
                 places,
+                texts,
+                fonts,
+                cells,
                 invisible,
                 images,
             });
@@ -923,7 +938,7 @@ impl Source {
             Self::Text(doc) if word(&doc.format) => "word-blocks/1",
             Self::Text(doc) if is_powerpoint(&doc.format) => "slide-blocks/1",
             Self::Text(doc) if html(&doc.format) => "html-blocks/1",
-            Self::Text(_) => "text-runs/1",
+            Self::Text(_) => "page-layout/1",
         }
     }
 
@@ -1225,26 +1240,6 @@ pub struct Edits<'a> {
 
 /// The sheet of a page's text strings, each with the font it is drawn in
 /// when the format records one.
-fn text_sheet(name: &str, part: &str, texts: Vec<(String, Option<Value>)>) -> Value {
-    let cells: Vec<_> = texts
-        .into_iter()
-        .enumerate()
-        .map(|(i, (value, font))| {
-            let mut cell = json!({
-                "id":format!("text-{}",i+1), "address":format!("A{}",i+1),
-                "type":"string", "value":value, "formula":null, "cached":null, "number_format":""
-            });
-            if let Some(font) = font {
-                cell["font"] = font;
-            }
-            cell
-        })
-        .collect();
-    let mut sheet = json!({"name":name,"part":part,"state":"visible","merges":[]});
-    sheet["cells"] = Value::Array(cells);
-    sheet
-}
-
 fn office_parts(raw: &[u8], include_binary: bool) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut zip = office_archive(raw)?;
     ensure!(
@@ -1616,7 +1611,7 @@ pub fn base_note(format: &str) -> &'static str {
             "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行、合計行はtfootの行です。ブラウザの表示と同じく、theadの行は表の先頭、tfootの行は末尾に置き、rowspanは行グループ（thead・tbody・tfoot）の外へ伸ばしません。表のセルの外に書いた文字は表の前のブロックにします。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表し、ブロック末尾の<br>は表示どおり除きます。空白と&nbsp;だけのブロックは行にしません。pre内のブロック要素（行ごとに要素を置くハイライト済みのコード）は、preのブロックの中の行として改行で区切ります。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。リンクの行き先になるため、本文から除いた部分やhidden属性の要素のものも、その位置か後のブロックのセルとして記録します（templateの中は除きます）。<img>（遅延読み込みのdata-srcを優先）と、画像の<input>・<object>・<embed>、SVGの中の<image>、style属性の背景画像はimagesにブロックのセル・src・altを記録し（相対パスは<base>からたどります）、data URLの画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定のpicture_folders（.arp/config.ymlはプロジェクト内、Git管理外の.arp/local.ymlはこのマシンのプロジェクト外も可）の中にあるものは取込時にassetsへ保存し、その外の画像ファイルは読みません。保存した画像にはWindowsでOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落やpre内のブロックをまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
         }
         "pdf" => {
-            "ページのテキスト描画命令を文字列単位で抽出します。A1等は文字列の通し番号です。Form XObjectの中の文字は描く位置に、注釈の表示の文字（コメント・入力済みのフォーム欄。チェックボックス等のボタンを除く）はページの文字の後に抽出しますが、書き戻せません。ページが描く画像（Form XObjectの中のもの、インライン画像、スタンプ・署名など注釈の表示に描く画像、タイリングパターン・ソフトマスク・Type3フォントの字形の中の画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。帯状・格子状に分けて描かれた1枚の画像と、ページのType3フォントの字形の画像は、それぞれ1枚の画像にまとめます。JPEGはそのまま（Decodeで反転するものは解読してPNG）、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにし、ソフトマスク・マスク・JPEG 2000のアルファによる透明度はPNGの透明度として保ちます。OCRは透明な部分を画像と見分けられる背景色の上で読み、OCRの上限より大きい画像は縮小して読みます。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。相互参照表からページをたどれないPDFは、ファイル内のオブジェクトを探して読み、注記に記録します。OCRの文字はセルの値にしません。元フォントで表現可能な文字だけ書き戻せます。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
+            "ページが描く文字列を、描く位置と罫線から行・列・表に並べて抽出します。同じ行で続く文字列は、描く順や分け方（1文字ずつ等）によらず1つのセルにまとめ、間隔の空く箇所を空白で表します（日本語の文字どうしと、日本語と英数字の間の字間は空白にしません）。交わる罫線は表とし、罫線のないセルどうしは結合としてmerges、表の範囲はtablesに記録します。罫線がなくても、同じ列に2行以上並ぶ文字列は表とします。表の外は1行ずつA列から並べ、同じ行で離れた文字列はB列以降に置き、段組みは列ごとに上から読みます。セル内の行は改行で表します。タグ付きPDFは構造ツリーから段落・見出し・リスト項目・表のセルごとに文字列をまとめ、折り返した行（次の語が入らなかった行）は改行を入れずにつなぎ、余白を残して改めた行は改行で表します。1文字ずつ下へ並ぶ行は縦書きとして1つにつなぎます。入れ子がなく行ごとの列数がそろった表は、構造ツリーの行・セル・結合・見出し行をそのまま表にします。Excelがシート全体を1つの表としたタグと、入れ子の表は使わず、罫線から読みます。タグが疑わしいと記録されたPDF（Suspects）はタグを使いません。見出し行は、構造ツリーの見出し行、網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。回転した文字列は1つずつ別の行にします。不可視の文字（スキャンページに重ねたOCRの文字）は見える文字と別のセルにします。Form XObjectの中の文字と、注釈の表示の文字（コメント・入力済みのフォーム欄。チェックボックス等のボタンを除く）も描く位置で並べますが、書き戻せません。ページが描く画像（Form XObjectの中のもの、インライン画像、スタンプ・署名など注釈の表示に描く画像、タイリングパターン・ソフトマスク・Type3フォントの字形の中の画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。帯状・格子状に分けて描かれた1枚の画像と、ページのType3フォントの字形の画像は、それぞれ1枚の画像にまとめます。JPEGはそのまま（Decodeで反転するものは解読してPNG）、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにし、ソフトマスク・マスク・JPEG 2000のアルファによる透明度はPNGの透明度として保ちます。OCRは透明な部分を画像と見分けられる背景色の上で読み、OCRの上限より大きい画像は縮小して読みます。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。相互参照表からページをたどれないPDFは、ファイル内のオブジェクトを探して読み、注記に記録します。OCRは読み取った単語の位置と画像の罫線から、ページの文字列と同じ規則で行・列・表に並べ、textに行を改行、セルをタブで区切って読む順に記録し、layoutにセルごとの文字・画像上の位置・結合・表の範囲を記録します。OCRの文字はセルの値にしません。書き戻しは変更した文字を含む文字列だけを書き換え、複数の文字列にまたがる変更は最初の文字列が新しい文字を受け取ります。元フォントで表現可能な文字だけ書き戻せます。文字列の間の空白とセル内の改行は文字ではなく配置から決まるため、それを追加・削除する変更は拒否します。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
         }
         format if word(format) => {
             "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表します。セル内の入れ子の表はそのセルの範囲に独自の行・列を持ち、外側のセルは入れ子の表に合わせて広がり（他のセルは結合として記録）、tablesに外側の表をparentとして記録します。罫線がなく、値のある全セルが表を持つ外側の表はレイアウト用の枠とみなし、表として記録しません。入れ子の表を持つ表の行の追加・削除は拒否します。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
@@ -3260,6 +3255,7 @@ impl TextSource {
                     let glyphs = subset_glyphs(original)?;
                     let mapped = pdf_mapped_fonts(original);
                     let mut read = PdfFonts::new(&mapped);
+                    let tags = pdf_tags::read(original);
                     for (page, id) in original.get_pages() {
                         if let Some(changes) = replacements.get(&format!("pdf:{page}")) {
                             ensure!(
@@ -3268,11 +3264,32 @@ impl TextSource {
                             );
                             let raw = original.get_page_content_with_limit(id, MAX_PAGE)?;
                             let mut content = Content::decode_strict(&raw)?;
+                            // The strings each changed cell is made of take
+                            // what the change gives them.
+                            let strings = pdf_text(
+                                original,
+                                id,
+                                &mut content,
+                                &BTreeMap::new(),
+                                None,
+                                &mut read,
+                            )?;
+                            let layout = pdf_page_layout(original, id, &content, &strings, &tags);
+                            let mut rewritten = BTreeMap::new();
+                            for (cell, after) in changes {
+                                let cell =
+                                    layout.cells.get(*cell).context("PDF text target missing")?;
+                                rewritten.extend(page_layout::distribute(
+                                    &cell.pieces,
+                                    |i| strings[i].text.as_str(),
+                                    after,
+                                )?);
+                            }
                             pdf_text(
                                 original,
                                 id,
                                 &mut content,
-                                changes,
+                                &rewritten,
                                 Some(&glyphs),
                                 &mut read,
                             )?;
@@ -4436,14 +4453,103 @@ impl<'a> PdfFonts<'a> {
     }
 }
 
-/// A string of a PDF page's text: its characters, its font as the extraction
-/// records it, where it starts and how wide it runs (`[x, y, width]` in the
-/// page's user space), and whether the page draws it invisibly.
+/// A string of a PDF page's text: its characters, its font (with its size
+/// on the page), where it starts and how wide it runs (`[x, y, width]` in
+/// the page's user space), whether it is written left to right along a
+/// level line, whether the page draws it invisibly, and the number (MCID)
+/// its content is marked with for the structure of a tagged PDF, if it is.
 struct PdfString {
     text: String,
-    font: Value,
+    font: crate::fonts::RunFont,
     origin: [f64; 3],
+    upright: bool,
     invisible: bool,
+    mark: Option<i64>,
+}
+
+/// The new characters of each string that changing the text of a PDF cell
+/// made of `pieces` to `after` rewrites, by the string's index among the
+/// page's `texts`; none when an export would refuse the change.
+pub fn pdf_cell_strings(
+    pieces: &[PdfPiece],
+    texts: &[String],
+    after: &str,
+) -> Option<BTreeMap<usize, String>> {
+    page_layout::distribute(pieces, |i| texts[i].as_str(), after).ok()
+}
+
+/// The sheet of the page `id`, which draws `content` and shows `strings`:
+/// its rows, columns and tables, read from where the page places its
+/// strings and rules its lines, and from the paragraphs and tables `tags`
+/// names of it.
+fn pdf_page_layout(
+    doc: &Pdf,
+    id: lopdf::ObjectId,
+    content: &Content,
+    strings: &[PdfString],
+    tags: &pdf_tags::Tags,
+) -> page_layout::Layout {
+    let [x0, _, _, y1] = pdf_page_box(doc, id);
+    let tags = tags.page(id);
+    let shown: Vec<page_layout::Shown<'_>> = strings
+        .iter()
+        .map(|string| page_layout::Shown {
+            text: &string.text,
+            x: string.origin[0] - x0,
+            y: y1 - string.origin[1],
+            width: string.origin[2],
+            size: string.font.size.unwrap_or(0.0),
+            upright: string.upright,
+            invisible: string.invisible,
+            unit: string.mark.and_then(|mark| tags?.units.get(&mark).copied()),
+        })
+        .collect();
+    page_layout::layout(
+        &shown,
+        &pdf_paths(content, [x0, y1]),
+        tags.map_or(&[][..], |tags| &tags.tables),
+    )
+}
+
+/// The sheet of the `page`th page of a PDF as an extraction records it:
+/// each cell of `layout` with the text and font of the `strings` it is made
+/// of.
+fn pdf_sheet(page: u32, strings: &[PdfString], layout: &page_layout::Layout) -> Value {
+    let cells: Vec<Value> = layout
+        .cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let mut value = String::new();
+            let mut runs = vec![];
+            for piece in &cell.pieces {
+                let string = &strings[piece.string];
+                value.push_str(piece.before);
+                let start = value.chars().count();
+                value.push_str(&string.text);
+                runs.push(crate::fonts::TextRun {
+                    font: string.font.clone(),
+                    bold: false,
+                    chars: start..value.chars().count(),
+                });
+            }
+            // A cell of one string has that string's font.
+            let font = match &runs[..] {
+                [run] => crate::fonts::element_font(&[], &run.font),
+                runs => crate::fonts::element_font(runs, &crate::fonts::RunFont::default()),
+            };
+            let column = crate::excel::column_name(cell.column).expect("a column of a sheet");
+            json!({
+                "id":format!("text-{}",i+1), "address":format!("{column}{}",cell.row),
+                "type":"string", "value":value, "formula":null, "cached":null,
+                "number_format":"", "font":font
+            })
+        })
+        .collect();
+    let mut sheet = json!({"name":format!("page-{page}"),"part":format!("pdf:{page}"),
+        "state":"visible","merges":layout.merges,"tables":layout.tables});
+    sheet["cells"] = Value::Array(cells);
+    sheet
 }
 
 /// A page of a PDF original as [`Source::pdf_pages`] gives it.
@@ -4455,6 +4561,13 @@ pub struct PdfPage {
     /// Where each string starts, and the width it runs along its line,
     /// `[x, y, width]` in points from the top left.
     pub places: Vec<[f64; 3]>,
+    /// The characters of each string.
+    pub texts: Vec<String>,
+    /// The font of each string as an extraction records one.
+    pub fonts: Vec<Value>,
+    /// The strings each cell of the page's sheet is made of, in the order
+    /// of the sheet's cells.
+    pub cells: Vec<Vec<PdfPiece>>,
     /// The strings drawn invisibly (render modes 3 and 7), as the OCR text
     /// of a scanned page is, by their index in `places`.
     pub invisible: BTreeSet<usize>,
@@ -4887,12 +5000,14 @@ fn pdf_text<'a>(
 /// The graphics state text is shown in, which a Form XObject inherits from
 /// what draws it: the font (by its resource name), the text render mode
 /// (Tr: 3 draws nothing and 7 only clips, as in the OCR layer of a scanned
-/// page) and the look.
+/// page), the look, and the number (MCID) the page marks the content being
+/// drawn with for its structure.
 #[derive(Clone, Default)]
 struct PdfTextState {
     font: Vec<u8>,
     render: i64,
     look: PdfLook,
+    mark: Option<i64>,
 }
 
 /// Reads the strings a page shows, as [`pdf_text`] does.
@@ -4994,7 +5109,10 @@ impl<'a> PdfTexts<'a, '_> {
             mut font,
             mut render,
             mut look,
+            mut mark,
         } = state;
+        // The marks of the marked content sequences open in this content.
+        let mut marks: Vec<Option<i64>> = vec![];
         let mut text_matrix = IDENTITY;
         // The start of the current line, which Td, TD and T* move from.
         let mut line_matrix = IDENTITY;
@@ -5089,6 +5207,47 @@ impl<'a> PdfTexts<'a, '_> {
                         .and_then(|mode| mode.as_i64().ok())
                         .unwrap_or(0);
                 }
+                // Marked content of the page: a sequence numbered for the
+                // structure tree is of the element naming that number, an
+                // artifact (a running head, a page number) of none. What a
+                // form marks is numbered for the form, not the page.
+                "BMC" | "BDC" => {
+                    marks.push(mark);
+                    let tag = operation
+                        .operands
+                        .first()
+                        .and_then(|tag| tag.as_name().ok())
+                        .unwrap_or(b"");
+                    if inside.is_some() {
+                    } else if tag == b"Artifact" {
+                        mark = None;
+                    } else if let Some(properties) = operation.operands.get(1) {
+                        let properties = match properties {
+                            Object::Name(name) => resources.iter().find_map(|r| {
+                                let named = match r.get(b"Properties").ok()? {
+                                    Object::Reference(id) => doc.get_dictionary(*id).ok()?,
+                                    named => named.as_dict().ok()?,
+                                };
+                                match named.get(name).ok()? {
+                                    Object::Reference(id) => doc.get_dictionary(*id).ok(),
+                                    properties => properties.as_dict().ok(),
+                                }
+                            }),
+                            properties => properties.as_dict().ok(),
+                        };
+                        if let Some(id) = properties
+                            .and_then(|p| p.get(b"MCID").ok())
+                            .and_then(|id| id.as_i64().ok())
+                        {
+                            mark = Some(id);
+                        }
+                    }
+                }
+                "EMC" => {
+                    if let Some(outer) = marks.pop() {
+                        mark = outer;
+                    }
+                }
                 "q" => stack.push((font.clone(), render, look.clone())),
                 // A Q without its q restores nothing, as PDF readers take it.
                 "Q" => {
@@ -5127,6 +5286,7 @@ impl<'a> PdfTexts<'a, '_> {
                             font: font.clone(),
                             render,
                             look: look.clone(),
+                            mark,
                         };
                         self.form(id, fonts, resources, state, "a Form XObject", depth);
                     }
@@ -5183,16 +5343,13 @@ impl<'a> PdfTexts<'a, '_> {
                         3 | 7 => None,
                         _ => look.fill.clone(),
                     };
-                    let look_of = crate::fonts::element_font(
-                        &[],
-                        &crate::fonts::RunFont {
-                            latin: name.clone(),
-                            east_asian: name,
-                            size: (size > 0.0).then_some(size),
-                            color: color.map(crate::fonts::Color::rgb),
-                            ..crate::fonts::RunFont::default()
-                        },
-                    );
+                    let look_of = crate::fonts::RunFont {
+                        latin: name.clone(),
+                        east_asian: name,
+                        size: (size > 0.0).then_some(size),
+                        color: color.map(crate::fonts::Color::rgb),
+                        ..crate::fonts::RunFont::default()
+                    };
                     let widths = self
                         .read
                         .widths
@@ -5271,7 +5428,12 @@ impl<'a> PdfTexts<'a, '_> {
                             text: value,
                             font: look_of.clone(),
                             origin,
+                            // Along a level line, not turned or mirrored.
+                            upright: start[0] > 0.0
+                                && start[1].abs() <= 0.02 * start[0]
+                                && start[3] > 0.0,
                             invisible: matches!(render, 3 | 7),
+                            mark,
                         });
                     }
                 }

@@ -1,12 +1,13 @@
 //! A PDF page in its size: the images it draws, the lines and areas it
 //! paints, and each string of its text where the page starts it, as wide as
-//! the page draws it, in its font's size and colour. A string is fitted to
-//! its width on the page, so that a font the viewer lacks does not move the
-//! strings after it; one the content changes keeps its own width. A string
-//! the page draws invisibly, as the OCR text over a scanned image, is kept
-//! transparent, where it can still be selected.
+//! the page draws it, in its font's size and colour, named by the cell of
+//! the page's sheet it is of. A string is fitted to its width on the page,
+//! so that a font the viewer lacks does not move the strings after it; one
+//! the content changes keeps its own width. A string the page draws
+//! invisibly, as the OCR text over a scanned image, is kept transparent,
+//! where it can still be selected.
 use super::*;
-use crate::excel::coordinate;
+use crate::document_source::pdf_cell_strings;
 use std::collections::BTreeSet;
 
 /// Pixels of a point.
@@ -94,52 +95,83 @@ pub(super) fn pages(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sectio
                 path.width
             );
         }
-        for cell in &sheet.cells {
-            let Ok((_, row)) = coordinate(cell.address()) else {
-                continue;
-            };
-            let Some([x, y, width]) = page.places.get(row as usize - 1).copied() else {
-                continue;
-            };
+        for (cell, pieces) in sheet.cells.iter().zip(&page.cells) {
             let shown = document.content.cell(name, cell.address());
-            let font = cell_font(sheet, Some(cell), shown);
-            let size = font["size"].as_f64().unwrap_or(12.0);
-            let text = text_of(shown, Some(cell));
-            let hidden = if page.invisible.contains(&(row as usize - 1)) {
-                "fill-opacity:0;"
-            } else {
-                ""
-            };
-            let fit = if width > 0.0 && shown.is_none_or(|s| s.original.is_none()) {
-                format!(r#" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs""#)
-            } else {
-                String::new()
-            };
-            let string = format!(
-                r#"<text data-a="{}" x="{x:.2}" y="{y:.2}" font-size="{size:.2}" style="{}{hidden}"{fit}>{}</text>"#,
-                cell.address(),
-                text_css(font, cell_style(sheet, Some(cell))),
-                escape(&text)
-            );
+            // The strings a change of the cell's text rewrites, as an
+            // export writes them; a change it would refuse is shown whole
+            // where the cell starts.
+            let changed = shown.filter(|s| s.original.is_some()).map(|_| {
+                let after = text_of(shown, Some(cell));
+                pdf_cell_strings(pieces, &page.texts, &after).unwrap_or_else(|| {
+                    pieces
+                        .iter()
+                        .enumerate()
+                        .map(|(i, piece)| {
+                            (
+                                piece.string,
+                                if i == 0 { after.clone() } else { String::new() },
+                            )
+                        })
+                        .collect()
+                })
+            });
             let mark = out.mark(shown, name, cell.address());
-            if mark.is_empty() {
-                html.push_str(&string);
-            } else {
-                // A changed string is framed where it stands on the page.
-                let note = shown
-                    .and_then(|s| s.original.as_ref())
-                    .map(|o| format!("原本: {}", plain(o)))
-                    .unwrap_or_else(|| "フォントを変更".to_owned());
-                let wide = text.chars().count() as f64 * size;
+            let mut strings = String::new();
+            // What the frame of a changed cell is drawn around.
+            let mut frame: Option<[f64; 4]> = None;
+            for piece in pieces {
+                let Some([x, y, width]) = page.places.get(piece.string).copied() else {
+                    continue;
+                };
+                let font = &page.fonts[piece.string];
+                let size = font["size"].as_f64().unwrap_or(12.0);
+                let rewritten = changed.as_ref().and_then(|c| c.get(&piece.string));
+                let text = rewritten.unwrap_or(&page.texts[piece.string]);
+                let hidden = if page.invisible.contains(&piece.string) {
+                    "fill-opacity:0;"
+                } else {
+                    ""
+                };
+                let fit = if width > 0.0 && rewritten.is_none() {
+                    format!(r#" textLength="{width:.2}" lengthAdjust="spacingAndGlyphs""#)
+                } else {
+                    String::new()
+                };
                 let _ = write!(
-                    html,
-                    r##"<g{mark}><title>{}</title><rect class="mark" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="none" stroke="#e8590c" stroke-width="1.2"/>{string}</g>"##,
-                    escape(&note),
-                    x - 1.0,
-                    y - size,
-                    width.max(wide.min(width * 2.0)).max(size) + 2.0,
-                    size * 1.3
+                    strings,
+                    r#"<text data-a="{}" x="{x:.2}" y="{y:.2}" font-size="{size:.2}" style="{}{hidden}"{fit}>{}</text>"#,
+                    cell.address(),
+                    text_css(font, cell_style(sheet, Some(cell))),
+                    escape(text)
                 );
+                let wide = text.chars().count() as f64 * size;
+                let right = x + width.max(wide.min(width * 2.0)).max(size);
+                let bounds = frame.get_or_insert([x, y - size, right, y + size * 0.3]);
+                *bounds = [
+                    bounds[0].min(x),
+                    bounds[1].min(y - size),
+                    bounds[2].max(right),
+                    bounds[3].max(y + size * 0.3),
+                ];
+            }
+            match frame.filter(|_| !mark.is_empty()) {
+                None => html.push_str(&strings),
+                // A changed cell is framed where it stands on the page.
+                Some([left, top, right, bottom]) => {
+                    let note = shown
+                        .and_then(|s| s.original.as_ref())
+                        .map(|o| format!("原本: {}", plain(o)))
+                        .unwrap_or_else(|| "フォントを変更".to_owned());
+                    let _ = write!(
+                        html,
+                        r##"<g{mark}><title>{}</title><rect class="mark" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="none" stroke="#e8590c" stroke-width="1.2"/>{strings}</g>"##,
+                        escape(&note),
+                        left - 1.0,
+                        top,
+                        right - left + 2.0,
+                        bottom - top
+                    );
+                }
             }
         }
         html.push_str("</svg></div>");

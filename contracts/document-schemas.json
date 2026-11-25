@@ -5743,6 +5743,97 @@
                 "reason": {
                   "type": "string",
                   "minLength": 1
+                },
+                "layout": {
+                  "type": "object",
+                  "description": "画像から読み取った単語を、その位置と画像の罫線から行・列・表に並べた結果。textはこの順に、行を改行、行内のセルをタブで区切って並べる。単語を読み取れた場合だけ持つ",
+                  "additionalProperties": false,
+                  "required": [
+                    "size",
+                    "cells",
+                    "merges",
+                    "tables"
+                  ],
+                  "properties": {
+                    "size": {
+                      "type": "array",
+                      "description": "OCRが読んだ画像の幅と高さ（画素）。上限より大きい画像は縮小後の大きさ",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "cells": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "address",
+                          "text",
+                          "box"
+                        ],
+                        "properties": {
+                          "address": {
+                            "type": "string",
+                            "description": "行・列の位置（A1形式）。表の外の行は1行ずつ、表は行・列の位置を保つ"
+                          },
+                          "text": {
+                            "type": "string",
+                            "description": "セルの文字。セル内の行は改行で区切る"
+                          },
+                          "box": {
+                            "type": "array",
+                            "description": "画像上の位置 [x, y, 幅, 高さ]（画素、左上から）",
+                            "minItems": 4,
+                            "maxItems": 4,
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "merges": {
+                      "type": "array",
+                      "description": "結合セルの範囲",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "tables": {
+                      "type": "array",
+                      "description": "表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name",
+                          "range",
+                          "header_rows",
+                          "totals_rows"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "range": {
+                            "type": "string"
+                          },
+                          "header_rows": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "totals_rows": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
               },
               "required": [
@@ -7989,6 +8080,97 @@
                 "reason": {
                   "type": "string",
                   "minLength": 1
+                },
+                "layout": {
+                  "type": "object",
+                  "description": "画像から読み取った単語を、その位置と画像の罫線から行・列・表に並べた結果。textはこの順に、行を改行、行内のセルをタブで区切って並べる。単語を読み取れた場合だけ持つ",
+                  "additionalProperties": false,
+                  "required": [
+                    "size",
+                    "cells",
+                    "merges",
+                    "tables"
+                  ],
+                  "properties": {
+                    "size": {
+                      "type": "array",
+                      "description": "OCRが読んだ画像の幅と高さ（画素）。上限より大きい画像は縮小後の大きさ",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "cells": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "address",
+                          "text",
+                          "box"
+                        ],
+                        "properties": {
+                          "address": {
+                            "type": "string",
+                            "description": "行・列の位置（A1形式）。表の外の行は1行ずつ、表は行・列の位置を保つ"
+                          },
+                          "text": {
+                            "type": "string",
+                            "description": "セルの文字。セル内の行は改行で区切る"
+                          },
+                          "box": {
+                            "type": "array",
+                            "description": "画像上の位置 [x, y, 幅, 高さ]（画素、左上から）",
+                            "minItems": 4,
+                            "maxItems": 4,
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "merges": {
+                      "type": "array",
+                      "description": "結合セルの範囲",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "tables": {
+                      "type": "array",
+                      "description": "表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name",
+                          "range",
+                          "header_rows",
+                          "totals_rows"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "range": {
+                            "type": "string"
+                          },
+                          "header_rows": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "totals_rows": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
               },
               "required": [

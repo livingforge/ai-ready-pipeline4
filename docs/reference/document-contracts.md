@@ -1290,6 +1290,23 @@
 | <code>/properties/assets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/assets/items</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
 | <code>/properties/assets/items/properties/ocr</code> | <code>{"additionalProperties":false,"required":["status","text","reason"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout</code> | <code>{"additionalProperties":false,"description":"画像から読み取った単語を、その位置と画像の罫線から行・列・表に並べた結果。textはこの順に、行を改行、行内のセルをタブで区切って並べる。単語を読み取れた場合だけ持つ","required":["size","cells","merges","tables"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells</code> | <code>{"type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","text","box"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/address</code> | <code>{"description":"行・列の位置（A1形式）。表の外の行は1行ずつ、表は行・列の位置を保つ","type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/box</code> | <code>{"description":"画像上の位置 [x, y, 幅, 高さ]（画素、左上から）","maxItems":4,"minItems":4,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/box/items</code> | <code>{"type":"integer"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/text</code> | <code>{"description":"セルの文字。セル内の行は改行で区切る","type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/merges</code> | <code>{"description":"結合セルの範囲","type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/merges/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/size</code> | <code>{"description":"OCRが読んだ画像の幅と高さ（画素）。上限より大きい画像は縮小後の大きさ","maxItems":2,"minItems":2,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/size/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables</code> | <code>{"description":"表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定","type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
@@ -1692,6 +1709,23 @@
 | <code>/properties/assets</code> | <code>{"type":"array"}</code> |
 | <code>/properties/assets/items</code> | <code>{"additionalProperties":false,"required":["path","sha256"],"type":"object"}</code> |
 | <code>/properties/assets/items/properties/ocr</code> | <code>{"additionalProperties":false,"required":["status","text","reason"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout</code> | <code>{"additionalProperties":false,"description":"画像から読み取った単語を、その位置と画像の罫線から行・列・表に並べた結果。textはこの順に、行を改行、行内のセルをタブで区切って並べる。単語を読み取れた場合だけ持つ","required":["size","cells","merges","tables"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells</code> | <code>{"type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items</code> | <code>{"additionalProperties":false,"required":["address","text","box"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/address</code> | <code>{"description":"行・列の位置（A1形式）。表の外の行は1行ずつ、表は行・列の位置を保つ","type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/box</code> | <code>{"description":"画像上の位置 [x, y, 幅, 高さ]（画素、左上から）","maxItems":4,"minItems":4,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/box/items</code> | <code>{"type":"integer"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/cells/items/properties/text</code> | <code>{"description":"セルの文字。セル内の行は改行で区切る","type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/merges</code> | <code>{"description":"結合セルの範囲","type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/merges/items</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/size</code> | <code>{"description":"OCRが読んだ画像の幅と高さ（画素）。上限より大きい画像は縮小後の大きさ","maxItems":2,"minItems":2,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/size/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables</code> | <code>{"description":"表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定","type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
