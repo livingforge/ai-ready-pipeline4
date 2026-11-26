@@ -20,10 +20,10 @@
 
 | 操作 | 既定の結果 | 詳細の取得 |
 | --- | --- | --- |
-| doctor | 実装・機能・応答仕様 | 同じ応答 |
+| doctor | 実装・応答仕様と、有無・一覧で表せる機能。文で説明する機能は名前だけを `described` に返す | `doctor <名前の一部>...` で名前にその語を含む機能を説明文ごと、`--full` で全件 |
 | skills install / documents init | state・件数またはroot | 保存先を確認 |
-| import（ファイル） | 変更時は文書ID・候補パス・抽出上の注意。開くのに保護の解除が要る原本（暗号化されたOffice文書・PDF）はエラー（`protected` と `unprotect` を参照）。`.arp/config.yml` の `protected_originals: unprotect` で暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無）。`--adopt` で採用した場合は候補パスの代わりに `document` と `state: imported`（レビューを引き継いだ場合は `state: reviewed`）、採用しなかった場合は `state: needs_record` と `not_adopted`（`edited` / `reviewed`）。採用に失敗した場合は `ok: false` で、エラーに段階と対象パスを含み、候補が残る（`documents adopt` で採用できる） | 再抽出が必要なら `--force`。既存候補があれば保持する |
-| import（フォルダ） | imported・unchanged・pending_proposals・skipped・failed・missingの文書ID（pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）。開くのに保護の解除が要る原本は取り込まず、skippedに `protection`（`password` / `rights_management`）付きで挙げる。`protected_originals: unprotect` で暗号化を解除した原本は `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）、採用した文書のうちレビューを引き継いだ `reviews_kept`（ある場合だけ）。採用に失敗した原本はfailedに入り、候補が残る。`.arp/config.yml` の `exclude` に該当する原本は飛ばしてどこにも挙げず、該当するのに取り込み済みの文書を `excluded` に返す（ある場合だけ）。`summary` は応答にある各一覧の件数で、応答が大きく一覧が `omitted_fields` に省かれても残る | 各候補のcontentと対応表。再抽出が必要なら `--force`。`excluded` は `remove` で記録を削除する。一覧が省略された場合はsummaryとstatusで確認 |
+| import（ファイル） | 変更時は文書ID・候補パスと、その原本に固有の抽出上の注意 `findings`（抽出していないシート・画像・ページなど。ある場合だけ。形式ごとに決まっている抽出範囲の説明は含めず、抽出結果と本文に残る）。開くのに保護の解除が要る原本（暗号化されたOffice文書・PDF）はエラー（`protected` と `unprotect` を参照）。`.arp/config.yml` の `protected_originals: unprotect` で暗号化を解除した場合は `unprotected`（`protection` と、IRM・秘密度ラベルでは解除した `removed`）。同じSHA-256なら `state: unchanged` と `pending_proposal`（既存候補の有無）。`--adopt` で採用した場合は候補パスの代わりに `document` と `state: imported`（レビューを引き継いだ場合は `state: reviewed`）、採用しなかった場合は `state: needs_record` と `not_adopted`（`edited` / `reviewed`）。採用に失敗した場合は `ok: false` で、エラーに段階と対象パスを含み、候補が残る（`documents adopt` で採用できる） | 再抽出が必要なら `--force`。既存候補があれば保持する |
+| import（フォルダ） | imported・pending_proposals・skipped・failed・missingの文書ID（1件以上ある一覧だけ。変更のなかったunchangedは `summary` の件数だけで、`--full` で一覧も返す。pending_proposalsは変更なしでも残っている候補。failedは理由付き。1件でもあれば `ok: false` だが他の原本は取り込み済み）。開くのに保護の解除が要る原本は取り込まず、skippedに `protection`（`password` / `rights_management`）付きで挙げる。`protected_originals: unprotect` で暗号化を解除した原本は `unprotected`。`--adopt` では採用した `adopted` と、採用しなかった `not_adopted`（文書IDと `reason`）、採用した文書のうちレビューを引き継いだ `reviews_kept`（ある場合だけ）。採用に失敗した原本はfailedに入り、候補が残る。`.arp/config.yml` の `exclude` に該当する原本は飛ばしてどこにも挙げず、該当するのに取り込み済みの文書を `excluded` に返す（ある場合だけ）。取り込んだ原本に固有の抽出上の注意は `findings` に `document_id` 付きで返す（ある場合だけ）。`summary` は各一覧の件数（0件を含む）で、応答が大きく一覧が `omitted_fields` に省かれても残る | 各候補のcontentと対応表。再抽出が必要なら `--force`。`excluded` は `remove` で記録を削除する。一覧が省略された場合はsummaryとstatusで確認 |
 | protected | importが取り込まない保護された原本の `items`（文書ID・`format`・`protection`・解除方法の `removal`: `password` / `office` / `manual`）。何も変更しない | `password` と `office` は利用者の承認を得て `unprotect`。`manual` はARPの外で保護を解除したコピーに置き換える |
 | unprotect | 暗号化を解除して上書きした原本の `unprotected`（文書ID・`protection`・`removed`）、ARPでは解除できない `not_removable`（PDF）、解除できなかった `failed`（理由付き。1件でもあれば `ok: false`、原本はそのまま）、`approved_by`。ファイル指定で解除できなければエラー | 利用者が承認した原本だけに実行する。パスワードは `--password-stdin`。解除後に `import` |
 | remove | 削除した文書ID。`exclude` に該当して原本を残した文書は `kept_originals` | 残りの文書をstatusで確認 |
@@ -32,16 +32,16 @@
 | adopt | 変更時は文書ID・本文パス・needs_review。候補がレビュー済みの内容と同じ読み取りならレビューを引き継ぎ、`state: reviewed`・`review: kept`。同じ内容なら `state: skipped`・`reason: no_changes` として候補だけを除去 | 本文と管理情報。変更時は確認後にreviewを記録する |
 | record / adopt / review（フォルダIDまたは `--all`） | recorded・adopted・reviewedのいずれか、skipped（状態・blockers・error・reason付き）、failed（理由付き。1件でもあれば `ok: false` だが他の文書は処理済み）、summaryの件数。処理がなければstateは `unchanged` | 一覧が省略された場合はsummaryとstatusで確認 |
 | record / adopt / review `--dry-run` | planned（`--include-hashes` でcontent付き）・skipped・summary。`--out` 指定時は保存した計画のパス `plan` | 保存された計画（`batch-plan`）の全件 |
-| check / status | 全体の状態別件数・対象のページ。候補には採用済み文書と内容が同じかを示す `no_changes` を含む | 対象IDで絞る、または次ページ |
-| diff | 比較別の全変更件数・差分のページ | 次ページ、または `--out <新規パス>` |
-| export（outなし） | 全体件数・計画のページ・complete | 次ページ、必要な場合は `--full` |
+| check / status | 全体の状態別件数・対象のページ（既定で最大100行）。2件以上の一覧では、文書IDと状態だけの行を状態ごとのIDのリスト（採用済み文書は `documents.<状態>`、候補は `proposals.<状態>`）にまとめ、それ以上を持つ行と1件だけの応答の行を `items` に返す。`items` の項目は `document_id`・`state` と、該当するものだけ: 候補の `proposal: true`、採用済み文書と同じ内容の候補の `no_changes: true`、`blockers`、`pending`、`structure_ready: true`、`structure_conflicts`、`structure_outdated: true`、`error`（載っていないフラグは偽、件数は0。`--full` は全項目）。対象は文書ID・フォルダID（配下の文書と候補）・原本のパスで指定でき、未採用の文書のIDには候補の行を返す。該当がなければ `state: invalid` と、同じファイル名の文書IDまたは必要なimportを示す `error` | 対象IDで絞る、または次ページ |
+| diff | 比較別の全変更件数・差分のページ。未適用の操作は `/mappings.yml/operations` の項目で示し、同じ操作を写した `/layout.yml/history` の項目は省く（`--full` と `--out` には載る） | 次ページ、または `--out <新規パス>` |
+| export（outなし） | 全体件数・計画のページ・complete。本文が書き戻さない項目（excluded）はページに並べず、`excluded_by_reason` に理由ごとの件数を返す | 次ページ、必要な場合は `--full` |
 | export（outあり） | 全体件数・`state: written`・Excelとreportのパス。Excelで `--calculate` を付けると、デスクトップExcelが計算した数式の結果を候補に書き込み、`calculation`（`results`・`missing`・Excelの `version`）を返す | 保存された完全なreport |
 | confirm-export | 確認した出力パス・ハッシュと確認記録 | apply前に必須 |
 | apply | `confirm-export` で確認した候補の原本反映結果と再抽出候補（applyによる成形として記録され `ready_to_adopt`）。未確認なら拒否。出力が原本と同じなら原本を書き換えず候補も作らない `state: unchanged` | 候補をdiffで確認してadopt |
-| values | `state`（`written`・`planned`・`unchanged`）、edit数、空のセルへの入力数 `new_cells`、書き戻し処理の試し書きの `verification`、Excelで文字が収まらない見込みの `layout_warnings`、`check`、`next_actions` | 拒否は `error.code` と `error.edit`・`error.target` |
+| values | `state`（`written`・`planned`・`unchanged`。書き込み済みの要求を同じ内容で送り直し、それが最後の値編集の記録なら `unchanged` と `already_recorded: true`）、edit数、空のセルへの入力数 `new_cells`、書き戻し処理の試し書きの `verification`、Excelで文字が収まらない見込みの `layout_warnings`、`check`、`next_actions` | 拒否は `error.code` と `error.edit`・`error.target` |
 | operations list / remove | 未適用の操作のページ / 取り消した `operation` と本文の変化（`removed_values`・`restored_values`・`reapplied_edits`・`removed_pages`・`restored_pages`）、`check` | 依存する操作は `error.dependents` |
 | render | 描画した画像のパス・幅・高さ、Excelはシート・範囲、他はページと全ページ数 `pages`、候補の `output_sha256`（`--include-hashes`） | 画像を開いて確認し、confirm-exportを記録する |
-| schema | プロパティ名・型・必須かどうか | `--pointer <JSON Pointer>`、必要な場合は `--full` |
+| schema | プロパティ名・型・必須かどうか・固定値 `const`・選択肢 `enum` | `--pointer <JSON Pointer>`（先頭の `/` は省ける）、必要な場合は `--full`。該当のないpointerは `schema_pointer_not_found` と、たどれた位置 `found`・その `members` |
 | spec check | ready/blocked・種類別 summary・coverage・問題のページ | `--offset` / `--limit`、`--full`、または `--out <診断.json>` |
 | spec capture / sources / prompt / schema / render | 出力パス | render は `.report.json` も保存。手順は [設計書生成](specifications.md) |
 | spec semantic packet / assemble / review-packet / review-apply / finalize / changes | タスク、モデル、分類、監査、採番、変更範囲 | [意味判断に絞った生成](semantic-generation.md)。assembleの成功とreadyは別。finalizeは初回専用 |
@@ -315,10 +315,10 @@ workflowの返信が検証で拒否された場合、`error.draft` は未受理�
 - check/statusの一覧は `items` に返す。
 - 通常diffは平坦な `items` を返し、比較の種類は `summary` のキーで示す。種類が複数ある場合だけ各項目に `comparison` を付ける。`--full` と保存ファイルは元の階層を維持し、`semantic_changes` もそちらにだけある。
 - 通常export計画の各配列は `items[].category/value` にまとめ、件数を `summary` に返す。`--full` と保存reportは元の配列を維持する。書き込み応答（`--out` あり）とapplyの `report` は件数の `summary`・`changed_parts`・`complete` などの書き戻し情報を返し、詳細は `.report.json` にある。
-- schemaの全体は `--full` の `schema` にある。通常は `--pointer /properties/<名前>` で必要な制約だけを取得する。
+- schemaの全体は `--full` の `schema` にある。通常は `--pointer properties/<名前>` で必要な制約だけを取得する（先頭の `/` は付けても省いてもよい。Git Bashは `/` で始まる引数をファイルパスに書き換えるので省く）。
 - `--format json` は既定なので省略できる。
 - import/adopt/applyの `proposal`・`document` はプロジェクトルートからの相対パス。exportの `output`・`report` は指定した `--out` のまま返す。
-- `doctor` の `limitations`（文章）は `--full` のときだけ返す。`capabilities` は常に返す。
+- `doctor` の `limitations`（文章）は `--full` のときだけ返す。`capabilities` は、名前を指定しなければ真偽値と一覧の機能だけを返し、文で説明する機能は `described` に名前を並べる。名前の一部を指定すると該当する機能を説明文ごと返す。
 - `--include-hashes` だけでは全件・全値の取得にはならない。保存情報は応答の省略に影響されない。
 
 `spec assign-ids --input <入力> --model <候補> --plan <対応表> [--previous <前回モデル>] --out <採番済みモデル>` で永続IDを採番する。出力モデルと `.ids.json` 台帳を一緒に保存し、次回は --previous を指定する。対応表と分割・統合・廃止の形式は [設計書生成](specifications.md#永続idの採番) を参照。

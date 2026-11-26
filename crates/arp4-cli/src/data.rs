@@ -1189,6 +1189,37 @@ pub fn value_key(value: &Value) -> String {
 
 /// Group `"<document>: {finding JSON}"` warnings so a finding repeated across
 /// documents is shown once with its document list. Unparseable entries keep their text.
+/// [`grouped_warnings`] as the commands that plan and track work tell them:
+/// what each note says of its documents, without the text the format of an
+/// original fixes, which begins the note of every original of the format. A
+/// note that says nothing more is left out. The task a worker reads keeps
+/// the whole note.
+pub fn specific_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Value {
+    let formats = crate::document_source::input_formats();
+    let mut groups = match grouped_warnings(warnings) {
+        Value::Array(groups) => groups,
+        _ => vec![],
+    };
+    groups.retain_mut(|group| {
+        let Some(message) = group["message"].as_str() else {
+            return true;
+        };
+        let base = formats
+            .iter()
+            .map(|format| crate::document_source::base_note(format))
+            .find(|base| !base.is_empty() && message.starts_with(base));
+        match base {
+            Some(base) if message.len() == base.len() => false,
+            Some(base) => {
+                group["message"] = json!(message[base.len()..]);
+                true
+            }
+            None => true,
+        }
+    });
+    json!(groups)
+}
+
 pub fn grouped_warnings<'a>(warnings: impl IntoIterator<Item = &'a str>) -> Value {
     let mut groups: Vec<Value> = Vec::new();
     // The group of each finding by its fields other than `documents`, and the

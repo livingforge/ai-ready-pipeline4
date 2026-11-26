@@ -707,7 +707,36 @@ impl Store {
         if let Some(p) = proposal {
             dirs.push((p.to_owned(), self.proposal(p)?))
         } else if let Some(id) = id {
-            dirs.push((id.to_owned(), self.document(id)?))
+            let typed = id.replace('\\', "/");
+            let mut id = typed.trim_end_matches('/').to_owned();
+            let mut adopted = self.ids("documents", Some(&id))?;
+            let mut proposed = self.ids("changes", Some(&id))?;
+            // The path of an original, or of a folder of originals, is taken
+            // as its ID.
+            if adopted.is_empty()
+                && proposed.is_empty()
+                && let Ok((_, original)) = self.resolve(Path::new(&typed))
+                && !original.is_empty()
+            {
+                adopted = self.ids("documents", Some(&original))?;
+                proposed = self.ids("changes", Some(&original))?;
+                id = original;
+            }
+            if adopted.len() == 1 && adopted[0] == id {
+                // An adopted document alone: its proposal is read with --proposal.
+                dirs.push((id.clone(), self.document(&id)?));
+            } else if adopted.is_empty() && proposed.is_empty() {
+                return Ok(json!([{"document_id":id,"state":"invalid",
+                    "error":self.unknown_id(&id)?}]));
+            } else {
+                // A folder, or a document not adopted yet, shown by its proposal.
+                for id in adopted {
+                    dirs.push((id.clone(), self.document(&id)?));
+                }
+                for id in proposed {
+                    dirs.push((id.clone(), self.proposal(&id)?));
+                }
+            }
         } else {
             for id in self.ids("documents", None)? {
                 dirs.push((id.clone(), self.document(&id)?));
@@ -717,6 +746,43 @@ impl Store {
             }
         }
         Ok(json!(self.states(&dirs, require_reviewed)?))
+    }
+
+    /// Why `id` names no document, proposal or folder of them, with what to
+    /// name instead.
+    fn unknown_id(&self, id: &str) -> Result<String> {
+        let mut known = self.ids("documents", None)?;
+        known.extend(self.ids("changes", None)?);
+        if known.is_empty() {
+            return Ok(
+                "no document is imported; run documents import <original or folder>".to_owned(),
+            );
+        }
+        if let Ok((path, original)) = self.resolve(Path::new(id))
+            && path.is_file()
+        {
+            return Ok(format!(
+                "the original is not imported; run documents import {original}"
+            ));
+        }
+        // The documents of that file name, in whatever folder.
+        let file = id.rsplit('/').next().unwrap_or(id).to_lowercase();
+        known.sort();
+        known.dedup();
+        let near: Vec<&str> = known
+            .iter()
+            .filter(|known| known.rsplit('/').next().unwrap_or(known).to_lowercase() == file)
+            .map(String::as_str)
+            .take(5)
+            .collect();
+        Ok(if near.is_empty() {
+            "no document or folder of that ID; documents status lists the document IDs".to_owned()
+        } else {
+            format!(
+                "no document or folder of that ID; the documents of that name are {}",
+                near.join(", ")
+            )
+        })
     }
 
     /// The status row of the document or proposal in `dir`: its state, and the

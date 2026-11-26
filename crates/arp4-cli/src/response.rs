@@ -266,6 +266,14 @@ pub fn fit_search_item(mut item: Value) -> Value {
     let table = item
         .as_object_mut()
         .and_then(|object| object.remove("table"));
+    // Listed once per response, like the table; a table row's is its table's.
+    let document = item
+        .as_object_mut()
+        .and_then(|object| object.remove("document"));
+    let table_document = table
+        .as_ref()
+        .and_then(|table| table.get("document"))
+        .cloned();
     let mut item = shed(
         item,
         &[
@@ -277,48 +285,144 @@ pub fn fit_search_item(mut item: Value) -> Value {
         ],
         ITEM_BYTES - INDEX_BYTES,
     );
-    if let Some(table) = table {
-        item["table"] = shed(table, &["within", "headings", "columns"], TABLE_BYTES);
+    if let Some(mut table) = table {
+        if let Some(table) = table.as_object_mut() {
+            table.remove("document");
+        }
+        let mut table = shed(table, &["within", "headings", "columns"], TABLE_BYTES);
+        if let Some(document) = table_document {
+            table["document"] = document;
+        }
+        item["table"] = table;
+    }
+    if let Some(document) = document {
+        item["document"] = document;
     }
     item
 }
 
-/// Tables listed once per search response. Rows of the same table under the
-/// same headers name it by `table_ref` instead of repeating it.
+/// Documents and tables listed once per search response. A hit names its
+/// document by a short reference under `document`; rows of the same table
+/// under the same headers name the table, which names their document, by
+/// `table_ref` instead of repeating it.
 #[derive(Default)]
 pub struct SearchTables {
     ids: HashMap<String, String>,
     listed: Map<String, Value>,
+    /// The reference of each listed document by its ID.
+    document_refs: HashMap<String, String>,
+    documents: Map<String, Value>,
 }
 
-/// A table first seen on a hit, listed once that hit is kept on the page.
+/// What a hit first lists, once the hit is kept on the page.
+#[derive(Default)]
+struct NewListed {
+    /// A document by its ID, with its reference and entry.
+    document: Option<(String, String, Value)>,
+    table: Option<NewTable>,
+}
+
+/// A table first seen on a hit.
 struct NewTable {
     key: String,
     id: String,
     table: Value,
 }
 
+impl NewListed {
+    /// The length the listing adds to the response.
+    fn bytes(&self) -> usize {
+        let document = self
+            .document
+            .as_ref()
+            .map_or(0, |(_, reference, document)| entry(reference, document) + 1);
+        let table = self
+            .table
+            .as_ref()
+            .map_or(0, |new| bytes(&new.table) + new.id.len() + 4);
+        document + table
+    }
+}
+
 impl SearchTables {
-    /// Move a hit's table out of it. A hit outside a table gets no reference.
-    fn detach(&self, item: &mut Value) -> Option<NewTable> {
-        let table = item.as_object_mut()?.remove("table")?;
+    /// The reference of the document entry `document`, which is listed under
+    /// it once the hit is kept: `new` takes an entry not listed yet.
+    fn refer(&self, document: Value, new: &mut NewListed) -> Value {
+        let Some(id) = document["document_id"].as_str().map(str::to_owned) else {
+            return document;
+        };
+        if let Some(reference) = self.document_refs.get(&id) {
+            return json!(reference);
+        }
+        let reference = format!("d{}", self.document_refs.len() + 1);
+        new.document = Some((id, reference.clone(), document));
+        json!(reference)
+    }
+
+    /// Move a hit's document and table out of it, leaving their references.
+    /// A hit outside a table gets no table reference.
+    fn detach(&self, item: &mut Value) -> NewListed {
+        let mut new = NewListed::default();
+        let Some(object) = item.as_object_mut() else {
+            return new;
+        };
+        if let Some(document) = object.remove("document") {
+            let reference = self.refer(document, &mut new);
+            object.insert("document".into(), reference);
+        }
+        let Some(mut table) = object.remove("table") else {
+            return new;
+        };
+        if let Some(document) = table.as_object_mut().and_then(|t| t.remove("document")) {
+            table["document"] = self.refer(document, &mut new);
+        }
         let key = table.to_string();
         if let Some(id) = self.ids.get(&key) {
             item["table_ref"] = json!(id);
-            return None;
+            return new;
         }
         let id = format!("t{}", self.ids.len() + 1);
         item["table_ref"] = json!(id);
-        Some(NewTable { key, id, table })
+        new.table = Some(NewTable { key, id, table });
+        new
     }
 
-    fn add(&mut self, new: NewTable) {
-        self.ids.insert(new.key, new.id.clone());
-        self.listed.insert(new.id, new.table);
+    fn add(&mut self, new: NewListed) {
+        if let Some((id, reference, document)) = new.document {
+            self.document_refs.insert(id, reference.clone());
+            self.documents.insert(reference, document);
+        }
+        if let Some(new) = new.table {
+            self.ids.insert(new.key, new.id.clone());
+            self.listed.insert(new.id, new.table);
+        }
     }
 
-    pub fn into_value(self) -> Value {
-        Value::Object(self.listed)
+    /// The documents and the tables by reference.
+    pub fn into_values(self) -> (Value, Value) {
+        (Value::Object(self.documents), Value::Object(self.listed))
+    }
+}
+
+/// Take the documents no kept hit names out of a fitted search batch.
+fn unlist_documents(value: &mut Value) {
+    let mut named = foldhash::HashSet::default();
+    for item in value["queries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|query| query["items"].as_array().into_iter().flatten())
+    {
+        let id = match item["table_ref"].as_str() {
+            Some(table) => &value["tables"][table]["document"],
+            None => &item["document"],
+        };
+        if let Some(id) = id.as_str() {
+            named.insert(id.to_owned());
+        }
+    }
+    if let Some(documents) = value.get_mut("documents").and_then(Value::as_object_mut) {
+        documents.retain(|id, _| named.contains(id));
     }
 }
 
@@ -384,6 +488,7 @@ impl Output {
             }
             first = false;
             if sizes.total() + 16 <= MAX_RESPONSE_BYTES {
+                unlist_documents(&mut value);
                 return Ok(value);
             }
         }
@@ -410,7 +515,7 @@ impl Output {
         let mut selected = Vec::new();
         let mut used = 0;
         for (index, mut item) in items.into_iter().enumerate().skip(offset).take(limit) {
-            let new = tables.as_deref().and_then(|t| t.detach(&mut item));
+            let new = tables.as_deref().map(|t| t.detach(&mut item));
             let mut item = if self.full {
                 item
             } else {
@@ -419,9 +524,7 @@ impl Output {
             if item.get("omitted_fields").is_some() || item.get("omitted").is_some() {
                 item["index"] = json!(index);
             }
-            let listed = new
-                .as_ref()
-                .map_or(0, |new| bytes(&new.table) + new.id.len() + 4);
+            let listed = new.as_ref().map_or(0, NewListed::bytes);
             let size = bytes(&item) + 1 + listed;
             if !self.full && used + size > PAGE_BYTES {
                 break;
@@ -745,7 +848,7 @@ mod tests {
         let returned = shared["page"]["returned"].as_u64().unwrap();
         assert_eq!(returned, 40);
         assert!(inline["page"]["returned"].as_u64().unwrap() < returned);
-        let listed = tables.into_value();
+        let listed = tables.into_values().1;
         assert_eq!(listed, json!({"t1":table}));
         let page = &shared["items"];
         assert!(
@@ -774,7 +877,7 @@ mod tests {
             })
             .collect();
         let fitted = output
-            .fit_search_batch(json!({"queries":queries,"tables":tables.into_value()}))
+            .fit_search_batch(json!({"queries":queries,"tables":tables.into_values().1}))
             .unwrap();
         let kept = fitted["queries"][0]["items"].as_array().unwrap();
         let listed = fitted["tables"].as_object().unwrap();

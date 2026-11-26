@@ -118,11 +118,11 @@
 | <code>/$defs/correction_journal/properties/visuals/items/properties/sources/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items/properties/visual</code> | <code>{"$ref":"#/$defs/visual"}</code> |
 | <code>/$defs/document_id</code> | <code>{"description":"The original's path below the sources folder, including leading spaces in path segments.","pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
-| <code>/$defs/edit</code> | <code>{"additionalProperties":false,"description":"Batch interpretation edits. Upsert replaces the complete item by ID or adds a new one. Remove requires an existing ID. IDs must occur only once per collection across both operations. Revision is the complete interpretation hash returned by read/check. Source, extraction, regions and review are CLI-managed.","required":["revision"],"type":"object"}</code> |
+| <code>/$defs/edit</code> | <code>{"additionalProperties":false,"description":"Batch interpretation edits. Upsert replaces the complete item by ID or adds a new one. Remove requires an existing ID. IDs must occur only once per collection across both operations. Revision is the complete interpretation hash returned by read/check. Source, extraction, regions and review are CLI-managed. Elements are given as read returns them (edit_element): a cell names what is not its default.","required":["revision"],"type":"object"}</code> |
 | <code>/$defs/edit/properties/elements</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
 | <code>/$defs/edit/properties/elements/properties/remove</code> | <code>{"$ref":"#/$defs/edit_ids"}</code> |
 | <code>/$defs/edit/properties/elements/properties/upsert</code> | <code>{"minItems":1,"type":"array"}</code> |
-| <code>/$defs/edit/properties/elements/properties/upsert/items</code> | <code>{"$ref":"#/$defs/element"}</code> |
+| <code>/$defs/edit/properties/elements/properties/upsert/items</code> | <code>{"$ref":"#/$defs/edit_element"}</code> |
 | <code>/$defs/edit/properties/revision</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/edit/properties/visuals</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
 | <code>/$defs/edit/properties/visuals/properties/remove</code> | <code>{"$ref":"#/$defs/edit_ids"}</code> |
@@ -130,6 +130,26 @@
 | <code>/$defs/edit/properties/visuals/properties/upsert/items</code> | <code>{"$ref":"#/$defs/visual"}</code> |
 | <code>/$defs/edit/anyOf/0</code> | <code>{"required":["elements"]}</code> |
 | <code>/$defs/edit/anyOf/1</code> | <code>{"required":["visuals"]}</code> |
+| <code>/$defs/edit_cell</code> | <code>{"additionalProperties":false,"description":"A cell as read returns it and an edit takes it: cell, without the members that have their default.","required":["address","role"],"type":"object"}</code> |
+| <code>/$defs/edit_cell/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/edit_cell/properties/headers</code> | <code>{"$ref":"#/$defs/ids","description":"The IDs of the cell's headers; left out when it has none."}</code> |
+| <code>/$defs/edit_cell/properties/id</code> | <code>{"$ref":"#/$defs/text","description":"Left out when it is s&lt;N&gt;-&lt;address&gt;, N the number of the element's sheet among the document's sheets from 1 (s2-B5): the ID headers, parent context and unresolved name the cell by."}</code> |
+| <code>/$defs/edit_cell/properties/role</code> | <code>{"enum":["unassigned","text","data","row_header","column_header","note"]}</code> |
+| <code>/$defs/edit_cell/properties/text_state</code> | <code>{"description":"Left out when read.","enum":["read","empty","unreadable","not_examined"]}</code> |
+| <code>/$defs/edit_element</code> | <code>{"additionalProperties":false,"description":"An element as read returns it and an edit takes it: element, with each cell as edit_cell.","required":["id","kind","sheet","cells","evidence","reading"],"type":"object"}</code> |
+| <code>/$defs/edit_element/properties/cells</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/$defs/edit_element/properties/cells/items</code> | <code>{"$ref":"#/$defs/edit_cell"}</code> |
+| <code>/$defs/edit_element/properties/descriptions</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/edit_element/properties/evidence</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/edit_element/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/edit_element/properties/kind</code> | <code>{"enum":["text","table"]}</code> |
+| <code>/$defs/edit_element/properties/parent</code> | <code>{"additionalProperties":false,"required":["element","context"],"type":"object"}</code> |
+| <code>/$defs/edit_element/properties/parent/properties/context</code> | <code>{"$ref":"#/$defs/ids"}</code> |
+| <code>/$defs/edit_element/properties/parent/properties/element</code> | <code>{"$ref":"#/$defs/text"}</code> |
+| <code>/$defs/edit_element/properties/reading</code> | <code>{"$ref":"#/$defs/reading"}</code> |
+| <code>/$defs/edit_element/properties/sheet</code> | <code>{"$ref":"#/$defs/sheet_name"}</code> |
+| <code>/$defs/edit_element/allOf/0</code> | <code>{"if":{"required":["descriptions"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
+| <code>/$defs/edit_element/allOf/1</code> | <code>{"if":{"required":["parent"]},"then":{"properties":{"kind":{"const":"table"}}}}</code> |
 | <code>/$defs/edit_ids</code> | <code>{"minItems":1,"type":"array","uniqueItems":true}</code> |
 | <code>/$defs/edit_ids/items</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/element</code> | <code>{"additionalProperties":false,"required":["id","kind","sheet","cells","evidence","reading"],"type":"object"}</code> |

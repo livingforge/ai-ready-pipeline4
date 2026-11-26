@@ -43,12 +43,37 @@ fn run(cli: Cli) -> Result<bool> {
     );
     match cli.command {
         Command::Spec { command } => return spec_command::execute(command, output),
-        Command::Doctor => {
+        Command::Doctor { names } => {
             let mut report = arp4_cli::capabilities();
             report["cli"] = json!({"response_version":1,"format":"json","max_response_bytes":response::MAX_RESPONSE_BYTES,"default_limit":20,"max_limit":100});
             // The prose limitations duplicate the skill text; capabilities stay.
             if !output.full {
                 report.as_object_mut().unwrap().remove("limitations");
+                let capabilities = report["capabilities"]
+                    .as_object_mut()
+                    .context("capabilities")?;
+                if names.is_empty() {
+                    // A capability told in a sentence is read when asked
+                    // for: together they are most of the report.
+                    let described: Vec<String> = capabilities
+                        .iter()
+                        .filter(|(_, value)| value.is_string())
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    capabilities.retain(|_, value| !value.is_string());
+                    report["described"] = json!(described);
+                    report["detail"] = json!(
+                        "Capabilities under described are told in a sentence: doctor <word of the name>... returns them, --full all."
+                    );
+                } else {
+                    let words: Vec<String> = names.iter().map(|name| name.to_lowercase()).collect();
+                    capabilities.retain(|name, _| words.iter().any(|word| name.contains(word)));
+                    ensure!(
+                        !capabilities.is_empty(),
+                        "no capability name holds {}; doctor without names lists them",
+                        names.join(" or ")
+                    );
+                }
             }
             output.emit(report, true);
         }
@@ -73,21 +98,61 @@ fn run(cli: Cli) -> Result<bool> {
             if let DocumentCommand::Schema { kind, pointer } = &command {
                 let schemas = arp4_cli::schemas();
                 let schema = schemas.get(kind).context("unknown document schema")?;
-                let node = match pointer {
-                    Some(p) => schema.pointer(p).context("schema pointer not found")?,
+                // A pointer is taken without its leading slash too: a POSIX
+                // shell on Windows rewrites an argument that begins with one
+                // into a file path.
+                let pointer = pointer
+                    .as_deref()
+                    .map(|p| format!("/{}", p.trim_start_matches('/')))
+                    .filter(|p| p != "/");
+                let node = match &pointer {
+                    Some(p) => match schema.pointer(p) {
+                        Some(node) => node,
+                        None => {
+                            // The longest part of the pointer that names a
+                            // node, and what that node holds.
+                            let mut found = "";
+                            for (at, _) in p.match_indices('/').skip(1) {
+                                if schema.pointer(&p[..at]).is_none() {
+                                    break;
+                                }
+                                found = &p[..at];
+                            }
+                            let members: Vec<&String> = schema
+                                .pointer(found)
+                                .and_then(Value::as_object)
+                                .map(|node| node.keys().collect())
+                                .unwrap_or_default();
+                            response::error(
+                                "schema_pointer_not_found",
+                                &format!("the {kind} contract has no node at {p}"),
+                                json!({"pointer":p,"found":found,"members":members,
+                                    "hint":"Give the pointer from the contract's root; without its leading slash (properties/<name>) where the shell rewrites one into a file path."}),
+                                &output.ignored,
+                            );
+                            return Ok(false);
+                        }
+                    },
                     None => schema,
                 };
                 let result = if output.full || pointer.is_some() {
                     json!({"kind":kind,"pointer":pointer.as_deref().unwrap_or(""),"schema":node})
                 } else {
                     let properties = node["properties"].as_object().map(|props| props.iter().map(|(name, property)| {
-                        json!({"name":name,"type":property.get("type"),"required":node["required"].as_array().is_some_and(|a|a.contains(&json!(name)))})
+                        let mut item = json!({"name":name,"required":node["required"].as_array().is_some_and(|a|a.contains(&json!(name)))});
+                        // A fixed value or a choice of values is the whole constraint.
+                        for key in ["type", "const", "enum"] {
+                            if let Some(value) = property.get(key) {
+                                item[key] = value.clone();
+                            }
+                        }
+                        item
                     }).collect()).unwrap_or_default();
                     let mut page = output.page(properties);
                     page["kind"] = json!(kind);
                     page["type"] = node["type"].clone();
                     page["detail"] = json!(
-                        "Use --pointer /properties/<name> for constraints; --full for the complete schema."
+                        "Use --pointer properties/<name> for constraints; --full for the complete schema."
                     );
                     page
                 };
@@ -247,8 +312,10 @@ fn run(cli: Cli) -> Result<bool> {
                             } else {
                                 compact_search_item(item);
                                 lift_search_document(item);
+                                compact_search_state(item);
                                 *item = response::fit_search_item(item.take());
                             }
+                            compact_table_columns(item);
                         }
                         let mut result = pager.page_search(items, &mut tables);
                         let returned = result["page"]["returned"].as_u64().unwrap() as usize;
@@ -279,12 +346,15 @@ fn run(cli: Cli) -> Result<bool> {
                         }
                         responses.push(result);
                     }
+                    let (documents, tables) = tables.into_values();
                     let result = if query.len() == 1 {
                         let mut result = responses.pop().unwrap();
-                        result["tables"] = tables.into_value();
+                        result["documents"] = documents;
+                        result["tables"] = tables;
                         result
                     } else {
-                        let mut result = json!({"queries": responses, "tables": tables.into_value(),
+                        let mut result = json!({"queries": responses, "documents": documents,
+                            "tables": tables,
                             "revision": batch.revision, "scope": "adopted_extraction",
                             "summary":summary, "failed":failed});
                         if !ok {
@@ -504,14 +574,24 @@ fn run(cli: Cli) -> Result<bool> {
                             })
                             .collect();
                         result["summary"] = Value::Object(summary);
+                        let adopted_any = adopt && !array(&result["adopted"])?.is_empty();
+                        let failed_any = !array(&result["failed"])?.is_empty();
+                        if !output.full {
+                            // The summary counts every list: the originals
+                            // left as they were need no step and are not
+                            // listed, nor is a list of none.
+                            let lists = result.as_object_mut().unwrap();
+                            lists.remove("unchanged");
+                            lists.retain(|_, list| list.as_array().is_none_or(|l| !l.is_empty()));
+                        }
                         result["state"] = json!(if proposals {
                             "needs_record"
-                        } else if adopt && !array(&result["adopted"])?.is_empty() {
+                        } else if adopted_any {
                             "imported"
                         } else {
                             "unchanged"
                         });
-                        if !array(&result["failed"])?.is_empty() {
+                        if failed_any {
                             result["error"] = json!({"code":"operation_failed","message":"Some originals could not be imported or adopted; see failed. The other originals were."});
                             output.emit(result, false);
                             return Ok(false);
@@ -540,7 +620,7 @@ fn run(cli: Cli) -> Result<bool> {
                             if result.get("proposal").is_some() {
                                 result["proposal"] = relative(&root, &result["proposal"])?;
                             }
-                            if !output.full {
+                            if !output.full && result.get("structure").is_some() {
                                 count_carried_cells(&mut result["structure"]);
                             }
                         }
@@ -549,9 +629,11 @@ fn run(cli: Cli) -> Result<bool> {
                 }
                 DocumentCommand::Protected { source } => {
                     let mut result = output.page(store.protected(source.as_deref())?);
-                    result["detail"] = json!(
-                        "Import leaves these originals unread. Ask the user before removing a protection: removal password and office by documents unprotect --approved-by, manual by replacing the original with a copy unprotected outside ARP."
-                    );
+                    if result["page"]["total"] != 0 {
+                        result["detail"] = json!(
+                            "Import leaves these originals unread. Ask the user before removing a protection: removal password and office by documents unprotect --approved-by, manual by replacing the original with a copy unprotected outside ARP."
+                        );
+                    }
                     output.emit(result, true);
                     return Ok(true);
                 }
@@ -747,6 +829,9 @@ fn run(cli: Cli) -> Result<bool> {
                                 .as_object_mut()
                                 .unwrap()
                                 .extend(output.page(items).as_object().unwrap().clone());
+                        } else {
+                            // The report beside the file holds the details.
+                            result.as_object_mut().unwrap().remove("excluded_by_reason");
                         }
                         // state says whether the file was written.
                         result.as_object_mut().unwrap().remove("written");
@@ -815,8 +900,14 @@ fn run(cli: Cli) -> Result<bool> {
                             let several = array(&result["comparisons"])?.len() > 1;
                             for comparison in array(&result["comparisons"])? {
                                 let kind = string(&comparison["kind"])?;
-                                summary[kind] = json!(array(&comparison["changes"])?.len());
-                                for change in array(&comparison["changes"])? {
+                                let listed = array(&comparison["changes"])?;
+                                let repeated = repeated_history(listed);
+                                summary[kind] =
+                                    json!(listed.len() - usize::from(repeated.is_some()));
+                                for (index, change) in listed.iter().enumerate() {
+                                    if repeated == Some(index) {
+                                        continue;
+                                    }
                                     let mut item = change.clone();
                                     if several {
                                         item["comparison"] = json!(kind);
@@ -890,22 +981,73 @@ fn run(cli: Cli) -> Result<bool> {
     Ok(true)
 }
 
-/// A table row names its document once, in the table it lists.
+/// What a hit tells of its document goes under `document`, which the page
+/// lists once per document; a table row names its document in its table.
 fn lift_search_document(item: &mut Value) {
     let object = item.as_object_mut().expect("search item object");
-    if !object.contains_key("table") {
-        return;
-    }
+    let mut document = serde_json::Map::new();
     for key in [
-        "document_id",
         "source_path",
         "extraction_path",
         "state",
         "structure_reviewed",
     ] {
         if let Some(value) = object.remove(key) {
-            object["table"][key] = value;
+            document.insert(key.into(), value);
         }
+    }
+    // The page lists the document under a short reference, which the hit,
+    // or the table of a table row, names in its place.
+    if let Some(id) = object.remove("document_id") {
+        document.insert("document_id".into(), id);
+    }
+    if object.contains_key("table") {
+        object["table"]["document"] = Value::Object(document);
+    } else {
+        object.insert("document".into(), Value::Object(document));
+    }
+}
+
+/// What a document's entry tells of its state in the usual output: whether
+/// it is reviewed, and what is not as it is for a document in order (its
+/// original changed or missing, its content edited since the extraction).
+fn compact_search_state(item: &mut Value) {
+    let document = match item.get_mut("table") {
+        Some(table) => &mut table["document"],
+        None => &mut item["document"],
+    };
+    let Some(state) = document.get_mut("state").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (key, usual) in [
+        ("source_current", true),
+        ("source_missing", false),
+        ("content_differs_from_extraction", false),
+    ] {
+        if state.get(key) == Some(&json!(usual)) {
+            state.remove(key);
+        }
+    }
+}
+
+/// A listed table's columns as two lists in the order of a row's values: the
+/// column letters under `columns`, and the headers of each under
+/// `column_headers`, left out when no column has one.
+fn compact_table_columns(item: &mut Value) {
+    let Some(table) = item.get_mut("table").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(columns) = table.get("columns").and_then(Value::as_array) else {
+        return;
+    };
+    let letters: Vec<Value> = columns.iter().map(|c| c["column"].clone()).collect();
+    let headers: Vec<Value> = columns.iter().map(|c| c["headers"].clone()).collect();
+    let headed = headers
+        .iter()
+        .any(|h| h.as_array().is_some_and(|h| !h.is_empty()));
+    table.insert("columns".into(), Value::Array(letters));
+    if headed {
+        table.insert("column_headers".into(), Value::Array(headers));
     }
 }
 
@@ -932,11 +1074,35 @@ fn compact_search_item(item: &mut Value) {
         }
         return;
     }
+    // The title leads with the document, which the hit names: the sheet or
+    // page and the headings the hit lies under are left.
+    if let (Some(id), Some(title)) = (object["document_id"].as_str(), object["title"].as_str())
+        && let Some(rest) = title.strip_prefix(id)
+    {
+        let rest = rest.trim_start_matches(" / ").trim_end_matches(" / ");
+        object["title"] = json!(rest);
+    }
     if let Some(sources) = object.get_mut("sources").and_then(Value::as_array_mut) {
         for source in sources {
             let source = source.as_object_mut().expect("search source object");
             for key in ["text", "value", "formula"] {
                 source.remove(key);
+            }
+            // A drawing has no cell, and an Office original no line span.
+            if source.get("address").is_some_and(|a| a == "") {
+                source.remove("address");
+            }
+            // Where the text lies in the stored extraction and in the
+            // passage is for --full: the sheet and cell tell where it is
+            // in the original. A drawing, which has no cell, keeps its
+            // pointer.
+            source.remove("start");
+            source.remove("end");
+            if source.contains_key("address") {
+                source.remove("pointer");
+            }
+            if source.get("position").is_some_and(Value::is_null) {
+                source.remove("position");
             }
         }
     }
@@ -1746,6 +1912,9 @@ fn edit_report(
             }
         }
         result["check"] = check;
+    }
+    // An edit that wrote nothing leaves no step to take after it.
+    if result["state"] != "planned" && result["state"] != "unchanged" {
         result["next_actions"] = json!(if proposal {
             vec![
                 format!("arp4 documents diff {id}"),
@@ -1788,6 +1957,33 @@ fn count_carried_cells(carried: &mut Value) {
     }
 }
 
+/// The change of the layout's history among `changes` that tells nothing the
+/// change of the pending operations beside it does not: the layout records
+/// each operation the mappings hold, with a fixed reason in place of the
+/// operation's. `--full` and a saved diff keep it.
+fn repeated_history(changes: &[Value]) -> Option<usize> {
+    let ids = |list: &Value| -> Vec<String> {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|operation| operation["id"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let at = changes
+        .iter()
+        .position(|change| change["path"] == "/layout.yml/history")?;
+    let operations = changes
+        .iter()
+        .find(|change| change["path"] == "/mappings.yml/operations")?;
+    let (before, after) = (ids(&changes[at]["before"]), ids(&changes[at]["after"]));
+    let pending = ids(&operations["after"]);
+    let kept = before.iter().all(|id| after.contains(id));
+    let told = after
+        .iter()
+        .all(|id| before.contains(id) || pending.contains(id));
+    (kept && told).then_some(at)
+}
+
 /// Replace an export report's detail arrays with counts under `summary` and drop
 /// verification hashes unless requested; the full report stays in `.report.json`.
 /// Returns the detail entries so a planning export can page through them.
@@ -1816,6 +2012,20 @@ fn summarize_export(report: &mut Value, include_hashes: bool) -> Result<Vec<Valu
             .remove(category)
             .unwrap_or(json!([]));
         counts[category] = json!(array(&values)?.len());
+        if category == "excluded" {
+            // What the content never writes back holds of the document
+            // whatever was edited: counted by reason, not listed.
+            let mut reasons = serde_json::Map::new();
+            for value in array(&values)? {
+                let reason = value["reason"].as_str().unwrap_or("");
+                let count = reasons.get(reason).and_then(Value::as_u64).unwrap_or(0);
+                reasons.insert(reason.to_owned(), json!(count + 1));
+            }
+            if !reasons.is_empty() {
+                report["excluded_by_reason"] = Value::Object(reasons);
+            }
+            continue;
+        }
         for value in array(&values)? {
             items.push(json!({"category":category,"value":value}));
         }
@@ -1945,28 +2155,91 @@ fn emit_status(
             ok = false;
         }
         omit_hashes(row, &["content", "source_sha256"], include_hashes);
-        if !output.full && row["state"] != "invalid" {
-            let pending = row["pending"].as_u64().unwrap_or(0);
-            let blocked = row["state"] == "blocked";
+        if !output.full {
             let fields = row.as_object_mut().unwrap();
+            // The state tells these; the folder follows from the ID.
             for key in ["directory", "reviewed", "source_current"] {
                 fields.remove(key);
             }
-            if pending == 0 {
-                fields.remove("pending");
-            }
-            if !blocked {
-                fields.remove("blockers");
-            }
+            // A row tells only what holds of it: a flag not shown is false,
+            // a count not shown none, a list not shown empty.
+            fields.retain(|key, value| {
+                !matches!(
+                    key.as_str(),
+                    "pending"
+                        | "blockers"
+                        | "no_changes"
+                        | "structure_ready"
+                        | "structure_conflicts"
+                        | "structure_outdated"
+                ) || !(value.is_null()
+                    || *value == json!(false)
+                    || *value == json!(0)
+                    || *value == json!([]))
+            });
         }
     }
-    let mut result = output.page(rows);
+    let mut result = if output.full {
+        output.page(rows)
+    } else {
+        // A row is short: a page takes up to a hundred of them, within the
+        // size of a response.
+        let pager = Output {
+            limit: output.limit.or(Some(100)),
+            offset: output.offset,
+            ..Output::default()
+        };
+        let mut page = pager.page(rows);
+        list_by_state(&mut page);
+        page
+    };
     result["summary"] = summary;
     if !ok {
         result["error"] = json!({"code":"validation_failed","message":"Inspect item states and errors; summary covers all items, including later pages."});
     }
     output.emit(result, ok);
     Ok(ok)
+}
+
+/// Lists the rows of a status page that tell no more than their document and
+/// state by state: the adopted documents' IDs under `documents`, the
+/// proposals' under `proposals`. The rows that tell more stay in `items`,
+/// as does the row of a page of one.
+fn list_by_state(page: &mut Value) {
+    let rows = match page["items"].as_array_mut() {
+        Some(rows) if rows.len() > 1 => std::mem::take(rows),
+        _ => return,
+    };
+    let mut told = vec![];
+    for row in rows {
+        let plain = row.as_object().is_some_and(|row| {
+            row.keys()
+                .all(|key| matches!(key.as_str(), "document_id" | "state" | "proposal"))
+        });
+        let (Some(id), Some(state), true) = (
+            row.get("document_id").cloned(),
+            row["state"].as_str().map(str::to_owned),
+            plain,
+        ) else {
+            told.push(row);
+            continue;
+        };
+        let list = if row["proposal"] == true {
+            "proposals"
+        } else {
+            "documents"
+        };
+        let ids = &mut page[list][state];
+        if ids.is_null() {
+            *ids = json!([]);
+        }
+        ids.as_array_mut().unwrap().push(id);
+    }
+    if told.is_empty() {
+        page.as_object_mut().unwrap().remove("items");
+    } else {
+        page["items"] = Value::Array(told);
+    }
 }
 
 /// The request a command reads from the file `path`, or from standard input

@@ -161,16 +161,18 @@ pub(super) fn read(
     }
     report["drawings"] = json!(drawings);
     report["image_paths"] = json!(images);
-    // Each cell with its font and style in place, as agents read it.
-    report["original_cells"] = Value::Array(
-        ext.sheets
-            .iter()
-            .map(crate::extraction::sheet_view)
-            .collect::<Result<_>>()?,
-    );
-    for sheet in report["original_cells"].as_array_mut().unwrap() {
-        sheet.as_object_mut().unwrap().remove("drawings");
+    // The sheets as extraction-read writes them: a sheet gives the font and
+    // style most of its cells have once, and a cell what is its own.
+    let mut sheets = match crate::extraction::reading(ext)?.get_mut("sheets") {
+        Some(sheets) => sheets.take(),
+        None => json!([]),
+    };
+    for sheet in sheets.as_array_mut().into_iter().flatten() {
+        if let Some(sheet) = sheet.as_object_mut() {
+            sheet.remove("drawings");
+        }
     }
+    report["original_cells"] = sheets;
     Ok(())
 }
 

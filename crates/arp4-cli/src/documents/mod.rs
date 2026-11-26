@@ -250,7 +250,13 @@ impl Store {
         check_elements(id, proposal, &layout, &interpretation, |part| {
             validate("document-elements", part)
         })?;
-        write_lazy(out, elements_view(id, proposal, &layout, &interpretation)?)?;
+        // A JSON file holds each element outside a table, and each column
+        // and cell of a table, on one line.
+        crate::data::write_lazy_lines(
+            out,
+            elements_view(id, proposal, &layout, &interpretation)?,
+            &["cells", "columns"],
+        )?;
         Ok(layout.sheets.len())
     }
 
@@ -739,7 +745,8 @@ fn resolved_element<'a>(
         let default = default.filter(|_| matches!(element, Meta::Text(_)));
         let mut element = element.to_value();
         resolve_font(sheet, &mut element, default.as_ref())?;
-        return Ok(Lazy::Value(element));
+        // An element outside a table is short: one line of the file.
+        return Ok(Lazy::Line(element));
     };
     // The cells of the table, which a cell's headers are among.
     let present: foldhash::HashSet<&str> = rows

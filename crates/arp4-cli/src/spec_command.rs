@@ -405,7 +405,7 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
             let bytes = encoded(&serde_json::to_value(&input)?);
             immutable(&out, &bytes)?;
             output.emit(json!({"state":"captured","input":out,"input_hash":hash(&bytes),"sources":input.sources.len(),
-                        "warnings":grouped_warnings(input.warnings.iter().map(String::as_str))}), true);
+                        "warnings":arp4_cli::data::specific_warnings(input.warnings.iter().map(String::as_str))}), true);
         }
         SpecCommand::Prompt { out } => {
             immutable(&out, spec::PROMPT.as_bytes())?;

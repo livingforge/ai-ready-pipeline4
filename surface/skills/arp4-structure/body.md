@@ -4,11 +4,13 @@
 
 このスキルを使う親Agentは準備・割当・保存を行い、原本との照合は担当へ委任する。操作の詳細と契約は利用環境の `arp4 spec structure --help`、`arp4 documents structure-read --help` から取得する。ARPのソースリポジトリで作業する場合は `docs/guides/document-structure.md` も参照できる。
 
+`arp4` は、文書プロジェクトのルート（`.arp/` を置くフォルダ）に `arp4.exe`（Linuxは `arp4`）があればそれをパスで起動し、なければPATHのものを使う。PATHに別の版があってもルートの版を優先し、作業の途中で切り替えない。
+
 ## 進め方
 
 1. 対象文書と作業ルートを確定し、採用済み文書は `documents structure-read <文書ID> --out <整理YAML>`、単独の抽出結果は `spec structure init --extraction <抽出JSON> --out <整理YAML>` で作業ビューを用意する。応答で原本・抽出結果の版と既存の解釈・レビュー状態を確認する。
-2. `arp4-structure-worker` に構造解釈の作成・修正を担当させる。渡すのは作業ルート、抽出JSONと整理YAMLのパス、担当固有のactor、OCRの精度確認を行うかどうか、利用者が用意した原本由来PNGがあればそのパス。親は `spec structure read` の出力や画像を先読みせず、資料の要約も作らない。担当は `spec structure check` まで行い、未確認箇所と判断理由を返す。
-3. 作成に参加していない `arp4-structure-reviewer` に、同じパスと別のactorを渡して原本・画像と整理結果の照合を担当させる。指摘があれば作成担当へ戻し、修正後に再びレビューへ渡す。acceptedの記録はレビュー担当が行う。
+2. `arp4-structure-worker` に構造解釈の作成・修正を担当させる。渡すのは使う実行ファイルのパス、作業ルート、抽出JSONと整理YAMLのパス、担当固有のactor、OCRの精度確認を行うかどうか、利用者が用意した原本由来PNGがあればそのパス。親は `spec structure read` の出力や画像を先読みせず、資料の要約も作らない。担当は `spec structure check` まで行い、未確認箇所と判断理由を返す。
+3. 作成に参加していない `arp4-structure-reviewer` に、同じ実行ファイル・パスと別のactorを渡して原本・画像と整理結果の照合を担当させる。指摘があれば作成担当へ戻し、修正後に再びレビューへ渡す。acceptedの記録はレビュー担当が行う。
 4. 採用済み文書または候補への反映が依頼範囲に含まれる場合、レビュー済みビューを `documents structure-save` で保存する。本文の要素分割と位置対応も更新される。本文の値は保持される。未適用の行列操作がある場合は先に適用する。後続の意味抽出が必要なら、その後に `spec capture` を実行する。構造変更後は以前のcaptureや進行中workflowへ自動反映されないため、再captureして更新する。
 
 担当が未確認として返した箇所は、文書・シート・セルまたはvisual IDと理由を添えて利用者へ報告する。CLIの `check` 成功とレビューのacceptedは、実際に確認した範囲についての記録であり、未確認箇所の正しさを保証しない。

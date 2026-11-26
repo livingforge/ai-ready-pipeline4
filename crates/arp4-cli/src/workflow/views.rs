@@ -103,7 +103,7 @@ impl Workflow {
         format!(".arp/work/workflow/{}", self.run_id())
     }
     pub(super) fn notices(&self) -> Value {
-        crate::data::grouped_warnings(
+        crate::data::specific_warnings(
             self.state
                 .notices
                 .as_array()

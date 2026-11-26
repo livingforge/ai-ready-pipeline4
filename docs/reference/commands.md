@@ -13,7 +13,7 @@ Usage: arp4 [OPTIONS] <COMMAND>
 
 Commands:
   spec       Build and validate evidence-backed specification models
-  doctor
+  doctor     The version, the response limits and the capabilities: those that are on or off and those that list formats or commands. The capabilities told in a sentence are named under described; give words of their names to read them, or --full for all
   skills
   documents
   help       Print this message or the help of the given subcommand(s)
@@ -1681,7 +1681,13 @@ Options:
 ## `arp4 doctor`
 
 ```text
-Usage: arp4 doctor [OPTIONS]
+The version, the response limits and the capabilities: those that are on or off and those that list formats or commands. The capabilities told in a sentence are named under described; give words of their names to read them, or --full for all
+
+Usage: arp4 doctor [OPTIONS] [NAMES]...
+
+Arguments:
+  [NAMES]...
+          Words of capability names, such as html or search: the capabilities whose name holds one are returned whole
 
 Options:
       --full
@@ -1767,7 +1773,7 @@ Commands:
   link-check           Check the links of adopted HTML documents: where each <a href> points among the imported pages and their anchors (id, and name of a). Lists the links that point to no page or anchor, to a file not imported or from the site root; --all lists every link with its target
   search-refresh       Reconcile canonical documents with the local search index, checking every byte, as a search does by itself when files change size or modification time
   structure-read       Write a derived structure view from the document's canonical corrections, with the report of how they replay on its extraction
-  elements-read        Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
+  elements-read        Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body. A .json file holds each element outside a table and each cell of a table on one line; another extension is written as YAML
   view                 Write a page that shows the content laid out as the original lays it out, for a person to read: values where the original shows them, with its sizes, merges, fills, borders, fonts, shapes and pictures, and the values and fonts the content changes marked with the original's, and a structure view of how the content YAML reads each table cell. Saved to .arp/view/<document>.html (a proposal's to .arp/view/proposal/<document>.html), which is not tracked; the content and the original are not changed. Several documents are viewed at once, each listed under views or, with the reason, failed. A document not adopted yet is shown by its proposal
   extraction-read      Write the extraction for reading (the extraction-view contract): as extraction.json stores it, one cell per line, with each font and style written out where extraction.json has its index; a sheet gives the font and style most of its cells have once (cell_font, cell_style), and a cell only one of its own. A formula's cached result is its value
   structure-save       Save structure corrections; remove a managed work/structure view on success
@@ -2304,7 +2310,7 @@ Options:
 ## `arp4 documents elements-read`
 
 ```text
-Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body
+Write the element metadata of every page, with current fonts resolved, and the visuals its references point to (the document-elements contract): the IDs, table rows and columns, headers, spans and formula kinds of the body. A .json file holds each element outside a table and each cell of a table on one line; another extension is written as YAML
 
 Usage: arp4 documents elements-read [OPTIONS] --out <OUT> <DOCUMENT>
 

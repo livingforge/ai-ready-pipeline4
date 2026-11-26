@@ -121,6 +121,24 @@ impl Store {
         if request["base"] != inspected.fingerprint.as_str()
             || request["source_sha256"] != inspected.meta["source"]["sha256"]
         {
+            // The request sent again after it was written, as after a
+            // response that did not arrive: the content changed by the
+            // request itself, the last the document records.
+            if operations.is_empty()
+                && request["source_sha256"] == inspected.meta["source"]["sha256"]
+                && read_mappings(&dir.join("mappings.yml"))?["value_edits"]
+                    .as_array()
+                    .and_then(|recorded| recorded.last())
+                    .is_some_and(|last| {
+                        last["actor"] == request["actor"]
+                            && last["reason"] == request["reason"]
+                            && last["edits"] == request["edits"]
+                    })
+            {
+                return Ok(json!({"state":"unchanged","already_recorded":true,
+                    "content":inspected.fingerprint,
+                    "edits":array(&request["edits"])?.len()}));
+            }
             return Err(rejection(
                 "base_changed",
                 "base or source_sha256 is not the document's current content or original; read check --include-hashes again and plan the edits on the current content",

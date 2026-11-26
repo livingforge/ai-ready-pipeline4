@@ -8,16 +8,16 @@
 
 ## CLI経由の編集
 
-Agentは整理YAMLと正規の修正記録、抽出JSONを直接編集せず、編集要求をCLIへ渡します。`spec structure read` または `check` の応答にある `revision` はレビューも含む現在のビューの版です。編集要求の契約は `spec structure schema --edit --out structure-edit-schema.json` で取得します。形式の完全な一覧は生成された構造契約リファレンスを参照してください。
+Agentは整理YAMLと正規の修正記録、抽出JSONを直接編集せず、編集要求をCLIへ渡します。`spec structure read` または `check` の応答にある `revision` はレビューも含む現在のビューの版です。編集要求の契約は `spec structure schema --edit --out structure-edit-schema.json` で取得します（編集要求を構成する定義だけを含みます）。形式の完全な一覧は生成された構造契約リファレンスを参照してください。
 
-readで取得したelementの完全な項目を修正し、編集要求のelements.upsertへ入れます。upsertはIDが存在すればその項目全体を置き換え、存在しなければ追加します。表の分割・統合は、元のIDをremoveへ、置き換えるelementをupsertへまとめます。図形関係とOCR補正はvisualsのupsertで記録します。変更しない項目は要求へ含める必要がありません。画像領域はrender・region、レビューはreviewで記録します。
+readで取得したelementの完全な項目を修正し、編集要求のelements.upsertへ入れます。readが返すelementと編集要求のelement（契約の `edit_element`）は、セルの既定値を省いた形です。`id` は `s<シート番号>-<番地>`（シート番号は文書のシートの並びで1から。例 `s2-B5`）のとき、`headers` は空のとき、`text_state` は `read` のとき書きません。見出し・`parent.context`・`unresolved` がセルを指すIDは、この既定のIDです。省かずに全項目を書いた要求も受け付け、保存される整理YAMLは常に全項目を持ちます。readの `original_cells` は `documents extraction-read` と同じ形で、シートに共通するフォント・書式を `cell_font`・`cell_style` に1回だけ持ちます。upsertはIDが存在すればその項目全体を置き換え、存在しなければ追加します。表の分割・統合は、元のIDをremoveへ、置き換えるelementをupsertへまとめます。図形関係とOCR補正はvisualsのupsertで記録します。変更しない項目は要求へ含める必要がありません。画像領域はrender・region、レビューはreviewで記録します。
 
 ```powershell
 arp4 spec structure edit --extraction extraction.json --structure interpretations/document.yml --input edits.json --dry-run
 arp4 spec structure edit --extraction extraction.json --structure interpretations/document.yml --input edits.json
 ```
 
-CLIは原本・抽出の版、画像証拠、セルの所属、見出し・説明・グラフの参照を変更後の全体で検証します。失敗時はビューを変更せず、成功時はbefore/afterの差分と新しいrevisionを返します。dry-runは保存しません。内容が変わればレビューをpendingへ戻し、同じ内容の再設定なら既存レビューを保持します。版が変わった要求は拒否するので再readして組み立て直します。CLIの構造更新は文書更新と同じ排他ロックを使います。ビューを編集・レビューした後は、既存のdocuments structure-saveで本文・位置対応・修正記録へまとめて反映します。
+CLIは原本・抽出の版、画像証拠、セルの所属、見出し・説明・グラフの参照を変更後の全体で検証します。失敗時はビューを変更せず、対象のセルのIDを添えた理由を返します。成功時は差分 `changes` と新しいrevisionを返します。追加・削除した項目は `before`・`after` に項目の全体、変更した項目は違いだけで、`changed` に変わったメンバーの変更前後、`cells` に変わったセルの番地と変更前後（追加・削除したセルは片側が `null`）を持ちます。check・read・editの `unresolved` は未解決の状態ごとに、役割が未割当のセル（`cells`）、読取のない図・画像（`visuals`）、未読のセル（`elements` の要素ごと）のIDを並べます。dry-runは保存しません。内容が変わればレビューをpendingへ戻し、同じ内容の再設定なら既存レビューを保持します。版が変わった要求は拒否するので再readして組み立て直します。CLIの構造更新は文書更新と同じ排他ロックを使います。ビューを編集・レビューした後は、既存のdocuments structure-saveで本文・位置対応・修正記録へまとめて反映します。
 
 ## 必須となる資料
 

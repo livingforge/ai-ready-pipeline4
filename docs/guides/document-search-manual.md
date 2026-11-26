@@ -76,19 +76,23 @@ arp4 documents search "注文" --document 設計 --root C:/project
   "ok": true,
   "items": [
     {
-      "document_id": "設計/注文API.md",
-      "source_path": "docs/設計/注文API.md",
-      "title": "設計/注文API.md / text / 注文API / 注文登録",
+      "document": "d1",
+      "title": "text / 注文API / 注文登録",
       "text": "タイムアウトは30秒とする。",
       "sources": [
         {"sheet": "text", "address": "A4",
          "position": {"line_start": 7, "line_end": 7, "headings": ["注文API", "注文登録"], "kind": "paragraph"}}
-      ],
-      "state": {"source_current": true, "source_missing": false, "reviewed": false,
-                "content_differs_from_extraction": false},
-      "structure_reviewed": false
+      ]
     }
   ],
+  "documents": {
+    "d1": {
+      "document_id": "設計/注文API.md",
+      "source_path": "docs/設計/注文API.md",
+      "state": {"reviewed": false},
+      "structure_reviewed": false
+    }
+  },
   "page": {"offset": 0, "returned": 1, "total": 1, "next_offset": null},
   "revision": "7356723b…",
   "summary": {"indexed_at_unix": 1791596348, "indexed_documents": 2, "refreshed_documents": 0, "source_checked_this_search": false}
@@ -101,8 +105,10 @@ arp4 documents search "注文" --document 設計 --root C:/project
 |---|---|
 | `ok` | `true` なら検索は完了しています。`false` のときは[困ったとき](#困ったとき)を見てください。 |
 | `items[].text` | 一致した本文です。構造解釈のない表の場合は1行の値を ` \| ` でつないで返します。構造解釈のある表の行は `values` で返します（[表を見出し込みで探す](#表を見出し込みで探す)）。 |
-| `items[].source_path` | 原本ファイルのパスです。 |
-| `items[].title` | 文書ID・シート・見出しをつないだ、その箇所の所在です。 |
+| `items[].document` | 文書の参照（`d1` など）です。文書IDとその文書の情報は `documents` の同じ参照の項目にあります。 |
+| `documents.<参照>.document_id` | 文書IDです。 |
+| `documents.<参照>.source_path` | 原本ファイルのパスです。文書ごとに1回だけ載ります。 |
+| `items[].title` | シート（ページ）名と見出しをつないだ、文書内での所在です。 |
 | `items[].sources[]` | 原本内の位置です。下の表を参照してください。 |
 | `page.total` | 一致した総件数です。 |
 | `page.next_offset` | 続きがある場合の次の開始位置です。`null` なら最後のページです。 |
@@ -121,7 +127,7 @@ JSONのままでは読みにくい場合は、PowerShellで表に整形できま
 
 ```powershell
 $r = arp4 documents search "注文" --root C:/project | ConvertFrom-Json
-$r.items | Select-Object document_id,
+$r.items | Select-Object @{n='文書'; e={ $r.documents.($_.document).document_id }},
     @{n='場所'; e={ ($_.sources | ForEach-Object { "$($_.sheet)!$($_.address)" }) -join ',' }},
     text | Format-Table -AutoSize
 $r.page
@@ -155,15 +161,17 @@ arp4 documents search "在庫照会 タイムアウト" --root C:/project
 {
   "tables": {
     "t1": {
-      "document_id": "設計/API一覧.xlsx", "source_path": "docs/設計/API一覧.xlsx",
+      "document": "d1",
       "sheet": "API一覧", "element": "table-1",
-      "columns": [
-        {"column": "A", "headers": ["機能"]},
-        {"column": "B", "headers": ["メソッド"]},
-        {"column": "C", "headers": ["パス"]},
-        {"column": "D", "headers": ["タイムアウト"]}
-      ],
-      "state": {"source_current": true, "…": "…"}, "structure_reviewed": false
+      "columns": ["A", "B", "C", "D"],
+      "column_headers": [["機能"], ["メソッド"], ["パス"], ["タイムアウト"]]
+    }
+  },
+  "documents": {
+    "d1": {
+      "document_id": "設計/API一覧.xlsx",
+      "source_path": "docs/設計/API一覧.xlsx",
+      "state": {"reviewed": false}, "structure_reviewed": false
     }
   },
   "items": [
@@ -173,7 +181,7 @@ arp4 documents search "在庫照会 タイムアウト" --root C:/project
 }
 ```
 
-行の値は `items[].values` に列の順で、表の情報は `tables` にまとめて返ります。各結果の `table_ref`（この例では `t1`）が、どの表かを示します。値と同じ位置の `columns` が、そのセルの列と見出しです。この例では、D5セルの「5秒」が「タイムアウト」の値です。同じ表の結果が多くても、表の情報は1回だけ載ります。
+行の値は `items[].values` に列の順で、表の情報は `tables` にまとめて返ります。各結果の `table_ref`（この例では `t1`）が、どの表かを示します。値と同じ位置の `columns` がそのセルの列、`column_headers` がその見出しです。この例では、D5セルの「5秒」が「タイムアウト」の値です。同じ表の結果が多くても、表の情報は1回だけ載ります。
 
 - 段組みの見出しは `["性能", "タイムアウト"]` のように、上の見出しから順に並びます。
 - 縦に結合した項目名など、別の行にある行見出しがその行にかかる場合は、`row_context` に `{"headers": [...], "text": "..."}` の組で入ります。
@@ -187,8 +195,8 @@ $r = arp4 documents search "タイムアウト" --root C:/project | ConvertFrom-
 $r.items | Where-Object table_ref | ForEach-Object {
     $t = $r.tables.($_.table_ref)
     for ($i = 0; $i -lt $_.values.Count; $i++) {
-        [pscustomobject]@{文書 = $t.document_id; セル = "$($t.sheet)!$($t.columns[$i].column)$($_.row)"
-            見出し = $t.columns[$i].headers -join ' / '; 値 = $_.values[$i]}
+        [pscustomobject]@{文書 = $r.documents.($t.document).document_id; セル = "$($t.sheet)!$($t.columns[$i])$($_.row)"
+            見出し = $t.column_headers[$i] -join ' / '; 値 = $_.values[$i]}
     }
 } | Format-Table -AutoSize
 ```
@@ -305,7 +313,7 @@ groups:
 
 ## 結果の状態を確認する
 
-各結果の `state` と `structure_reviewed` は、**索引を最後に更新した時点**の状態です。ファイルが変わっていれば検索が先に索引を更新するので、通常は検索した時点の状態です。構造解釈のある表の行では、`tables` の表の項目に載ります。
+各結果の `state` と `structure_reviewed` は、**索引を最後に更新した時点**の状態です。ファイルが変わっていれば検索が先に索引を更新するので、通常は検索した時点の状態です。応答の `documents` に文書ごとに1回だけ載り、各結果の `document`（表の行は `tables` の表の項目の `document`）の参照から引きます。通常の応答の `state` は `reviewed` と、下の表で注意が必要な値になっている項目だけを持ちます。載っていない項目は正常です。
 
 | 項目 | `true` / `false` のとき注意すること |
 |---|---|

@@ -23,11 +23,20 @@
 | 既存workflowの再開・抽出・レビュー・修正 | [進行管理](references/orchestration.md)。同じroot・run-idのstatus --summaryから再開する |
 | 採番済みの要件・仕様の更新・承認 | [正本の継続保守](references/registry.md) |
 | CLI応答のページ送り・省略・エラー・状態の読み方 | [CLI応答の読み方](references/responses.md) |
-| ARP実行ファイルの導入・更新が必要 | ARPソースの `docs/guides/install.md`。ソースの場所は利用者に確認する |
+| ARP実行ファイルがプロジェクトにもPATHにもない、または更新が必要 | ARPソースの `docs/guides/install.md`。ソースの場所は利用者に確認する |
 
 資料にある `docs/guides/`・`docs/reference/` で始まる文書パスはARPソースルート基準で、導入先の文書プロジェクトに存在するとは限らない。原本フォルダの既定 `docs/` は文書プロジェクト側のフォルダで、これとは別。実行時の引数・対応機能・返信契約は、資料で足りないときだけCLIのhelp・doctor・readで確かめる。
 
 原本操作や台帳保守だけなら、workflowの担当Agentを起動する必要はない。
+
+## 使う実行ファイル
+
+資料中の `arp4` は、次の順で最初に見つかった実行ファイルを指す。
+
+1. 文書プロジェクトのルート（`.arp/` を置くフォルダ）にある `arp4.exe`（Linuxは `arp4`）。チームがGitで共有している版で、PATHに別の版があってもこちらを使う。
+2. PATHの `arp4`。
+
+ルートの実行ファイルはコマンド名では起動されないため、パスで呼ぶ（PowerShellは `& '<project>\arp4.exe' …`、bashは `'<project>/arp4.exe' …`）。一つの作業の中で実行ファイルを切り替えない。workflowは開始時と同じ実行ファイルでしか続行できない。担当へ委任するときは、handoffのexecutableまたはこの実行ファイルのパスを渡す。ルートの実行ファイルを、ビルドやインストール済みの版で置き換えるのは、利用者に依頼されたときだけにする。
 
 ## workflowの責務
 

@@ -12,9 +12,14 @@
       "failed": {"type": "array"},
       "error": {"type": "object"},
       "detail": {"type": "string"},
+      "documents": {
+        "type": "object",
+        "description": "Documents listed once for all queries under short references (d1, d2, ...): document_id, source_path, state and structure_reviewed (and extraction_path with --full). The state tells reviewed and what is not as usual; --full tells every member. A hit names its document by the reference under document, a table row by the document of its table.",
+        "additionalProperties": {"type": "object"}
+      },
       "tables": {
         "type": "object",
-        "description": "Tables listed once for all queries, as search-passage table with the document of their rows: document_id, source_path, state and structure_reviewed (and extraction_path with --full). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.",
+        "description": "Tables listed once for all queries, as search-passage table with the document reference of their rows, the column letters under columns and their headers in the same order under column_headers (left out when no column has one). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.",
         "additionalProperties": {"type": "object"}
       },
       "queries": {

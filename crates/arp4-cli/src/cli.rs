@@ -21,7 +21,15 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: SpecCommand,
     },
-    Doctor,
+    /// The version, the response limits and the capabilities: those that are
+    /// on or off and those that list formats or commands. The capabilities
+    /// told in a sentence are named under described; give words of their
+    /// names to read them, or --full for all.
+    Doctor {
+        /// Words of capability names, such as html or search: the
+        /// capabilities whose name holds one are returned whole.
+        names: Vec<String>,
+    },
     Skills {
         #[command(subcommand)]
         command: SkillCommand,
@@ -1500,6 +1508,8 @@ pub(crate) enum DocumentCommand {
     /// Write the element metadata of every page, with current fonts resolved, and
     /// the visuals its references point to (the document-elements contract): the
     /// IDs, table rows and columns, headers, spans and formula kinds of the body.
+    /// A .json file holds each element outside a table and each cell of a
+    /// table on one line; another extension is written as YAML.
     ElementsRead {
         document: String,
         #[arg(long)]

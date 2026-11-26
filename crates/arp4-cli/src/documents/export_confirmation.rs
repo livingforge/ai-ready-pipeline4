@@ -121,7 +121,16 @@ impl Store {
         id: &str,
         inspected: &Inspection,
     ) -> Result<(Vec<u8>, Value)> {
-        let confirmation = read(&self.confirmation_path(id)?,Some("export-confirmation")).context("export layout is unconfirmed; export and confirm-export the exact candidate before apply")?;
+        let path = self.confirmation_path(id)?;
+        // No confirmation is the usual case, told without the path of a
+        // file that is not there.
+        ensure!(
+            path.is_file(),
+            "export layout is unconfirmed; export and confirm-export the exact candidate before apply"
+        );
+        let confirmation = read(&path, Some("export-confirmation")).context(
+            "the export confirmation cannot be read; export and confirm-export the candidate again",
+        )?;
         ensure!(
             confirmation["document_id"] == id
                 && confirmation["content"] == inspected.fingerprint

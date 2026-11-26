@@ -2666,6 +2666,8 @@
 | --- | --- |
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Multiple queries in input order against one saved search index snapshot. Shared index metadata and failures occur once at the outer level. The outer revision pins the ordered query list and index snapshot. Per-query revisions support individual searches. Normal presentation may omit trailing hits while retaining every query; omitted fields are explicit.","required":["ok","scope","revision","summary","failed","queries"],"type":"object"}</code> |
 | <code>/properties/detail</code> | <code>{"type":"string"}</code> |
+| <code>/properties/documents</code> | <code>{"description":"Documents listed once for all queries under short references (d1, d2, ...): document_id, source_path, state and structure_reviewed (and extraction_path with --full). The state tells reviewed and what is not as usual; --full tells every member. A hit names its document by the reference under document, a table row by the document of its table.","type":"object"}</code> |
+| <code>/properties/documents/additionalProperties</code> | <code>{"type":"object"}</code> |
 | <code>/properties/error</code> | <code>{"type":"object"}</code> |
 | <code>/properties/failed</code> | <code>{"type":"array"}</code> |
 | <code>/properties/ok</code> | <code>{"type":"boolean"}</code> |
@@ -2676,7 +2678,7 @@
 | <code>/properties/revision</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
 | <code>/properties/scope</code> | <code>{"const":"adopted_extraction"}</code> |
 | <code>/properties/summary</code> | <code>{"type":"object"}</code> |
-| <code>/properties/tables</code> | <code>{"description":"Tables listed once for all queries, as search-passage table with the document of their rows: document_id, source_path, state and structure_reviewed (and extraction_path with --full). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.","type":"object"}</code> |
+| <code>/properties/tables</code> | <code>{"description":"Tables listed once for all queries, as search-passage table with the document reference of their rows, the column letters under columns and their headers in the same order under column_headers (left out when no column has one). A row names its table by table_ref; rows of one table under other headings name other entries. A table that did not fit lists omitted_fields.","type":"object"}</code> |
 | <code>/properties/tables/additionalProperties</code> | <code>{"type":"object"}</code> |
 
 ## search-format

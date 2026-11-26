@@ -119,6 +119,7 @@ impl Store {
         let mut skipped = vec![];
         let mut failed = vec![];
         let mut unprotected = vec![];
+        let mut findings = vec![];
         let originals = self.originals_below(&dir)?;
         let moved = self.moved_originals(&originals)?;
         let moved_to: BTreeSet<&str> = moved.values().map(String::as_str).collect();
@@ -142,6 +143,11 @@ impl Store {
                         let mut record = record.clone();
                         record["document_id"] = json!(id);
                         unprotected.push(record);
+                    }
+                    for finding in result["findings"].as_array().into_iter().flatten() {
+                        let mut finding = finding.clone();
+                        finding["document_id"] = json!(id);
+                        findings.push(finding);
                     }
                     imported.push(json!(id));
                 }
@@ -178,6 +184,9 @@ impl Store {
             .collect();
         if !excluded.is_empty() {
             result["excluded"] = json!(excluded);
+        }
+        if !findings.is_empty() {
+            result["findings"] = json!(findings);
         }
         if !moved.is_empty() {
             result["moved"] = json!(
@@ -862,8 +871,25 @@ impl Store {
             }
             return Err(error);
         }
-        let mut result =
-            json!({"document_id":id,"proposal":destination,"findings":extraction["findings"]});
+        let mut result = json!({"document_id":id,"proposal":destination});
+        // What the note tells of this original: the text its format fixes
+        // is the same for every original of the format.
+        let base = crate::document_source::base_note(&ext);
+        let findings: Vec<Value> = array(&extraction["findings"])?
+            .iter()
+            .filter_map(|finding| {
+                let message = finding["message"].as_str()?;
+                let message = message.strip_prefix(base).unwrap_or(message);
+                (!message.is_empty()).then(|| {
+                    let mut finding = finding.clone();
+                    finding["message"] = json!(message);
+                    finding
+                })
+            })
+            .collect();
+        if !findings.is_empty() {
+            result["findings"] = json!(findings);
+        }
         if !carried.is_null() {
             result["structure"] = carried;
         }

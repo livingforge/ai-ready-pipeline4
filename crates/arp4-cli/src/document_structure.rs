@@ -415,6 +415,53 @@ fn infer(extraction: &Extraction, extraction_hash: &str) -> Result<Structure> {
     Ok(Structure::new(fields, inference::elements(extraction)?))
 }
 
+/// What validation lists as unresolved, by state, as check and read tell it:
+/// the cells whose role is unassigned and the visuals without a reading as
+/// lists of IDs, and the cells not read by their element. A new
+/// interpretation lists each of its cells.
+fn unresolved_by_state(entries: &Value) -> Value {
+    let mut states = serde_json::Map::new();
+    for entry in entries.as_array().into_iter().flatten() {
+        let state = entry["state"].as_str().unwrap_or("").to_owned();
+        let group = states.entry(state).or_insert_with(|| json!({}));
+        match (
+            entry["element"].as_str(),
+            entry.get("cell"),
+            entry.get("visual"),
+        ) {
+            (Some(element), Some(cell), None) => {
+                let cells = &mut group["elements"][element];
+                if cells.is_null() {
+                    *cells = json!([]);
+                }
+                cells.as_array_mut().unwrap().push(cell.clone());
+            }
+            (None, Some(id), None) | (None, None, Some(id)) => {
+                let key = if entry.get("cell").is_some() {
+                    "cells"
+                } else {
+                    "visuals"
+                };
+                if group[key].is_null() {
+                    group[key] = json!([]);
+                }
+                group[key].as_array_mut().unwrap().push(id.clone());
+            }
+            _ => {
+                let mut rest = entry.clone();
+                if let Some(rest) = rest.as_object_mut() {
+                    rest.remove("state");
+                }
+                if group["entries"].is_null() {
+                    group["entries"] = json!([]);
+                }
+                group["entries"].as_array_mut().unwrap().push(rest);
+            }
+        }
+    }
+    Value::Object(states)
+}
+
 /// Validity is distinct from readiness: pending/unreadable cells remain inspectable.
 pub fn validate(root: &Path, extraction: &Extraction, value: &Value) -> Result<Value> {
     validate_schema(value)?;
@@ -620,18 +667,18 @@ fn verify(
         }
         for cell in cells {
             let id = &*cell.id;
-            ensure!(ids.insert(id), "duplicate element/cell ID");
+            ensure!(ids.insert(id), "duplicate element/cell ID: {id}");
             let address = &*cell.address;
             let point = crate::excel::coordinate(address)?;
             let found = original_cells.find(address, point);
             ensure!(
                 original_cells.own(address, found),
-                "cell belongs to multiple elements"
+                "cell belongs to multiple elements: {id}"
             );
             if vision {
                 ensure!(
                     evidence.iter().any(|r| contains(*r, point)),
-                    "vision cell outside supplied image regions"
+                    "vision cell outside supplied image regions: {id}"
                 );
             }
             let original = found.map(|at| original_cells.cell(at));
@@ -640,12 +687,12 @@ fn verify(
                 TextState::Read => ensure!(
                     text.is_some_and(|t| !t.is_null() && t.as_str().is_none_or(|s| !s.is_empty()))
                         || original.is_some_and(|c| c.formula().is_some()),
-                    "read cell has no captured text; OCR cannot become an exact source quote"
+                    "read cell has no captured text; OCR cannot become an exact source quote: {id}"
                 ),
                 TextState::Empty => ensure!(
                     text.is_none_or(|t| t.is_null() || t == "")
                         && original.is_none_or(|c| c.formula().is_none()),
-                    "empty cell contains original content"
+                    "empty cell contains original content: {id}"
                 ),
                 _ => unresolved.push(
                     || json!({"element":element["id"],"cell":id,"state":cell.text_state.as_str()}),
@@ -655,9 +702,13 @@ fn verify(
                 unresolved.push(|| json!({"cell":id,"state":"unassigned_role"}));
             }
             for header in &cell.headers {
-                let h =
-                    local(header).context("header must reference a cell in the same element")?;
-                ensure!(cells[h].role.heads(), "header target is not a header");
+                let h = local(header).with_context(|| {
+                    format!("header must reference a cell in the same element: {header} of {id}")
+                })?;
+                ensure!(
+                    cells[h].role.heads(),
+                    "header target is not a header: {header}, a header of {id}, must be a row_header or column_header"
+                );
             }
         }
         // Iterative traversal avoids recursive overflow for deeply nested
@@ -686,7 +737,11 @@ fn verify(
                 };
                 top.1 += 1;
                 let h = local(h).expect("the headers of the cells are checked above");
-                ensure!(visited[h] != on_path, "cyclic header relationship");
+                ensure!(
+                    visited[h] != on_path,
+                    "cyclic header relationship: {}",
+                    &*cells[h].id
+                );
                 if visited[h] == 0 {
                     visited[h] = on_path;
                     path.push((h, 0));
@@ -945,10 +1000,18 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
             let value = read(&structure, None)?;
             let mut report = validate(root, &ext, &value)?;
             report["revision"] = json!(hash(&encoded(&value)));
+            report["unresolved"] = unresolved_by_state(&report["unresolved"]);
             if !include_context {
                 return Ok(report);
             }
             report["structure"] = value;
+            for element in report["structure"]["elements"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
+                edit::compact_element(&ext, element);
+            }
             context::read(root, &path, &ext, &mut report)?;
             Ok(report)
         }
