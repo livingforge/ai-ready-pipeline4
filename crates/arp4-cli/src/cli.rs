@@ -1513,11 +1513,20 @@ pub(crate) enum DocumentCommand {
     /// its sizes, merges, fills, borders, fonts, shapes and pictures, and the
     /// values and fonts the content changes marked with the original's, and
     /// a structure view of how the content YAML reads each table cell.
-    /// Saved to .arp/view/<document>.html, which is not tracked; the
-    /// content and the original are not changed.
+    /// Saved to .arp/view/<document>.html (a proposal's to
+    /// .arp/view/proposal/<document>.html), which is not tracked; the
+    /// content and the original are not changed. Several documents are
+    /// viewed at once, each listed under views or, with the reason, failed.
+    /// A document not adopted yet is shown by its proposal.
     View {
-        document: String,
-        /// Show the proposal instead of the adopted document.
+        /// Document IDs, or folder IDs for every document below them; the
+        /// path of an original or of a folder of originals is taken as its ID.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        documents: Vec<String>,
+        /// View every document.
+        #[arg(long)]
+        all: bool,
+        /// Show the proposals alone, also of documents already adopted.
         #[arg(long)]
         proposal: bool,
     },

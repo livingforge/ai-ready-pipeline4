@@ -94,6 +94,12 @@ const MIXED_SPACE_GAP: f64 = 0.6;
 const MEET: f64 = 3.0;
 /// The thickest line that is a ruling rather than an area.
 const THICK: f64 = 3.0;
+/// The share of a grid its closed cells cover from which it is a table
+/// beyond doubt.
+const SURE: f64 = 0.6;
+/// The most lines of a page gaps running down between columns are looked
+/// for among.
+const MAX_RIVER_LINES: usize = 5_000;
 /// The most rulings a page's tables are looked for among.
 const MAX_RULES: usize = 20_000;
 /// The most columns a table may have, as a sheet has.
@@ -523,6 +529,67 @@ pub(super) fn subpaths(outline: &str) -> Vec<Subpath> {
 /// rulings, the other filled rectangles areas. What is painted white is
 /// neither.
 pub(super) fn rulings(paths: &[PdfPath]) -> (Vec<Rule>, Vec<Shade>) {
+    rulings_of(paths.iter())
+}
+
+/// The box `path` draws, `[x0, y0, x1, y1]`, when it draws one: a single
+/// rectangle wider and higher than a line, as a shape of a figure is drawn.
+/// The rulings of a table are lines and areas as thin as lines.
+pub(super) fn boxed(path: &PdfPath) -> Option<[f64; 4]> {
+    let [(points, ..)] = &subpaths(&path.outline)[..] else {
+        return None;
+    };
+    let (x, y) = *points.first()?;
+    let bounds = points.iter().fold([x, y, x, y], |b, (x, y)| {
+        [b[0].min(*x), b[1].min(*y), b[2].max(*x), b[3].max(*y)]
+    });
+    (points.len() >= 4
+        && (bounds[2] - bounds[0]).min(bounds[3] - bounds[1]) > THICK
+        && points.iter().all(|(x, y)| {
+            ((x - bounds[0]).abs() < 0.3 || (x - bounds[2]).abs() < 0.3)
+                && ((y - bounds[1]).abs() < 0.3 || (y - bounds[3]).abs() < 0.3)
+        }))
+    .then_some(bounds)
+}
+
+/// The tables of a page that are tables beyond doubt, by where each lies:
+/// rulings drawn as lines (not the boxes of a figure) whose closed cells
+/// cover them, with text in four or more cells of two or more columns and
+/// rows. A figure drawn against one is not of it.
+pub(super) fn sure_tables(shown: &[Shown<'_>], paths: &[PdfPath]) -> Vec<[f64; 4]> {
+    if paths.is_empty() {
+        return vec![];
+    }
+    let (rules, _) = rulings_of(paths.iter().filter(|path| boxed(path).is_none()));
+    lattices(rules)
+        .into_iter()
+        .filter(|lattice| {
+            let held: std::collections::BTreeSet<usize> = shown
+                .iter()
+                .filter(|s| !s.text.trim().is_empty())
+                .filter_map(|s| {
+                    let size = if s.size > 0.0 { s.size } else { 10.0 };
+                    let x = s.x + (0.25 * size).min(s.width.max(0.0) / 2.0);
+                    lattice.region_at(x, s.y - 0.3 * size)
+                })
+                .collect();
+            lattice.closed >= SURE
+                && lattice.columns() >= 2
+                && lattice.ys.len() >= 3
+                && held.len() >= 4
+        })
+        .map(|lattice| {
+            [
+                lattice.xs[0],
+                lattice.ys[0],
+                lattice.xs[lattice.xs.len() - 1],
+                lattice.ys[lattice.ys.len() - 1],
+            ]
+        })
+        .collect()
+}
+
+fn rulings_of<'a>(paths: impl Iterator<Item = &'a PdfPath>) -> (Vec<Rule>, Vec<Shade>) {
     let mut rules = vec![];
     let mut shades = vec![];
     let seen = |color: &Option<String>| color.as_deref().is_some_and(|c| c != "FFFFFF");
@@ -653,6 +720,9 @@ fn clustered(mut values: Vec<f64>) -> Vec<f64> {
 /// with the columns and rows each spans (from 0, both ends included).
 #[derive(Clone, Debug)]
 struct Table {
+    /// Whether it is the text of a figure, row by row, rather than a table:
+    /// it is laid out as one, and written as rows.
+    plain: bool,
     bounds: [f64; 4],
     columns: usize,
     rows: usize,
@@ -664,6 +734,10 @@ struct Table {
 /// the region of cells without a ruling between them that each cell of its
 /// grid is of, with what each region spans.
 struct Lattice {
+    /// The share of the lattice its closed cells cover: those ruled along
+    /// all of their outline. The cells of a table cover it; boxes joined by
+    /// lines leave most of it open.
+    closed: f64,
     xs: Vec<f64>,
     ys: Vec<f64>,
     region: Vec<usize>,
@@ -817,7 +891,31 @@ fn lattices(rules: Vec<Rule>) -> Vec<Lattice> {
         if spans.len() < 2 {
             continue;
         }
+        // The sets of cells ruled along all of their outline: those at the
+        // edge of the lattice have a ruling along it.
+        let mut open = std::collections::BTreeSet::new();
+        for here in 0..columns * rows {
+            let (column, row) = (here % columns, here / columns);
+            let across = |at: f64| ruled(&level, at, xs[column], xs[column + 1]);
+            let down = |at: f64| ruled(&upright, at, ys[row], ys[row + 1]);
+            if (column == 0 && !down(xs[0]))
+                || (column + 1 == columns && !down(xs[columns]))
+                || (row == 0 && !across(ys[0]))
+                || (row + 1 == rows && !across(ys[rows]))
+            {
+                open.insert(root(&mut cells, here));
+            }
+        }
+        let mut closed = 0.0;
+        for here in 0..columns * rows {
+            let (column, row) = (here % columns, here / columns);
+            if !open.contains(&root(&mut cells, here)) {
+                closed += (xs[column + 1] - xs[column]) * (ys[row + 1] - ys[row]);
+            }
+        }
+        let whole = (xs[columns] - xs[0]) * (ys[rows] - ys[0]);
         out.push(Lattice {
+            closed: if whole > 0.0 { closed / whole } else { 0.0 },
             xs,
             ys,
             region,
@@ -882,6 +980,7 @@ enum Item {
 
 struct Free<'a> {
     tables: &'a [Table],
+    shown: &'a [Shown<'a>],
     out: Vec<Block>,
 }
 
@@ -964,7 +1063,56 @@ impl Free<'_> {
                         .collect()
                 })
                 .collect();
-            match texts.map_or(Columns::Apart, unruled) {
+            let Some(texts) = texts else {
+                // A column that holds a table is read on its own; the
+                // columns of text are read together where the first of
+                // them stands, as they may be the columns of a table
+                // without rulings though a table stands between them.
+                let figure = |item: &Item| matches!(item, Item::Table(t) if self.tables[*t].plain);
+                if columns
+                    .iter()
+                    .flatten()
+                    .all(|item| matches!(item, Item::Text(_)) || figure(item))
+                {
+                    // The text of a figure is beside the page's text, not
+                    // of its columns: the page's text is read as it is
+                    // without it, each from the top of the page down.
+                    let (figures, texts): (Vec<Item>, Vec<Item>) =
+                        columns.into_iter().flatten().partition(figure);
+                    let mut groups: Vec<Vec<Item>> =
+                        figures.into_iter().map(|item| vec![item]).collect();
+                    groups.push(texts);
+                    let top = |group: &Vec<Item>| {
+                        group
+                            .iter()
+                            .map(|item| self.bounds(item)[1])
+                            .fold(f64::MAX, f64::min)
+                    };
+                    groups.sort_by(|a, b| top(a).total_cmp(&top(b)));
+                    for group in groups {
+                        self.lay(group);
+                    }
+                    return;
+                }
+                let mut groups: Vec<Vec<Item>> = vec![];
+                let mut texts = None;
+                for column in columns {
+                    if column.iter().any(|item| matches!(item, Item::Table(_))) {
+                        groups.push(column);
+                    } else {
+                        let at = *texts.get_or_insert_with(|| {
+                            groups.push(vec![]);
+                            groups.len() - 1
+                        });
+                        groups[at].extend(column);
+                    }
+                }
+                for group in groups {
+                    self.lay(group);
+                }
+                return;
+            };
+            match unruled(texts, self.shown) {
                 Columns::Table(table) => {
                     self.out.push(Block::Table(table));
                     return;
@@ -1062,30 +1210,80 @@ impl Free<'_> {
                 pitch = pitch.min(step);
                 end += 1;
             }
-            // A last line with one text may be what follows the table.
-            while end > at + 1 && run.last().is_some_and(|line| line.len() < 2) {
-                run.pop();
-                end -= 1;
-            }
-            if set >= 2
-                && end > at + 1
-                && let Some(placed) = grid(&run)
-            {
-                let width = placed.iter().flatten().max().map_or(0, |last| last + 1);
-                let mut columns: Vec<Vec<Fragment>> = vec![vec![]; width];
-                for (line, placed) in run.iter().zip(&placed) {
-                    for (text, column) in line.iter().zip(placed) {
-                        columns[*column].push(text.clone());
+            // The texts of the lines of a run, column by column.
+            let columns = |run: &[Vec<Fragment>]| {
+                grid(run).map(|placed| {
+                    let width = placed.iter().flatten().max().map_or(0, |last| last + 1);
+                    let mut columns: Vec<Vec<Fragment>> = vec![vec![]; width];
+                    for (line, placed) in run.iter().zip(&placed) {
+                        for (text, column) in line.iter().zip(placed) {
+                            columns[*column].push(text.clone());
+                        }
                     }
-                }
-                if let Columns::Table(table) = unruled(columns) {
-                    self.out.push(Block::Table(table));
-                    at = end;
-                    continue;
+                    columns
+                })
+            };
+            // A last line with one text may be what follows the table, or
+            // the end of a cell wrapped onto it: it is of the table when
+            // the run is one with it. A line that follows as closely as
+            // the lines of the run follow one another runs a column on:
+            // texts of different lengths side by side, which three rows
+            // or fewer do not show to be a table.
+            let mut taken = None;
+            let mut tail = end - at;
+            let mut on = false;
+            while set >= 2 && tail > 1 {
+                let Some(columns) = columns(&run[..tail]) else {
+                    break;
+                };
+                match unruled(columns.clone(), self.shown) {
+                    Columns::Table(table) => {
+                        if !(on && table.rows <= 3) {
+                            taken = Some((tail, Ok(table)));
+                        }
+                        break;
+                    }
+                    _ if run[tail - 1].len() < 2 => {
+                        // It runs a column on when it starts where the
+                        // texts of one start and is about as wide: a
+                        // paragraph under a table is wider than its cells.
+                        let last = &run[tail - 1][0];
+                        let widest = run[..tail - 1]
+                            .iter()
+                            .flatten()
+                            .filter(|text| (text.x0 - last.x0).abs() <= last.size)
+                            .map(|text| text.x1 - text.x0)
+                            .fold(0.0, f64::max);
+                        on |= last.y - run[tail - 2][0].y <= 1.3 * pitch
+                            && last.x1 - last.x0 <= 1.5 * widest;
+                        tail -= 1;
+                    }
+                    Columns::Apart => {
+                        taken = Some((tail, Err(columns)));
+                        break;
+                    }
+                    Columns::Lines => break,
                 }
             }
-            self.out.push(Block::Row(line));
-            at += 1;
+            match taken {
+                Some((lines, Ok(table))) => {
+                    self.out.push(Block::Table(table));
+                    at += lines;
+                }
+                // Columns each with lines of their own, one after another.
+                Some((lines, Err(columns))) => {
+                    for mut column in columns {
+                        column.sort_by(|a, b| a.y.total_cmp(&b.y));
+                        self.out
+                            .extend(column.into_iter().map(|text| Block::Row(vec![text])));
+                    }
+                    at += lines;
+                }
+                None => {
+                    self.out.push(Block::Row(line));
+                    at += 1;
+                }
+            }
         }
     }
 }
@@ -1142,21 +1340,52 @@ fn grid(rows: &[Vec<Fragment>]) -> Option<Vec<Vec<usize>>> {
 
 /// What texts with gaps running down between them are.
 enum Columns {
-    /// A table: the columns share their lines, and half the lines (two or
+    /// A table: the columns share their lines, and half its rows (two or
     /// more), the first and the last among them, have texts in several.
     Table(Table),
     /// Columns read one after another: side by side they each have lines
-    /// of their own, or are filled to their width line after line, as
-    /// running text is.
+    /// of their own, are filled to their width line after line, as running
+    /// text is, or are lists.
     Apart,
     /// Lines read one after another, a line here or there with a text set
     /// apart on it, as a heading is from the indented text under it.
     Lines,
 }
 
-/// What the texts set in `columns` are; the rows of a table are their
-/// lines.
-fn unruled(columns: Vec<Vec<Fragment>>) -> Columns {
+/// Whether a text begins as an item of a list does: with a bullet, or a
+/// number and a full stop or bracket.
+fn listed(text: &str) -> bool {
+    let mut chars = text.trim_start().chars();
+    match chars.next() {
+        // Bullets, and the geometric shapes and dingbats used as bullets.
+        Some('・' | '※' | '-' | '–' | '*' | '\u{2022}'..='\u{2043}') => true,
+        Some('\u{25A0}'..='\u{25FF}' | '\u{2600}'..='\u{27BF}' | '\u{2B00}'..='\u{2BFF}') => true,
+        Some('①'..='⑳') => true,
+        Some(first) if first.is_ascii_digit() || first == '(' || first == '（' => {
+            let rest: String = std::iter::once(first).chain(chars).collect();
+            let digits = rest
+                .trim_start_matches(['(', '（'])
+                .trim_start_matches(|c: char| c.is_ascii_digit());
+            digits.len() < rest.len()
+                && rest.chars().any(|c| c.is_ascii_digit())
+                && digits.starts_with(['.', ')', '）', '．'])
+        }
+        _ => false,
+    }
+}
+
+/// What the texts set in `columns` are.
+///
+/// The rows of a table are its lines, except that a line whose texts each
+/// run on from the line above in their column is of the row above: the
+/// line above was wrapped (the first word of this one would not have fitted
+/// on it, it is long, and it does not end a sentence), and a cell holds the
+/// lines it was wrapped into; only running text wraps, not a value as long
+/// as its column is wide. A line where one text runs on and another
+/// begins shows columns each wrapped on its own, which are not the columns
+/// of a table: they are read one after another when each holds sentences,
+/// and columns that are all lists are lists side by side.
+fn unruled(columns: Vec<Vec<Fragment>>, shown: &[Shown<'_>]) -> Columns {
     let baselines = |texts: &mut dyn Iterator<Item = &Fragment>| {
         let mut ys: Vec<(f64, f64)> = texts.map(|f| (f.y, f.size)).collect();
         ys.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1227,6 +1456,12 @@ fn unruled(columns: Vec<Vec<Fragment>>) -> Columns {
     if running {
         return Columns::Apart;
     }
+    // Columns read apart need two lines or more each.
+    let apart = if own.iter().all(|lines| *lines >= 2) {
+        Columns::Apart
+    } else {
+        Columns::Lines
+    };
     // The texts of each line, and the column each is of. A text standing
     // across columns shows they are not the columns of a table: the lines
     // are then read one by one, those of a table among them found there.
@@ -1244,59 +1479,266 @@ fn unruled(columns: Vec<Vec<Fragment>>) -> Columns {
         return Columns::Lines;
     };
     let width = placed.iter().flatten().max().map_or(0, |last| last + 1);
-    let lines = lines
-        .into_iter()
-        .zip(placed)
-        .map(|(line, placed)| placed.into_iter().zip(line));
+    // How far the texts of each column reach.
+    let mut reach = vec![(f64::MAX, f64::MIN); width];
+    for (line, placed) in lines.iter().zip(&placed) {
+        for (text, column) in line.iter().zip(placed) {
+            let (left, right) = &mut reach[*column];
+            (*left, *right) = (left.min(text.x0), right.max(text.x1));
+        }
+    }
+    let text = |f: &Fragment| composed(&f.pieces, |i| shown[i].text);
+    // Whether `next`, on the line after `last` in the column that reaches
+    // `left..right`, runs on from it.
+    let runs_on = |last: &Fragment, next: &Fragment, (left, right): (f64, f64)| {
+        let size = last.size.max(next.size);
+        let written = text(next);
+        let word = match written.chars().next() {
+            Some(c) if unspaced(c) => 1,
+            _ => written.chars().take_while(|c| !c.is_whitespace()).count(),
+        };
+        let wide = (next.x1 - next.x0) * word as f64 / written.chars().count().max(1) as f64;
+        let ended = text(last)
+            .trim_end()
+            .chars()
+            .next_back()
+            .is_some_and(|c| matches!(c, '。' | '．' | '.' | '！' | '？' | '!' | '?'));
+        // Running text, which is what wraps: a code, a date or a name
+        // as long as its column is wide is a value of its own.
+        let above = text(last);
+        let running = above.chars().filter(|c| unspaced(*c)).count() >= 8
+            || above.split_whitespace().count() >= 4;
+        next.y - last.last <= 2.0 * size
+            && last.x1 - last.x0 >= 8.0 * last.size
+            && running
+            && next.x0 <= left + 1.5 * size
+            && !ended
+            && last.x1 + wide > right - 0.5 * size
+    };
+    // Each line: whether its texts all run on from the line above, and
+    // whether only some do.
+    let mut continued = vec![false; rows.len()];
+    let mut mixed = false;
+    for row in 1..rows.len() {
+        let on: Vec<bool> = lines[row]
+            .iter()
+            .zip(&placed[row])
+            .map(|(next, column)| {
+                lines[row - 1]
+                    .iter()
+                    .zip(&placed[row - 1])
+                    .find(|(_, above)| *above == column)
+                    .is_some_and(|(last, _)| runs_on(last, next, reach[*column]))
+            })
+            .collect();
+        continued[row] = !on.is_empty() && on.iter().all(|on| *on);
+        mixed |= !continued[row] && on.iter().any(|on| *on);
+    }
+    if mixed {
+        // Sentences in every column are running text side by side; a
+        // heading over the first column of a table runs on into no cell.
+        let sentences = columns.iter().all(|column| {
+            column.iter().any(|f| {
+                text(f)
+                    .trim_end()
+                    .ends_with(['。', '．', '.', '！', '？', '!', '?'])
+            })
+        });
+        return if sentences { apart } else { Columns::Lines };
+    }
+    // The rows: a line and the lines that run on from it.
+    let mut row_of = vec![0usize; rows.len()];
+    let mut count = 0;
+    for row in 0..rows.len() {
+        if row > 0 && !continued[row] {
+            count += 1;
+        }
+        row_of[row] = count;
+    }
+    let depth = count + 1;
     let mut cells: BTreeMap<(usize, usize), Vec<Fragment>> = BTreeMap::new();
     let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    for (row, line) in lines.into_iter().enumerate() {
-        for (column, text) in line {
+    for ((line, placed), row) in lines.into_iter().zip(placed).zip(&row_of) {
+        for (text, column) in line.into_iter().zip(placed) {
             bounds = [
                 bounds[0].min(text.x0),
                 bounds[1].min(text.top()),
                 bounds[2].max(text.x1),
                 bounds[3].max(text.bottom()),
             ];
-            cells.entry((row, column)).or_default().push(text);
+            cells.entry((*row, column)).or_default().push(text);
         }
     }
-    let mut filled = vec![0usize; rows.len()];
+    let mut filled = vec![0usize; depth];
     for (row, _) in cells.keys() {
         filled[*row] += 1;
     }
-    // A table has texts in several columns on two lines or more, on half
-    // its lines, and on its first and last: fewer are lines with a text
+    // A table has texts in several columns on two rows or more, on half
+    // its rows, and on its first and last: fewer are lines with a text
     // set apart here and there, and a line of one text over or under a
     // table is what stands before or after it.
     let several = filled.iter().filter(|columns| **columns > 1).count();
     let ends = filled.first().is_some_and(|n| *n > 1) && filled.last().is_some_and(|n| *n > 1);
-    if several < 2 || 2 * several < rows.len() || !ends {
-        return Columns::Lines;
+    if several < 2 || 2 * several < depth || !ends {
+        // Text wrapped line after line in each column is running text.
+        let wrapped = continued.iter().filter(|c| **c).count();
+        return if 2 * wrapped >= rows.len() {
+            apart
+        } else {
+            Columns::Lines
+        };
+    }
+    if cells.values().flatten().all(|f| listed(&text(f))) {
+        return apart;
     }
     let cells: Vec<([usize; 4], Vec<Piece>)> = cells
         .into_iter()
         .map(|((row, column), mut texts)| {
-            texts.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-            let mut pieces: Vec<Piece> = vec![];
+            texts.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x0.total_cmp(&b.x0)));
+            // The texts of a line a space apart, the lines as a paragraph's
+            // are: joined where one was wrapped into the next.
+            let mut of_lines: Vec<Fragment> = vec![];
             for text in texts {
-                let first = pieces.len();
-                pieces.extend(text.pieces);
-                if first > 0 {
-                    pieces[first].before = " ";
+                match of_lines.last_mut() {
+                    Some(line) if text.y - line.y <= 0.3 * text.size.min(line.size) => {
+                        let first = line.pieces.len();
+                        line.pieces.extend(text.pieces);
+                        line.pieces[first].before = " ";
+                        line.x1 = line.x1.max(text.x1);
+                    }
+                    _ => of_lines.push(text),
                 }
             }
-            ([column, row, column, row], pieces)
+            let whole = paragraph(of_lines, shown, Some(reach[column].1));
+            ([column, row, column, row], whole.pieces)
         })
         .collect();
-    let header_rows = header_rows(&cells, &vec![false; cells.len()], width, rows.len());
+    let header_rows = header_rows(&cells, &vec![false; cells.len()], width, depth);
     Columns::Table(Table {
+        plain: false,
         bounds,
         columns: width,
-        rows: rows.len(),
+        rows: depth,
         cells,
         header_rows,
     })
+}
+
+/// Where the words of each of `lines` part though they stand closer than
+/// texts do: the indices of the words that begin a text there.
+///
+/// A gap narrower than the one that parts texts is the space between
+/// columns when it runs down the page: three lines or more leave it free,
+/// two or more of them with words on both sides of it, and four and three
+/// where lines that run further leave little of it. A line alone cannot
+/// tell such a gap from the space between words. The gap after the bullets
+/// or numbers of a list is not one: an item is one text with its bullet.
+fn rivers(lines: &[Vec<Word>], shown: &[Shown<'_>]) -> Vec<Vec<usize>> {
+    let mut parts = vec![vec![]; lines.len()];
+    if lines.len() < 3 || lines.len() > MAX_RIVER_LINES {
+        return parts;
+    }
+    // The band `a..b` as line `j` leaves it: none when a word runs through
+    // it or it is left narrower than `least`; and whether the line has
+    // words on both sides of it.
+    let left = |j: usize, a: f64, b: f64, least: f64| -> Option<(f64, f64, bool)> {
+        let (mut a, mut b) = (a, b);
+        for word in &lines[j] {
+            if word.x1 <= a || word.x0 >= b {
+                continue;
+            }
+            if word.x0 <= a && word.x1 >= b {
+                return None;
+            }
+            if word.x0 <= a {
+                a = a.max(word.x1);
+            } else {
+                b = b.min(word.x0);
+            }
+        }
+        (b - a >= least).then(|| {
+            let sides = lines[j].iter().any(|w| w.x1 <= a + 0.5)
+                && lines[j].iter().any(|w| w.x0 >= b - 0.5);
+            (a, b, sides)
+        })
+    };
+    for (i, line) in lines.iter().enumerate() {
+        if !line.first().is_some_and(|w| w.upright) {
+            continue;
+        }
+        let mut reach = f64::MIN;
+        for (k, word) in line.iter().enumerate() {
+            let size = word.size.max(1.0);
+            let (a, b) = (reach, word.x0);
+            reach = reach.max(word.x1);
+            // Half the width may be taken by the lines that run further.
+            let (least, wide) = ((0.5 * size).max(4.0), (0.8 * size).max(6.0));
+            if k == 0 || b - a < least || b - a > TEXT_GAP * size {
+                continue;
+            }
+            // The gap after the bullet or number of a list item, which the
+            // items of a list share, is the item's own.
+            let first = (1..k)
+                .rev()
+                .find(|j| line[*j].x0 - line[j - 1].x1 >= least)
+                .unwrap_or(0);
+            let before: String = line[first..k]
+                .iter()
+                .map(|w| shown[w.string].text)
+                .collect();
+            if before.trim().chars().count() <= 4 && listed(&before) {
+                continue;
+            }
+            let (mut a, mut b) = (a, b);
+            let (mut span, mut sided) = (1, 1);
+            // Down the page, then up, as far as lines follow one another.
+            for step in [1isize, -1] {
+                let mut at = i as isize;
+                loop {
+                    let next = at + step;
+                    if next < 0 || next >= lines.len() as isize {
+                        break;
+                    }
+                    let (here, there) = (&lines[at as usize][0], &lines[next as usize][0]);
+                    if !there.upright || (there.y - here.y).abs() > 3.0 * size {
+                        break;
+                    }
+                    let Some((left_a, left_b, sides)) = left(next as usize, a, b, least) else {
+                        break;
+                    };
+                    (a, b) = (left_a, left_b);
+                    span += 1;
+                    sided += usize::from(sides);
+                    at = next;
+                }
+            }
+            // A gap left narrow by the lines beside it needs more of them.
+            if (b - a >= wide && span >= 3 && sided >= 2) || (span >= 4 && sided >= 3) {
+                parts[i].push(k);
+            }
+        }
+    }
+    parts
+}
+
+/// The grids `paths` rule, whether or not their cells hold text: where each
+/// lies on the page, `[x0, y0, x1, y1]`, and the share of it its closed
+/// cells cover.
+pub(super) fn grids(paths: &[PdfPath]) -> Vec<([f64; 4], f64)> {
+    lattices(rulings(paths).0)
+        .into_iter()
+        .map(|lattice| {
+            (
+                [
+                    lattice.xs[0],
+                    lattice.ys[0],
+                    lattice.xs[lattice.xs.len() - 1],
+                    lattice.ys[lattice.ys.len() - 1],
+                ],
+                lattice.closed,
+            )
+        })
+        .collect()
 }
 
 /// The address of the cell at a 1-based `column` and `row`.
@@ -1305,11 +1747,38 @@ fn address(column: u32, row: u32) -> String {
     format!("{column}{row}")
 }
 
-/// The sheet of a page that shows `shown`, paints `paths` and names the
-/// tables `marked`.
-pub(super) fn layout(shown: &[Shown<'_>], paths: &[PdfPath], marked: &[Marked]) -> Layout {
-    let (rules, shades) = rulings(paths);
-    ruled_layout(shown, rules, &shades, marked)
+/// The sheet of a page that shows `shown`, paints `paths`, names the tables
+/// `marked` and draws the figures `figures` (see [`ruled_layout`]). `sure`
+/// are its tables beyond doubt ([`sure_tables`]): a box drawn against one
+/// is a shape of a figure beside it, and does not rule a cell of it.
+pub(super) fn layout(
+    shown: &[Shown<'_>],
+    paths: &[PdfPath],
+    marked: &[Marked],
+    figures: &[([f64; 4], bool)],
+    sure: &[[f64; 4]],
+) -> Layout {
+    let against = |path: &PdfPath| {
+        boxed(path).is_some_and(|b| {
+            sure.iter().any(|t| {
+                let within = b[0] >= t[0] - MEET
+                    && b[1] >= t[1] - MEET
+                    && b[2] <= t[2] + MEET
+                    && b[3] <= t[3] + MEET;
+                let near = b[0] <= t[2] + 2.0 * MEET
+                    && t[0] <= b[2] + 2.0 * MEET
+                    && b[1] <= t[3] + 2.0 * MEET
+                    && t[1] <= b[3] + 2.0 * MEET;
+                near && !within
+            })
+        })
+    };
+    let (rules, shades) = if sure.is_empty() {
+        rulings(paths)
+    } else {
+        rulings_of(paths.iter().filter(|path| !against(path)))
+    };
+    ruled_layout(shown, rules, &shades, marked, figures)
 }
 
 /// The table a page names by its rows and cells, whose text is that of the
@@ -1478,6 +1947,7 @@ fn marked_table(
         header_rows(&cells, &vec![false; cells.len()], columns, depth)
     };
     Some(Table {
+        plain: false,
         bounds,
         columns,
         rows: depth,
@@ -1497,11 +1967,20 @@ fn start(text: &Fragment) -> [f64; 2] {
 
 /// The sheet of a page that shows `shown`, is ruled by `rules`, has the
 /// areas `shades` filled with a colour and names the tables `marked`.
+///
+/// `figures` are the boxes of the figures the page draws, each with whether
+/// it is a diagram of boxes. The lines of a figure (its boxes and the lines
+/// joining them) rule no table: rulings in a figure are a table only when
+/// they hold text in four or more cells of two or more columns and rows,
+/// and never in a diagram of boxes. The text of a figure that is in no such
+/// table is read row by row where the figure stands, a row a line of it,
+/// and is no table however its labels are set.
 pub(crate) fn ruled_layout(
     shown: &[Shown<'_>],
     rules: Vec<Rule>,
     shades: &[Shade],
     marked: &[Marked],
+    figures: &[([f64; 4], bool)],
 ) -> Layout {
     let mut tables = vec![];
     // The strings of each paragraph the page names are one text; a table
@@ -1570,24 +2049,39 @@ pub(crate) fn ruled_layout(
             .filter_map(|(i, lattice)| Some((i, lattice.region_at(x, y)?)))
             .min_by(|a, b| lattices[a.0].area(a.1).total_cmp(&lattices[b.0].area(b.1)))
     };
+    // The figure a point is in, and the words and texts of each figure
+    // that are in no table.
+    let drawn_at = |[x, y]: [f64; 2]| {
+        figures
+            .iter()
+            .position(|(b, _)| (b[0]..=b[2]).contains(&x) && (b[1]..=b[3]).contains(&y))
+    };
+    let mut drawn_words: Vec<Vec<Word>> = vec![vec![]; figures.len()];
+    let mut drawn: Vec<Vec<Fragment>> = vec![vec![]; figures.len()];
     let mut free = vec![];
     for word in words {
-        let x = word.x0 + (0.25 * word.size).min((word.x1 - word.x0) / 2.0);
-        match within(&lattices, [x, word.y - 0.3 * word.size]) {
-            Some((lattice, region)) => lattices[lattice].words[region].push(word),
-            None => free.push(word),
+        let at = [
+            word.x0 + (0.25 * word.size).min((word.x1 - word.x0) / 2.0),
+            word.y - 0.3 * word.size,
+        ];
+        match (within(&lattices, at), drawn_at(at)) {
+            (Some((lattice, region)), _) => lattices[lattice].words[region].push(word),
+            (None, Some(figure)) => drawn_words[figure].push(word),
+            (None, None) => free.push(word),
         }
     }
     let mut items = vec![];
     for lines in units.into_values() {
-        match within(&lattices, start(&lines[0])) {
-            Some((lattice, region)) => {
+        let at = start(&lines[0]);
+        match (within(&lattices, at), drawn_at(at)) {
+            (Some((lattice, region)), _) => {
                 // The paragraph may run to the right edge of its cell.
                 let lattice = &mut lattices[lattice];
                 let right = lattice.xs[lattice.spans[region][2] + 1];
                 lattice.texts[region].push(paragraph(lines, shown, Some(right)));
             }
-            None => items.push(Item::Text(paragraph(lines, shown, None))),
+            (None, Some(figure)) => drawn[figure].push(paragraph(lines, shown, None)),
+            (None, None) => items.push(Item::Text(paragraph(lines, shown, None))),
         }
     }
     for mut lattice in lattices {
@@ -1598,11 +2092,29 @@ pub(crate) fn ruled_layout(
             lattice.ys[lattice.ys.len() - 1],
         ];
         let whole = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]);
-        let mut cells = vec![];
-        let mut shaded = vec![];
+        let mut held = vec![];
         for region in 0..lattice.spans.len() {
             let mut texts = line_texts(std::mem::take(&mut lattice.words[region]), shown);
             texts.append(&mut lattice.texts[region]);
+            if !texts.is_empty() {
+                held.push((region, texts));
+            }
+        }
+        let (columns, rows) = (lattice.columns(), lattice.ys.len() - 1);
+        // The lines of a figure are its boxes, not a table.
+        if let Some(figure) = figures.iter().position(|(b, diagram)| {
+            bounds[0] >= b[0] - MEET
+                && bounds[1] >= b[1] - MEET
+                && bounds[2] <= b[2] + MEET
+                && bounds[3] <= b[3] + MEET
+                && (*diagram || held.len() < 4 || columns < 2 || rows < 2)
+        }) {
+            drawn[figure].extend(held.into_iter().flat_map(|(_, texts)| texts));
+            continue;
+        }
+        let mut cells = vec![];
+        let mut shaded = vec![];
+        for (region, texts) in held {
             let pieces = cell_pieces(texts);
             if pieces.is_empty() {
                 continue;
@@ -1622,8 +2134,8 @@ pub(crate) fn ruled_layout(
         if cells.is_empty() {
             continue;
         }
-        let (columns, rows) = (lattice.columns(), lattice.ys.len() - 1);
         tables.push(Table {
+            plain: false,
             bounds,
             columns,
             rows,
@@ -1631,12 +2143,67 @@ pub(crate) fn ruled_layout(
             cells,
         });
     }
+    // The text of each figure, a row a line of it, where the figure stands.
+    for (mut texts, words) in drawn.into_iter().zip(drawn_words) {
+        for line in lines(words) {
+            texts.extend(fragments(&line, shown, true));
+        }
+        // It stands where its text is: a figure may reach over a table.
+        let bounds = texts
+            .iter()
+            .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, t| {
+                [
+                    b[0].min(t.x0),
+                    b[1].min(t.top()),
+                    b[2].max(t.x1),
+                    b[3].max(t.bottom()),
+                ]
+            });
+        texts.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x0.total_cmp(&b.x0)));
+        let mut rows: Vec<Vec<Fragment>> = vec![];
+        for text in texts {
+            match rows.last_mut() {
+                Some(row) if text.y - row[0].y <= 0.3 * text.size.min(row[0].size) => {
+                    row.push(text);
+                }
+                _ => rows.push(vec![text]),
+            }
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        let mut cells = vec![];
+        for (row, mut texts) in rows.into_iter().enumerate() {
+            texts.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+            for (column, text) in texts.into_iter().enumerate() {
+                let column = column.min(MAX_COLUMNS - 1);
+                cells.push(([column, row, column, row], text.pieces));
+            }
+        }
+        tables.push(Table {
+            plain: true,
+            bounds,
+            columns: cells.iter().map(|(span, _)| span[0] + 1).max().unwrap_or(1),
+            rows: cells.iter().map(|(span, _)| span[1] + 1).max().unwrap_or(1),
+            header_rows: 0,
+            cells,
+        });
+    }
     items.extend((0..tables.len()).map(Item::Table));
-    for line in lines(free) {
-        items.extend(fragments(&line, shown, true).into_iter().map(Item::Text));
+    // The texts of each line, parted where texts stand apart and where a
+    // narrower gap runs down the lines between columns.
+    let free = lines(free);
+    for (line, parts) in free.iter().zip(rivers(&free, shown)) {
+        let mut from = 0;
+        for to in parts.into_iter().chain([line.len()]) {
+            let texts = fragments(&line[from..to], shown, true);
+            items.extend(texts.into_iter().map(Item::Text));
+            from = to;
+        }
     }
     let mut free = Free {
         tables: &tables,
+        shown,
         out: vec![],
     };
     free.lay(items);
@@ -1664,6 +2231,28 @@ pub(crate) fn ruled_layout(
             }
             Block::Table(mut table) => {
                 table.cells.sort_by_key(|(span, _)| (span[1], span[0]));
+                if table.plain {
+                    // Texts beyond the columns of a sheet join the last.
+                    let mut last = None;
+                    for ([column, line, ..], pieces) in table.cells {
+                        if last == Some((column, line))
+                            && let Some(cell) = layout.cells.last_mut()
+                        {
+                            let first = cell.pieces.len();
+                            cell.pieces.extend(pieces);
+                            cell.pieces[first].before = " ";
+                            continue;
+                        }
+                        last = Some((column, line));
+                        layout.cells.push(Cell {
+                            column: column as u32 + 1,
+                            row: row + line as u32,
+                            pieces,
+                        });
+                    }
+                    row += table.rows as u32;
+                    continue;
+                }
                 for ([c0, r0, c1, r1], pieces) in table.cells {
                     let (column, top) = (c0 as u32 + 1, row + r0 as u32);
                     if [c0, r0] != [c1, r1] {
@@ -1716,7 +2305,7 @@ mod tests {
 
     /// [`layout`] of a page that names no tables.
     fn layout(shown: &[Shown<'_>], paths: &[PdfPath]) -> Layout {
-        super::layout(shown, paths, &[])
+        super::layout(shown, paths, &[], &[], &[])
     }
 
     fn line(x0: f64, y0: f64, x1: f64, y1: f64) -> PdfPath {
@@ -2146,7 +2735,7 @@ mod tests {
             ],
             header_rows: 2,
         }];
-        let layout = super::layout(&shown, &[], &marked);
+        let layout = super::layout(&shown, &[], &marked, &[], &[]);
         assert_eq!(
             texts(&layout, &shown),
             pairs(&[
@@ -2276,7 +2865,7 @@ mod tests {
             ],
             header_rows: 1,
         }];
-        let named = super::layout(&shown, &[], &marked);
+        let named = super::layout(&shown, &[], &marked, &[], &[]);
         assert_eq!(
             texts(&named, &shown)[6..],
             pairs(&[("B3", "Nut"), ("C3", "9")])
@@ -2294,7 +2883,7 @@ mod tests {
         for x in [40.0, 110.0, 190.0, 260.0] {
             paths.push(line(x, 88.0, x, 132.0));
         }
-        let ruled = super::layout(&shown, &paths, &marked);
+        let ruled = super::layout(&shown, &paths, &marked, &[], &[]);
         assert_eq!(ruled.merges, ["A2:A3"]);
         assert_eq!(texts(&ruled, &shown), texts(&named, &shown));
     }
@@ -2332,5 +2921,241 @@ mod tests {
             let error = changed(after).unwrap_err().to_string();
             assert!(error.contains("space or line break"), "{error}");
         }
+    }
+
+    #[test]
+    fn the_lines_of_a_figure_rule_no_table_and_its_text_is_read_row_by_row() {
+        // Two boxes joined by a line, a label in each and one over the
+        // line, above a ruled table of two columns and two rows.
+        let mut paths = vec![];
+        for x in [100.0, 260.0] {
+            paths.extend([
+                line(x, 100.0, x + 100.0, 100.0),
+                line(x, 130.0, x + 100.0, 130.0),
+                line(x, 100.0, x, 130.0),
+                line(x + 100.0, 100.0, x + 100.0, 130.0),
+            ]);
+        }
+        paths.push(line(200.0, 115.0, 260.0, 115.0));
+        for y in [200.0, 220.0, 240.0] {
+            paths.push(line(100.0, y, 300.0, y));
+        }
+        for x in [100.0, 200.0, 300.0] {
+            paths.push(line(x, 200.0, x, 240.0));
+        }
+        let shown = shown(&[
+            ("Order", 110.0, 120.0),
+            ("Stock", 270.0, 120.0),
+            ("many", 215.0, 110.0),
+            ("Key", 105.0, 214.0),
+            ("Kind", 205.0, 214.0),
+            ("a", 105.0, 234.0),
+            ("b", 205.0, 234.0),
+        ]);
+        // Read from its lines alone, the figure is a table of its own.
+        let read = layout(&shown, &paths);
+        assert_eq!(read.tables.len(), 2, "{:?}", read.tables);
+        // As a figure it is rows of its text; the table below stays one.
+        let figure = [([100.0, 100.0, 360.0, 130.0], false)];
+        let read = super::layout(&shown, &paths, &[], &figure, &[]);
+        assert_eq!(read.tables.len(), 1);
+        assert_eq!(read.tables[0]["range"], "A3:B4");
+        assert!(read.merges.is_empty(), "{:?}", read.merges);
+        assert_eq!(
+            texts(&read, &shown),
+            pairs(&[
+                ("A1", "many"),
+                ("A2", "Order"),
+                ("B2", "Stock"),
+                ("A3", "Key"),
+                ("B3", "Kind"),
+                ("A4", "a"),
+                ("B4", "b"),
+            ])
+        );
+        // Rulings in a figure that hold text in four cells of two columns
+        // and rows are a table still, unless the figure is a diagram of
+        // boxes.
+        let around = [([90.0, 90.0, 370.0, 250.0], false)];
+        let read = super::layout(&shown, &paths, &[], &around, &[]);
+        assert_eq!(read.tables.len(), 1, "{:?}", read.tables);
+        let boxes = [([90.0, 90.0, 370.0, 250.0], true)];
+        let read = super::layout(&shown, &paths, &[], &boxes, &[]);
+        assert!(read.tables.is_empty(), "{:?}", read.tables);
+        assert_eq!(read.cells.len(), 7);
+    }
+
+    #[test]
+    fn a_box_drawn_against_a_table_does_not_rule_a_cell_of_it() {
+        // A ruled table of two columns and two rows with text in each
+        // cell, and a box with a label drawn against its last ruling.
+        let mut paths = vec![];
+        for y in [100.0, 120.0, 140.0] {
+            paths.push(line(100.0, y, 300.0, y));
+        }
+        for x in [100.0, 200.0, 300.0] {
+            paths.push(line(x, 100.0, x, 140.0));
+        }
+        paths.push(PdfPath {
+            outline: "M100.00,142.00L200.00,142.00 200.00,170.00 100.00,170.00Z".into(),
+            fill: None,
+            even_odd: false,
+            stroke: Some("000000".into()),
+            width: 0.5,
+        });
+        let shown = shown(&[
+            ("Key", 105.0, 114.0),
+            ("Kind", 205.0, 114.0),
+            ("a", 105.0, 134.0),
+            ("b", 205.0, 134.0),
+            ("Start", 105.0, 160.0),
+        ]);
+        // Read with the box, the table has a third row holding its label.
+        let read = super::layout(&shown, &paths, &[], &[], &[]);
+        assert_eq!(read.tables[0]["range"], "A1:B3");
+        // The table is one beyond doubt without the box, and is read so.
+        let sure = sure_tables(&shown, &paths);
+        assert_eq!(sure.len(), 1);
+        assert_eq!(sure[0].map(f64::round), [100.0, 100.0, 300.0, 140.0]);
+        let read = super::layout(&shown, &paths, &[], &[], &sure);
+        assert_eq!(read.tables[0]["range"], "A1:B2");
+        assert_eq!(
+            texts(&read, &shown)[4],
+            ("A3".to_owned(), "Start".to_owned())
+        );
+        // Rulings with text in fewer than four cells are not beyond doubt.
+        assert!(sure_tables(&shown[..3], &paths).is_empty());
+    }
+
+    #[test]
+    fn a_cell_wrapped_onto_lines_is_one_cell_of_a_table_without_rulings() {
+        // The second column of the first row is wrapped onto a line of its
+        // own, on which the first column has nothing.
+        let shown = shown(&[
+            ("Item", 50.0, 100.0),
+            ("Note", 150.0, 100.0),
+            ("A-1", 50.0, 114.0),
+            ("this text is long enough to wrap onto", 150.0, 114.0),
+            ("the next line.", 150.0, 128.0),
+            ("A-2", 50.0, 142.0),
+            ("short.", 150.0, 142.0),
+        ]);
+        let layout = layout(&shown, &[]);
+        assert_eq!(
+            texts(&layout, &shown),
+            pairs(&[
+                ("A1", "Item"),
+                ("B1", "Note"),
+                ("A2", "A-1"),
+                ("B2", "this text is long enough to wrap onto the next line."),
+                ("A3", "A-2"),
+                ("B3", "short."),
+            ])
+        );
+        assert_eq!(layout.tables[0]["range"], "A1:B3");
+        // A value as long as its column is wide is not wrapped: the row
+        // under it is a row.
+        let values = shown_values();
+        let read = super::layout(&values, &[], &[], &[], &[]);
+        assert_eq!(read.tables[0]["range"], "A1:B3");
+        assert_eq!(read.cells.len(), 6);
+    }
+
+    /// A key and a value on each of three lines, the first value a code as
+    /// long as its column is wide.
+    fn shown_values() -> Vec<Shown<'static>> {
+        shown(&[
+            ("Number", 50.0, 100.0),
+            ("DOC-2026-0142-REV-A", 150.0, 100.0),
+            ("Author", 50.0, 114.0),
+            ("Yamada", 150.0, 114.0),
+            ("State", 50.0, 128.0),
+            ("Approved", 150.0, 128.0),
+        ])
+    }
+
+    #[test]
+    fn texts_of_different_lengths_side_by_side_are_not_a_table() {
+        // A note of two lines beside a list of three: their first two lines
+        // stand in two columns, and the list runs on.
+        let note = shown(&[
+            ("Note: no updates at night", 50.0, 100.0),
+            ("two servers", 300.0, 100.0),
+            ("from two to four", 50.0, 114.0),
+            ("watched daily", 300.0, 114.0),
+            ("backed up nightly", 300.0, 128.0),
+        ]);
+        let read = layout(&note, &[]);
+        assert!(read.tables.is_empty(), "{:?}", read.tables);
+        assert_eq!(read.cells.len(), 5);
+        // Lists side by side are lists, though their items stand in rows.
+        let shown = shown(&[
+            ("- enter the order", 50.0, 100.0),
+            ("- print the slip", 300.0, 100.0),
+            ("- reserve the stock", 50.0, 114.0),
+            ("- send the invoice", 300.0, 114.0),
+            ("- ship the goods", 50.0, 128.0),
+            ("- check the payment", 300.0, 128.0),
+        ]);
+        let layout = layout(&shown, &[]);
+        assert!(layout.tables.is_empty(), "{:?}", layout.tables);
+        let read: Vec<String> = texts(&layout, &shown).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(
+            read[..3],
+            [
+                "- enter the order",
+                "- reserve the stock",
+                "- ship the goods"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gap_running_down_the_lines_parts_columns_set_close() {
+        // Two columns of running text ten points apart, closer than texts
+        // of one line may stand: each is read down, one after the other.
+        let mut strings = vec![];
+        let left = [
+            "aaaa bbbb cccc dddd eeee ffff",
+            "gggg hhhh iiii jjjj kkkk llll",
+            "mmmm nnnn oooo pppp qqqq rrrr",
+            "ssss tttt uuuu.",
+        ];
+        let right = [
+            "AAAA BBBB CCCC DDDD EEEE FFFF",
+            "GGGG HHHH IIII JJJJ KKKK LLLL",
+            "MMMM NNNN OOOO PPPP QQQQ RRRR",
+            "SSSS TTTT UUUU.",
+        ];
+        for (i, (l, r)) in left.iter().zip(right).enumerate() {
+            strings.push((*l, 50.0, 100.0 + 14.0 * i as f64));
+            strings.push((r, 205.0, 100.0 + 14.0 * i as f64));
+        }
+        let columns = shown(&strings);
+        let laid = layout(&columns, &[]);
+        assert!(laid.tables.is_empty(), "{:?}", laid.tables);
+        let read: Vec<String> = texts(&laid, &columns).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(read.len(), 8, "{read:?}");
+        assert_eq!(read[..4], left);
+        assert_eq!(read[4..], right);
+        // The gap after the numbers of a list is the items' own.
+        let shown = shown(&[
+            ("1.", 50.0, 100.0),
+            ("first item of the list", 68.0, 100.0),
+            ("2.", 50.0, 114.0),
+            ("second item of the list", 68.0, 114.0),
+            ("3.", 50.0, 128.0),
+            ("third item of the list", 68.0, 128.0),
+        ]);
+        let layout = layout(&shown, &[]);
+        let read: Vec<String> = texts(&layout, &shown).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(
+            read,
+            [
+                "1. first item of the list",
+                "2. second item of the list",
+                "3. third item of the list"
+            ]
+        );
     }
 }

@@ -154,7 +154,7 @@ fn laid(read: &Read) -> (String, Option<Value>) {
     } else {
         vec![]
     };
-    let layout = page_layout::ruled_layout(&shown, rules, &[], &[]);
+    let layout = page_layout::ruled_layout(&shown, rules, &[], &[], &[]);
     // The lines of a cell are one text on its row.
     let flat = |text: &str| {
         let mut out = String::new();

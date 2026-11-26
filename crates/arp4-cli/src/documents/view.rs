@@ -17,11 +17,11 @@ impl Store {
     pub fn view(&self, id: &str, proposal: bool) -> Result<Value> {
         let dir = self.structure_dir(id, proposal)?;
         let inspected = self.inspect(&dir, false)?;
+        let source_path = string(&inspected.meta["source"]["path"])?;
         ensure!(
             inspected.source_current,
-            "source changed/missing; re-import before view"
+            "the original {source_path} changed or is missing since it was imported; run documents import {source_path}, then view again"
         );
-        let source_path = string(&inspected.meta["source"]["path"])?;
         let content = shown(&inspected)?;
         let structure = self.readings(id, proposal, &dir, &inspected, &content)?;
         // Opened once the readings, which take the most room, are made.
@@ -43,8 +43,138 @@ impl Store {
         // A project made before views had their own folder ignores it from here on.
         crate::project::ensure_lines(&under(&self.arp, ".gitignore")?, &["/view/"])?;
         replace_cache(&out, page.html.as_bytes())?;
-        Ok(json!({"state":"saved","view":out,"document_id":id,
+        Ok(json!({"state":"saved","document_id":id,"view":out,
             "pages":inspected.extraction.sheets.len(),"differences":page.differences}))
+    }
+
+    /// Writes the view of every document `named` names, or of every document
+    /// when it names none, and returns those written (`views`) and those not
+    /// (`failed`, each with the reason); one that fails does not keep the
+    /// others from being written. A name is a document ID, a folder ID for
+    /// every document below it, or the path of an original or of a folder of
+    /// originals as import takes it. A document is shown as adopted
+    /// (`pending_proposal` when a proposal awaits beside it), and one not
+    /// adopted yet by its proposal (`proposal`); with `proposal`, the
+    /// proposals alone are shown.
+    pub fn views(&self, named: &[String], proposal: bool) -> Result<Value> {
+        let adopted: BTreeSet<String> = self.ids("documents", None)?.into_iter().collect();
+        let proposed: BTreeSet<String> = self.ids("changes", None)?.into_iter().collect();
+        let known: BTreeSet<&String> = adopted.union(&proposed).collect();
+        let below = |scope: &str| -> Vec<&String> {
+            known
+                .iter()
+                .filter(|id| {
+                    scope.is_empty()
+                        || id
+                            .strip_prefix(scope)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                })
+                .copied()
+                .collect()
+        };
+        let mut failed = vec![];
+        let mut targets: Vec<(&String, bool)> = vec![];
+        if named.is_empty() {
+            ensure!(
+                !known.is_empty(),
+                "no document is imported; run documents import <original or folder>"
+            );
+            ensure!(
+                !proposal || !proposed.is_empty(),
+                "no proposal; without --proposal the adopted documents are shown"
+            );
+            targets.extend(
+                known
+                    .iter()
+                    .filter(|id| !proposal || proposed.contains(**id))
+                    .map(|id| (*id, proposal || !adopted.contains(*id))),
+            );
+        }
+        for name in named {
+            let typed = name.replace('\\', "/");
+            let typed = typed.trim_start_matches("./").trim_end_matches('/');
+            let mut found = if typed.is_empty() {
+                vec![]
+            } else {
+                below(typed)
+            };
+            // The original as import is given it: its path from the project
+            // root or from the sources folder, or its absolute path.
+            let original = if found.is_empty() {
+                self.resolve(Path::new(name)).ok()
+            } else {
+                None
+            };
+            if let Some((_, id)) = &original {
+                found = below(id);
+            }
+            if found.is_empty() {
+                let reason = if known.is_empty() {
+                    "no document is imported; run documents import <original or folder>".to_owned()
+                } else if let Some((path, _)) = original.filter(|(path, _)| path.is_file()) {
+                    format!(
+                        "the original is not imported; run documents import {}, then view",
+                        path.strip_prefix(&self.root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    )
+                } else {
+                    // The documents of that file name, in whatever folder.
+                    let file = typed.rsplit('/').next().unwrap_or(typed).to_lowercase();
+                    let near: Vec<&str> = known
+                        .iter()
+                        .filter(|id| id.rsplit('/').next().unwrap_or(id).to_lowercase() == file)
+                        .map(|id| id.as_str())
+                        .take(5)
+                        .collect();
+                    if near.is_empty() {
+                        "no document or folder of that ID; documents status lists the document IDs"
+                            .to_owned()
+                    } else {
+                        format!(
+                            "no document or folder of that ID; the documents of that name are {}",
+                            near.join(", ")
+                        )
+                    }
+                };
+                failed.push(json!({"document_id":name,"reason":reason}));
+                continue;
+            }
+            let before = targets.len();
+            for id in found {
+                let shown = proposal || !adopted.contains(id);
+                if proposed.contains(id) || !proposal {
+                    targets.push((id, shown));
+                }
+            }
+            if targets.len() == before {
+                failed.push(json!({"document_id":name,
+                    "reason":"no proposal; without --proposal the adopted document is shown"}));
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut views = vec![];
+        for (id, proposal) in targets {
+            if !seen.insert(id) {
+                continue;
+            }
+            match self.view(id, proposal) {
+                Ok(mut view) => {
+                    view.as_object_mut().unwrap().remove("state");
+                    if proposal {
+                        view["proposal"] = json!(true);
+                    } else if proposed.contains(id) {
+                        view["pending_proposal"] = json!(true);
+                    }
+                    views.push(view);
+                }
+                Err(error) => {
+                    failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
+                }
+            }
+        }
+        Ok(json!({"views":views,"failed":failed}))
     }
 
     /// Removes the views a removed proposal of `id` leaves behind, and with

@@ -9,8 +9,14 @@
 //! curves or slants is a figure, as rulings and shading do neither; one of
 //! level and upright lines and areas alone is a figure (a bar chart, boxes
 //! joined by lines) when it has three or more of them, is not what the
-//! page's sheet reads as a table and is more than a frame. A slanted line from one corner of a ruled
-//! cell to another strikes the cell out and is of its table. Where a table
+//! page's sheet reads as a table and is more than a frame. Rulings alone
+//! whose cells cover the group are a table with no text, and areas that
+//! fill the group around a table of the sheet are the shading of a table
+//! without rulings: neither is a figure. Three or more boxes that stand alone,
+//! with nothing drawn in them and no box along their sides, are the boxes of
+//! a diagram whatever the sheet reads of them, as are blocks of boxes that a
+//! line joins (the entities of a data model). A slanted line from one corner of
+//! a ruled cell to another strikes the cell out and is of its table. Where a table
 //! holds drawings far smaller than itself, each is a figure and the table is
 //! not. A mark drawn on one of the page's images is a figure with the image,
 //! what a figure is drawn over is of it, and a hollow box over half of the
@@ -52,6 +58,14 @@ const DRAWING_SHARE: f64 = 0.15;
 /// How far, in points, from a figure's paths a string may lie and be its
 /// text.
 const TEXT_REACH: f64 = 3.0;
+/// The fewest boxes standing alone that are the boxes of a diagram.
+const BOXES: usize = 3;
+/// The most boxes of a group looked at for those standing alone.
+const MAX_BOXES: usize = 2000;
+/// The share of a grid its closed cells cover from which it is a table.
+const CLOSED: f64 = 0.6;
+/// The share of a group its filled areas cover from which they shade it.
+const SHADED: f64 = 0.85;
 /// The share of the page's area from which a hollow box borders the page's
 /// content rather than a figure.
 const PAGE_FRAME: f64 = 0.5;
@@ -77,13 +91,15 @@ enum Kind {
 
 /// A path of a page: its index among the page's paths, the box it lies in
 /// (`[x0, y0, x1, y1]`), what it draws, whether it shows (it is painted in
-/// a colour other than white) and whether it is hollow (no colour fills it).
+/// a colour other than white), whether it is hollow (no colour fills it)
+/// and whether it is a box: one rectangle wider and higher than a line.
 struct Shape {
     path: usize,
     bounds: [f64; 4],
     kind: Kind,
     seen: bool,
     hollow: bool,
+    boxed: bool,
 }
 
 fn area(b: &[f64; 4]) -> f64 {
@@ -102,6 +118,35 @@ fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 /// Whether `a` lies in `b` grown by `pad`.
 fn inside(a: &[f64; 4], b: &[f64; 4], pad: f64) -> bool {
     a[0] >= b[0] - pad && a[1] >= b[1] - pad && a[2] <= b[2] + pad && a[3] <= b[3] + pad
+}
+
+/// Whether `a` and `b` are one outline: an area and the line around it.
+fn alike(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 1.5)
+}
+
+/// Whether the boxes `a` and `b` stand side by side, no further apart than
+/// the paths of a figure and along half or more of the shorter of their
+/// sides, as the cells of a table and the bars of a chart do.
+fn beside(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    let along = |axis: usize| {
+        let shared = a[axis + 2].min(b[axis + 2]) - a[axis].max(b[axis]);
+        shared >= 0.5 * (a[axis + 2] - a[axis]).min(b[axis + 2] - b[axis])
+    };
+    let meets =
+        |axis: usize| (a[axis + 2] - b[axis]).abs() <= GAP || (b[axis + 2] - a[axis]).abs() <= GAP;
+    (meets(0) && along(1)) || (meets(1) && along(0))
+}
+
+/// Whether the boxes `a` and `b` stand one on the other with sides of one
+/// length: the parts of one block.
+fn stacked(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    (0..2).any(|axis| {
+        let across = 1 - axis;
+        ((a[axis + 2] - b[axis]).abs() <= 1.5 || (b[axis + 2] - a[axis]).abs() <= 1.5)
+            && (a[across] - b[across]).abs() <= LINE
+            && (a[across + 2] - b[across + 2]).abs() <= LINE
+    })
 }
 
 /// Whether `a` and `b` lie within `gap` of one another.
@@ -126,6 +171,7 @@ fn shapes(paths: &[PdfPath], width: f64, height: f64) -> Vec<Shape> {
             0.0
         };
         let bounds = points.fold([x, y, x, y], |b, (x, y)| union(b, [x, y, x, y]));
+        let boxed = page_layout::boxed(drawn).is_some();
         let bounds = [
             bounds[0] - half,
             bounds[1] - half,
@@ -164,6 +210,7 @@ fn shapes(paths: &[PdfPath], width: f64, height: f64) -> Vec<Shape> {
             kind,
             seen: seen(&drawn.fill) || seen(&drawn.stroke),
             hollow: !seen(&drawn.fill),
+            boxed,
         });
     }
     shapes
@@ -232,6 +279,9 @@ fn groups(boxes: &[[f64; 4]]) -> Vec<Vec<usize>> {
 struct Rules {
     level: Vec<page_layout::Rule>,
     upright: Vec<page_layout::Rule>,
+    /// The grids the rulings make, with the share of each its closed cells
+    /// cover.
+    grids: Vec<([f64; 4], f64)>,
 }
 
 impl Rules {
@@ -242,20 +292,54 @@ impl Rules {
             .partition(|rule| rule.level);
         level.sort_by(|a, b| a.at.total_cmp(&b.at));
         upright.sort_by(|a, b| a.at.total_cmp(&b.at));
-        Self { level, upright }
+        Self {
+            level,
+            upright,
+            grids: page_layout::grids(paths),
+        }
+    }
+
+    /// Whether a ruling of `rules` at `at` runs past `along`.
+    fn on(rules: &[page_layout::Rule], at: f64, along: f64) -> bool {
+        rules[rules.partition_point(|r| r.at < at - CORNER)..]
+            .iter()
+            .take_while(|r| r.at <= at + CORNER)
+            .any(|r| r.from - CORNER <= along && along <= r.to + CORNER)
     }
 
     /// Whether a point is a corner of a ruled cell: on a level and on an
     /// upright ruling.
     fn corner(&self, (x, y): (f64, f64)) -> bool {
-        let on = |rules: &[page_layout::Rule], at: f64, along: f64| {
-            rules[rules.partition_point(|r| r.at < at - CORNER)..]
-                .iter()
-                .take_while(|r| r.at <= at + CORNER)
-                .any(|r| r.from - CORNER <= along && along <= r.to + CORNER)
-        };
-        on(&self.level, y, x) && on(&self.upright, x, y)
+        Self::on(&self.level, y, x) && Self::on(&self.upright, x, y)
     }
+
+    /// Whether a ruling along a side of `rect` runs on past a corner of it,
+    /// as the rulings of a table run on along the cells beside one. The
+    /// side of another box a little off the line is not such a ruling.
+    fn beyond(&self, rect: &[f64; 4]) -> bool {
+        let runs = |rules: &[page_layout::Rule], at: f64, along: f64| {
+            rules[rules.partition_point(|r| r.at < at - 1.0)..]
+                .iter()
+                .take_while(|r| r.at <= at + 1.0)
+                .any(|r| r.from <= along && along <= r.to)
+        };
+        let past = CORNER + 1.0;
+        [rect[1], rect[3]]
+            .into_iter()
+            .any(|y| runs(&self.level, y, rect[0] - past) || runs(&self.level, y, rect[2] + past))
+            || [rect[0], rect[2]].into_iter().any(|x| {
+                runs(&self.upright, x, rect[1] - past) || runs(&self.upright, x, rect[3] + past)
+            })
+    }
+}
+
+/// A figure of a page: the box its paths lie in, whether it is a group of
+/// paths whole (rather than a drawing set in a table) and whether it is a
+/// diagram of boxes.
+struct Figure {
+    bounds: [f64; 4],
+    whole: bool,
+    diagram: bool,
 }
 
 /// The boxes of the figures among `shapes` on a page ruled by `rules` whose
@@ -267,12 +351,16 @@ fn figure_boxes(
     rules: &Rules,
     tables: &[[f64; 4]],
     images: &[[f64; 4]],
+    sure: &[[f64; 4]],
     page: f64,
-) -> Vec<[f64; 4]> {
+) -> Vec<Figure> {
     let seen: Vec<&Shape> = shapes.iter().filter(|s| s.seen).collect();
     if seen.is_empty() || seen.len() > MAX_SHAPES {
         return vec![];
     }
+    // The groups that are figures whole, each with whether it is a diagram
+    // of boxes.
+    let mut wholes: Vec<([f64; 4], bool)> = vec![];
     let boxes: Vec<[f64; 4]> = seen.iter().map(|s| s.bounds).collect();
     let whole = |members: &[usize]| {
         members
@@ -283,12 +371,14 @@ fn figure_boxes(
     };
     // A hollow box over much of the page borders the page's content. It
     // is left out, as it would make one group of all it holds: a figure of
-    // the page.
+    // the page. So are the rulings and shading of a table beyond doubt: a
+    // figure drawn against the table is a figure without it.
     let plain: Vec<usize> = (0..seen.len())
         .filter(|i| {
-            !(seen[*i].hollow
-                && matches!(seen[*i].kind, Kind::Straight)
-                && area(&boxes[*i]) >= PAGE_FRAME * page)
+            let straight = matches!(seen[*i].kind, Kind::Straight);
+            !(straight
+                && ((seen[*i].hollow && area(&boxes[*i]) >= PAGE_FRAME * page)
+                    || sure.iter().any(|table| inside(&boxes[*i], table, 2.0))))
         })
         .collect();
     let plain_boxes: Vec<[f64; 4]> = plain.iter().map(|i| boxes[*i]).collect();
@@ -338,6 +428,93 @@ fn figure_boxes(
                 Kind::Other => true,
             })
             .collect();
+        // An area and the line around it are two paths of one outline.
+        let mut outlines: Vec<[f64; 4]> = vec![];
+        let mut rects: Vec<[f64; 4]> = vec![];
+        for i in &members {
+            if !outlines.iter().any(|o| alike(o, &boxes[*i])) {
+                outlines.push(boxes[*i]);
+                if seen[*i].boxed {
+                    rects.push(boxes[*i]);
+                }
+            }
+        }
+        // Boxes that stand alone, with nothing drawn in them, no box along
+        // their sides and no ruling running on past their corners, are the
+        // boxes of a diagram (an organization chart, the fields of a
+        // screen): the cells of a table stand side by side between
+        // rulings that run the length of the table.
+        let standing = if rects.len() <= MAX_BOXES {
+            rects
+                .iter()
+                .filter(|rect| {
+                    !outlines
+                        .iter()
+                        .any(|other| !alike(other, rect) && inside(other, rect, 0.0))
+                        && !rects
+                            .iter()
+                            .any(|other| !alike(other, rect) && beside(rect, other))
+                        && !rules.beyond(rect)
+                })
+                .count()
+        } else {
+            0
+        };
+        // Boxes one on another, as wide or as high as one another, are one
+        // block (an entity of a diagram, its name over its columns). Blocks that stand alone and
+        // that a line joins, ending at a side of each, are a diagram too.
+        let joined = rects.len() >= 2 && rects.len() <= MAX_BOXES && {
+            let mut block: Vec<usize> = (0..rects.len()).collect();
+            fn root(block: &mut [usize], mut i: usize) -> usize {
+                while block[i] != i {
+                    block[i] = block[block[i]];
+                    i = block[i];
+                }
+                i
+            }
+            for a in 0..rects.len() {
+                for b in a + 1..rects.len() {
+                    if stacked(&rects[a], &rects[b]) {
+                        let (a, b) = (root(&mut block, a), root(&mut block, b));
+                        block[a.max(b)] = a.min(b);
+                    }
+                }
+            }
+            let mut blocks: BTreeMap<usize, [f64; 4]> = BTreeMap::new();
+            for (i, rect) in rects.iter().enumerate() {
+                let bounds = blocks.entry(root(&mut block, i)).or_insert(*rect);
+                *bounds = union(*bounds, *rect);
+            }
+            let all: Vec<[f64; 4]> = blocks.into_values().collect();
+            // A box in a block is a part of it (the frame of a name).
+            let blocks: Vec<[f64; 4]> = all
+                .iter()
+                .filter(|block| {
+                    !rules.beyond(block)
+                        && !all
+                            .iter()
+                            .any(|other| !alike(other, block) && inside(block, other, 0.0))
+                })
+                .copied()
+                .collect();
+            // A level line ends at the left or right side of a block,
+            // between its corners; an upright one at its top or bottom.
+            let ends = |line: &[f64; 4], block: &[f64; 4]| {
+                let axis = usize::from(line[2] - line[0] < line[3] - line[1]);
+                let across = 1 - axis;
+                let middle = (line[across] + line[across + 2]) / 2.0;
+                middle > block[across] + CORNER
+                    && middle < block[across + 2] - CORNER
+                    && ((line[axis + 2] - block[axis]).abs() <= 2.0
+                        || (line[axis] - block[axis + 2]).abs() <= 2.0)
+            };
+            blocks.len() >= 2
+                && outlines
+                    .iter()
+                    .filter(|line| (line[2] - line[0]).min(line[3] - line[1]) <= LINE)
+                    .any(|line| blocks.iter().filter(|block| ends(line, block)).count() >= 2)
+        };
+        let diagram = standing >= BOXES || joined;
         if odd.is_empty() {
             // Lines along the sides of the group alone are a frame around
             // what the page shows in it, not a figure.
@@ -355,12 +532,39 @@ fn figure_boxes(
             let marks = images
                 .iter()
                 .any(|image| near(&bounds, image, 0.0) && !inside(image, &bounds, 2.0));
-            if !tabled && ((members.len() >= MIN_SHAPES && !frame) || marks) {
+            // Rulings alone whose cells cover the group are a table with
+            // no text in it, which the sheet does not have.
+            let ruled = members.iter().all(|i| {
+                let b = &boxes[*i];
+                seen[*i].hollow || (b[2] - b[0]).min(b[3] - b[1]) <= LINE
+            }) && rules.grids.iter().any(|(grid, closed)| {
+                let shared = [
+                    bounds[0].max(grid[0]),
+                    bounds[1].max(grid[1]),
+                    bounds[2].min(grid[2]),
+                    bounds[3].min(grid[3]),
+                ];
+                *closed >= CLOSED && area(&shared) >= TABLE_SHARE * area(&bounds)
+            });
+            // Areas that fill the group around a table of the sheet shade
+            // its cells: a table without rulings, whose place the sheet
+            // knows only by its text.
+            let filled: f64 = members
+                .iter()
+                .filter(|i| !seen[**i].hollow)
+                .map(|i| area(&boxes[*i]))
+                .sum();
+            let shading =
+                filled >= SHADED * area(&bounds) && tables.iter().any(|t| inside(t, &bounds, 2.0));
+            let diagram = diagram && !ruled && !shading;
+            let tabled = tabled || ruled || shading;
+            if diagram || (!tabled && ((outlines.len() >= MIN_SHAPES && !frame) || marks)) {
                 found.push(bounds);
+                wholes.push((bounds, diagram));
             } else if !tabled {
                 loose.push(bounds);
             }
-        } else if tabled && area(&whole(&odd)) < DRAWING_SHARE * area(&bounds) {
+        } else if tabled && !diagram && area(&whole(&odd)) < DRAWING_SHARE * area(&bounds) {
             let drawn: Vec<[f64; 4]> = odd.iter().map(|i| boxes[*i]).collect();
             found.extend(
                 groups(&drawn)
@@ -369,6 +573,16 @@ fn figure_boxes(
             );
         } else {
             found.push(bounds);
+            wholes.push((bounds, diagram));
+        }
+    }
+    // A figure drawn on an image is of the image whole: the marks on one
+    // picture are one figure.
+    for bounds in &mut found {
+        for image in images {
+            if near(bounds, image, 0.0) {
+                *bounds = union(*bounds, *image);
+            }
         }
     }
     found.retain(|b| b[2] - b[0] >= MIN_SIDE && b[3] - b[1] >= MIN_SIDE);
@@ -401,6 +615,47 @@ fn figure_boxes(
     }
     found.sort_by(|a, b| area(b).total_cmp(&area(a)));
     found
+        .into_iter()
+        .map(|bounds| {
+            let mut parts = wholes.iter().filter(|(part, _)| inside(part, &bounds, 1.0));
+            Figure {
+                bounds,
+                whole: parts.clone().next().is_some(),
+                diagram: parts.any(|(_, diagram)| *diagram),
+            }
+        })
+        .collect()
+}
+
+/// The boxes of the figures a page `width` by `height` draws with `paths`,
+/// each with whether it is a diagram of boxes, when the rulings and text of
+/// the page would make the tables `tables`, `sure` those of them beyond
+/// doubt: the figures whose lines rule no
+/// table of the page's sheet. A drawing set in a table is not among them,
+/// as the table is a table.
+pub(super) fn regions(
+    paths: &[PdfPath],
+    width: f64,
+    height: f64,
+    tables: &[[f64; 4]],
+    sure: &[[f64; 4]],
+) -> Vec<([f64; 4], bool)> {
+    if paths.is_empty() {
+        return vec![];
+    }
+    let shapes = shapes(paths, width, height);
+    figure_boxes(
+        &shapes,
+        &Rules::of(paths),
+        tables,
+        &[],
+        sure,
+        width * height,
+    )
+    .into_iter()
+    .filter(|figure| figure.whole)
+    .map(|figure| (figure.bounds, figure.diagram))
+    .collect()
 }
 
 /// Whether a page `width` by `height` painting `paths` may draw a figure,
@@ -408,7 +663,7 @@ fn figure_boxes(
 fn drawn(paths: &[PdfPath], width: f64, height: f64, images: bool) -> bool {
     let shapes = shapes(paths, width, height);
     (images && shapes.iter().any(|s| s.seen))
-        || !figure_boxes(&shapes, &Rules::of(paths), &[], &[], width * height).is_empty()
+        || !figure_boxes(&shapes, &Rules::of(paths), &[], &[], &[], width * height).is_empty()
 }
 
 /// `text` as the content of an XML element or attribute.
@@ -466,13 +721,17 @@ pub(super) fn figures(
         })
         .collect();
     let covered: Vec<[f64; 4]> = shown.iter().map(|(.., covered)| *covered).collect();
-    let mut boxes = figure_boxes(
+    let mut boxes: Vec<[f64; 4]> = figure_boxes(
         &shapes,
         &Rules::of(&page.paths),
         &page.tables,
         &covered,
+        &page.sure_tables,
         page.width * page.height,
-    );
+    )
+    .into_iter()
+    .map(|figure| figure.bounds)
+    .collect();
     boxes.sort_by(|a, b| a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])));
     let mut pictures = vec![];
     let mut slender = 0;
@@ -489,7 +748,12 @@ pub(super) fn figures(
             }
             let size = page.fonts[i]["size"].as_f64().unwrap_or(10.0);
             let written = [x, y - size, x + width.max(0.0), y + 0.25 * size];
-            if near(&written, &drawn, TEXT_REACH) {
+            // The text of a table beside the figure is the table's.
+            let tabled = page.sure_tables.iter().any(|t| {
+                (t[0]..=t[2]).contains(&(x + 0.25 * size))
+                    && (t[1]..=t[3]).contains(&(y - 0.3 * size))
+            });
+            if !tabled && near(&written, &drawn, TEXT_REACH) {
                 strings.insert(i);
                 bounds = union(bounds, written);
             }
@@ -706,6 +970,7 @@ mod tests {
             turned: BTreeSet::new(),
             images: vec![],
             tables,
+            sure_tables: vec![],
         }
     }
 
@@ -939,5 +1204,192 @@ mod tests {
         )]);
         assert!(figures(&outlined, &files, &limits).0.is_empty());
         assert!(figures(&marked, &BTreeMap::new(), &limits).0.is_empty());
+    }
+
+    /// A stroked rectangle with nothing filling it.
+    fn outlined(x: f64, y: f64, width: f64, height: f64) -> PdfPath {
+        let (right, bottom) = (x + width, y + height);
+        path(
+            &format!("M{x},{y}L{right},{y} {right},{bottom} {x},{bottom}Z"),
+            None,
+            Some("000000"),
+        )
+    }
+
+    #[test]
+    fn a_table_without_text_or_without_rulings_is_not_a_figure() {
+        // Rulings whose cells cover them are a table though no cell holds
+        // text, so that the sheet has no table there.
+        assert!(boxes(&page(ruled(), vec![])).is_empty());
+        // The shading of the cells of a table without rulings, wider than
+        // the text the sheet knows the table by.
+        let shaded = || {
+            vec![
+                filled(100.0, 100.0, 200.0, 30.0),
+                filled(100.0, 131.0, 200.0, 30.0),
+                filled(100.0, 162.0, 200.0, 30.0),
+            ]
+        };
+        assert!(boxes(&page(shaded(), vec![[108.0, 108.0, 150.0, 184.0]])).is_empty());
+        // Without a table of the sheet the areas are a figure.
+        assert_eq!(boxes(&page(shaded(), vec![])), ["99 99 202 94"]);
+    }
+
+    #[test]
+    fn boxes_standing_alone_are_a_diagram_whatever_the_sheet_reads() {
+        // Three boxes joined by lines, as an organization chart without
+        // arrowheads is drawn: the sheet reads the lines as a table.
+        let chart = || {
+            vec![
+                outlined(200.0, 100.0, 100.0, 30.0),
+                outlined(100.0, 180.0, 100.0, 30.0),
+                outlined(300.0, 180.0, 100.0, 30.0),
+                stroked((250.0, 130.0), (250.0, 155.0)),
+                stroked((150.0, 155.0), (350.0, 155.0)),
+                stroked((150.0, 155.0), (150.0, 180.0)),
+                stroked((350.0, 155.0), (350.0, 180.0)),
+            ]
+        };
+        let table = vec![[100.0, 100.0, 400.0, 210.0]];
+        assert_eq!(boxes(&page(chart(), table.clone())), ["98 98 303 113"]);
+        // Boxes side by side are the cells of a table.
+        let cells = vec![
+            outlined(100.0, 100.0, 100.0, 30.0),
+            outlined(200.0, 100.0, 100.0, 30.0),
+            outlined(300.0, 100.0, 100.0, 30.0),
+        ];
+        assert!(boxes(&page(cells, table.clone())).is_empty());
+        // So are areas between rulings that run the length of the table.
+        let mut shaded = vec![
+            filled(100.0, 100.0, 100.0, 20.0),
+            filled(100.0, 140.0, 100.0, 20.0),
+            filled(100.0, 180.0, 100.0, 20.0),
+        ];
+        for y in [100.0, 120.0, 140.0, 160.0, 180.0, 200.0] {
+            shaded.push(stroked((100.0, y), (400.0, y)));
+        }
+        for x in [100.0, 200.0, 400.0] {
+            shaded.push(stroked((x, 100.0), (x, 200.0)));
+        }
+        assert!(boxes(&page(shaded, vec![[100.0, 100.0, 400.0, 200.0]])).is_empty());
+    }
+
+    #[test]
+    fn an_area_and_the_line_around_it_are_one_outline() {
+        // A heading on a bar over a framed paragraph: two outlines, though
+        // the bar is painted and then stroked.
+        let paths = vec![
+            filled(100.0, 100.0, 300.0, 20.0),
+            outlined(100.0, 100.0, 300.0, 20.0),
+            outlined(100.0, 124.0, 300.0, 40.0),
+        ];
+        assert!(boxes(&page(paths, vec![])).is_empty());
+    }
+
+    #[test]
+    fn the_marks_on_one_picture_are_one_figure() {
+        let mut page = page(
+            vec![
+                outlined(120.0, 120.0, 30.0, 20.0),
+                outlined(240.0, 160.0, 30.0, 20.0),
+            ],
+            vec![],
+        );
+        page.images = vec![super::super::PdfImage {
+            asset: "image-001".into(),
+            matrix: [200.0, 0.0, 0.0, 100.0, 100.0, 100.0],
+            mask: false,
+        }];
+        let files = BTreeMap::from([("image-001".to_owned(), "image-001.png".to_owned())]);
+        let (pictures, _) = figures(&page, &files, &AssetLimits::default());
+        let [svg] = &pictures[..] else {
+            panic!("{pictures:?}")
+        };
+        assert_eq!(svg.matches("<path ").count(), 2, "{svg}");
+        assert_eq!(svg.matches("<image ").count(), 1, "{svg}");
+    }
+
+    #[test]
+    fn blocks_of_boxes_a_line_joins_are_a_diagram() {
+        // Two entities, a name on a bar over ruled columns, and the line
+        // of their relation: the sheet reads each as a table.
+        let entities = |joined: bool| {
+            let mut paths = vec![];
+            for x in [100.0, 340.0] {
+                paths.push(filled(x, 100.0, 150.0, 24.0));
+                paths.push(outlined(x, 124.0, 150.0, 66.0));
+                paths.push(stroked((x, 146.0), (x + 150.0, 146.0)));
+                paths.push(stroked((x, 168.0), (x + 150.0, 168.0)));
+            }
+            if joined {
+                paths.push(stroked((250.0, 157.0), (340.0, 157.0)));
+            }
+            paths
+        };
+        let tables = vec![[100.0, 100.0, 250.0, 190.0], [340.0, 100.0, 490.0, 190.0]];
+        assert_eq!(
+            boxes(&page(entities(true), tables.clone())),
+            ["98 99 393 92"]
+        );
+        // Apart, they are two tables.
+        assert!(boxes(&page(entities(false), tables)).is_empty());
+    }
+
+    #[test]
+    fn figures_whose_lines_rule_no_table_are_those_that_are_groups_whole() {
+        // An organization chart the sheet would read as a table, and a
+        // circle set in a table far larger than it.
+        let mut paths = vec![
+            outlined(200.0, 400.0, 100.0, 30.0),
+            outlined(100.0, 480.0, 100.0, 30.0),
+            outlined(300.0, 480.0, 100.0, 30.0),
+            stroked((250.0, 430.0), (250.0, 455.0)),
+            stroked((150.0, 455.0), (350.0, 455.0)),
+            stroked((150.0, 455.0), (150.0, 480.0)),
+            stroked((350.0, 455.0), (350.0, 480.0)),
+        ];
+        paths.extend(ruled());
+        for y in [190.0, 220.0, 250.0, 280.0, 310.0] {
+            paths.push(stroked((100.0, y), (300.0, y)));
+        }
+        paths.push(stroked((100.0, 160.0), (100.0, 310.0)));
+        paths.push(stroked((300.0, 160.0), (300.0, 310.0)));
+        paths.push(path(
+            "M130,105C141,105 150,114 150,125C150,136 141,145 130,145C119,145 110,136 110,125C110,114 119,105 130,105Z",
+            None,
+            Some("CC0000"),
+        ));
+        let tables = [[100.0, 100.0, 300.0, 310.0], [100.0, 400.0, 400.0, 510.0]];
+        let found = regions(&paths, 600.0, 800.0, &tables, &[]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (bounds, diagram) = found[0];
+        assert!(diagram);
+        assert_eq!(bounds.map(f64::round), [100.0, 400.0, 401.0, 511.0]);
+    }
+
+    #[test]
+    fn a_figure_drawn_against_a_table_is_a_figure_without_the_table() {
+        // A ruled table, a box touching its last ruling and a curve from
+        // the box: with the table known beyond doubt, the figure is the box
+        // and the curve; without, the box is taken for a part of the table
+        // and the curve for a drawing set in it.
+        let mut paths = ruled();
+        paths.push(outlined(100.0, 162.0, 100.0, 30.0));
+        paths.push(path(
+            "M150,192C150,220 250,200 250,230",
+            None,
+            Some("0000FF"),
+        ));
+        let table = [100.0, 100.0, 300.0, 160.0];
+        let mut drawn = page(paths, vec![table]);
+        assert_eq!(boxes(&drawn), ["148 190 103 41"]);
+        drawn.sure_tables = vec![table];
+        assert_eq!(boxes(&drawn), ["98 160 153 71"]);
+        // The text of the table is not the figure's, though it lies by it.
+        drawn.places = vec![[105.0, 155.0, 20.0], [105.0, 180.0, 20.0]];
+        drawn.texts = vec!["cell".into(), "box".into()];
+        drawn.fonts = vec![serde_json::json!({"latin":"Arial","size":10.0}); 2];
+        let (pictures, _) = figures(&drawn, &BTreeMap::new(), &AssetLimits::default());
+        assert!(pictures[0].contains(">box<") && !pictures[0].contains(">cell<"));
     }
 }

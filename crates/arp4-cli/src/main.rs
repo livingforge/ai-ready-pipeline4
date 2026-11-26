@@ -609,9 +609,28 @@ fn run(cli: Cli) -> Result<bool> {
                     let pages = store.write_elements(&document, proposal, &out)?;
                     json!({"state":"saved","elements":out,"document_id":document,"pages":pages})
                 }
-                DocumentCommand::View { document, proposal } => {
-                    let mut result = store.view(&document, proposal)?;
-                    result["view"] = relative(&root, &result["view"])?;
+                DocumentCommand::View {
+                    documents,
+                    all: _,
+                    proposal,
+                } => {
+                    let mut result = store.views(&documents, proposal)?;
+                    for view in result["views"].as_array_mut().into_iter().flatten() {
+                        view["view"] = relative(&root, &view["view"])?;
+                    }
+                    let saved = array(&result["views"])?.len();
+                    let failed = array(&result["failed"])?.len();
+                    result["summary"] = json!({"saved":saved,"failed":failed});
+                    result["state"] = json!(if saved > 0 { "saved" } else { "unchanged" });
+                    if failed > 0 {
+                        result["error"] = json!({"code":"operation_failed","message":if saved > 0 {
+                            "Some views were not written; see failed. The others were."
+                        } else {
+                            "No view was written; see failed."
+                        }});
+                        output.emit(result, false);
+                        return Ok(false);
+                    }
                     result
                 }
                 DocumentCommand::ExtractionRead {

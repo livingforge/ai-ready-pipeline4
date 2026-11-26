@@ -9,7 +9,7 @@
 | 依頼 | 読む資料 |
 | --- | --- |
 | 原本の取り込み・採用・移動・削除 | [取り込みと採用](references/import.md)。形式ごとの抽出範囲と制約を確かめるときは [対応形式](references/formats.md) |
-| 採用データの本文を読む、設計情報を検索する | [本文の読み方と検索](references/reading.md) |
+| 採用データの本文を読む、設計情報を検索する、原本の見た目で確認するページ（view）を作る | [本文の読み方と検索](references/reading.md) |
 | 値・数式・フォントの変更 | [値・数式・フォントの編集](references/value-edits.md) |
 | 行・列の追加・削除・移動、記録した操作の取り消し | [行・列の追加・削除と操作の取り消し](references/layout-edits.md) |
 | Excelの書式・シート・セル範囲・図形の配置・リンク・入力規則の変更 | [Excelの書式・シート・セルの操作](references/excel-edits.md) |
