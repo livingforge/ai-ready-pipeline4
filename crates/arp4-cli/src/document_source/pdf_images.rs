@@ -74,11 +74,13 @@ struct Found {
     glyph: bool,
 }
 
-/// The images of a PDF by their index, and the images each page (by its
-/// number) draws.
+/// The images each page of a PDF draws, by the page's number.
+pub(super) type PagePlacements = Vec<(u32, Vec<Placement>)>;
+
+/// The images of a PDF by their index, and the images each page draws.
 pub(super) struct Placements {
     pub images: Vec<Drawn>,
-    pub pages: Vec<(u32, Vec<Placement>)>,
+    pub pages: PagePlacements,
 }
 
 /// The images the pages of `doc` draw, page by page, and each image by its
@@ -138,24 +140,48 @@ pub fn stem(index: usize) -> String {
 
 /// The images the pages of `doc` draw as files, named by their index, so
 /// that a name says which image it is whether or not the images before it
-/// could be made files.
-pub(super) fn read(doc: &Pdf, max_page: usize) -> Result<ImageAssets> {
+/// were made files, and where each page draws its images. An image `limits`
+/// leaves out for its shape, as the page first shows it (as its samples are
+/// when no page shows it), is not read and is counted for the pages that
+/// draw it.
+pub(super) fn read(
+    doc: &Pdf,
+    max_page: usize,
+    limits: &crate::project::AssetLimits,
+) -> Result<(ImageAssets, PagePlacements)> {
     let Placements {
         images: order,
         pages: placed,
     } = placements(doc, max_page)?;
     let mut drawn_on: Vec<Vec<u32>> = vec![vec![]; order.len()];
+    let mut shown: Vec<Option<[f64; 2]>> = vec![None; order.len()];
     for (page, placements) in &placed {
         for placement in placements {
             let pages = &mut drawn_on[placement.index];
             if pages.last() != Some(page) {
                 pages.push(*page);
             }
+            if let Some([a, b, c, d, ..]) = placement.matrix {
+                shown[placement.index].get_or_insert([a.hypot(b), c.hypot(d)]);
+            }
         }
     }
     let mut images = ImageAssets::default();
     let mut left_out: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-    for (index, (image, pages)) in order.into_iter().zip(drawn_on).enumerate() {
+    for (index, ((image, pages), shown)) in order.into_iter().zip(drawn_on).zip(shown).enumerate() {
+        let size = shown.or_else(|| {
+            let (_, dict) = source(doc, &image).ok()?;
+            Some([
+                integer(&dict, b"Width")? as f64,
+                integer(&dict, b"Height")? as f64,
+            ])
+        });
+        if size.is_some_and(|[width, height]| limits.slender(width, height)) {
+            for page in pages {
+                *images.slender.entry(page).or_default() += 1;
+            }
+            continue;
+        }
         let file = match &image {
             Drawn::Composite(pieces) => compose(doc, pieces).map(|pixels| (pixels.png(), "png")),
             image => source(doc, image).and_then(|(stream, dict)| image_file(doc, stream, &dict)),
@@ -191,7 +217,7 @@ pub(super) fn read(doc: &Pdf, max_page: usize) -> Result<ImageAssets> {
             "次のページの画像は画像ファイルにできないため、assetsに保存せずOCRもしていません: {pages}。この画像の文字を読むには、画像をPNGかJPEGにしたPDFか、OCRで文字を付けたPDFを取り込んでください。"
         );
     }
-    Ok(images)
+    Ok((images, placed))
 }
 
 /// `object` as a dictionary, following a reference.
@@ -2367,6 +2393,14 @@ mod tests {
     use super::*;
     use lopdf::{content::Operation, dictionary};
 
+    /// The images of `doc` as files, none left out for its shape.
+    fn read(doc: &Pdf, max_page: usize) -> Result<ImageAssets> {
+        let limits = crate::project::AssetLimits {
+            max_aspect_ratio: None,
+        };
+        super::read(doc, max_page, &limits).map(|(images, _)| images)
+    }
+
     /// A one-page PDF drawing `image` once directly and once through a form.
     fn drawing(image: Stream) -> Pdf {
         let mut doc = Pdf::with_version("1.5");
@@ -3349,5 +3383,44 @@ mod tests {
         let row = &pixels[1..17];
         assert!(row[..8].iter().all(|p| *p > 240), "{row:?}");
         assert!(row[8..].iter().all(|p| *p < 15), "{row:?}");
+    }
+
+    #[test]
+    fn images_too_slender_as_their_pages_show_them_are_left_out() {
+        // A page drawing one image as a band 400 by 4 and another 100 by 50.
+        let mut doc = Pdf::with_version("1.5");
+        let gray = || {
+            Stream::new(
+                dictionary! { "Subtype" => "Image", "Width" => 2, "Height" => 2,
+                "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8 },
+                vec![0, 255, 255, 0],
+            )
+        };
+        let (band, picture) = (doc.add_object(gray()), doc.add_object(gray()));
+        let content = b"q 400 0 0 4 0 0 cm /Im1 Do Q q 100 0 0 50 0 100 cm /Im2 Do Q".to_vec();
+        let content = doc.add_object(Stream::new(dictionary! {}, content));
+        let pages = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages, "Contents" => content,
+            "MediaBox" => vec![0.into(), 0.into(), 600.into(), 800.into()],
+            "Resources" => dictionary! { "XObject" => dictionary! { "Im1" => band, "Im2" => picture } },
+        });
+        doc.objects.insert(
+            pages,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        doc.trailer.set("Root", catalog);
+        let limits = crate::project::AssetLimits::default();
+        let (images, placed) = super::read(&doc, 1 << 20, &limits).unwrap();
+        // The picture keeps the name its place among the images gives it.
+        assert_eq!(images.files.keys().collect::<Vec<_>>(), ["image-002.png"]);
+        assert_eq!(images.slender, BTreeMap::from([(1, 1)]));
+        assert!(images.note.is_empty(), "{}", images.note);
+        assert_eq!(placed[0].1.len(), 2);
+        // With no limit both are files.
+        assert_eq!(read(&doc, 1 << 20).unwrap().files.len(), 2);
     }
 }

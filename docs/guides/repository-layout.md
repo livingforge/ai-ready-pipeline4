@@ -102,6 +102,21 @@ exclude:
 
 フォルダの取り込みは除外した原本を飛ばし、`skipped` にも挙げません。除外したファイル・フォルダを `documents import` に直接指定したとき、および `documents move` の移動先が除外に該当するときは、一致したパターンを示して拒否します。設定より前に取り込んだ文書が除外に該当する場合、フォルダの取り込みはそれらを `excluded` に挙げます。`documents remove <文書ID>` で記録を削除でき、原本はそのまま残ります（応答の `kept_originals`）。YAMLでは `\` をそのまま書けるよう、パターンを単引用符で囲みます。
 
+開くのに保護の解除が要る原本（パスワード・IRM・秘密度ラベルで暗号化されたOffice文書、パスワードが要るPDF、暗号化した本体を案内ページで包んだPDF）の扱いは `protected_originals` で決めます。既定の `skip` では、importはこれらを取り込まず原本も変えません（フォルダの取り込みでは `skipped` に `protection` 付きで挙げます）。`documents protected` で一覧し、利用者が承認した原本だけ `documents unprotect --approved-by <承認者>` で暗号化を解除してから取り込みます。`unprotect` にすると、importがOffice文書の暗号化を解除し、原本を暗号化なしで上書きしてから取り込みます。PDFの暗号化はどちらでも解除しません。暗号化された版は残らないため、利用者が判断して設定し、Agentには書き換えさせません。
+
+```yaml
+# .arp/config.yml
+protected_originals: unprotect   # 既定は skip
+```
+
+PDFのページが描く画像と図のうち、長辺が短辺の20倍を超えるものは、罫線や帯などの飾りとみなして `assets/` に保存しません（保存しなかったページと件数は抽出の注意事項に記録します）。倍率は `assets.max_aspect_ratio` で変えられ、`null` にすると縦横比では除外しません。設定を変えても原本が変わらない文書は再取込されないので、`documents import --force` で取り込み直します。
+
+```yaml
+# .arp/config.yml
+assets:
+  max_aspect_ratio: 40   # 既定は 20。null で除外しない
+```
+
 読む範囲を広げると、そのフォルダの画像が取込時に `.arp/documents/` へ写され、Gitで共有されます。利用者が判断して設定し、Agentには書き換えさせません。設定を変えても原本が変わらない文書は再取込されないので、`documents import --force` で取り込み直します。`.arp/.gitignore` の `/local.yml` は `documents init` が書き、以前に作ったプロジェクトでも `local.yml` を初めて読むときに追加します。
 
 ARPは原本と `.arp/` の記録をバイト列のハッシュで照合します。Gitが改行を変換すると、コミットやcloneの時点で原本のCRLFがLFに変わる、または記録ファイルがCRLFになり、原本の変更や記録の不整合として検出されます。Windowsの既定の `core.autocrlf=true` や、リポジトリの `* text=auto eol=lf` が該当します。このため `documents init` はsourcesフォルダと `.arp/` の `.gitattributes` に `* -text` を追記します。下位フォルダの `.gitattributes` はリポジトリルートの指定より優先されるため、コード等の改行設定は変わりません。既存の `.gitattributes` の内容は残し、行が無い場合だけ追記します。削除しないでください。

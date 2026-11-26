@@ -5849,7 +5849,7 @@
             },
             "pages": {
               "type": "array",
-              "description": "PDFでこの画像を描くページ（1から）",
+              "description": "PDFでこの画像・図（figure-NNN.svg）を描くページ（1から）",
               "minItems": 1,
               "items": {
                 "type": "integer",
@@ -8186,7 +8186,7 @@
             },
             "pages": {
               "type": "array",
-              "description": "PDFでこの画像を描くページ（1から）",
+              "description": "PDFでこの画像・図（figure-NNN.svg）を描くページ（1から）",
               "minItems": 1,
               "items": {
                 "type": "integer",
@@ -13092,6 +13092,31 @@
         "items": {
           "type": "string",
           "minLength": 1
+        }
+      },
+      "protected_originals": {
+        "description": "What import does with an original that opens only with its protection removed: an Office file encrypted with a password, by IRM or by a sensitivity label, and a PDF that needs a password or wraps an encrypted document. skip leaves it as it is and lists it under skipped; documents protected lists such originals and documents unprotect removes the protection of an Office original once the user approves. unprotect lets import remove the protection of an Office original, save it over unprotected and import it. A protected PDF is skipped under both.",
+        "type": "string",
+        "enum": [
+          "skip",
+          "unprotect"
+        ],
+        "default": "skip"
+      },
+      "assets": {
+        "description": "Which of the pictures an original shows import leaves out of its assets.",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_aspect_ratio": {
+            "description": "The most times longer than it is short an image or figure of a PDF page may be, as the page shows it. Longer ones are rules, bands and other decoration: they are not saved as assets, and the extraction's findings name their pages. null leaves none out for its shape. Originals already imported keep their assets until imported again with --force.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 1,
+            "default": 20
+          }
         }
       }
     },

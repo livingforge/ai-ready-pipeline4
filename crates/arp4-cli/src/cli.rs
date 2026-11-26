@@ -1312,16 +1312,23 @@ pub(crate) enum DocumentCommand {
     /// ID is the original's path below the sources folder. Unchanged originals are skipped.
     /// Originals matching exclude of .arp/config.yml are left out of a folder unlisted
     /// and refused when named.
-    /// An encrypted Office original is decrypted and saved over without its encryption
-    /// first: a password with --password-stdin, IRM and sensitivity labels by desktop
-    /// Office on Windows with the signed-in account's rights.
+    /// An original that opens only with its protection removed (an Office file
+    /// encrypted with a password, by IRM or by a sensitivity label, and a PDF
+    /// that needs a password or wraps an encrypted document) is not imported:
+    /// a folder lists it under skipped with its protection, and it is refused
+    /// when named. See protected and unprotect. Where protected_originals of
+    /// .arp/config.yml is unprotect, an encrypted Office original is decrypted
+    /// and saved over without its encryption first: a password with
+    /// --password-stdin, IRM and sensitivity labels by desktop Office on
+    /// Windows with the signed-in account's rights.
     Import {
         source: PathBuf,
         /// Re-extract even when the original's SHA-256 matches a proposal or adopted document.
         #[arg(long)]
         force: bool,
         /// Read passwords of encrypted originals from standard input, one per line;
-        /// each encrypted original is opened with the first that fits.
+        /// each encrypted original is opened with the first that fits. Only
+        /// where protected_originals of .arp/config.yml is unprotect.
         #[arg(long)]
         password_stdin: bool,
         /// Adopt each new proposal as extracted, without record and review: the
@@ -1329,6 +1336,35 @@ pub(crate) enum DocumentCommand {
         /// has edits or a review is kept for record and adopt (`not_adopted`).
         #[arg(long)]
         adopt: bool,
+    },
+    /// List the originals that import does not read because they open only
+    /// with their protection removed: Office files encrypted with a password
+    /// (removal: password), by IRM or by a sensitivity label (removal: office),
+    /// both removed by unprotect, and PDFs that need a password or wrap an
+    /// encrypted document (removal: manual), which are replaced with a copy
+    /// unprotected outside ARP. Changes nothing.
+    Protected {
+        /// A folder or original below the sources folder; all originals without it.
+        source: Option<PathBuf>,
+    },
+    /// Remove the encryption of an Office original, or of every protected
+    /// Office original below a folder, and save each over without it; import
+    /// then reads them. Run only after the user approved removing the
+    /// protection of these originals: the encrypted file is not kept. A
+    /// password is read with --password-stdin; IRM and sensitivity labels are
+    /// removed by desktop Office on Windows with the signed-in account's
+    /// rights (owner or export). An original whose protection cannot be
+    /// removed stays as it was.
+    Unprotect {
+        /// The original, or a folder of originals, below the sources folder.
+        source: PathBuf,
+        /// The user who approved removing the protection of these originals.
+        #[arg(long)]
+        approved_by: String,
+        /// Read passwords of encrypted originals from standard input, one per line;
+        /// each encrypted original is opened with the first that fits.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Move or rename an original, or a folder of originals, with its records.
     ///

@@ -111,6 +111,7 @@ fn run(cli: Cli) -> Result<bool> {
                 command,
                 DocumentCommand::Init { .. }
                     | DocumentCommand::Import { .. }
+                    | DocumentCommand::Unprotect { .. }
                     | DocumentCommand::Remove { .. }
                     | DocumentCommand::Move { .. }
                     | DocumentCommand::Discard { .. }
@@ -445,6 +446,12 @@ fn run(cli: Cli) -> Result<bool> {
                     password_stdin,
                     adopt,
                 } => {
+                    ensure!(
+                        !password_stdin
+                            || store.protected_originals()?
+                                == arp4_cli::project::ProtectedOriginals::Unprotect,
+                        "import does not remove the protection of originals unless protected_originals of .arp/config.yml is unprotect; with the user's approval, remove it with documents unprotect --password-stdin, then import"
+                    );
                     let unprotection = arp4_cli::documents::Unprotection::new(if password_stdin {
                         passwords(std::io::stdin().lock())?
                     } else {
@@ -528,6 +535,42 @@ fn run(cli: Cli) -> Result<bool> {
                         }
                         result
                     }
+                }
+                DocumentCommand::Protected { source } => {
+                    let mut result = output.page(store.protected(source.as_deref())?);
+                    result["detail"] = json!(
+                        "Import leaves these originals unread. Ask the user before removing a protection: removal password and office by documents unprotect --approved-by, manual by replacing the original with a copy unprotected outside ARP."
+                    );
+                    output.emit(result, true);
+                    return Ok(true);
+                }
+                DocumentCommand::Unprotect {
+                    source,
+                    approved_by,
+                    password_stdin,
+                } => {
+                    ensure!(
+                        !approved_by.trim().is_empty(),
+                        "--approved-by names the user who approved removing the protection"
+                    );
+                    let unprotection = arp4_cli::documents::Unprotection::new(if password_stdin {
+                        passwords(std::io::stdin().lock())?
+                    } else {
+                        vec![]
+                    });
+                    let mut result = store.unprotect(&source, &unprotection)?;
+                    result["approved_by"] = json!(approved_by);
+                    result["state"] = json!(if array(&result["unprotected"])?.is_empty() {
+                        "unchanged"
+                    } else {
+                        "unprotected"
+                    });
+                    if !array(&result["failed"])?.is_empty() {
+                        result["error"] = json!({"code":"operation_failed","message":"The protection of some originals could not be removed; see failed. They stay as they were."});
+                        output.emit(result, false);
+                        return Ok(false);
+                    }
+                    result
                 }
                 DocumentCommand::Remove {
                     document,

@@ -30,6 +30,7 @@ pub fn open(root: &Path) -> Result<PathBuf> {
     )?;
     project_picture_folders(&root, &config)?;
     Exclusion::of(&config)?;
+    AssetLimits::of(&config)?;
     Ok(root)
 }
 
@@ -77,6 +78,75 @@ impl Exclusion {
                 .find(|pattern| pattern.is_match(path))
                 .map(regex::Regex::as_str)
         })
+    }
+}
+
+/// What import does with an original that opens only with its protection
+/// removed (a password, IRM or a sensitivity label), by `protected_originals`
+/// of the project configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedOriginals {
+    /// Leaves it as it is and does not import it; `documents unprotect`
+    /// removes the protection once the user approves.
+    #[default]
+    Skip,
+    /// Removes the protection of an Office original, saves it over
+    /// unprotected and imports it.
+    Unprotect,
+}
+
+impl ProtectedOriginals {
+    /// The setting of the project configuration `config`.
+    pub fn of(config: &Value) -> Result<Self> {
+        config
+            .get("protected_originals")
+            .map_or(Ok(Self::default()), |value| {
+                serde_json::from_value(value.clone())
+                    .context("protected_originals of .arp/config.yml must be skip or unprotect")
+            })
+    }
+}
+
+/// Which of the pictures an original shows import leaves out of its assets,
+/// by `assets` of the project configuration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AssetLimits {
+    /// The most times longer than it is short a picture may be; none when
+    /// no picture is left out for its shape.
+    pub max_aspect_ratio: Option<f64>,
+}
+
+impl Default for AssetLimits {
+    /// Pictures more than 20 times longer than they are short are rules,
+    /// bands and other decoration rather than figures.
+    fn default() -> Self {
+        Self {
+            max_aspect_ratio: Some(20.0),
+        }
+    }
+}
+
+impl AssetLimits {
+    /// The limits of the project configuration `config`.
+    pub fn of(config: &Value) -> Result<Self> {
+        let mut limits = Self::default();
+        if let Some(ratio) = config.get("assets").and_then(|a| a.get("max_aspect_ratio")) {
+            limits.max_aspect_ratio = match ratio {
+                Value::Null => None,
+                ratio => Some(ratio.as_f64().filter(|r| *r >= 1.0).context(
+                    "assets.max_aspect_ratio of .arp/config.yml must be a number of 1 or more, or null",
+                )?),
+            };
+        }
+        Ok(limits)
+    }
+
+    /// Whether a picture `width` by `height` is left out for its shape.
+    pub fn slender(&self, width: f64, height: f64) -> bool {
+        let (long, short) = (width.max(height), width.min(height));
+        self.max_aspect_ratio
+            .is_some_and(|most| long > most * short)
     }
 }
 
@@ -216,4 +286,36 @@ pub(crate) fn ensure_lines(path: &Path, lines: &[&str]) -> Result<()> {
         }
     }
     crate::data::replace(path, contents.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn asset_limits_are_those_of_the_configuration() {
+        let limits = |config: Value| AssetLimits::of(&config).map(|l| l.max_aspect_ratio);
+        assert_eq!(limits(json!({})).unwrap(), Some(20.0));
+        assert_eq!(limits(json!({"assets":{}})).unwrap(), Some(20.0));
+        assert_eq!(
+            limits(json!({"assets":{"max_aspect_ratio":40}})).unwrap(),
+            Some(40.0)
+        );
+        assert_eq!(
+            limits(json!({"assets":{"max_aspect_ratio":null}})).unwrap(),
+            None
+        );
+        assert!(limits(json!({"assets":{"max_aspect_ratio":0.5}})).is_err());
+        assert!(limits(json!({"assets":{"max_aspect_ratio":"wide"}})).is_err());
+        // Whichever side is the longer, and no longer than the limit is kept.
+        let default = AssetLimits::default();
+        assert!(default.slender(401.0, 20.0) && default.slender(20.0, 401.0));
+        assert!(!default.slender(400.0, 20.0) && !default.slender(0.0, 0.0));
+        assert!(default.slender(5.0, 0.0));
+        let none = AssetLimits {
+            max_aspect_ratio: None,
+        };
+        assert!(!none.slender(1000.0, 1.0));
+    }
 }

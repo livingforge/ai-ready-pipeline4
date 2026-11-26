@@ -25,6 +25,7 @@ mod html;
 mod html_parse;
 mod package;
 pub(crate) mod page_layout;
+mod pdf_figures;
 mod pdf_images;
 mod pdf_tags;
 mod slide_drawings;
@@ -133,14 +134,17 @@ pub struct TextSource {
     linked: BTreeMap<String, std::path::PathBuf>,
 }
 
-/// The image files an original holds, by asset name; for a PDF, the pages
-/// (from 1) that draw each, and a note naming the pages with images that
-/// could not be made files.
+/// The image files an original holds, by asset name; for a PDF, whose
+/// figures drawn with lines and areas are among them as SVG pictures, the
+/// pages (from 1) that draw each, a note naming the pages with images that
+/// could not be made files, and how many images and figures of each page
+/// were left out for their shape.
 #[derive(Default)]
 pub struct ImageAssets {
     pub files: BTreeMap<String, Vec<u8>>,
     pub pages: BTreeMap<String, Vec<u32>>,
     pub note: String,
+    pub slender: BTreeMap<u32, usize>,
 }
 
 enum TextBackend {
@@ -180,9 +184,11 @@ impl Source {
 
     /// Images in Word's media folder, PowerPoint's pictures, the pictures an
     /// HTML page shows and the images a PDF's pages draw are kept as
-    /// independently reviewable assets. Their bytes are read from the
-    /// original, or the files an HTML page links, only on import.
-    pub fn image_assets(&self) -> Result<ImageAssets> {
+    /// independently reviewable assets, as are the figures a PDF's pages
+    /// draw with lines and areas. Their bytes are read from the original,
+    /// or the files an HTML page links, only on import. `limits` says which
+    /// of a PDF's images and figures are left out.
+    pub fn image_assets(&self, limits: &crate::project::AssetLimits) -> Result<ImageAssets> {
         let files = |files| ImageAssets {
             files,
             ..ImageAssets::default()
@@ -199,7 +205,23 @@ impl Source {
             Self::Text(doc) => doc,
         };
         if let TextBackend::Pdf { doc, .. } = &doc.backend {
-            return pdf_images::read(doc, MAX_PAGE);
+            let (mut images, placed) = pdf_images::read(doc, MAX_PAGE, limits)?;
+            pdf_figures::read(doc, &mut images, placed, limits)?;
+            if let Some(most) = limits
+                .max_aspect_ratio
+                .filter(|_| !images.slender.is_empty())
+            {
+                let pages = images
+                    .slender
+                    .iter()
+                    .map(|(page, count)| format!("{page}ページ（{count}件）"))
+                    .collect::<Vec<_>>()
+                    .join("、");
+                images.note.push_str(&format!(
+                    "次のページの画像・図は、長辺が短辺の{most}倍を超えるため、罫線や帯などの飾りとみなしてassetsに保存していません: {pages}。保存するには .arp/config.yml の assets.max_aspect_ratio を大きくしてください（nullにすると縦横比では除外しません）。"
+                ));
+            }
+            return Ok(images);
         }
         if is_powerpoint(&doc.format) {
             return Ok(files(doc.images.clone()));
@@ -583,15 +605,8 @@ impl Source {
             )
         } else if format == "pdf" {
             let (doc, repaired) = pdf_load(&raw)?;
-            ensure!(
-                !doc.is_encrypted() && doc.trailer.get(b"Encrypt").is_err(),
-                "encrypted PDF is not supported"
-            );
-            if let Some(protection) = pdf_encrypted_payload(&doc) {
-                bail!(
-                    "the PDF wraps an encrypted document ({protection}) in a cover page whose text is only a notice that it is protected; \
-                     import a copy whose protection was removed by an account allowed to remove it"
-                );
+            if let Some(protected) = pdf_protection(&doc) {
+                return Err(protected.into());
             }
             let mut sheets = vec![];
             let mut unparsed = vec![];
@@ -846,57 +861,11 @@ impl Source {
         let mut pages = vec![];
         let mut placed = pdf_images::placements(doc, MAX_PAGE)?.pages.into_iter();
         for (_, id) in doc.get_pages() {
-            let [x0, y0, x1, y1] = pdf_page_box(doc, id);
-            let raw = doc.get_page_content_with_limit(id, MAX_PAGE)?;
-            let (mut content, _) = pdf_content(&raw)?;
-            let paths = pdf_paths(&content, [x0, y1]);
-            let strings = pdf_text(doc, id, &mut content, &BTreeMap::new(), None, &mut read)?;
-            let cells = pdf_page_layout(doc, id, &content, &strings, &tags)
-                .cells
-                .into_iter()
-                .map(|cell| cell.pieces)
-                .collect();
-            let mut places = vec![];
-            let mut invisible = BTreeSet::new();
-            let mut texts = vec![];
-            let mut fonts = vec![];
-            for (i, string) in strings.into_iter().enumerate() {
-                let [x, y, width] = string.origin;
-                places.push([x - x0, y1 - y, width]);
-                if string.invisible {
-                    invisible.insert(i);
-                }
-                fonts.push(crate::fonts::element_font(&[], &string.font));
-                texts.push(string.text);
-            }
-            read.left_out.clear();
-            // The unit square of an image, its top row at 1, onto the page
-            // from its top left: SVG draws an image from its top left down.
-            let images = placed
+            let placements = placed
                 .next()
                 .map(|(_, placements)| placements)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|p| {
-                    let [a, b, c, d, e, f] = p.matrix?;
-                    Some(PdfImage {
-                        asset: pdf_images::stem(p.index),
-                        matrix: [a, -b, -c, d, c + e - x0, y1 - d - f],
-                        mask: p.mask,
-                    })
-                })
-                .collect();
-            pages.push(PdfPage {
-                width: x1 - x0,
-                height: y1 - y0,
-                paths,
-                places,
-                texts,
-                fonts,
-                cells,
-                invisible,
-                images,
-            });
+                .unwrap_or_default();
+            pages.push(pdf_page(doc, id, &mut read, &tags, placements)?);
         }
         Ok(Some(pages))
     }
@@ -1611,7 +1580,7 @@ pub fn base_note(format: &str) -> &'static str {
             "HTMLの<title>と本文を、見出し・段落・リスト項目・表のセルなどのブロック単位で抽出します。<title>を先頭行に置き、表の外のブロックは1ブロック1行でA列に並べます。表は行・列の位置を保ち、colspan・rowspanをmerges、表の範囲をtablesに記録します。見出し行はthead、なければthだけの先頭行、合計行はtfootの行です。ブラウザの表示と同じく、theadの行は表の先頭、tfootの行は末尾に置き、rowspanは行グループ（thead・tbody・tfoot）の外へ伸ばしません。表のセルの外に書いた文字は表の前のブロックにします。表を含む表はレイアウト用の枠とみなし、中の段落と表を本文として並べます。空白はブラウザと同じく連続を1つにまとめ、ブロックの先頭・末尾と<br>の前後で除き、preでは原文どおり保ちます。<br>は改行、セル内の段落は改行で表し、ブロック末尾の<br>は表示どおり除きます。空白と&nbsp;だけのブロックは行にしません。pre内のブロック要素（行ごとに要素を置くハイライト済みのコード）は、preのブロックの中の行として改行で区切ります。文字参照は文字に直します。CSSは解釈せず、文字の大きさはブラウザ標準の値（本文12pt、h1 24pt〜h6 8pt）、太字はh1〜h6・th・b・strongから決めます。<main>かrole=\"main\"の要素があればその中だけを本文とし、navとrole=\"navigation\"・\"banner\"・\"contentinfo\"・\"search\"の要素は除きます。head・script・style・template・hidden属性の要素（選ばれていないタブのrole=\"tabpanel\"は除く）・svg・mathの中身、フォーム部品は抽出しません。CSSで非表示にした文字は抽出します。<a href>はlinks（ブロックのセル・url・リンクの文字）、idとaのnameはanchorsに記録します。リンクの行き先になるため、本文から除いた部分やhidden属性の要素のものも、その位置か後のブロックのセルとして記録します（templateの中は除きます）。<img>（遅延読み込みのdata-srcを優先）と、画像の<input>・<object>・<embed>、SVGの中の<image>、style属性の背景画像はimagesにブロックのセル・src・altを記録し（相対パスは<base>からたどります）、data URLの画像と、ページから相対パスで指す画像ファイルのうち取り込み元フォルダと設定のpicture_folders（.arp/config.ymlはプロジェクト内、Git管理外の.arp/local.ymlはこのマシンのプロジェクト外も可）の中にあるものは取込時にassetsへ保存し、その外の画像ファイルは読みません。保存した画像にはWindowsでOCRを自動実行します。画像ファイルは取込時点の内容で、画像だけを変えても原本の変更として検出しません。書き戻しは変更した文字だけを原本の文字コードで書き換え、ほかのバイトは保ちます。改行は<br>として書き、要素をまたぐ変更は最初の要素が新しい文字を受け取ります。表せない文字、HTMLの表示で失われる空白（連続・行頭・行末の空白とタブ）、表のセル内の段落やpre内のブロックをまたぐ変更は拒否します。段落・リスト項目・表の行はdocuments rowsで追加・削除できます。出力をブラウザで開いて表示を確認してください。"
         }
         "pdf" => {
-            "ページが描く文字列を、描く位置と罫線から行・列・表に並べて抽出します。同じ行で続く文字列は、描く順や分け方（1文字ずつ等）によらず1つのセルにまとめ、間隔の空く箇所を空白で表します（日本語の文字どうしと、日本語と英数字の間の字間は空白にしません）。交わる罫線は表とし、罫線のないセルどうしは結合としてmerges、表の範囲はtablesに記録します。罫線がなくても、同じ列に2行以上並ぶ文字列は表とします（列をまたぐ文字列のある行と、表の前後の1項目だけの行は表に含めません）。タグのないPDFでは、列の間隔が文字の大きさの1.8倍に満たない罫線なしの表は列に分けられず、1行のセルがつながります。表の外は1行ずつA列から並べ、同じ行で離れた文字列はB列以降に置き、段組みは列ごとに上から読みます。セル内の行は改行で表します。タグ付きPDFは構造ツリーから段落・見出し・リスト項目・表のセルごとに文字列をまとめ、折り返した行（次の語が入らなかった行）は改行を入れずにつなぎ、余白を残して改めた行は改行で表します。1文字ずつ下へ並ぶ行は縦書きとして1つにつなぎます。段落が次の段へ続くときは段ごとに読んで1つにつなぎます。同じ行に並ぶ段落は、間隔がなくても別々のセルとし、上下の行と重なる位置から列を決めます（Wordは罫線のない表を表としてタグ付けせず、セルを段落として出力します）。構造ツリーが表として示す表は、ページが罫線で描いていればセルが1つずつ罫線の枠に入る限り罫線から読み（結合セルと、ページごとに繰り返す見出し行が分かるため）、罫線がない表と罫線どうしが重なる表は構造ツリーの行・セル・見出し行を使います。結合で省かれたセルのある行は、セルの位置から列を決めます。Excelがシート全体を1つの表としたタグと、入れ子の表は使わず、罫線から読みます。タグが疑わしいと記録されたPDF（Suspects）はタグを使いません。見出し行は、構造ツリーの見出し行、網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。回転した文字列は1つずつ別の行にします。不可視の文字（スキャンページに重ねたOCRの文字）は見える文字と別のセルにします。Form XObjectの中の文字と、注釈の表示の文字（コメント・入力済みのフォーム欄。チェックボックス等のボタンを除く）も描く位置で並べますが、書き戻せません。ページが描く画像（Form XObjectの中のもの、インライン画像、スタンプ・署名など注釈の表示に描く画像、タイリングパターン・ソフトマスク・Type3フォントの字形の中の画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。帯状・格子状に分けて描かれた1枚の画像と、ページのType3フォントの字形の画像は、それぞれ1枚の画像にまとめます。JPEGはそのまま（Decodeで反転するものは解読してPNG）、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにし、ソフトマスク・マスク・JPEG 2000のアルファによる透明度はPNGの透明度として保ちます。OCRは透明な部分を画像と見分けられる背景色の上で読み、OCRの上限より大きい画像は縮小して読みます。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。相互参照表からページをたどれないPDFは、ファイル内のオブジェクトを探して読み、注記に記録します。OCRは読み取った単語の位置と画像の罫線から、ページの文字列と同じ規則で行・列・表に並べ、textに行を改行、セルをタブで区切って読む順に記録し、layoutにセルごとの文字・画像上の位置・結合・表の範囲を記録します。OCRの文字はセルの値にしません。書き戻しは変更した文字を含む文字列だけを書き換え、複数の文字列にまたがる変更は最初の文字列が新しい文字を受け取ります。元フォントで表現可能な文字だけ書き戻せます。文字列の間の空白とセル内の改行は文字ではなく配置から決まるため、それを追加・削除する変更は拒否します。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
+            "ページが描く文字列を、描く位置と罫線から行・列・表に並べて抽出します。同じ行で続く文字列は、描く順や分け方（1文字ずつ等）によらず1つのセルにまとめ、間隔の空く箇所を空白で表します（日本語の文字どうしと、日本語と英数字の間の字間は空白にしません）。交わる罫線は表とし、罫線のないセルどうしは結合としてmerges、表の範囲はtablesに記録します。罫線がなくても、同じ列に2行以上並ぶ文字列は表とします（列をまたぐ文字列のある行と、表の前後の1項目だけの行は表に含めません）。タグのないPDFでは、列の間隔が文字の大きさの1.8倍に満たない罫線なしの表は列に分けられず、1行のセルがつながります。表の外は1行ずつA列から並べ、同じ行で離れた文字列はB列以降に置き、段組みは列ごとに上から読みます。セル内の行は改行で表します。タグ付きPDFは構造ツリーから段落・見出し・リスト項目・表のセルごとに文字列をまとめ、折り返した行（次の語が入らなかった行）は改行を入れずにつなぎ、余白を残して改めた行は改行で表します。1文字ずつ下へ並ぶ行は縦書きとして1つにつなぎます。段落が次の段へ続くときは段ごとに読んで1つにつなぎます。同じ行に並ぶ段落は、間隔がなくても別々のセルとし、上下の行と重なる位置から列を決めます（Wordは罫線のない表を表としてタグ付けせず、セルを段落として出力します）。構造ツリーが表として示す表は、ページが罫線で描いていればセルが1つずつ罫線の枠に入る限り罫線から読み（結合セルと、ページごとに繰り返す見出し行が分かるため）、罫線がない表と罫線どうしが重なる表は構造ツリーの行・セル・見出し行を使います。結合で省かれたセルのある行は、セルの位置から列を決めます。Excelがシート全体を1つの表としたタグと、入れ子の表は使わず、罫線から読みます。タグが疑わしいと記録されたPDF（Suspects）はタグを使いません。見出し行は、構造ツリーの見出し行、網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。回転した文字列は1つずつ別の行にします。不可視の文字（スキャンページに重ねたOCRの文字）は見える文字と別のセルにします。Form XObjectの中の文字と、注釈の表示の文字（コメント・入力済みのフォーム欄。チェックボックス等のボタンを除く）も描く位置で並べますが、書き戻せません。ページが描く画像（Form XObjectの中のもの、インライン画像、スタンプ・署名など注釈の表示に描く画像、タイリングパターン・ソフトマスク・Type3フォントの字形の中の画像を含む。インライン画像は短い辺が8画素未満か1024画素未満の記号・罫線を除く）は取込時に画像ファイルにしてassetsへ保存し、描くページをpagesに記録して、WindowsでOCRを自動実行します。帯状・格子状に分けて描かれた1枚の画像と、ページのType3フォントの字形の画像は、それぞれ1枚の画像にまとめます。JPEGはそのまま（Decodeで反転するものは解読してPNG）、そのほか（CCITT Fax・JBIG2・JPEG 2000を含む）は解読してPNGにし、ソフトマスク・マスク・JPEG 2000のアルファによる透明度はPNGの透明度として保ちます。OCRは透明な部分を画像と見分けられる背景色の上で読み、OCRの上限より大きい画像は縮小して読みます。色空間を読めない画像と解読できない画像は保存せず、注記にページと理由を記録します。ページが線と塗りで描く図（Word・Excel・PowerPointの図形、グラフ、ブラウザで印刷したSVGなど）は、近くに描かれた線と塗りをまとめて図ごとのSVGにし、figure-001.svgのようにassetsへ保存します。SVGは範囲内の線と塗り、文字（ページのセルごとに1つのtext要素）、保存した画像への参照からなり、viewBoxはページ上の位置（ポイント、左上から）です。文字はocr.textにも記録します。図の範囲は推定です。曲線か斜めの線を含むまとまりと、水平・垂直の線と塗りが3個以上あり表でも枠でもないまとまりを図とし、6ポイント以内に描かれたものを1つの図にまとめます。図に重なる枠や線、画像の上に描いた印（画面の一部を囲む枠など）も図に含め、ページの半分以上を囲む枠は図に含めません。罫線の交点どうしを結ぶ斜線は表のセルの斜線として表に含め、短辺が16ポイント未満のものは記号とみなして除きます。表の中の小さな図は図だけを切り出します。グラデーションは始まりの色の単色で塗ります。Form XObjectの中の線と塗り、クリップ・破線・不透明度、横書きでない文字は図に描きません。長辺が短辺の20倍を超える画像と図は、罫線や帯などの飾りとみなして保存せず、注意事項にページと件数を記録します（倍率は.arp/config.ymlのassets.max_aspect_ratioで変更でき、nullにすると縦横比では除外しません）。相互参照表からページをたどれないPDFは、ファイル内のオブジェクトを探して読み、注記に記録します。OCRは読み取った単語の位置と画像の罫線から、ページの文字列と同じ規則で行・列・表に並べ、textに行を改行、セルをタブで区切って読む順に記録し、layoutにセルごとの文字・画像上の位置・結合・表の範囲を記録します。OCRの文字はセルの値にしません。書き戻しは変更した文字を含む文字列だけを書き換え、複数の文字列にまたがる変更は最初の文字列が新しい文字を受け取ります。元フォントで表現可能な文字だけ書き戻せます。文字列の間の空白とセル内の改行は文字ではなく配置から決まるため、それを追加・削除する変更は拒否します。自動改行・再配置はしないため、文字の重なりやはみ出しを出力PDFで確認してください。"
         }
         format if word(format) => {
             "Word本文・表・テキストボックス・ヘッダー・フッター・脚注・文末脚注・コメントを段落と表のセル単位で抽出します。表の外の段落は1段落1行でA列に並び、表は行・列の位置を保ち、結合セルをmerges、表の範囲をtablesに記録します。見出し行はWordの見出し行の繰り返し、太字・網掛けの先頭行、3列以上の表の先頭行から推定するため、構造のレビューで確認してください。セル内の段落・改行は改行、タブはタブ文字で表します。セル内の入れ子の表はそのセルの範囲に独自の行・列を持ち、外側のセルは入れ子の表に合わせて広がり（他のセルは結合として記録）、tablesに外側の表をparentとして記録します。罫線がなく、値のある全セルが表を持つ外側の表はレイアウト用の枠とみなし、表として記録しません。入れ子の表を持つ表の行の追加・削除は拒否します。書き戻しは変更箇所を含むrunだけを書き換えます。段落内の改行・タブは追加・削除・置換でき、runの改行（w:br）・タブ（w:tab）として書き込みます。段落の分割・結合となる変更は拒否します。テキストボックスは表示される1組だけを抽出し、書き戻しでは互換用の複製（VML）も同じ文字にします。画像はassetsに保存し、WindowsではOCRを自動実行します。フィールド命令はfield_codesへ読み取り専用で記録します。フィールドの表示結果（日付・ページ番号・目次・相互参照等）はWordが再計算するため書き戻しを拒否します。ページは再組版されるため出力Wordの表示を確認してください。"
@@ -3619,6 +3588,33 @@ fn inline_images(raw: &[u8], lengths: &[Option<usize>]) -> Result<Vec<std::ops::
     Ok(images)
 }
 
+/// The protection that keeps the original `raw` of `format` from being read:
+/// the encryption of an Office package, or of a PDF that needs a password or
+/// wraps an encrypted document. A PDF restricted only against editing or
+/// printing opens without a password and is not protected so.
+pub fn protection(format: &str, raw: &[u8]) -> Option<encryption::Protected> {
+    if format == "pdf" {
+        pdf_protection(&pdf_load(raw).ok()?.0)
+    } else if is_office(format) {
+        encryption::protection(raw).map(encryption::Protected::office)
+    } else {
+        None
+    }
+}
+
+/// Whether `format` is an Open XML package of Excel, Word or PowerPoint.
+pub fn is_office(format: &str) -> bool {
+    is_excel(format) || WORD_FORMATS.contains(&format) || is_powerpoint(format)
+}
+
+/// The protection of the loaded PDF `doc` that keeps its pages from being read.
+fn pdf_protection(doc: &Pdf) -> Option<encryption::Protected> {
+    if doc.is_encrypted() || doc.trailer.get(b"Encrypt").is_ok() {
+        return Some(encryption::Protected::pdf_password());
+    }
+    pdf_encrypted_payload(doc).map(|payload| encryption::Protected::pdf_payload(&payload))
+}
+
 /// The protection of the encrypted document `doc` wraps, when `doc` is an
 /// unencrypted wrapper (ISO 32000-2, 7.6.7): a cover page shown by readers
 /// that cannot open the document, which is embedded as a file whose
@@ -4506,9 +4502,72 @@ fn pdf_page_layout(
         .collect();
     page_layout::layout(
         &shown,
-        &pdf_paths(content, [x0, y1]),
+        &pdf_paths(content, [x0, y1], &pdf_pattern_colors(doc, id)),
         tags.map_or(&[][..], |tags| &tags.tables),
     )
+}
+
+/// The page `id` of a PDF as [`Source::pdf_pages`] gives it, drawing the
+/// images `placements`.
+fn pdf_page<'a>(
+    doc: &'a Pdf,
+    id: lopdf::ObjectId,
+    read: &mut PdfFonts<'a>,
+    tags: &pdf_tags::Tags,
+    placements: Vec<pdf_images::Placement>,
+) -> Result<PdfPage> {
+    let [x0, y0, x1, y1] = pdf_page_box(doc, id);
+    let raw = doc.get_page_content_with_limit(id, MAX_PAGE)?;
+    let (mut content, _) = pdf_content(&raw)?;
+    let paths = pdf_paths(&content, [x0, y1], &pdf_pattern_colors(doc, id));
+    let strings = pdf_text(doc, id, &mut content, &BTreeMap::new(), None, read)?;
+    let layout = pdf_page_layout(doc, id, &content, &strings, tags);
+    let tables = layout.table_bounds;
+    let cells = layout.cells.into_iter().map(|cell| cell.pieces).collect();
+    let mut places = vec![];
+    let mut invisible = BTreeSet::new();
+    let mut turned = BTreeSet::new();
+    let mut texts = vec![];
+    let mut fonts = vec![];
+    for (i, string) in strings.into_iter().enumerate() {
+        let [x, y, width] = string.origin;
+        places.push([x - x0, y1 - y, width]);
+        if string.invisible {
+            invisible.insert(i);
+        }
+        if !string.upright {
+            turned.insert(i);
+        }
+        fonts.push(crate::fonts::element_font(&[], &string.font));
+        texts.push(string.text);
+    }
+    read.left_out.clear();
+    // The unit square of an image, its top row at 1, onto the page from its
+    // top left: SVG draws an image from its top left down.
+    let images = placements
+        .into_iter()
+        .filter_map(|p| {
+            let [a, b, c, d, e, f] = p.matrix?;
+            Some(PdfImage {
+                asset: pdf_images::stem(p.index),
+                matrix: [a, -b, -c, d, c + e - x0, y1 - d - f],
+                mask: p.mask,
+            })
+        })
+        .collect();
+    Ok(PdfPage {
+        width: x1 - x0,
+        height: y1 - y0,
+        paths,
+        places,
+        texts,
+        fonts,
+        cells,
+        invisible,
+        turned,
+        images,
+        tables,
+    })
 }
 
 /// The sheet of the `page`th page of a PDF as an extraction records it:
@@ -4571,8 +4630,14 @@ pub struct PdfPage {
     /// The strings drawn invisibly (render modes 3 and 7), as the OCR text
     /// of a scanned page is, by their index in `places`.
     pub invisible: BTreeSet<usize>,
+    /// The strings not written left to right along a level line, by their
+    /// index in `places`.
+    pub turned: BTreeSet<usize>,
     /// The images the page draws, in the order it draws them.
     pub images: Vec<PdfImage>,
+    /// Where each table of the page's sheet lies, `[x0, y0, x1, y1]` in
+    /// points from the top left.
+    pub tables: Vec<[f64; 4]>,
 }
 
 /// An image a PDF page draws: the asset name of its file without the
@@ -4619,10 +4684,110 @@ struct PdfPaint {
     width: f64,
 }
 
+/// The colour each shading pattern of the page `id` starts from, by the
+/// pattern's name in the page's resources, as `RRGGBB`: what stands for a
+/// gradient where only one colour can be painted. Tiling patterns and
+/// shadings whose function or colour space cannot be read have none.
+fn pdf_pattern_colors(doc: &Pdf, id: lopdf::ObjectId) -> BTreeMap<Vec<u8>, String> {
+    let follow = |object: &'_ Object| -> Object {
+        doc.dereference(object)
+            .map_or_else(|_| object.clone(), |(_, o)| o.clone())
+    };
+    let dictionary = |object: &Object| -> Option<lopdf::Dictionary> {
+        match follow(object) {
+            Object::Dictionary(dict) => Some(dict),
+            Object::Stream(stream) => Some(stream.dict),
+            _ => None,
+        }
+    };
+    // The values a function gives where its domain starts.
+    fn start(doc: &Pdf, function: &Object, depth: usize) -> Option<Vec<f64>> {
+        let function = doc.dereference(function).map_or(function, |(_, o)| o);
+        if depth > 4 {
+            return None;
+        }
+        let numbers = |dict: &lopdf::Dictionary, key: &[u8]| -> Option<Vec<f64>> {
+            let array = dict.get(key).ok()?;
+            let array = doc.dereference(array).map_or(array, |(_, o)| o);
+            Some(pdf_numbers(array.as_array().ok()?))
+        };
+        match function {
+            // A function for each component.
+            Object::Array(functions) => functions
+                .iter()
+                .map(|f| start(doc, f, depth + 1)?.first().copied())
+                .collect(),
+            Object::Dictionary(dict) => match dict.get(b"FunctionType").and_then(Object::as_i64) {
+                Ok(2) => Some(numbers(dict, b"C0").unwrap_or_else(|| vec![0.0])),
+                Ok(3) => {
+                    let functions = dict.get(b"Functions").ok()?;
+                    let functions = doc.dereference(functions).map_or(functions, |(_, o)| o);
+                    start(doc, functions.as_array().ok()?.first()?, depth + 1)
+                }
+                _ => None,
+            },
+            // Samples: the first of them, each as its range maps it.
+            Object::Stream(stream) => {
+                let dict = &stream.dict;
+                if dict.get(b"FunctionType").and_then(Object::as_i64).ok()? != 0 {
+                    return None;
+                }
+                let range = numbers(dict, b"Range")?;
+                let bits = dict.get(b"BitsPerSample").and_then(Object::as_i64).ok()?;
+                let bytes = match bits {
+                    8 => 1,
+                    16 => 2,
+                    _ => return None,
+                };
+                let data = stream.decompressed_content_with_limit(MAX_PAGE).ok()?;
+                let most = ((1u32 << bits) - 1) as f64;
+                range
+                    .chunks(2)
+                    .enumerate()
+                    .map(|(n, range)| {
+                        let sample = data.get(n * bytes..(n + 1) * bytes)?;
+                        let sample = sample.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+                        Some(range[0] + f64::from(sample) / most * (range.get(1)? - range[0]))
+                    })
+                    .collect()
+            }
+            _ => None,
+        }
+    }
+    let mut colors = BTreeMap::new();
+    for resources in pdf_page_resources(doc, id).into_iter().rev() {
+        let Some(patterns) = resources.get(b"Pattern").ok().and_then(dictionary) else {
+            continue;
+        };
+        for (name, pattern) in patterns.iter() {
+            let color = dictionary(pattern)
+                .and_then(|pattern| dictionary(pattern.get(b"Shading").ok()?))
+                .and_then(|shading| {
+                    let components = start(doc, shading.get(b"Function").ok()?, 0)?;
+                    let space = match follow(shading.get(b"ColorSpace").ok()?) {
+                        Object::Name(name) => name,
+                        _ => vec![],
+                    };
+                    pdf_any_color(&space, &components)
+                });
+            match color {
+                Some(color) => colors.insert(name.clone(), color),
+                None => colors.remove(name),
+            };
+        }
+    }
+    colors
+}
+
 /// The paths `content` paints, its points taken from default user space to
 /// the top left corner `[x0, y1]` of the page's box. Clipping, shadings and
-/// images are left out.
-fn pdf_paths(content: &Content, [x0, y1]: [f64; 2]) -> Vec<PdfPath> {
+/// images are left out; a path painted with a pattern is in the colour
+/// `patterns` gives the pattern, and has no colour when they give none.
+fn pdf_paths(
+    content: &Content,
+    [x0, y1]: [f64; 2],
+    patterns: &BTreeMap<Vec<u8>, String>,
+) -> Vec<PdfPath> {
     let mut state = PdfPaint {
         matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         fill: Some("000000".into()),
@@ -4695,6 +4860,19 @@ fn pdf_paths(content: &Content, [x0, y1]: [f64; 2]) -> Vec<PdfPath> {
             }
             ("SC" | "SCN", components) if !components.is_empty() => {
                 state.stroke = pdf_any_color(&state.stroke_space, components);
+            }
+            // A pattern alone (a shading, a coloured tiling) is painted in
+            // the colour its shading starts from; one without is left
+            // unpainted rather than in the colour set before it.
+            ("scn" | "SCN", _) => {
+                if let Some(Object::Name(name)) = operation.operands.last() {
+                    let color = patterns.get(name).cloned();
+                    if operation.operator == "scn" {
+                        state.fill = color;
+                    } else {
+                        state.stroke = color;
+                    }
+                }
             }
             ("m", [x, y]) => {
                 add(&mut outline, &m, 'M', &[(*x, *y)]);
@@ -5702,7 +5880,10 @@ mod tests {
         );
         let source = Source::open(&path).unwrap();
         assert_eq!(
-            source.image_assets().unwrap().files["image-001.png"],
+            source
+                .image_assets(&crate::project::AssetLimits::default())
+                .unwrap()
+                .files["image-001.png"],
             b"image bytes"
         );
         assert_eq!(
@@ -6729,6 +6910,67 @@ mod tests {
             vec![
                 ("slide-1".into(), "slide.xml".into()),
                 ("notes-1".into(), "notes.xml".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_painted_with_a_gradient_has_the_colour_the_gradient_starts_from() {
+        use lopdf::dictionary;
+        let mut doc = Pdf::with_version("1.5");
+        let step = |from: [f32; 3], to: [f32; 3]| {
+            dictionary! { "FunctionType" => 2, "N" => 1,
+            "C0" => from.map(Object::Real).to_vec(), "C1" => to.map(Object::Real).to_vec() }
+        };
+        let stitched = doc.add_object(dictionary! { "FunctionType" => 3,
+        "Functions" => vec![step([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]).into(), step([0.0, 0.0, 1.0], [1.0, 1.0, 1.0]).into()] });
+        let shaded = |function: Object| {
+            dictionary! { "PatternType" => 2,
+            "Shading" => dictionary! { "ShadingType" => 2, "ColorSpace" => "DeviceRGB", "Function" => function } }
+        };
+        // Samples of 8 bits: the first of them is the colour at the start.
+        let sampled = doc.add_object(Stream::new(
+            dictionary! { "FunctionType" => 0, "Size" => vec![2.into()], "BitsPerSample" => 8,
+            "Domain" => vec![0.into(), 1.into()],
+            "Range" => vec![0.into(), 1.into(), 0.into(), 1.into(), 0.into(), 1.into()] },
+            vec![0, 255, 0, 255, 255, 255],
+        ));
+        let patterns = dictionary! {
+            "P1" => shaded(stitched.into()),
+            "P2" => shaded(sampled.into()),
+            "P3" => dictionary! { "PatternType" => 1 },
+        };
+        let content = b"/Pattern cs /P1 scn 0 0 10 10 re f /P2 scn 20 0 10 10 re f \
+/P3 scn 40 0 10 10 re f /Pattern CS /P1 SCN 60 0 m 70 0 l S"
+            .to_vec();
+        let content = doc.add_object(Stream::new(dictionary! {}, content));
+        let pages = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages, "Contents" => content,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Resources" => dictionary! { "Pattern" => patterns },
+        });
+        doc.objects.insert(
+            pages,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let raw = doc.get_page_content_with_limit(page, MAX_PAGE).unwrap();
+        let (content, _) = pdf_content(&raw).unwrap();
+        let paths = pdf_paths(&content, [0.0, 100.0], &pdf_pattern_colors(&doc, page));
+        let colors: Vec<_> = paths
+            .iter()
+            .map(|p| (p.fill.as_deref(), p.stroke.as_deref()))
+            .collect();
+        // A tiling pattern has no colour: its path is left unpainted.
+        assert_eq!(
+            colors,
+            [
+                (Some("FF0000"), None),
+                (Some("00FF00"), None),
+                (None, None),
+                (None, Some("FF0000"))
             ]
         );
     }

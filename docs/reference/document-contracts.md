@@ -1310,7 +1310,7 @@
 | <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
-| <code>/properties/assets/items/properties/pages</code> | <code>{"description":"PDFでこの画像を描くページ（1から）","minItems":1,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/pages</code> | <code>{"description":"PDFでこの画像・図（figure-NNN.svg）を描くページ（1から）","minItems":1,"type":"array"}</code> |
 | <code>/properties/assets/items/properties/pages/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
@@ -1729,7 +1729,7 @@
 | <code>/properties/assets/items/properties/ocr/properties/reason</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/status</code> | <code>{"enum":["available","unavailable"]}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/text</code> | <code>{"type":"string"}</code> |
-| <code>/properties/assets/items/properties/pages</code> | <code>{"description":"PDFでこの画像を描くページ（1から）","minItems":1,"type":"array"}</code> |
+| <code>/properties/assets/items/properties/pages</code> | <code>{"description":"PDFでこの画像・図（figure-NNN.svg）を描くページ（1から）","minItems":1,"type":"array"}</code> |
 | <code>/properties/assets/items/properties/pages/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/path</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/assets/items/properties/sha256</code> | <code>{"pattern":"^[a-f0-9]{64}$","type":"string"}</code> |
@@ -2618,10 +2618,13 @@
 | --- | --- |
 | <code></code> | <code>{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"required":["schema_version","sources"],"type":"object"}</code> |
 | <code>/properties/agent_read_format</code> | <code>{"default":"toon","description":"Presentation of agent reading material; storage and reply protocols remain JSON.","enum":["toon","json"],"type":"string"}</code> |
+| <code>/properties/assets</code> | <code>{"additionalProperties":false,"description":"Which of the pictures an original shows import leaves out of its assets.","type":"object"}</code> |
+| <code>/properties/assets/properties/max_aspect_ratio</code> | <code>{"default":20,"description":"The most times longer than it is short an image or figure of a PDF page may be, as the page shows it. Longer ones are rules, bands and other decoration: they are not saved as assets, and the extraction's findings name their pages. null leaves none out for its shape. Originals already imported keep their assets until imported again with --force.","minimum":1,"type":["number","null"]}</code> |
 | <code>/properties/exclude</code> | <code>{"description":"Regular expressions (Rust regex syntax) of the files and folders below sources that are not documents. Each is searched for anywhere in a path relative to sources, with / between names; a folder's path ends with /, and a folder that matches excludes everything below it. Folder import leaves excluded originals out without listing them, and importing or moving a document to an excluded path is refused.","type":"array","uniqueItems":true}</code> |
 | <code>/properties/exclude/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/picture_folders</code> | <code>{"description":"Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.","type":"array","uniqueItems":true}</code> |
 | <code>/properties/picture_folders/items</code> | <code>{"minLength":1,"type":"string"}</code> |
+| <code>/properties/protected_originals</code> | <code>{"default":"skip","description":"What import does with an original that opens only with its protection removed: an Office file encrypted with a password, by IRM or by a sensitivity label, and a PDF that needs a password or wraps an encrypted document. skip leaves it as it is and lists it under skipped; documents protected lists such originals and documents unprotect removes the protection of an Office original once the user approves. unprotect lets import remove the protection of an Office original, save it over unprotected and import it. A protected PDF is skipped under both.","enum":["skip","unprotect"],"type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |
 | <code>/properties/sources</code> | <code>{"minLength":1,"type":"string"}</code> |
 

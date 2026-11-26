@@ -1,16 +1,19 @@
 use super::*;
-use crate::document_source::encryption::{self, Protection};
+use crate::document_source::encryption::{self, Protected, Protection};
 use crate::document_structure::Carrier;
+use crate::project::ProtectedOriginals;
 use crate::rights_management::Unprotected;
 use foldhash::HashSet;
+use std::io::Read as _;
 
 /// Records written after import, which the proposal does not contain yet.
 const LATER_RECORDS: [&str; 3] = ["formation.json", "review.json", "prompt.txt"];
 
-/// How import removes the encryption of an Office original, which a project
-/// keeps unencrypted: a password-encrypted original is decrypted with the
-/// first of `passwords` that opens it, and rights management protection (IRM
-/// and sensitivity labels) is removed by desktop Office.
+/// How the encryption of an Office original is removed, by `documents
+/// unprotect` or by an import the project lets remove it: a
+/// password-encrypted original is decrypted with the first of `passwords`
+/// that opens it, and rights management protection (IRM and sensitivity
+/// labels) is removed by desktop Office.
 pub struct Unprotection {
     passwords: Vec<String>,
     rights_management: fn(&Path, &Path) -> Result<Unprotected>,
@@ -37,6 +40,16 @@ impl Unprotection {
             passwords,
             rights_management: remove,
         }
+    }
+}
+
+/// How the protection `protected` is removed: with its `password` or by
+/// desktop `office`, both by `documents unprotect`, or `manual`ly outside ARP.
+fn removal(protected: &Protected) -> &'static str {
+    match protected.protection {
+        _ if !protected.removable => "manual",
+        Protection::Password => "password",
+        Protection::RightsManagement => "office",
     }
 }
 
@@ -84,7 +97,8 @@ impl Store {
     /// are listed under `moved` for `documents move` (see [`Self::moved_originals`]),
     /// and documents whose original is gone are listed for `documents remove`. An
     /// original that cannot be imported is listed under `failed` and the others are
-    /// still imported.
+    /// still imported. A protected original is listed under `skipped` with its
+    /// `protection`, unless the project lets import remove it.
     pub fn import_folder(
         &self,
         source: &Path,
@@ -96,9 +110,8 @@ impl Store {
         if !scope.is_empty() {
             self.ensure_included(&format!("{scope}/"))?;
         }
-        let sources = crate::data::canonicalize(self.sources()?)?;
+        let unprotection = self.unprotection_at_import(unprotection)?;
         let exclusion = self.exclusion()?;
-        let dir = dir.as_path();
         let formats = crate::document_source::input_formats();
         let mut imported = vec![];
         let mut unchanged = vec![];
@@ -106,37 +119,7 @@ impl Store {
         let mut skipped = vec![];
         let mut failed = vec![];
         let mut unprotected = vec![];
-        let mut pending = vec![dir.to_owned()];
-        let mut originals = vec![];
-        while let Some(dir) = pending.pop() {
-            for entry in fs::read_dir(&dir)? {
-                let path = entry?.path();
-                let name = path.file_name().unwrap().to_string_lossy();
-                // Hidden files and Office lock files are not documents.
-                if name.starts_with('.') || name.starts_with("~$") {
-                    continue;
-                }
-                let meta = fs::symlink_metadata(&path)?;
-                // Excluded originals are not documents and are not listed.
-                let relative = path
-                    .strip_prefix(&sources)?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let folder = meta.is_dir() || is_link(&meta);
-                if exclusion.pattern(&relative).is_some()
-                    || folder && exclusion.pattern(&format!("{relative}/")).is_some()
-                {
-                    continue;
-                }
-                ensure!(!is_link(&meta), "links are not allowed: {}", path.display());
-                if meta.is_dir() {
-                    pending.push(path);
-                } else if meta.is_file() {
-                    originals.push(path);
-                }
-            }
-        }
-        originals.sort();
+        let originals = self.originals_below(&dir)?;
         let moved = self.moved_originals(&originals)?;
         let moved_to: BTreeSet<&str> = moved.values().map(String::as_str).collect();
         for path in originals {
@@ -168,9 +151,14 @@ impl Store {
                     }
                     unchanged.push(json!(id));
                 }
-                Err(error) => {
-                    failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
-                }
+                Err(error) => match error.downcast_ref::<Protected>() {
+                    Some(protected) => skipped.push(json!({"document_id":id,
+                        "reason":protected.to_string(),
+                        "protection":protected.protection.name()})),
+                    None => {
+                        failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
+                    }
+                },
             }
         }
         let missing: Vec<String> = self
@@ -200,6 +188,163 @@ impl Store {
             );
         }
         Ok(result)
+    }
+
+    /// `unprotection` when the project lets import remove the protection of
+    /// originals, which import otherwise leaves alone.
+    fn unprotection_at_import<'a>(
+        &self,
+        unprotection: &'a Unprotection,
+    ) -> Result<Option<&'a Unprotection>> {
+        Ok((self.protected_originals()? == ProtectedOriginals::Unprotect).then_some(unprotection))
+    }
+
+    /// The files below the folder `dir` of the sources that the project does
+    /// not exclude, in the order of their paths.
+    fn originals_below(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let sources = crate::data::canonicalize(self.sources()?)?;
+        let exclusion = self.exclusion()?;
+        let mut pending = vec![dir.to_owned()];
+        let mut originals = vec![];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let name = path.file_name().unwrap().to_string_lossy();
+                // Hidden files and Office lock files are not documents.
+                if name.starts_with('.') || name.starts_with("~$") {
+                    continue;
+                }
+                let meta = fs::symlink_metadata(&path)?;
+                // Excluded originals are not documents and are not listed.
+                let relative = path
+                    .strip_prefix(&sources)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let folder = meta.is_dir() || is_link(&meta);
+                if exclusion.pattern(&relative).is_some()
+                    || folder && exclusion.pattern(&format!("{relative}/")).is_some()
+                {
+                    continue;
+                }
+                ensure!(!is_link(&meta), "links are not allowed: {}", path.display());
+                if meta.is_dir() {
+                    pending.push(path);
+                } else if meta.is_file() {
+                    originals.push(path);
+                }
+            }
+        }
+        originals.sort();
+        Ok(originals)
+    }
+
+    /// The originals at or below `source` (the sources folder without one)
+    /// that open only with their protection removed, which import leaves
+    /// alone: each with its document ID, `protection`, `format` and how the
+    /// protection is removed (`removal`): `password` and `office` by
+    /// `documents unprotect`, `manual` outside ARP.
+    pub fn protected(&self, source: Option<&Path>) -> Result<Vec<Value>> {
+        let mut protected = vec![];
+        for (path, id) in self.originals_at(source)? {
+            if let Some(found) = self.protection_of(&path, &id)? {
+                protected.push(json!({"document_id":id,
+                    "format":extension(&path),
+                    "protection":found.protection.name(),
+                    "removal":removal(&found)}));
+            }
+        }
+        Ok(protected)
+    }
+
+    /// Removes the protection of the Office original `source`, or of every
+    /// protected Office original below the folder `source`, and saves each
+    /// over unprotected; import then reads them. Lists the originals
+    /// `unprotected`, those whose protection ARP does not remove
+    /// (`not_removable`) and, below a folder, those whose protection could
+    /// not be removed (`failed`), which stay as they were.
+    pub fn unprotect(&self, source: &Path, unprotection: &Unprotection) -> Result<Value> {
+        let (path, id) = self.resolve(source)?;
+        let named = path.is_file();
+        let mut unprotected = vec![];
+        let mut not_removable = vec![];
+        let mut failed = vec![];
+        for (path, id) in self.originals_at(Some(source))? {
+            let Some(found) = self.protection_of(&path, &id)? else {
+                continue;
+            };
+            if !found.removable {
+                ensure!(!named, "{found}");
+                not_removable.push(json!({"document_id":id,
+                    "protection":found.protection.name(),"reason":found.to_string()}));
+                continue;
+            }
+            let removed = fs::read(&path).map_err(Into::into).and_then(|raw| {
+                self.remove_protection(&path, &raw, found.protection, unprotection)
+            });
+            match removed {
+                Ok((_, mut record)) => {
+                    record["document_id"] = json!(id);
+                    unprotected.push(record);
+                }
+                Err(error) if named => return Err(error),
+                Err(error) => {
+                    failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
+                }
+            }
+        }
+        ensure!(!named || !unprotected.is_empty(), "{id} is not protected");
+        Ok(json!({"unprotected":unprotected,"not_removable":not_removable,"failed":failed}))
+    }
+
+    /// The original `source` names, or the originals below the folder it
+    /// names (the sources folder without one) that the project does not
+    /// exclude, with their document IDs.
+    fn originals_at(&self, source: Option<&Path>) -> Result<Vec<(PathBuf, String)>> {
+        let sources = self.sources()?;
+        let (path, scope) = self.resolve(source.unwrap_or(&sources))?;
+        if path.is_file() {
+            self.ensure_included(&scope)?;
+            return Ok(vec![(path, scope)]);
+        }
+        ensure!(path.is_dir(), "not a file or folder: {scope}");
+        if !scope.is_empty() {
+            self.ensure_included(&format!("{scope}/"))?;
+        }
+        self.originals_below(&path)?
+            .iter()
+            .map(|path| self.resolve(path))
+            .collect()
+    }
+
+    /// The protection that keeps the original at `path`, of the document
+    /// `id`, from being read. A PDF is loaded to find out, unless the document
+    /// or its proposal was imported from these bytes.
+    fn protection_of(&self, path: &Path, id: &str) -> Result<Option<Protected>> {
+        let ext = extension(path);
+        if crate::document_source::is_office(&ext) {
+            // An encrypted package is an OLE compound file; a ZIP is not read.
+            let mut start = vec![];
+            std::io::Read::take(fs::File::open(path)?, 8).read_to_end(&mut start)?;
+            if !encryption::compound_file(&start) {
+                return Ok(None);
+            }
+        } else if ext != "pdf" {
+            return Ok(None);
+        }
+        let raw = fs::read(path)?;
+        if ext == "pdf" {
+            let sha = hash(&raw);
+            for dir in [self.proposal_path(id)?, self.document(id)?] {
+                let meta = dir.join("document.yml");
+                if meta.is_file()
+                    && read(&meta, Some("document"))
+                        .is_ok_and(|meta| meta["source"]["sha256"] == sha)
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(crate::document_source::protection(&ext, &raw))
     }
 
     /// The originals among `originals` that are documents moved by hand, by
@@ -254,19 +399,28 @@ impl Store {
         self.entry("changes", id)
     }
 
-    /// An encrypted original is saved over without its encryption first; the
-    /// result then records the protection removed under `unprotected`.
+    /// An encrypted Office original fails as [`Protected`] without
+    /// `unprotection`, as a protected PDF always does. With it the original
+    /// is saved over without its encryption first; the result then records
+    /// the protection removed under `unprotected`.
     fn import_changed(
         &self,
         path: &Path,
         id: &str,
         force: bool,
-        unprotection: &Unprotection,
+        unprotection: Option<&Unprotection>,
     ) -> Result<Option<Value>> {
         let raw = fs::read(path)?;
-        let (raw, unprotected) = match encryption::protection(&raw) {
+        let protection = Some(extension(path))
+            .filter(|ext| crate::document_source::is_office(ext))
+            .and_then(|_| encryption::protection(&raw));
+        let (raw, unprotected) = match protection {
             Some(protection) => {
-                let (plain, record) = self.unprotect(path, &raw, protection, unprotection)?;
+                let Some(unprotection) = unprotection else {
+                    return Err(Protected::office(protection).into());
+                };
+                let (plain, record) =
+                    self.remove_protection(path, &raw, protection, unprotection)?;
                 (plain, Some(record))
             }
             None => (raw, None),
@@ -346,7 +500,7 @@ impl Store {
     /// Removes the encryption of the original at `path`, whose bytes are `raw`,
     /// and saves the decrypted package over it. Returns the package and the
     /// record of the protection removed.
-    fn unprotect(
+    fn remove_protection(
         &self,
         path: &Path,
         raw: &[u8],
@@ -366,8 +520,9 @@ impl Store {
         };
         record["protection"] = json!(protection.name());
         // Only a package ARP opens replaces the original.
-        crate::document_source::office_package(&plain)
-            .context("the decrypted original is not an Open XML package")?;
+        if let Err(error) = crate::document_source::office_package(&plain) {
+            bail!("the decrypted original is not an Open XML package: {error:#}");
+        }
         ensure!(
             fs::read(path)? == raw,
             "source changed while its encryption was removed"
@@ -395,8 +550,9 @@ impl Store {
         self.import_with(source, force, &Unprotection::default())
     }
 
-    /// Imports one original as `import_with_force` does, removing its
-    /// encryption with `unprotection`.
+    /// Imports one original as `import_with_force` does. Its encryption is
+    /// removed with `unprotection` when the project lets import remove it;
+    /// otherwise a protected original is refused.
     pub fn import_with(
         &self,
         source: &Path,
@@ -406,6 +562,7 @@ impl Store {
         let (source, id) = self.resolve(source)?;
         ensure!(source.is_file(), "import a file or use a folder: {id}");
         self.ensure_included(&id)?;
+        let unprotection = self.unprotection_at_import(unprotection)?;
         match self.import_changed(&source, &id, force, unprotection)? {
             Some(result) => Ok(result),
             None => Ok(
@@ -468,7 +625,7 @@ impl Store {
         };
         let sha = hash(book.raw());
         let info = json!({"path":source_path,"sha256":sha});
-        let images = book.image_assets()?;
+        let images = book.image_assets(&self.asset_limits()?)?;
         let mut note = book.note();
         note.push_str(&images.note);
         let mut assets = BTreeMap::new();

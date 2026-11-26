@@ -39,9 +39,74 @@ impl Protection {
     }
 }
 
+/// An original that opens only with its protection removed. Import leaves it
+/// alone unless the project lets it remove the protection.
+#[derive(Debug)]
+pub struct Protected {
+    pub protection: Protection,
+    /// Whether `documents unprotect` removes the protection; a PDF's is
+    /// removed outside ARP.
+    pub removable: bool,
+    message: String,
+}
+
+impl Protected {
+    /// An encrypted Office package.
+    pub fn office(protection: Protection) -> Self {
+        let message = match protection {
+            Protection::Password => {
+                "the file is encrypted with a password and is not imported; with the user's approval, remove the encryption from the original with documents unprotect --password-stdin"
+            }
+            Protection::RightsManagement => {
+                "the file is encrypted by IRM or a sensitivity label and is not imported; with the user's approval, remove the protection from the original with documents unprotect"
+            }
+        };
+        Self {
+            protection,
+            removable: true,
+            message: message.to_owned(),
+        }
+    }
+
+    /// A PDF that opens with a password only.
+    pub fn pdf_password() -> Self {
+        Self {
+            protection: Protection::Password,
+            removable: false,
+            message: "the PDF needs a password to open and is not imported; ARP does not remove the encryption of a PDF, so replace it with a copy saved without the password".to_owned(),
+        }
+    }
+
+    /// A cover page wrapping a document encrypted with the filter `payload`.
+    pub fn pdf_payload(payload: &str) -> Self {
+        Self {
+            protection: Protection::RightsManagement,
+            removable: false,
+            message: format!(
+                "the PDF wraps an encrypted document ({payload}) in a cover page whose text is only a notice that it is protected, and is not imported; \
+                 replace it with a copy whose protection was removed by an account allowed to remove it"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Protected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Protected {}
+
+/// Whether a file starting with `start` is an OLE compound file, as an
+/// encrypted Office package is.
+pub fn compound_file(start: &[u8]) -> bool {
+    start.starts_with(&OLE)
+}
+
 /// How `raw` is encrypted, or `None` when it is not an encrypted Office package.
 pub fn protection(raw: &[u8]) -> Option<Protection> {
-    if !raw.starts_with(&OLE) {
+    if !compound_file(raw) {
         return None;
     }
     let file = cfb::CompoundFile::open(Cursor::new(raw)).ok()?;

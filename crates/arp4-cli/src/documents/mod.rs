@@ -384,6 +384,22 @@ impl Store {
             Some("project-config"),
         )?)
     }
+    /// What import does with originals that open only with their protection
+    /// removed.
+    pub fn protected_originals(&self) -> Result<crate::project::ProtectedOriginals> {
+        crate::project::ProtectedOriginals::of(&read(
+            &under(&self.root, ".arp/config.yml")?,
+            Some("project-config"),
+        )?)
+    }
+    /// Which of the pictures an original shows import leaves out of its
+    /// assets.
+    pub fn asset_limits(&self) -> Result<crate::project::AssetLimits> {
+        crate::project::AssetLimits::of(&read(
+            &under(&self.root, ".arp/config.yml")?,
+            Some("project-config"),
+        )?)
+    }
     /// Fails when `path`, relative to the sources folder and ending with `/`
     /// for a folder, is excluded by the project configuration.
     pub(crate) fn ensure_included(&self, path: &str) -> Result<()> {

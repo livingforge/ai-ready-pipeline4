@@ -153,6 +153,7 @@ fn paged(command: &Command) -> bool {
                 | DocumentCommand::Search { .. }
                 | DocumentCommand::SearchFormats { .. }
                 | DocumentCommand::LinkCheck { .. }
+                | DocumentCommand::Protected { .. }
                 | DocumentCommand::Operations {
                     command: OperationCommand::List { .. }
                 }

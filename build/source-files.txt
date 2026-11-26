@@ -32,6 +32,7 @@ crates/arp4-cli/src/document_source/html.rs
 crates/arp4-cli/src/document_source/html_parse.rs
 crates/arp4-cli/src/document_source/package.rs
 crates/arp4-cli/src/document_source/page_layout.rs
+crates/arp4-cli/src/document_source/pdf_figures.rs
 crates/arp4-cli/src/document_source/pdf_images.rs
 crates/arp4-cli/src/document_source/pdf_tags.rs
 crates/arp4-cli/src/document_source/slide_drawings.rs

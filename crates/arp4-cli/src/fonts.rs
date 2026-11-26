@@ -1262,9 +1262,41 @@ pub fn excel_name(edit: &FontEdit) -> Result<Option<String>> {
     }
 }
 
+/// The CSS families of a PDF font's names, each also as a viewer names the
+/// font: PDF writes `MS-PGothic` and `Arial,Bold` for what a system calls
+/// `MS PGothic` and `Arial`.
+pub fn pdf_css_families(font: &Value) -> String {
+    let mut names: Vec<String> = vec![];
+    for name in [&font["latin"], &font["east_asian"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+    {
+        let base = name.split(',').next().unwrap_or(name);
+        for candidate in [base.to_owned(), base.replace('-', " ")] {
+            let candidate = candidate.replace(['\'', '\\', '<', '>', '"'], "");
+            if !names.contains(&candidate) {
+                names.push(candidate);
+            }
+        }
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    let quoted: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
+    format!("font-family:{},sans-serif;", quoted.join(","))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_font_names_are_also_given_as_systems_name_them() {
+        assert_eq!(
+            pdf_css_families(&json!({"latin":"MS-PGothic","east_asian":"Arial,Bold"})),
+            "font-family:'MS-PGothic','MS PGothic','Arial',sans-serif;"
+        );
+    }
 
     /// Runs of `fonts`, each showing as many characters as it says, after
     /// one another.

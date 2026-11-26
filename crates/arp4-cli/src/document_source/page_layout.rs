@@ -78,6 +78,8 @@ pub struct Layout {
     pub cells: Vec<Cell>,
     pub merges: Vec<String>,
     pub tables: Vec<Value>,
+    /// Where each of `tables` lies on the page, `[x0, y0, x1, y1]`.
+    pub table_bounds: Vec<[f64; 4]>,
 }
 
 /// The widest gap, in sizes of the text, between strings of one text.
@@ -482,11 +484,11 @@ pub(crate) type Shade = [f64; 4];
 
 /// A subpath of an outline: its points, whether it closes and whether it
 /// curves.
-type Subpath = (Vec<(f64, f64)>, bool, bool);
+pub(super) type Subpath = (Vec<(f64, f64)>, bool, bool);
 
 /// The subpaths of an outline [`super::pdf_paths`] writes: their points,
 /// whether they close and whether they curve.
-fn subpaths(outline: &str) -> Vec<Subpath> {
+pub(super) fn subpaths(outline: &str) -> Vec<Subpath> {
     let mut out: Vec<Subpath> = vec![];
     let mut rest = outline;
     while let Some(command) = rest.chars().next() {
@@ -520,7 +522,7 @@ fn subpaths(outline: &str) -> Vec<Subpath> {
 /// edges of what is stroked and the filled rectangles as thin as a line are
 /// rulings, the other filled rectangles areas. What is painted white is
 /// neither.
-fn rulings(paths: &[PdfPath]) -> (Vec<Rule>, Vec<Shade>) {
+pub(super) fn rulings(paths: &[PdfPath]) -> (Vec<Rule>, Vec<Shade>) {
     let mut rules = vec![];
     let mut shades = vec![];
     let seen = |color: &Option<String>| color.as_deref().is_some_and(|c| c != "FFFFFF");
@@ -1678,6 +1680,7 @@ pub(crate) fn ruled_layout(
                     });
                 }
                 let last = row + table.rows as u32 - 1;
+                layout.table_bounds.push(table.bounds);
                 layout.tables.push(json!({
                     "name":format!("table-{}", layout.tables.len() + 1),
                     "range":format!("{}:{}", address(1, row), address(table.columns as u32, last)),
