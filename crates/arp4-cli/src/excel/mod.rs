@@ -56,10 +56,12 @@ mod fit;
 pub mod glyphs;
 pub use fit::{FitTarget, Place, layout_warnings, line_height, wide};
 mod look;
+mod overlays;
 pub use look::{
-    BorderSide, DrawingLook, FormatLook, Paint, SheetLook, blank_sheet_look, drawing_looks,
-    sheet_looks,
+    BorderSide, CustomPath, DrawingLook, FormatLook, Gradient, Paint, ShapeExtras, SheetLook,
+    blank_sheet_look, drawing_looks, shape_extras, sheet_looks,
 };
+pub use overlays::{ConditionalLook, DifferentialLook, Rule, Span, TableLook, Test, Threshold};
 mod cell_objects;
 mod column_move;
 mod formatting;

@@ -339,6 +339,7 @@ body.plain [data-changed]::after,body.plain .mark{display:none}
 .grid .heads-y .gap{border-width:1px 0}
 .grid .f{position:absolute}
 .grid .c{position:absolute;display:flex;padding:0 3px;line-height:1.2;white-space:pre;overflow:hidden}
+.grid .c>.icon{position:absolute;left:3px;font-style:normal;font-weight:normal;text-decoration:none}
 .grid .c.w{white-space:pre-wrap;overflow-wrap:anywhere}
 .grid .c.t>span{transform:rotate(var(--turn))}
 .grid .sel{position:absolute;border:2px solid #217346;z-index:4;pointer-events:none;scroll-margin:28px 8px 8px 48px}
@@ -353,6 +354,7 @@ svg.lines{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
 .slide td{padding:2px 5px;vertical-align:top;overflow:hidden;overflow-wrap:anywhere;position:relative}
 .paper{position:relative;background:#fff;margin:0 auto;box-shadow:0 1px 4px rgba(0,0,0,.25);font-family:'Yu Mincho','游明朝','Century',serif;font-size:10.5pt}
 .paper p{margin:0 0 .4em;white-space:pre-wrap;position:relative;min-height:1em}
+.paper p>.num{display:inline-block;text-indent:0;white-space:pre}
 .paper td{border:1px solid transparent;padding:2px 5px;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere;position:relative}
 .paper .band{color:var(--muted);font-size:9pt;padding:4px 0}
 .paper .band.top{border-bottom:1px dashed var(--ui-line);margin-bottom:12px}

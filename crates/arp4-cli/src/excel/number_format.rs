@@ -1,6 +1,6 @@
 //! The text a cell shows: its value under its number format, as Excel draws
-//! it. A format this does not render (conditions, fractions, other numeral
-//! systems) shows the value as stored, never a guess.
+//! it. A format this does not render (other numeral systems and the like)
+//! shows the value as stored, never a guess.
 use serde_json::Value;
 
 /// The text Excel shows for `value` under `format`. `date1904` is the
@@ -127,9 +127,11 @@ fn tokens(section: &str) -> Option<Section> {
                 ]
                 .contains(&lower.as_str())
                     || lower.starts_with("color")
+                    // A condition chooses the section, which `chosen` reads.
+                    || lower.starts_with(['<', '>', '='])
                 {
                 } else {
-                    // Conditions, numeral systems and the like.
+                    // Numeral systems and the like.
                     return None;
                 }
             }
@@ -197,22 +199,200 @@ fn number(x: f64, format: &str, date1904: bool) -> Option<String> {
     if format.is_empty() || format.eq_ignore_ascii_case("general") {
         return Some(general(x));
     }
-    let sections = sections(format);
-    // A section for negative numbers shows their magnitude, without a sign.
-    let (section, value) = match sections.len() {
-        1 => (sections[0], x),
-        2 if x < 0.0 => (sections[1], -x),
-        2 => (sections[0], x),
-        _ if x < 0.0 => (sections[1], -x),
-        _ if x == 0.0 => (sections[2], x),
-        _ => (sections[0], x),
-    };
+    let (section, value) = chosen(x, format);
     let section = tokens(section)?;
     if section.tokens.iter().any(|t| matches!(t, Token::Date(_))) {
         date(value, &section, date1904)
     } else {
         numeric(value, &section.tokens)
     }
+}
+
+/// The section of `format` a number `x` is shown by, and the number it
+/// shows: a section for negative numbers shows their magnitude, without a
+/// sign. A section starting with a condition (`[>=100]`) takes the numbers
+/// meeting it, the section after it those that do not.
+fn chosen(x: f64, format: &str) -> (&str, f64) {
+    let sections = sections(format);
+    let conditions: Vec<Option<(bool, bool)>> = sections.iter().map(|s| condition(s, x)).collect();
+    if conditions.iter().take(2).any(Option::is_some) {
+        // Up to two sections with conditions, then one for the rest.
+        for (index, section) in sections.iter().enumerate().take(3) {
+            match conditions[index] {
+                // A condition only negative numbers meet shows them without
+                // their sign.
+                Some((true, true)) => return (section, -x),
+                Some((true, false)) => return (section, x),
+                Some((false, _)) => {}
+                // A section without a condition after one with it takes
+                // what is left; as the second of three or more, the
+                // negative numbers among it, without their sign.
+                None if index == 1 && sections.len() > 2 && x < 0.0 => return (section, -x),
+                None if index == 1 && sections.len() > 2 => {}
+                None => return (section, x),
+            }
+        }
+        return (sections[0], x);
+    }
+    match sections.len() {
+        1 => (sections[0], x),
+        2 if x < 0.0 => (sections[1], -x),
+        2 => (sections[0], x),
+        _ if x < 0.0 => (sections[1], -x),
+        _ if x == 0.0 => (sections[2], x),
+        _ => (sections[0], x),
+    }
+}
+
+/// Whether `x` meets the condition a section starts with (`[<=10]`), and
+/// whether only negative numbers meet it; none for a section without one.
+fn condition(section: &str, x: f64) -> Option<(bool, bool)> {
+    let mut rest = section;
+    // The condition follows the colour, if the section names one.
+    while let Some(inner) = rest.strip_prefix('[') {
+        let (content, after) = inner.split_once(']')?;
+        let content = content.trim();
+        for (operator, meets) in [
+            ("<=", (|x, y| x <= y) as fn(f64, f64) -> bool),
+            (">=", |x, y| x >= y),
+            ("<>", |x, y| x != y),
+            ("<", |x, y| x < y),
+            (">", |x, y| x > y),
+            ("=", |x, y| x == y),
+        ] {
+            if let Some(number) = content.strip_prefix(operator) {
+                let bound: f64 = number.trim().parse().ok()?;
+                let negative = operator.starts_with('<') && operator != "<>" && bound <= 0.0;
+                return Some((meets(x, bound), negative));
+            }
+        }
+        rest = after;
+    }
+    None
+}
+
+/// The colour the format of a number gives its text (`[Red]`), `RRGGBB`;
+/// none when the section showing `value` names none.
+pub fn color(value: &Value, format: &str) -> Option<&'static str> {
+    let x = value.as_f64()?;
+    let (section, _) = chosen(x, system(format));
+    let mut rest = section;
+    while let Some(inner) = rest.strip_prefix('[') {
+        let (content, after) = inner.split_once(']')?;
+        match content.to_ascii_lowercase().as_str() {
+            "black" => return Some("000000"),
+            "blue" => return Some("0000FF"),
+            "cyan" => return Some("00FFFF"),
+            "green" => return Some("00FF00"),
+            "magenta" => return Some("FF00FF"),
+            "red" => return Some("FF0000"),
+            "white" => return Some("FFFFFF"),
+            "yellow" => return Some("FFFF00"),
+            _ => rest = after,
+        }
+    }
+    None
+}
+
+/// A number as a fraction (`# ?/?`, `# ??/16`): its whole part, when the
+/// format has a place for one, and the nearest fraction whose denominator
+/// has no more digits than the format gives it, or is the one it names.
+fn fraction(x: f64, tokens: &[Token]) -> Option<String> {
+    let digit = |t: &Token| matches!(t, Token::Digit(_));
+    let slash = tokens
+        .iter()
+        .position(|t| *t == Token::Literal("/".into()))?;
+    // The numerator is the digits just before the slash; digits before
+    // them are the whole part.
+    let numerator_start = tokens[..slash]
+        .iter()
+        .rposition(|t| !digit(t))
+        .map_or(0, |at| at + 1);
+    if numerator_start == slash {
+        return None;
+    }
+    let whole_end = tokens[..numerator_start].iter().rposition(digit);
+    let after = &tokens[slash + 1..];
+    let places = after.iter().take_while(|t| digit(t)).count();
+    let (named, denominator_end) = if places > 0 {
+        (None, places)
+    } else {
+        let digits: String = after
+            .iter()
+            .map_while(|t| match t {
+                Token::Literal(l) if l.len() == 1 && l.as_bytes()[0].is_ascii_digit() => {
+                    Some(l.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        (
+            Some(digits.parse::<u64>().ok().filter(|d| *d > 0)?),
+            digits.len(),
+        )
+    };
+    let negative = x < 0.0;
+    let value = x.abs();
+    let mut whole = if whole_end.is_some() {
+        value.floor()
+    } else {
+        0.0
+    };
+    let part = value - whole;
+    let (mut numerator, mut denominator) = match named {
+        Some(denominator) => ((part * denominator as f64).round() as u64, denominator),
+        None => {
+            let most = 10u64.pow(places.min(7) as u32) - 1;
+            let mut best = (0u64, 1u64, f64::INFINITY);
+            for d in 1..=most.min(9_999) {
+                let n = (part * d as f64).round() as u64;
+                let error = (part - n as f64 / d as f64).abs();
+                if error < best.2 - 1e-12 {
+                    best = (n, d, error);
+                }
+            }
+            (best.0, best.1)
+        }
+    };
+    if whole_end.is_some() && numerator == denominator {
+        whole += 1.0;
+        numerator = 0;
+    }
+    if numerator == 0 && named.is_none() {
+        denominator = 1;
+    }
+    let mut shown = if negative {
+        "-".to_owned()
+    } else {
+        String::new()
+    };
+    let literal = |shown: &mut String, tokens: &[Token]| {
+        for token in tokens {
+            if let Token::Literal(text) = token {
+                shown.push_str(text);
+            }
+        }
+    };
+    match whole_end {
+        Some(end) => {
+            literal(&mut shown, &tokens[..end]);
+            // Nothing but a fraction shows no zero before it, unless the
+            // format writes one (`0 ?/?`).
+            let zero = tokens[..=end].contains(&Token::Digit('0'));
+            if whole > 0.0 || numerator == 0 || zero {
+                shown.push_str(&general(whole));
+            }
+            if numerator > 0 {
+                literal(&mut shown, &tokens[end + 1..numerator_start]);
+            }
+        }
+        None => literal(&mut shown, &tokens[..numerator_start]),
+    }
+    if numerator > 0 || whole_end.is_none() {
+        shown.push_str(&format!("{numerator}/{denominator}"));
+    }
+    literal(&mut shown, &after[denominator_end..]);
+    Some(shown.trim().to_owned())
 }
 
 fn text(text: &str, format: &str) -> Option<String> {
@@ -418,9 +598,8 @@ fn numeric(x: f64, tokens: &[Token]) -> Option<String> {
             value *= 100.0;
         }
     }
-    // A fraction written with a slash is not rendered.
     if tokens.iter().any(|t| *t == Token::Literal("/".into())) {
-        return None;
+        return fraction(x, tokens);
     }
     let integer_tokens: Vec<&Token> = mantissa[first..integer_end]
         .iter()
@@ -923,9 +1102,49 @@ mod tests {
     }
 
     #[test]
+    fn conditions_choose_the_section_and_its_colour() {
+        let format = r#"[=5]"五";0"#;
+        assert_eq!(shown(json!(5), format), "五");
+        assert_eq!(shown(json!(7), format), "7");
+        assert_eq!(shown(json!(-7), format), "-7");
+        let ranked = r#"[Blue][>=100]0"点";[Red][<0]"負"0;0.0"#;
+        assert_eq!(shown(json!(120), ranked), "120点");
+        assert_eq!(shown(json!(-3), ranked), "負3");
+        assert_eq!(shown(json!(50), ranked), "50.0");
+        // As Excel shows them: the sign goes where only negative numbers
+        // meet the condition, and stays elsewhere.
+        let sized = r#"[>5]"big";[<-5]"small"0;0.00"#;
+        assert_eq!(shown(json!(-7), sized), "small7");
+        assert_eq!(shown(json!(-3), sized), "-3.00");
+        assert_eq!(shown(json!(-3), r#"[>=100]0"p";"n"0;0.0"#), "n3");
+        assert_eq!(shown(json!(1234), "[<=999]000;0000-00"), "0012-34");
+        assert_eq!(color(&json!(120), ranked), Some("0000FF"));
+        assert_eq!(color(&json!(-3), ranked), Some("FF0000"));
+        assert_eq!(color(&json!(50), ranked), None);
+        // Without conditions the second section is for negative numbers.
+        assert_eq!(color(&json!(-1), "#,##0;[Red]-#,##0"), Some("FF0000"));
+        assert_eq!(color(&json!(1), "#,##0;[Red]-#,##0"), None);
+        assert_eq!(color(&json!("text"), "[Red]0"), None);
+    }
+
+    #[test]
+    fn fractions_show_the_nearest_one_the_format_has_room_for() {
+        assert_eq!(shown(json!(0.5), "# ?/?"), "1/2");
+        assert_eq!(shown(json!(2.75), "# ?/?"), "2 3/4");
+        assert_eq!(shown(json!(-2.75), "# ?/?"), "-2 3/4");
+        assert_eq!(shown(json!(3), "# ?/?"), "3");
+        assert_eq!(shown(json!(0.3333), "# ?/?"), "1/3");
+        assert_eq!(shown(json!(0.3125), "# ??/??"), "5/16");
+        assert_eq!(shown(json!(1.3), "# ?/8"), "1 2/8");
+        assert_eq!(shown(json!(1.5), "?/?"), "3/2");
+        assert_eq!(shown(json!(0.999), "# ?/?"), "1");
+        assert_eq!(shown(json!(0.04), "# ?/?"), "0");
+        assert_eq!(shown(json!(0.04), "?/?"), "0/1");
+        assert_eq!(shown(json!(0.5), "0 ?/?"), "0 1/2");
+    }
+
+    #[test]
     fn unrendered_formats_show_the_stored_value() {
-        assert_eq!(shown(json!(1234), "[<=999]000;0000-00"), "1234");
-        assert_eq!(shown(json!(0.5), "# ?/?"), "0.5");
         assert_eq!(shown(json!(123), "[DBNum1]General"), "123");
         assert_eq!(shown(json!(-1), "yyyy/m/d"), "-1");
     }

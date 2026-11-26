@@ -8,6 +8,8 @@
 //! one the content changes is marked, with the original's value to compare.
 //! The page needs nothing but itself: images are written into it.
 mod drawings;
+mod geometry;
+mod overlay;
 mod pdf;
 mod sheet;
 mod shell;
@@ -15,6 +17,7 @@ mod slides;
 mod text;
 mod web;
 mod word;
+mod word_extras;
 
 use crate::{document_source::Source, extraction::Extraction};
 use anyhow::Result;

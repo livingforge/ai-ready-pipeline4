@@ -1,11 +1,13 @@
 //! An Excel sheet on its grid: the columns and rows in their sizes, with
 //! the letters and numbers Excel heads them with, the gridlines the sheet
 //! shows, each cell's fill, borders, alignment and font, merged cells as one,
-//! text that does not wrap running on over the empty cells beside it, and the
-//! sheet's drawings where their anchors place them.
-use super::drawings::{Defaults, Rect};
+//! text that does not wrap running on over the empty cells beside it, what
+//! the sheet's conditional formats and the styles of its tables lay over
+//! them, and the sheet's drawings where their anchors place them.
+use super::drawings::{Defaults, Rect, extras};
+use super::overlay::{Laid, Val};
 use super::*;
-use crate::excel::{DrawingLook, Paint, SheetLook, Workbook, column_name, coordinate};
+use crate::excel::{DrawingLook, FormatLook, Paint, SheetLook, Workbook, column_name, coordinate};
 use crate::extraction::{Cell, CellKind, Sheet};
 use foldhash::HashMap;
 use serde_json::json;
@@ -155,6 +157,16 @@ fn grid(
         .filter_map(|m| range(m.as_str()?))
         .collect();
     let drawings: Vec<&Value> = sheet["drawings"].as_array().into_iter().flatten().collect();
+    // What the sheet's conditional formats and table styles lay over its
+    // cells, by the values the cells show.
+    let over = super::overlay::laid(look, &|c, r| match content.get(&(c, r)) {
+        Some(shown) if !(shown.formula && shown.original.is_none()) => Val::of(&shown.value, false),
+        _ => cells.get(&(c, r)).map_or(Val::Empty, |cell| {
+            let value = cell.value().to_json();
+            let error = cell.kind() == CellKind::Error || is_error(&value);
+            Val::of(&value, error)
+        }),
+    });
     // The extent of what the sheet shows, and a column and row beyond it.
     let (mut columns, mut rows) = (1, 1);
     let mut reach = |c: u32, r: u32| {
@@ -167,9 +179,61 @@ fn grid(
     for (c, r) in look.painted() {
         reach(c, r);
     }
+    for (&(c, r), laid) in &over {
+        if laid.fill.is_some() || laid.borders.iter().any(Option::is_some) {
+            reach(c, r);
+        }
+    }
     for merge in &merges {
         reach(merge.c1, merge.r1);
     }
+    // Text running on past the last cell the sheet uses is shown over the
+    // columns it reaches, as Excel shows it.
+    let mut last_of_row: HashMap<u32, u32> = HashMap::default();
+    for (&(c, r), cell) in &cells {
+        if !cell.value().is_null() {
+            let last = last_of_row.entry(r).or_insert(c);
+            *last = (*last).max(c);
+        }
+    }
+    let mut text_reach = 0;
+    for (&r, &c) in &last_of_row {
+        let Some(cell) = cells.get(&(c, r)) else {
+            continue;
+        };
+        let Value::String(text) = cell.value().to_json() else {
+            continue;
+        };
+        if text.chars().count() < 4
+            || merged_at(&merges, c, r)
+            || look.cell(c, r).is_some_and(|f| {
+                f.wrap || f.shrink || !matches!(f.horizontal.as_deref(), None | Some("left"))
+            })
+        {
+            continue;
+        }
+        let font = excel_font(cell_font(sheet, Some(*cell), None));
+        let room = Room::new(
+            look,
+            Range {
+                c0: c,
+                r0: r,
+                c1: c,
+                r1: r,
+            },
+            font.as_ref(),
+            font["bold"] == true,
+        );
+        // The text's width at the screen's whole pixels, a little over.
+        let mut needed = room.font.text(&text) * 1.05 + 8.0 - look.width(c);
+        let mut last = c;
+        while needed > 0.0 && last < c + 60 && last < 16_383 {
+            last += 1;
+            needed -= look.width(last);
+        }
+        text_reach = text_reach.max(last);
+    }
+    reach(text_reach, 1);
     for drawing in &drawings {
         for marker in [&drawing["anchor"]["from"], &drawing["anchor"]["to"]] {
             if let (Some(c), Some(r)) = (marker["col"].as_u64(), marker["row"].as_u64()) {
@@ -178,6 +242,10 @@ fn grid(
         }
     }
     let (columns, rows) = ((columns + 1).min(16_384), (rows + 1).min(1_048_576));
+    let over: HashMap<(u32, u32), Laid> = over
+        .into_iter()
+        .filter(|((c, r), _)| *c <= columns && *r <= rows)
+        .collect();
     let lines = Lines::new(look, columns, rows);
     let (width, height) = (lines.x(columns + 1), lines.y(rows + 1));
     let mut merged: HashMap<(u32, u32), usize> = HashMap::default();
@@ -259,14 +327,12 @@ fn grid(
     // sheet small enough for the formats of its rows and columns to count.
     let mut places: BTreeSet<(u32, u32)> = cells.keys().chain(content.keys()).copied().collect();
     places.extend(look.painted());
+    places.extend(over.keys().copied());
     places.extend(merges.iter().map(|m| (m.c0, m.r0)));
     if u64::from(columns) * u64::from(rows) <= FORMATTED_AREA {
         for r in 1..=rows {
             for c in 1..=columns {
-                if look
-                    .cell(c, r)
-                    .is_some_and(|f| f.fill.is_some() || f.borders.iter().any(Option::is_some))
-                {
+                if look.cell(c, r).is_some_and(FormatLook::paints) {
                     places.insert((c, r));
                 }
             }
@@ -284,29 +350,60 @@ fn grid(
             c1: c,
             r1: r,
         }));
-        // A merged cell hides the gridlines inside it.
-        let fill = look
-            .cell(c, r)
-            .and_then(|f| f.fill.clone())
-            .map(|rgb| format!("#{rgb}"))
-            .or_else(|| merge.map(|_| "#fff".to_owned()));
-        if let Some(fill) = fill
-            && rect.w > 0.0
-            && rect.h > 0.0
-        {
+        // A conditional format's fill goes over the cell's own, the style
+        // of a table under it. A merged cell hides the gridlines inside it.
+        let own = look.cell(c, r);
+        let own_fill = || {
+            own.and_then(|f| f.gradient.clone()).or_else(|| {
+                own.and_then(|f| f.fill.as_ref())
+                    .map(|rgb| format!("#{rgb}"))
+            })
+        };
+        let laid = over.get(&(c, r));
+        let laid_fill = || {
+            laid.and_then(|l| l.fill.as_ref())
+                .map(|rgb| format!("#{rgb}"))
+        };
+        let fill = if laid.is_some_and(|l| l.under) {
+            own_fill().or_else(laid_fill)
+        } else {
+            laid_fill().or_else(own_fill)
+        }
+        .or_else(|| merge.map(|_| "#fff".to_owned()));
+        if rect.w <= 0.0 || rect.h <= 0.0 {
+            continue;
+        }
+        if let Some(fill) = fill {
             let _ = write!(
                 html,
                 r#"<div class="f" style="left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px;background:{fill}"></div>"#,
                 rect.x, rect.y, rect.w, rect.h
             );
         }
+        // A data bar, from the left of the cell, fading as Excel's does.
+        if let Some((share, color)) = laid.and_then(|l| l.bar.as_ref())
+            && *share > 0.0
+        {
+            let _ = write!(
+                html,
+                r#"<div class="f" style="left:{:.0}px;top:{:.0}px;width:{:.1}px;height:{:.0}px;background:linear-gradient(90deg,#{color},#{color}40);border:1px solid #{color};box-sizing:border-box"></div>"#,
+                rect.x + 1.0,
+                rect.y + 2.0,
+                ((rect.w - 3.0) * share).max(2.0),
+                (rect.h - 5.0).max(1.0)
+            );
+        }
     }
     // Borders, a merged range's only on its edges.
+    let none = [const { None }; 4];
     let mut rules = Rules::default();
+    let mut diagonals = String::new();
     for &(c, r) in &places {
-        let Some(format) = look.cell(c, r) else {
+        let format = look.cell(c, r);
+        let laid = over.get(&(c, r));
+        if format.is_none() && laid.is_none() {
             continue;
-        };
+        }
         let merge = merged.get(&(c, r)).map(|i| merges[*i]);
         let (x0, x1, y0, y1) = (lines.x(c), lines.x(c + 1), lines.y(r), lines.y(r + 1));
         // A cell in a hidden column or row draws no border.
@@ -319,15 +416,43 @@ fn grid(
             (merge.is_none_or(|m| m.r0 == r), (x0, y0, x1, y0)),
             (merge.is_none_or(|m| m.r1 == r), (x0, y1, x1, y1)),
         ];
-        for (side, (edge, line)) in format.borders.iter().zip(sides) {
+        let own = format.map_or(&none, |f| &f.borders);
+        let given = laid.map_or(&none, |l| &l.borders);
+        // A conditional format's border goes over the cell's own, the edge
+        // of a table under it.
+        let under = laid.is_none_or(|l| l.under);
+        for ((own, given), (edge, line)) in own.iter().zip(given).zip(sides) {
+            let side = if under {
+                own.as_ref().or(given.as_ref())
+            } else {
+                given.as_ref().or(own.as_ref())
+            };
             if let Some(side) = side
                 && edge
             {
                 rules.add(side, line);
             }
         }
+        // The lines between the corners, across the whole of a merged cell.
+        if let Some((side, up, down)) = format.and_then(|f| f.diagonal.as_ref())
+            && merge.is_none_or(|m| (m.c0, m.r0) == (c, r))
+        {
+            let rect = lines.rect(merge.unwrap_or(Range {
+                c0: c,
+                r0: r,
+                c1: c,
+                r1: r,
+            }));
+            let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+            if *down {
+                border(&mut diagonals, side, (x0, y0, x1, y1));
+            }
+            if *up {
+                border(&mut diagonals, side, (x0, y1, x1, y0));
+            }
+        }
     }
-    let borders = rules.draw();
+    let borders = rules.draw() + &diagonals;
     if !borders.is_empty() {
         let _ = write!(
             html,
@@ -372,6 +497,7 @@ fn grid(
         }
         let cell = cells.get(&(c, r)).copied();
         let format = look.cell(c, r).cloned().unwrap_or_default();
+        let laid = over.get(&(c, r));
         let font = excel_font(cell_font(sheet, cell, shown));
         let font = font.as_ref();
         let emphasis = cell_style(sheet, cell);
@@ -383,16 +509,30 @@ fn grid(
         );
         // A number Excel fits to its cell, unless it shrinks it or turns it.
         let across = format.rotation == 0;
-        let (text, kind) = display(
+        // Excel's own formats are shown as the language of the Excel that
+        // made the workbook writes them.
+        let own_format = look
+            .japanese
+            .then(|| japanese_format(format.number_format))
+            .flatten();
+        let (text, kind, format_color) = display(
             cell,
             shown,
+            own_format,
             date1904,
             (across && !format.shrink).then_some(&room),
         );
         let changed = shown.is_some_and(Shown::changed);
-        if text.is_empty() && !changed {
+        let icon = laid.and_then(|l| l.icon);
+        if text.is_empty() && !changed && icon.is_none() {
             continue;
         }
+        // A rule showing its bar or icon alone hides the value.
+        let text = if laid.is_some_and(|l| l.hide_value) && !changed {
+            String::new()
+        } else {
+            text
+        };
         // Excel breaks the lines of a cell only when it wraps its text.
         let text = if format.wrap {
             text
@@ -500,6 +640,44 @@ fn grid(
             let _ = write!(style, "--turn:{turned}deg;");
         }
         style.push_str(&font_css(font, emphasis));
+        if format.double_underline {
+            style.push_str("text-decoration-style:double;");
+        }
+        // What is laid over the cell changes its text: a table's style only
+        // text in the colour Excel gives it by itself.
+        if let Some(laid) = laid {
+            let plain = !font["color"].is_string()
+                || font["color_theme"] == "dk1"
+                || font["color"] == "000000";
+            if let Some(rgb) = laid.color.as_ref().filter(|_| !laid.under || plain) {
+                let _ = write!(style, "color:#{rgb};");
+            }
+            match laid.bold {
+                Some(true) => style.push_str("font-weight:bold;"),
+                Some(false) if !laid.under => style.push_str("font-weight:normal;"),
+                _ => {}
+            }
+            match laid.italic {
+                Some(true) => style.push_str("font-style:italic;"),
+                Some(false) if !laid.under => style.push_str("font-style:normal;"),
+                _ => {}
+            }
+            match (laid.underline, laid.strike) {
+                (Some(true), Some(true)) => {
+                    style.push_str("text-decoration:underline line-through;");
+                }
+                (Some(true), _) => style.push_str("text-decoration:underline;"),
+                (_, Some(true)) => style.push_str("text-decoration:line-through;"),
+                _ => {}
+            }
+        }
+        // The colour a number format names goes over the font's, a
+        // conditional format's over that.
+        if let Some(rgb) = format_color
+            && laid.is_none_or(|l| l.under || l.color.is_none())
+        {
+            let _ = write!(style, "color:#{rgb};");
+        }
         // The font is a whole number of the screen's pixels, as Excel draws
         // it there, made smaller to fit the cell's width when it shrinks.
         let mut pixels = crate::excel::glyphs::screen_pixels(room.size);
@@ -514,9 +692,23 @@ fn grid(
         if stacked {
             let _ = write!(style, "letter-spacing:{:.2}em;", line - 1.0);
         }
+        // The parts of the text in fonts of their own, and an icon before
+        // the value, at the left of the cell.
+        let mut inner = runs(
+            font,
+            look.scripts.get(&(c, r)).map_or(&[], |s| s.as_slice()),
+            &text,
+            shown.is_none_or(|s| s.original.is_none()),
+        );
+        if let Some((shape, color)) = icon {
+            inner =
+                format!(r#"<i class="icon" style="color:{color}">{shape}</i><span>{inner}</span>"#);
+        } else {
+            inner = format!("<span>{inner}</span>");
+        }
         let _ = write!(
             html,
-            r#"<div class="c k{}{}{}" style="left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px"{attributes}><span>{}</span></div>"#,
+            r#"<div class="c k{}{}{}" style="left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px"{attributes}>{inner}</div>"#,
             out.class(style),
             if format.wrap { " w" } else { "" },
             if turned != 0 { " t" } else { "" },
@@ -524,7 +716,6 @@ fn grid(
             rect.y,
             rect.w,
             rect.h,
-            escape(&text)
         );
     }
     // Drawings, in the order the sheet lists them: later ones on top.
@@ -549,6 +740,11 @@ fn grid(
             };
             drawing["fill"] = paint(&shape.fill);
             drawing["line"] = json!({"color":paint(&shape.line),"width":shape.line_width});
+            if let Some(gradient) = &shape.gradient {
+                drawing["gradient"] = json!({"stops":gradient.stops,"angle":gradient.angle});
+            }
+            drawing["fill_opacity"] = json!(shape.fill_opacity);
+            extras(&mut drawing, &shape.extras);
         }
         let defaults = Defaults {
             fill: "#ffffff",
@@ -565,6 +761,12 @@ fn grid(
         let text = shown
             .map(|s| plain(&s.value))
             .unwrap_or_else(|| plain(&drawing["text"]));
+        // The parts of the original's text written bold are drawn so.
+        let bold: &[(usize, usize)] = match (shape, shown) {
+            (Some(shape), shown) if shown.is_none_or(|s| s.original.is_none()) => &shape.bold,
+            _ => &[],
+        };
+        let text = emboldened(&text, bold);
         // The end of the drawing's ID names the shape in a diagram (`s3`).
         let number = id.rsplit_once('#').map_or("", |(_, n)| n);
         let mark = format!(
@@ -579,7 +781,7 @@ fn grid(
         html.push_str(&drawings::drawing(
             drawing,
             rect,
-            &escape(&text),
+            &text,
             &mark,
             rotation,
             document.assets,
@@ -636,10 +838,11 @@ enum Kind {
 fn display(
     cell: Option<Cell<'_>>,
     shown: Option<&Shown>,
+    own_format: Option<&str>,
     date1904: bool,
     room: Option<&Room>,
-) -> (String, Kind) {
-    let format = cell.map_or("General", |c| c.number_format());
+) -> (String, Kind, Option<&'static str>) {
+    let format = own_format.unwrap_or_else(|| cell.map_or("General", |c| c.number_format()));
     let value = match shown {
         Some(shown) if shown.formula && shown.original.is_none() => {
             cell.map(|c| c.value().to_json()).unwrap_or(Value::Null)
@@ -647,13 +850,16 @@ fn display(
         Some(shown) => shown.value.clone(),
         None => cell.map(|c| c.value().to_json()).unwrap_or(Value::Null),
     };
-    let error = cell.is_some_and(|c| c.kind() == CellKind::Error)
-        && shown.is_none_or(|s| s.original.is_none());
+    // An error is one the cell holds or the result of its formula.
+    let error = cell.is_some_and(|c| {
+        c.kind() == CellKind::Error || (c.formula().is_some() && is_error(&value))
+    }) && shown.is_none_or(|s| s.original.is_none());
     match &value {
-        Value::Null => (String::new(), Kind::Text),
+        Value::Null => (String::new(), Kind::Text, None),
         Value::Bool(b) => (
             (if *b { "TRUE" } else { "FALSE" }).to_owned(),
             Kind::Centered,
+            None,
         ),
         Value::Number(number) => {
             let text = crate::excel::number_format::display(&value, format, date1904);
@@ -661,11 +867,162 @@ fn display(
                 Some(number) => fitted(text, number, format, room),
                 None => text,
             };
-            (text, Kind::Number)
+            // A number in the text format stands as text does.
+            let kind = if format == "@" {
+                Kind::Text
+            } else {
+                Kind::Number
+            };
+            (
+                text,
+                kind,
+                crate::excel::number_format::color(&value, format),
+            )
         }
-        Value::String(text) if error => (text.clone(), Kind::Centered),
-        other => (plain(other), Kind::Text),
+        Value::String(text) if error => (text.clone(), Kind::Centered, None),
+        other => (
+            crate::excel::number_format::display(other, format, date1904),
+            Kind::Text,
+            None,
+        ),
     }
+}
+
+/// The HTML of `text` with the characters of each of `bold` (from and to)
+/// written bold; all of it when they cover it all, which its font says.
+fn emboldened(text: &str, bold: &[(usize, usize)]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let part = |from: usize, to: usize| escape(&chars[from..to].iter().collect::<String>());
+    let mut html = String::new();
+    let mut at = 0;
+    for &(start, end) in bold {
+        let (start, end) = (start.max(at), end.min(chars.len()));
+        if start >= end || (start == 0 && end == chars.len()) {
+            continue;
+        }
+        html.push_str(&part(at, start));
+        let _ = write!(html, "<b>{}</b>", part(start, end));
+        at = end;
+    }
+    html.push_str(&part(at, chars.len()));
+    html
+}
+
+/// Whether `value` is the text of one of Excel's errors.
+fn is_error(value: &Value) -> bool {
+    matches!(
+        value.as_str(),
+        Some(
+            "#DIV/0!"
+                | "#N/A"
+                | "#NAME?"
+                | "#NULL!"
+                | "#NUM!"
+                | "#REF!"
+                | "#VALUE!"
+                | "#SPILL!"
+                | "#CALC!"
+                | "#GETTING_DATA"
+        )
+    )
+}
+
+/// Whether a merge holds the cell at `c` and `r`.
+fn merged_at(merges: &[Range], c: u32, r: u32) -> bool {
+    merges
+        .iter()
+        .any(|m| (m.c0..=m.c1).contains(&c) && (m.r0..=m.r1).contains(&r))
+}
+
+/// The format Japanese Excel shows for one of Excel's own number formats
+/// that it writes its own way; none for one it shows as every Excel does.
+fn japanese_format(id: u32) -> Option<&'static str> {
+    Some(match id {
+        5 => r##""¥"#,##0;"¥"-#,##0"##,
+        6 => r##""¥"#,##0;[Red]"¥"-#,##0"##,
+        7 => r##""¥"#,##0.00;"¥"-#,##0.00"##,
+        8 => r##""¥"#,##0.00;[Red]"¥"-#,##0.00"##,
+        37 => "#,##0;-#,##0",
+        38 => "#,##0;[Red]-#,##0",
+        39 => "#,##0.00;-#,##0.00",
+        40 => "#,##0.00;[Red]-#,##0.00",
+        41 => r#"_ * #,##0_ ;_ * -#,##0_ ;_ * "-"_ ;_ @_ "#,
+        42 => r#"_ "¥"* #,##0_ ;_ "¥"* -#,##0_ ;_ "¥"* "-"_ ;_ @_ "#,
+        43 => r#"_ * #,##0.00_ ;_ * -#,##0.00_ ;_ * "-"??_ ;_ @_ "#,
+        44 => r#"_ "¥"* #,##0.00_ ;_ "¥"* -#,##0.00_ ;_ "¥"* "-"??_ ;_ @_ "#,
+        _ => return None,
+    })
+}
+
+/// The HTML of `text` with the parts of it the cell's font gives fonts of
+/// their own (`runs`, by the characters they cover) each in its own, and
+/// the parts set above or below the line (`scripts`) so; plain when there
+/// are neither or the text is not the one they were read for.
+fn runs(font: &Value, scripts: &[(usize, usize, bool)], text: &str, original: bool) -> String {
+    let fonts: &[Value] = font["runs"].as_array().map_or(&[], Vec::as_slice);
+    if !original || (fonts.is_empty() && scripts.is_empty()) {
+        return escape(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // The style of each character, then each stretch of one style.
+    let mut styles = vec![String::new(); chars.len()];
+    let mut cover = |start: usize, end: usize, css: &str| {
+        for style in styles.iter_mut().take(end.min(chars.len())).skip(start) {
+            style.push_str(css);
+        }
+    };
+    for run in fonts {
+        let (Some(start), Some(end)) = (run["start"].as_u64(), run["end"].as_u64()) else {
+            continue;
+        };
+        let mut css = String::new();
+        if let Some(rgb) = color(&run["color"]) {
+            let _ = write!(css, "color:{rgb};");
+        }
+        for (key, on, off) in [
+            ("bold", "font-weight:bold;", "font-weight:normal;"),
+            ("italic", "font-style:italic;", "font-style:normal;"),
+        ] {
+            match run[key].as_bool() {
+                Some(true) => css.push_str(on),
+                Some(false) => css.push_str(off),
+                None => {}
+            }
+        }
+        match (run["underline"] == true, run["strike"] == true) {
+            (true, true) => css.push_str("text-decoration:underline line-through;"),
+            (true, false) => css.push_str("text-decoration:underline;"),
+            (false, true) => css.push_str("text-decoration:line-through;"),
+            (false, false) => {}
+        }
+        cover(start as usize, end as usize, &css);
+    }
+    for &(start, end, above) in scripts {
+        cover(
+            start,
+            end,
+            if above {
+                "vertical-align:super;font-size:70%;"
+            } else {
+                "vertical-align:sub;font-size:70%;"
+            },
+        );
+    }
+    let mut html = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let end = (at..chars.len())
+            .find(|k| styles[*k] != styles[at])
+            .unwrap_or(chars.len());
+        let part = escape(&chars[at..end].iter().collect::<String>());
+        if styles[at].is_empty() {
+            html.push_str(&part);
+        } else {
+            let _ = write!(html, r#"<span style="{}">{part}</span>"#, styles[at]);
+        }
+        at = end;
+    }
+    html
 }
 
 /// What Excel shows of a number whose text is `text`: in the General format

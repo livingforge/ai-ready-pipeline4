@@ -234,6 +234,13 @@ pub(super) fn original_neighbors(placed: &[Placed]) -> (Vec<Option<usize>>, Vec<
     (before, after)
 }
 
+impl<'a, 'input> Layout<'a, 'input> {
+    /// The element of each row: a paragraph or a table row.
+    pub(super) fn rows(&self) -> &BTreeMap<usize, Node<'a, 'input>> {
+        &self.rows
+    }
+}
+
 impl Layout<'_, '_> {
     /// Edits that insert and delete paragraphs and table rows as `operations`
     /// (the row insertions and deletions of this part, in order) do. A new row
@@ -1040,8 +1047,6 @@ struct Measured<'a, 'input> {
     node: Node<'a, 'input>,
     rows: Vec<Node<'a, 'input>>,
     cells: Vec<GridCell<'a, 'input>>,
-    /// The Word table grid's column count.
-    grid: usize,
     /// Grid columns of each Word grid column.
     columns: Vec<usize>,
     /// Grid rows of each table row.
@@ -1191,7 +1196,6 @@ fn measure<'a, 'input>(
         node: table,
         rows,
         cells: measured,
-        grid,
         columns,
         heights,
     })
@@ -1335,10 +1339,15 @@ fn place<'a, 'input>(
     if frame {
         return Ok(());
     }
-    let header_rows = header_rows(&table.rows, &emphasis, table.grid);
     let mut definition = json!({"name":name,
         "range":range((top, left), (y[table.rows.len()] - 1, x[columns.len()] - 1))?,
-        "header_rows":table.heights[..header_rows].iter().sum::<usize>(),"totals_rows":0});
+        "totals_rows":0});
+    if let Some(header_rows) = header_rows(&table.rows, &emphasis) {
+        definition["header_rows"] = json!(table.heights[..header_rows].iter().sum::<usize>());
+    }
+    if table.heights.iter().any(|height| *height > 1) {
+        definition["row_heights"] = json!(table.heights);
+    }
     if let Some(parent) = parent {
         definition["parent"] = json!(parent);
     }
@@ -1406,17 +1415,16 @@ fn laid_out<'a, 'input>(
     Ok(output)
 }
 
-/// Header rows as a hypothesis for review: rows Word repeats as a header;
-/// otherwise leading rows that are entirely bold or shaded; otherwise the first
-/// row of a table with three or more columns. Two-column tables are usually
-/// label/value lists, so they get none.
-fn header_rows(rows: &[Node<'_, '_>], emphasis: &[(usize, bool)], width: usize) -> usize {
+/// The header rows the table tells: rows Word repeats as a header; otherwise
+/// leading rows that are entirely bold or shaded. `None` when it tells none,
+/// and structure inference reads them from the table's cells.
+fn header_rows(rows: &[Node<'_, '_>], emphasis: &[(usize, bool)]) -> Option<usize> {
     let repeated = rows
         .iter()
         .take_while(|tr| on(property(**tr, "trPr", "tblHeader")))
         .count();
     if repeated > 0 {
-        return repeated;
+        return Some(repeated);
     }
     let mut row_emphasis = vec![(0usize, true); rows.len()];
     for &(row, emphasized) in emphasis {
@@ -1427,13 +1435,7 @@ fn header_rows(rows: &[Node<'_, '_>], emphasis: &[(usize, bool)], width: usize) 
         .iter()
         .take_while(|(count, all)| *count > 0 && *all)
         .count();
-    if emphasized > 0 && emphasized < rows.len() {
-        emphasized
-    } else if width >= 3 && rows.len() >= 2 {
-        1
-    } else {
-        0
-    }
+    (emphasized > 0 && emphasized < rows.len()).then_some(emphasized)
 }
 
 /// Maps an edit of a block's text to new content for the elements it touches:
@@ -1763,8 +1765,8 @@ mod tests {
         assert_eq!(
             layout.tables,
             [
-                json!({"name":"table-1","range":"A2:E6","header_rows":1,"totals_rows":0}),
-                json!({"name":"table-2","range":"C3:D3","header_rows":0,"totals_rows":0,"parent":"table-1"})
+                json!({"name":"table-1","range":"A2:E6","totals_rows":0,"row_heights":[1,2,1,1]}),
+                json!({"name":"table-2","range":"C3:D3","totals_rows":0,"parent":"table-1"})
             ]
         );
         let styles = super::super::word_fonts::WordStyles::new(&BTreeMap::new()).unwrap();
@@ -1805,7 +1807,7 @@ mod tests {
     }
 
     #[test]
-    fn header_rows_follow_repeat_marks_emphasis_or_width() {
+    fn header_rows_follow_repeat_marks_or_emphasis_and_are_left_out_otherwise() {
         let row = |header: &str, cells: &[&str]| {
             format!(
                 "<w:tr><w:trPr>{header}</w:trPr>{}</w:tr>",
@@ -1822,7 +1824,7 @@ mod tests {
                     row("<w:tblHeader/>", &[&p("c"), &p("d")]),
                     row("", &[&p("e"), &p("f")])
                 ),
-                2,
+                json!(2),
             ),
             (
                 format!(
@@ -1830,7 +1832,7 @@ mod tests {
                     tc("", bold),
                     row("", &[&p("x"), &p("y")])
                 ),
-                1,
+                json!(1),
             ),
             (
                 format!(
@@ -1838,7 +1840,7 @@ mod tests {
                     row("", &[&p("項目"), &p("値")]),
                     row("", &[&p("x"), &p("y")])
                 ),
-                0,
+                Value::Null,
             ),
             (
                 format!(
@@ -1846,7 +1848,7 @@ mod tests {
                     row("", &[&p("a"), &p("b"), &p("c")]),
                     row("", &[&p("x"), &p("y"), &p("z")])
                 ),
-                1,
+                Value::Null,
             ),
         ];
         for (rows, expected) in cases {
@@ -2075,8 +2077,8 @@ mod tests {
         assert_eq!(
             layout.tables,
             [
-                json!({"name":"table-1","range":"A2:B3","header_rows":0,"totals_rows":0}),
-                json!({"name":"table-2","range":"C2:D3","header_rows":0,"totals_rows":0})
+                json!({"name":"table-1","range":"A2:B3","totals_rows":0}),
+                json!({"name":"table-2","range":"C2:D3","totals_rows":0})
             ]
         );
         assert_eq!(layout.merges, ["A1:B1", "C1:D1"]);

@@ -493,6 +493,17 @@ fn run(cli: Cli) -> Result<bool> {
                             result["not_adopted"] = json!(not_adopted);
                             result["failed"] = json!(failed);
                         }
+                        // The length of every list, which stays when a large
+                        // response leaves the lists out.
+                        let summary: serde_json::Map<String, Value> = result
+                            .as_object()
+                            .unwrap()
+                            .iter()
+                            .filter_map(|(key, list)| {
+                                Some((key.clone(), json!(list.as_array()?.len())))
+                            })
+                            .collect();
+                        result["summary"] = Value::Object(summary);
                         result["state"] = json!(if proposals {
                             "needs_record"
                         } else if adopt && !array(&result["adopted"])?.is_empty() {

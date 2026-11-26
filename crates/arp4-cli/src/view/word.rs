@@ -1,8 +1,10 @@
 //! A Word document on its paper: the width and margins of its last section,
-//! its header and footer, and its paragraphs and tables in order, each table
-//! with its merged cells, borders and shading. The extraction does not place
-//! the pictures in the text, so they follow it. Comments and notes follow as
-//! tables of their own.
+//! its header and footer, and its paragraphs and tables in order, each
+//! paragraph with its list number, indent and alignment and the pictures it
+//! holds, each table with its merged cells, the borders it draws, its column
+//! widths and shading. A picture the text does not place follows it.
+//! Comments and notes follow as tables of their own.
+use super::word_extras::{self, Extras};
 use super::*;
 use crate::excel::coordinate;
 use crate::extraction::Sheet;
@@ -70,6 +72,14 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
     };
     let paper = paper(document);
     out.page = 0;
+    // What each part says of its paragraphs and tables beyond the
+    // extraction, and the pictures placed with them.
+    let extras = |sheet: &Sheet| {
+        sheet["part"]
+            .as_str()
+            .and_then(|part| word_extras::read(document, part))
+    };
+    let mut placed: Vec<String> = vec![];
     // The header, footer and notes are pages of their own in the body.
     let mut parts = vec![];
     let mut part = |sheet: &Sheet, label: &'static str| {
@@ -84,14 +94,25 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
     );
     for band in named("header-") {
         let prefix = part(band, "ヘッダー");
+        let extras = extras(band);
         let _ = write!(
             html,
             r#"<div class="band top">{}</div>"#,
-            flow(document, band, &prefix, out, &Paragraphs)?
+            flow(document, band, &prefix, out, &Paragraphs, extras.as_ref())?
         );
+        placed.extend(extras.into_iter().flat_map(|e| e.placed));
     }
     if let Some(body) = named("document").next() {
-        html.push_str(&flow(document, body, "", out, &Paragraphs)?);
+        let extras = extras(body);
+        html.push_str(&flow(
+            document,
+            body,
+            "",
+            out,
+            &Paragraphs,
+            extras.as_ref(),
+        )?);
+        placed.extend(extras.into_iter().flat_map(|e| e.placed));
     }
     // Footnotes and endnotes under a short rule, as Word sets them.
     for notes in named("footnotes-").chain(named("endnotes-")) {
@@ -99,27 +120,32 @@ pub(super) fn document(document: &Document<'_>, out: &mut Out) -> Result<Vec<Sec
         let _ = write!(
             html,
             r#"<div class="notes">{}</div>"#,
-            flow(document, notes, &prefix, out, &Paragraphs)?
+            flow(document, notes, &prefix, out, &Paragraphs, None)?
         );
     }
+    // The pictures no paragraph places: those of tables, text boxes and
+    // parts not drawn above.
     let images: Vec<String> = document.extraction["assets"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|asset| image_url(document.assets, asset["path"].as_str()?))
+        .filter_map(|asset| asset["path"].as_str())
+        .filter(|path| !placed.iter().any(|p| p == path))
+        .filter_map(|path| image_url(document.assets, path))
         .collect();
     if !images.is_empty() {
-        html.push_str(r#"<div class="band bottom">図（本文中の位置は抽出結果にないため、ここにまとめています）</div>"#);
+        html.push_str(r#"<div class="band bottom">図（本文中の位置を特定できないため、ここにまとめています）</div>"#);
         for url in images {
             let _ = write!(html, r#"<figure><img src="{url}" alt=""></figure>"#);
         }
     }
     for band in named("footer-") {
         let prefix = part(band, "フッター");
+        let extras = extras(band);
         let _ = write!(
             html,
             r#"<div class="band bottom">{}</div>"#,
-            flow(document, band, &prefix, out, &Paragraphs)?
+            flow(document, band, &prefix, out, &Paragraphs, extras.as_ref())?
         );
     }
     html.push_str("</div>");
@@ -169,13 +195,15 @@ impl Blocks for Paragraphs {
 
 /// The paragraphs and tables of a part, in the order of its rows: a row a
 /// table takes is a row of the table, any other the paragraph in column A,
-/// drawn by `blocks`. Each is placed by its address after `prefix`.
+/// drawn by `blocks`. Each is placed by its address after `prefix`. With
+/// `extras`, what the original says of them beyond the extraction is drawn.
 pub(super) fn flow(
     document: &Document<'_>,
     sheet: &Sheet,
     prefix: &str,
     out: &mut Out,
     blocks: &dyn Blocks,
+    extras: Option<&Extras>,
 ) -> Result<String> {
     let name = sheet["name"].as_str().unwrap_or_default();
     let cells: HashMap<(u32, u32), crate::extraction::Cell<'_>> = sheet
@@ -211,9 +239,27 @@ pub(super) fn flow(
     let mut row = 1;
     while row <= last {
         if let Some(&(c0, r0, c1, r1)) = tables.get(&row) {
-            html.push_str(r#"<table style="width:100%">"#);
-            // A cell holding nothing has no style of its own; it takes the
-            // borders its table draws.
+            // The table in the widths its grid gives its columns, or, with
+            // no grid, fitted to what they hold as Word fits it.
+            let extra = extras.and_then(|e| e.tables.get(&r0));
+            match extra {
+                Some(extra) if extra.widths.len() == (c1 - c0 + 1) as usize => {
+                    let _ = write!(
+                        html,
+                        r#"<table style="width:{:.0}px;max-width:100%"><colgroup>"#,
+                        extra.widths.iter().sum::<f64>()
+                    );
+                    for width in &extra.widths {
+                        let _ = write!(html, r#"<col style="width:{width:.0}px">"#);
+                    }
+                    html.push_str("</colgroup>");
+                }
+                Some(_) => html.push_str(r#"<table style="table-layout:auto">"#),
+                None => html.push_str(r#"<table style="width:100%">"#),
+            }
+            // Without the original to say whether the table draws borders,
+            // a cell marked as bordered is, and a cell holding nothing, which
+            // has no style of its own, takes the borders its table draws.
             let ruled = (r0..=r1).any(|r| {
                 (c0..=c1).any(|c| {
                     cell_style(sheet, cells.get(&(c, r)).copied())["border"]
@@ -239,8 +285,14 @@ pub(super) fn flow(
                     let shown = document.content.cell(name, &address);
                     let style = cell_style(sheet, cell);
                     let mut css = font_css(cell_font(sheet, cell, shown), style);
-                    if style["border"].as_u64().is_some_and(|b| b > 0) || (cell.is_none() && ruled)
-                    {
+                    let bordered = match extra {
+                        Some(extra) => extra.bordered,
+                        None => {
+                            style["border"].as_u64().is_some_and(|b| b > 0)
+                                || (cell.is_none() && ruled)
+                        }
+                    };
+                    if bordered {
                         css.push_str("border-color:#000;");
                     }
                     if style["fill"].as_u64().is_some_and(|f| f > 0) {
@@ -264,13 +316,47 @@ pub(super) fn flow(
         let cell = cells.get(&(1, row)).copied();
         let shown = document.content.cell(name, &address);
         let mark = out.mark(shown, name, &address);
+        let mut css = font_css(cell_font(sheet, cell, shown), cell_style(sheet, cell));
+        let mut text = escape(&text_of(shown, cell));
+        let extra = extras.and_then(|e| e.rows.get(&row));
+        if let Some(extra) = extra {
+            // The indent, with the first line hanging out of it by the room
+            // of its number or bullet.
+            if extra.left != 0.0 || extra.hanging != 0.0 {
+                let _ = write!(
+                    css,
+                    "padding-left:{:.0}px;text-indent:{:.0}px;",
+                    extra.left.max(0.0),
+                    -extra.hanging
+                );
+            }
+            if let Some(align) = extra.align {
+                let _ = write!(css, "text-align:{align};");
+            }
+            if let Some(label) = &extra.label {
+                text = format!(
+                    r#"<span class="num" style="min-width:{:.0}px">{}</span>{text}"#,
+                    extra.hanging.max(0.0),
+                    escape(label)
+                );
+            }
+        }
         html.push_str(&blocks.paragraph(
             &format!("{prefix}{address}"),
             &address,
-            &font_css(cell_font(sheet, cell, shown), cell_style(sheet, cell)),
+            &css,
             &mark,
-            &escape(&text_of(shown, cell)),
+            &text,
         ));
+        // The pictures of the paragraph and of those without text after it.
+        for (url, width, height) in extra.iter().flat_map(|e| &e.pictures) {
+            let size = if *width > 0.0 && *height > 0.0 {
+                format!(r#" style="width:{width:.0}px;aspect-ratio:{width:.0}/{height:.0}""#)
+            } else {
+                String::new()
+            };
+            let _ = write!(html, r#"<figure><img src="{url}" alt=""{size}></figure>"#);
+        }
         row += 1;
     }
     Ok(html)

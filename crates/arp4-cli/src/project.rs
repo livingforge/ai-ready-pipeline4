@@ -249,10 +249,7 @@ pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
             "sources already configured"
         );
     } else {
-        write(
-            &config,
-            &json!({"schema_version":"1", "sources":sources, "agent_read_format":AgentFormat::default()}),
-        )?;
+        write(&config, &initial_config(sources)?)?;
     }
     ensure_lines(
         &under(&root, ".arp/.gitignore")?,
@@ -267,6 +264,34 @@ pub fn init(root: &Path, sources: &str) -> Result<PathBuf> {
         )?;
     }
     Ok(root)
+}
+
+/// The configuration `documents init` writes for the sources folder
+/// `sources`: every setting of the `project-config` contract with the value
+/// the contract gives it, so that the file shows what can be changed. A
+/// setting added to the contract appears here without a change to this code.
+pub fn initial_config(sources: &str) -> Result<Value> {
+    let schema = crate::schema("project-config").context("project-config contract required")?;
+    let mut config = defaults(&schema).context("project-config has no settings")?;
+    config["sources"] = json!(sources);
+    crate::data::validate("project-config", &config)?;
+    Ok(config)
+}
+
+/// The value `schema` gives a setting the user leaves out: its `const` or
+/// `default`, else for an object the defaults of its properties. None for a
+/// setting that has neither.
+fn defaults(schema: &Value) -> Option<Value> {
+    if let Some(value) = schema.get("const").or_else(|| schema.get("default")) {
+        return Some(value.clone());
+    }
+    let properties = schema.get("properties")?.as_object()?;
+    Some(Value::Object(
+        properties
+            .iter()
+            .filter_map(|(name, schema)| Some((name.clone(), defaults(schema)?)))
+            .collect(),
+    ))
 }
 
 /// Appends the lines a file lacks, keeping what the user already wrote.
@@ -292,6 +317,61 @@ pub(crate) fn ensure_lines(path: &Path, lines: &[&str]) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The settings of `schema` that [`defaults`] would leave out, by path.
+    fn without_default(schema: &Value, path: &str, missing: &mut Vec<String>) {
+        if schema
+            .get("const")
+            .or_else(|| schema.get("default"))
+            .is_some()
+        {
+            return;
+        }
+        match schema.get("properties").and_then(Value::as_object) {
+            Some(properties) => {
+                for (name, schema) in properties {
+                    without_default(schema, &format!("{path}/{name}"), missing);
+                }
+            }
+            None => missing.push(path.to_owned()),
+        }
+    }
+
+    #[test]
+    fn initial_configuration_holds_every_setting_of_the_contract_with_its_default() {
+        // A setting added to the contract without a default would be left
+        // out of the file documents init writes.
+        let schema = crate::schema("project-config").unwrap();
+        let mut missing = Vec::new();
+        without_default(&schema, "", &mut missing);
+        assert_eq!(missing, ["/sources"], "settings need a default");
+        let config = initial_config("docs").unwrap();
+        assert_eq!(
+            config,
+            json!({
+                "schema_version": "1",
+                "sources": "docs",
+                "agent_read_format": "toon",
+                "picture_folders": [],
+                "exclude": [],
+                "protected_originals": "skip",
+                "assets": {"max_aspect_ratio": 20},
+            })
+        );
+        // The defaults of the contract are those the code takes for a
+        // setting left out.
+        let none = json!({});
+        assert_eq!(
+            AssetLimits::of(&config).unwrap(),
+            AssetLimits::of(&none).unwrap()
+        );
+        assert_eq!(
+            ProtectedOriginals::of(&config).unwrap(),
+            ProtectedOriginals::of(&none).unwrap()
+        );
+        assert_eq!(config["agent_read_format"], json!(AgentFormat::default()));
+        assert!(Exclusion::of(&config).unwrap().0.is_empty());
+    }
 
     #[test]
     fn asset_limits_are_those_of_the_configuration() {

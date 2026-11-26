@@ -3,6 +3,7 @@
 //! borders and alignment of each cell format. A view of the document
 //! (`documents view`) lays the content out with them; nothing is written.
 use super::fonts::Palette;
+use super::overlays::{ConditionalLook, TableLook};
 use super::*;
 use crate::fonts::Color;
 use foldhash::HashMap;
@@ -32,6 +33,24 @@ pub struct FormatLook {
     /// Degrees counterclockwise (1–180 as Excel stores them, 91–180 down), or
     /// 255 for letters stacked one under another.
     pub rotation: u32,
+    /// The gradient the fill is, as CSS writes one; `fill` is its first
+    /// colour.
+    pub gradient: Option<String>,
+    /// The line between the corners of the cell, and whether it runs up from
+    /// the bottom left and down from the top left.
+    pub diagonal: Option<(BorderSide, bool, bool)>,
+    /// The number format by its number in the workbook (`numFmtId`): one
+    /// under 164 is Excel's own, which it shows by the system's language.
+    pub number_format: u32,
+    /// The font underlines with two lines.
+    pub double_underline: bool,
+}
+
+impl FormatLook {
+    /// Whether the format shows on a cell that holds nothing.
+    pub fn paints(&self) -> bool {
+        self.fill.is_some() || self.diagonal.is_some() || self.borders.iter().any(Option::is_some)
+    }
 }
 
 /// The sizes and cell formats of a worksheet, in pixels at 96 per inch.
@@ -53,7 +72,21 @@ pub struct SheetLook {
     formats: std::sync::Arc<Vec<FormatLook>>,
     /// Whether the sheet shows its gridlines.
     pub grid_lines: bool,
+    /// The sheet's conditional formats, in the order of their priorities.
+    pub conditional: Vec<ConditionalLook>,
+    /// The sheet's tables with what their styles give.
+    pub tables: Vec<TableLook>,
+    /// Whether the workbook was made by Japanese Excel, which shows Excel's
+    /// own number formats as Japanese writes them.
+    pub japanese: bool,
+    /// The parts of the text of a cell set above or below its line, by
+    /// (column, row): the characters each covers and whether it is above.
+    pub scripts: HashMap<(u32, u32), ScriptRuns>,
 }
+
+/// The parts of a text set above or below its line: the characters each
+/// covers, from and to, and whether it is above.
+pub type ScriptRuns = std::sync::Arc<Vec<(usize, usize, bool)>>;
 
 impl SheetLook {
     /// The width of the column numbered `column` (from 1), in pixels.
@@ -100,10 +133,9 @@ impl SheetLook {
     /// The cells the sheet writes whose format paints a fill or a border, by
     /// (column, row): those that show though they hold nothing.
     pub fn painted(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.cells.iter().filter_map(|(place, format)| {
-            let look = self.formats.get(*format)?;
-            (look.fill.is_some() || look.borders.iter().any(Option::is_some)).then_some(*place)
-        })
+        self.cells
+            .iter()
+            .filter_map(|(place, format)| self.formats.get(*format)?.paints().then_some(*place))
     }
 }
 
@@ -129,6 +161,177 @@ pub struct DrawingLook {
     pub line_width: Option<f64>,
     pub vertical: Option<String>,
     pub horizontal: Option<String>,
+    /// The gradient the shape is filled with, when it is.
+    pub gradient: Option<Gradient>,
+    /// How much of what is behind the fill it hides, from 0 to 1, when not
+    /// all of it.
+    pub fill_opacity: Option<f64>,
+    pub extras: ShapeExtras,
+    /// The parts of the shape's text written bold, by the characters of
+    /// the text each covers, from and to.
+    pub bold: Vec<(usize, usize)>,
+}
+
+/// A gradient fill: its colours (`RRGGBB`) by their place from 0 to 1, and
+/// the angle it runs at, in degrees clockwise from left to right; none for
+/// one spreading from a point.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gradient {
+    pub stops: Vec<(f64, String)>,
+    pub angle: Option<f64>,
+}
+
+/// What a DrawingML shape's geometry and text body say beyond its preset's
+/// name, the same in a worksheet drawing and on a slide.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShapeExtras {
+    /// The adjustments of the preset geometry (`a:avLst`), by name.
+    pub adjust: Vec<(String, f64)>,
+    /// The paths of a custom geometry (`a:custGeom`).
+    pub paths: Vec<CustomPath>,
+    /// The direction of the text (`vert` of `a:bodyPr`), unless horizontal.
+    pub text_direction: Option<String>,
+    /// The size of the arrowhead at the head and at the tail of the line
+    /// (`w` and `len` of `a:headEnd` and `a:tailEnd`: sm, med, lg).
+    pub head_size: Option<(String, String)>,
+    pub tail_size: Option<(String, String)>,
+}
+
+/// A path of a custom geometry: the size of the box its points are given
+/// in, and the path as SVG writes one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomPath {
+    pub width: f64,
+    pub height: f64,
+    pub d: String,
+    pub filled: bool,
+    pub stroked: bool,
+}
+
+/// The [`ShapeExtras`] of a shape or connector element (`sp`, `cxnSp`) of a
+/// worksheet drawing or a slide.
+pub fn shape_extras(shape: Node<'_, '_>) -> ShapeExtras {
+    fn local<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
+        node.children()
+            .find(|n| n.is_element() && n.tag_name().name() == name)
+    }
+    fn drawing<'a, 'i>(node: Option<Node<'a, 'i>>, name: &str) -> Option<Node<'a, 'i>> {
+        node?.children().find(|n| n.has_tag_name((DRAWING, name)))
+    }
+    let properties = local(shape, "spPr");
+    let number = |node: Node<'_, '_>, name: &str| node.attribute(name)?.parse::<f64>().ok();
+    let adjust = drawing(drawing(properties, "prstGeom"), "avLst")
+        .into_iter()
+        .flat_map(|list| list.children().filter(|n| n.has_tag_name((DRAWING, "gd"))))
+        .filter_map(|guide| {
+            let value = guide.attribute("fmla")?.strip_prefix("val ")?;
+            Some((
+                guide.attribute("name")?.to_owned(),
+                value.trim().parse().ok()?,
+            ))
+        })
+        .collect();
+    // A path without a size of its own is in the shape's (EMUs).
+    let extent = drawing(drawing(properties, "xfrm"), "ext")
+        .and_then(|ext| Some((number(ext, "cx")?, number(ext, "cy")?)));
+    let paths = drawing(drawing(properties, "custGeom"), "pathLst")
+        .into_iter()
+        .flat_map(|list| {
+            list.children()
+                .filter(|n| n.has_tag_name((DRAWING, "path")))
+        })
+        .filter_map(|path| {
+            let (width, height) = match (number(path, "w"), number(path, "h")) {
+                (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
+                _ => extent?,
+            };
+            Some(CustomPath {
+                width,
+                height,
+                d: custom_path(path)?,
+                filled: path.attribute("fill") != Some("none"),
+                stroked: !matches!(path.attribute("stroke"), Some("0" | "false")),
+            })
+        })
+        .collect();
+    let outline = drawing(properties, "ln");
+    let size = |name: &str| {
+        let end = drawing(outline, name)?;
+        Some((
+            end.attribute("w").unwrap_or("med").to_owned(),
+            end.attribute("len").unwrap_or("med").to_owned(),
+        ))
+    };
+    ShapeExtras {
+        adjust,
+        paths,
+        text_direction: drawing(local(shape, "txBody"), "bodyPr")
+            .and_then(|body| body.attribute("vert"))
+            .filter(|vert| *vert != "horz")
+            .map(str::to_owned),
+        head_size: size("headEnd"),
+        tail_size: size("tailEnd"),
+    }
+}
+
+/// The path of a custom geometry's `a:path` as SVG writes one; none when it
+/// names a point by a guide, which is not worked out.
+fn custom_path(path: Node<'_, '_>) -> Option<String> {
+    use std::fmt::Write as _;
+    let mut d = String::new();
+    let mut current = (0.0, 0.0);
+    for step in path.children().filter(Node::is_element) {
+        let points = step
+            .children()
+            .filter(|n| n.has_tag_name((DRAWING, "pt")))
+            .map(|pt| {
+                Some((
+                    pt.attribute("x")?.parse::<f64>().ok()?,
+                    pt.attribute("y")?.parse::<f64>().ok()?,
+                ))
+            })
+            .collect::<Option<Vec<(f64, f64)>>>()?;
+        let letter = match (step.tag_name().name(), points.len()) {
+            ("moveTo", 1) => 'M',
+            ("lnTo", 1) => 'L',
+            ("quadBezTo", 2) => 'Q',
+            ("cubicBezTo", 3) => 'C',
+            ("close", _) => {
+                d.push('Z');
+                continue;
+            }
+            ("arcTo", _) => {
+                let value = |name: &str| step.attribute(name)?.parse::<f64>().ok();
+                let (rx, ry) = (value("wR")?, value("hR")?);
+                let (start, swing) = (value("stAng")? / 60_000.0, value("swAng")? / 60_000.0);
+                // An angle is that of the ray from the centre; the point of
+                // the ellipse on it is at another angle of its circle.
+                let on = |degrees: f64| {
+                    let angle = degrees.to_radians();
+                    let t = (rx * angle.sin()).atan2(ry * angle.cos());
+                    (rx * t.cos(), ry * t.sin())
+                };
+                let (from, to) = (on(start), on(start + swing));
+                current = (current.0 - from.0 + to.0, current.1 - from.1 + to.1);
+                let _ = write!(
+                    d,
+                    "A{rx:.0},{ry:.0} 0 {} {} {:.0},{:.0}",
+                    u8::from(swing.abs() > 180.0),
+                    u8::from(swing > 0.0),
+                    current.0,
+                    current.1
+                );
+                continue;
+            }
+            _ => return None,
+        };
+        d.push(letter);
+        for (index, (x, y)) in points.iter().enumerate() {
+            let _ = write!(d, "{}{x:.0},{y:.0}", if index > 0 { " " } else { "" });
+        }
+        current = *points.last()?;
+    }
+    (!d.is_empty()).then_some(d)
 }
 
 /// The look of each shape and connector of the drawings of `book`, by its
@@ -166,6 +369,47 @@ pub fn drawing_looks(book: &Workbook) -> Result<HashMap<String, DrawingLook>> {
                 "gradFill" | "blipFill" | "pattFill" | "grpFill" => Some(Paint::Unresolved),
                 _ => None,
             })
+    };
+    // The gradient of the fill among `node`'s children: its stops in the
+    // colours that resolve, and the angle a linear one runs at.
+    let gradient_of = |node: Node<'_, '_>| {
+        let fill = node
+            .children()
+            .find(|n| n.has_tag_name((DRAWING, "gradFill")))?;
+        let mut stops: Vec<(f64, String)> = fill
+            .descendants()
+            .filter(|n| n.has_tag_name((DRAWING, "gs")))
+            .filter_map(|stop| {
+                let Paint::Color(rgb) = color(stop.children().find(Node::is_element)?) else {
+                    return None;
+                };
+                Some((stop.attribute("pos")?.parse::<f64>().ok()? / 100_000.0, rgb))
+            })
+            .collect();
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (stops.len() > 1).then(|| Gradient {
+            stops,
+            angle: fill
+                .children()
+                .find(|n| n.has_tag_name((DRAWING, "lin")))
+                .map(|lin| {
+                    lin.attribute("ang")
+                        .and_then(|a| a.parse::<f64>().ok())
+                        .unwrap_or(0.0)
+                        / 60_000.0
+                }),
+        })
+    };
+    // How much a solid fill among `node`'s children hides (`a:alpha`).
+    let opacity_of = |node: Node<'_, '_>| {
+        node.children()
+            .find(|n| n.has_tag_name((DRAWING, "solidFill")))?
+            .descendants()
+            .find(|n| n.has_tag_name((DRAWING, "alpha")))?
+            .attribute("val")?
+            .parse::<f64>()
+            .ok()
+            .map(|alpha| (alpha / 100_000.0).clamp(0.0, 1.0))
     };
     // The paint a style reference gives: nothing for index 0.
     let reference = |style: Option<Node<'_, '_>>, name: &str| {
@@ -232,11 +476,41 @@ pub fn drawing_looks(book: &Workbook) -> Result<HashMap<String, DrawingLook>> {
                         .map(|emu| emu / 12_700.0),
                     vertical: attribute(body, "bodyPr", "anchor"),
                     horizontal: attribute(body, "pPr", "algn"),
+                    gradient: properties.and_then(gradient_of),
+                    fill_opacity: properties.and_then(opacity_of),
+                    extras: shape_extras(shape),
+                    bold: bold_runs(body),
                 },
             );
         }
     }
     Ok(looks)
+}
+
+/// The parts of the text of a shape's text body its runs write bold
+/// (`b` of `a:rPr`), by the characters of the text each covers: its
+/// paragraphs are a line each.
+fn bold_runs(body: Option<Node<'_, '_>>) -> Vec<(usize, usize)> {
+    let mut bold = vec![];
+    let mut at = 0;
+    for (index, paragraph) in body
+        .into_iter()
+        .flat_map(|body| body.children().filter(|n| n.has_tag_name((DRAWING, "p"))))
+        .enumerate()
+    {
+        let (runs, end) = crate::fonts::placed_runs(paragraph, at + usize::from(index > 0));
+        for (run, chars) in runs {
+            if run
+                .children()
+                .find(|n| n.has_tag_name((DRAWING, "rPr")))
+                .is_some_and(|p| matches!(p.attribute("b"), Some("1" | "true")))
+            {
+                bold.push((chars.start, chars.end));
+            }
+        }
+        at = end;
+    }
+    bold
 }
 
 /// The look of each worksheet of `book`, by sheet name.
@@ -252,16 +526,46 @@ pub fn sheet_looks(book: &Workbook) -> Result<BTreeMap<String, SheetLook>> {
         None => vec![],
     });
     let measures = fit::Styles::read(&book.parts)?;
+    let styles_root = styles.as_ref().map(|doc| doc.root_element());
+    let differential = styles_root
+        .map(|root| overlays::differential_looks(root, &palette))
+        .unwrap_or_default();
+    let japanese = styles_root.is_some_and(japanese);
+    let scripts = match book.parts.get("xl/sharedStrings.xml") {
+        Some(bytes) => script_runs(&xml(bytes)?),
+        None => HashMap::default(),
+    };
     let mut looks = BTreeMap::new();
     for sheet in &book.sheets {
         let part = string(&sheet["part"])?;
         let Some(bytes) = book.parts.get(part) else {
             continue;
         };
-        looks.insert(
-            string(&sheet["name"])?.to_owned(),
-            sheet_look(&xml(bytes)?, &measures, formats.clone())?,
-        );
+        let doc = xml(bytes)?;
+        let mut look = sheet_look(&doc, &measures, formats.clone())?;
+        look.conditional = overlays::conditional_looks(doc.root_element(), &differential, &palette);
+        look.tables =
+            overlays::table_looks(&book.parts, part, styles_root, &differential, &palette);
+        look.japanese = japanese;
+        // The cells whose shared string sets part of its text above or
+        // below the line.
+        if !scripts.is_empty() {
+            for cell in doc
+                .descendants()
+                .filter(|n| n.has_tag_name((NS, "c")) && n.attribute("t") == Some("s"))
+            {
+                let index = child(cell, "v")
+                    .and_then(|v| v.text())
+                    .and_then(|v| v.trim().parse::<usize>().ok());
+                if let (Some(found), Some(Ok(place))) = (
+                    index.and_then(|index| scripts.get(&index)),
+                    cell.attribute("r").map(coordinate),
+                ) {
+                    look.scripts.insert(place, found.clone());
+                }
+            }
+        }
+        looks.insert(string(&sheet["name"])?.to_owned(), look);
     }
     Ok(looks)
 }
@@ -380,7 +684,100 @@ fn sheet_look(
         column_formats,
         formats,
         grid_lines,
+        conditional: vec![],
+        tables: vec![],
+        japanese: false,
+        scripts: HashMap::default(),
     })
+}
+
+/// Whether the styles part `root` is one Japanese Excel writes: its normal
+/// font is in the Japanese character set or has a Japanese name.
+fn japanese(root: Node<'_, '_>) -> bool {
+    let Some(font) = child(root, "fonts").and_then(|fonts| child(fonts, "font")) else {
+        return false;
+    };
+    let value = |name: &str| child(font, name).and_then(|n| n.attribute("val"));
+    value("charset") == Some("128")
+        || value("name").is_some_and(|name| {
+            !name.is_ascii()
+                || [
+                    "Yu Gothic",
+                    "Meiryo",
+                    "MS PGothic",
+                    "MS Gothic",
+                    "MS Mincho",
+                    "MS PMincho",
+                ]
+                .iter()
+                .any(|japanese| name.starts_with(japanese))
+        })
+}
+
+/// The runs of each shared string that are set above or below the line
+/// (`vertAlign`), by the string's number.
+fn script_runs(doc: &Document<'_>) -> HashMap<usize, ScriptRuns> {
+    let length = |node: Option<Node<'_, '_>>| {
+        node.and_then(|t| t.text())
+            .map_or(0, |t| decode_xstring(t).chars().count())
+    };
+    let mut found = HashMap::default();
+    for (index, item) in doc
+        .root_element()
+        .children()
+        .filter(Node::is_element)
+        .enumerate()
+    {
+        let mut at = length(child(item, "t"));
+        let mut runs = vec![];
+        for run in item.children().filter(|n| n.has_tag_name((NS, "r"))) {
+            let end = at + length(child(run, "t"));
+            let script = child(run, "rPr")
+                .and_then(|p| child(p, "vertAlign"))
+                .and_then(|v| v.attribute("val"));
+            match script {
+                Some("superscript") => runs.push((at, end, true)),
+                Some("subscript") => runs.push((at, end, false)),
+                _ => {}
+            }
+            at = end;
+        }
+        if !runs.is_empty() {
+            found.insert(index, std::sync::Arc::new(runs));
+        }
+    }
+    found
+}
+
+/// How much of a cell a fill pattern covers with its foreground colour.
+fn pattern_density(pattern: &str) -> f64 {
+    match pattern {
+        "solid" => 1.0,
+        "darkGray" | "darkTrellis" => 0.75,
+        "mediumGray" | "darkHorizontal" | "darkVertical" | "darkDown" | "darkUp" | "darkGrid" => {
+            0.5
+        }
+        "lightGrid" | "lightTrellis" => 0.4,
+        "lightGray" | "lightHorizontal" | "lightVertical" | "lightDown" | "lightUp" => 0.25,
+        "gray125" => 0.125,
+        "gray0625" => 0.0625,
+        _ => 1.0,
+    }
+}
+
+/// The colour `share` of `over` and the rest of `under` mix to, `RRGGBB`.
+fn mixed(over: &str, under: &str, share: f64) -> String {
+    let part = |rgb: &str, at: usize| {
+        rgb.get(at..at + 2)
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            .map_or(0.0, f64::from)
+    };
+    (0..3)
+        .map(|k| {
+            let value = part(over, k * 2) * share + part(under, k * 2) * (1.0 - share);
+            format!("{:02X}", value.round().clamp(0.0, 255.0) as u8)
+        })
+        .collect()
 }
 
 /// The look of each cell format of the styles part `root`.
@@ -389,25 +786,95 @@ fn cell_looks(root: Node<'_, '_>, palette: &Palette) -> Vec<FormatLook> {
         Some(Color::Rgb { rgb, .. }) => Some(rgb),
         _ => None,
     };
-    let fills: Vec<Option<String>> = child(root, "fills")
+    // Each fill: its colour and, for a gradient, the gradient.
+    let fills: Vec<(Option<String>, Option<String>)> = child(root, "fills")
         .into_iter()
         .flat_map(|fills| fills.children().filter(Node::is_element))
         .map(|fill| {
             if let Some(gradient) = child(fill, "gradientFill") {
-                return gradient
+                let stops: Vec<(f64, String)> = gradient
                     .children()
-                    .find(|n| n.has_tag_name((NS, "stop")))
-                    .and_then(|stop| rgb(child(stop, "color")));
+                    .filter(|n| n.has_tag_name((NS, "stop")))
+                    .filter_map(|stop| {
+                        Some((
+                            stop.attribute("position")?.parse::<f64>().ok()?,
+                            rgb(child(stop, "color"))?,
+                        ))
+                    })
+                    .collect();
+                let colors: Vec<String> = stops
+                    .iter()
+                    .map(|(at, rgb)| format!("#{rgb} {:.0}%", at * 100.0))
+                    .collect();
+                let css = match (colors.len() > 1, gradient.attribute("type")) {
+                    (false, _) => None,
+                    (true, Some("path")) => Some(format!(
+                        "radial-gradient(closest-side,{})",
+                        colors.join(",")
+                    )),
+                    // Excel's degrees run clockwise from left to right,
+                    // CSS's from bottom to top.
+                    (true, _) => Some(format!(
+                        "linear-gradient({:.0}deg,{})",
+                        gradient
+                            .attribute("degree")
+                            .and_then(|d| d.parse::<f64>().ok())
+                            .unwrap_or(0.0)
+                            + 90.0,
+                        colors.join(",")
+                    )),
+                };
+                return (stops.first().map(|(_, rgb)| rgb.clone()), css);
             }
-            let pattern = child(fill, "patternFill")?;
-            match pattern.attribute("patternType") {
+            let Some(pattern) = child(fill, "patternFill") else {
+                return (None, None);
+            };
+            let fill = match pattern.attribute("patternType") {
                 None | Some("none") => None,
-                // A solid fill paints its foreground colour; a pattern shows
-                // mostly its foreground over its background.
-                _ => rgb(child(pattern, "fgColor"))
+                // A solid fill paints its foreground colour; a pattern is
+                // drawn as the colour its foreground and background mix to.
+                Some("solid") => rgb(child(pattern, "fgColor"))
                     .or_else(|| rgb(child(pattern, "bgColor")))
                     .or_else(|| Some("000000".to_owned())),
-            }
+                Some(kind) => Some(mixed(
+                    rgb(child(pattern, "fgColor"))
+                        .as_deref()
+                        .unwrap_or("000000"),
+                    rgb(child(pattern, "bgColor"))
+                        .as_deref()
+                        .unwrap_or("FFFFFF"),
+                    pattern_density(kind),
+                )),
+            };
+            (fill, None)
+        })
+        .collect();
+    let double_underlines: Vec<bool> = child(root, "fonts")
+        .into_iter()
+        .flat_map(|fonts| fonts.children().filter(Node::is_element))
+        .map(|font| {
+            child(font, "u")
+                .is_some_and(|u| matches!(u.attribute("val"), Some("double" | "doubleAccounting")))
+        })
+        .collect();
+    let diagonals: Vec<Option<(BorderSide, bool, bool)>> = child(root, "borders")
+        .into_iter()
+        .flat_map(|borders| borders.children().filter(Node::is_element))
+        .map(|border| {
+            let on = |name: &str| matches!(border.attribute(name), Some("1" | "true"));
+            let (up, down) = (on("diagonalUp"), on("diagonalDown"));
+            let side = child(border, "diagonal")?;
+            let style = side.attribute("style").filter(|s| *s != "none")?;
+            (up || down).then(|| {
+                (
+                    BorderSide {
+                        style: style.to_owned(),
+                        color: rgb(child(side, "color")),
+                    },
+                    up,
+                    down,
+                )
+            })
         })
         .collect();
     let borders: Vec<[Option<BorderSide>; 4]> = child(root, "borders")
@@ -445,7 +912,14 @@ fn cell_looks(root: Node<'_, '_>, palette: &Palette) -> Vec<FormatLook> {
             let value = |name: &str| alignment.and_then(|a| a.attribute(name));
             let flag = |name: &str| matches!(value(name), Some("1" | "true"));
             FormatLook {
-                fill: fills.get(index("fillId")).cloned().flatten(),
+                fill: fills.get(index("fillId")).and_then(|f| f.0.clone()),
+                gradient: fills.get(index("fillId")).and_then(|f| f.1.clone()),
+                diagonal: diagonals.get(index("borderId")).cloned().flatten(),
+                number_format: index("numFmtId") as u32,
+                double_underline: double_underlines
+                    .get(index("fontId"))
+                    .copied()
+                    .unwrap_or(false),
                 borders: borders.get(index("borderId")).cloned().unwrap_or_default(),
                 horizontal: value("horizontal")
                     .filter(|h| *h != "general")
@@ -470,10 +944,14 @@ mod tests {
 
     const STYLES: &str = r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <fills><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill></fills>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="lightUp"><fgColor rgb="FFFF0000"/></patternFill></fill>
+<fill><gradientFill degree="90"><stop position="0"><color rgb="FF00FFFF"/></stop><stop position="1"><color rgb="FF0000FF"/></stop></gradientFill></fill></fills>
 <borders><border><left/><right/><top/><bottom/></border>
-<border><left style="thin"><color rgb="FF00FF00"/></left><right/><top/><bottom style="double"><color auto="1"/></bottom></border></borders>
-<cellXfs><xf fillId="0" borderId="0"/><xf fillId="2" borderId="1"><alignment horizontal="center" vertical="top" wrapText="1" indent="2"/></xf></cellXfs>
+<border><left style="thin"><color rgb="FF00FF00"/></left><right/><top/><bottom style="double"><color auto="1"/></bottom></border>
+<border diagonalUp="1"><left/><right/><top/><bottom/><diagonal style="thin"><color rgb="FF112233"/></diagonal></border></borders>
+<cellXfs><xf fillId="0" borderId="0"/><xf fillId="2" borderId="1"><alignment horizontal="center" vertical="top" wrapText="1" indent="2"/></xf>
+<xf numFmtId="38" fillId="3" borderId="2"/><xf fillId="4" borderId="0"/></cellXfs>
 </styleSheet>"#;
 
     #[test]
@@ -496,6 +974,27 @@ mod tests {
         assert_eq!(looks[1].vertical.as_deref(), Some("top"));
         assert!(looks[1].wrap);
         assert_eq!(looks[1].indent, 2);
+        // A pattern is the colour its red lines and the white behind mix to.
+        assert_eq!(looks[2].fill.as_deref(), Some("FFBFBF"));
+        assert_eq!(looks[2].number_format, 38);
+        let (side, up, down) = looks[2].diagonal.clone().unwrap();
+        assert_eq!(
+            (side.color.as_deref(), up, down),
+            (Some("112233"), true, false)
+        );
+        assert!(looks[2].paints() && !looks[0].paints());
+        // A gradient running down the cell, from its first colour.
+        assert_eq!(looks[3].fill.as_deref(), Some("00FFFF"));
+        assert_eq!(
+            looks[3].gradient.as_deref(),
+            Some("linear-gradient(180deg,#00FFFF 0%,#0000FF 100%)")
+        );
+        assert!(!japanese(doc.root_element()));
+        let japanese_styles = Document::parse(
+            r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts><font><name val="Calibri"/><charset val="128"/></font></fonts></styleSheet>"#,
+        )
+        .unwrap();
+        assert!(japanese(japanese_styles.root_element()));
     }
 
     #[test]

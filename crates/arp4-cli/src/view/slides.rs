@@ -118,6 +118,23 @@ fn shapes(
 ) -> Result<String> {
     let cells = cells_of(sheet);
     let mut tables: Vec<&Value> = sheet["tables"].as_array().into_iter().flatten().collect();
+    // The shapes of the slide's part, by the number of each (`cNvPr id`).
+    let part = sheet["part"]
+        .as_str()
+        .and_then(|part| document.original.office_part(part));
+    let xml = part.as_deref().and_then(|text| Xml::parse(text).ok());
+    let nodes: HashMap<&str, roxmltree::Node<'_, '_>> = xml
+        .iter()
+        .flat_map(|xml| xml.descendants())
+        .filter(|n| matches!(n.tag_name().name(), "sp" | "cxnSp" | "pic"))
+        .filter_map(|shape| {
+            let id = shape
+                .descendants()
+                .find(|n| n.tag_name().name() == "cNvPr")?
+                .attribute("id")?;
+            Some((id, shape))
+        })
+        .collect();
     let mut html = String::new();
     for drawing in sheet["drawings"].as_array().into_iter().flatten() {
         let anchor = &drawing["anchor"];
@@ -151,25 +168,107 @@ fn shapes(
             .filter_map(|p| p.as_str().map(str::to_owned))
             .collect();
         let text = paragraphs(document, sheet, &cells, &addresses, "", out);
+        // What the slide says of the shape beyond the extraction: its
+        // adjustments, custom paths and text direction, where its text
+        // stands, and whether anything paints its area and its line.
+        let node = drawing["id"]
+            .as_str()
+            .and_then(|id| id.rsplit_once('#'))
+            .and_then(|(_, number)| nodes.get(number));
+        let mut drawing = drawing.clone();
+        let mut placed = (None, None);
+        let (mut filled, mut lined) = (true, true);
+        if let Some(node) = node {
+            drawings::extras(&mut drawing, &crate::excel::shape_extras(*node));
+            let child = |parent: Option<roxmltree::Node<'_, '_>>, name: &str| {
+                parent?
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == name)
+                    .map(|n| n.id())
+            };
+            let at = |id: Option<roxmltree::NodeId>| id.and_then(|id| xml.as_ref()?.get_node(id));
+            let properties = at(child(Some(*node), "spPr"));
+            let style = at(child(Some(*node), "style"));
+            let outline = at(child(properties, "ln"));
+            let paints = |parent: Option<roxmltree::Node<'_, '_>>| {
+                parent.is_some_and(|p| {
+                    p.children().any(|n| {
+                        matches!(
+                            n.tag_name().name(),
+                            "solidFill" | "gradFill" | "blipFill" | "pattFill" | "grpFill"
+                        )
+                    })
+                })
+            };
+            // Nothing paints what neither the shape's properties nor a
+            // style reference of an index over 0 do.
+            let referred = |name: &str| {
+                at(child(style, name)).is_some_and(|r| r.attribute("idx") != Some("0"))
+            };
+            // A gradient whose colours are written out (`a:srgbClr`).
+            if let Some(gradient) = properties
+                .and_then(|p| p.children().find(|n| n.has_tag_name((DRAWING, "gradFill"))))
+            {
+                let stops: Option<Vec<(f64, String)>> = gradient
+                    .descendants()
+                    .filter(|n| n.has_tag_name((DRAWING, "gs")))
+                    .map(|stop| {
+                        let color = stop
+                            .children()
+                            .find(|n| n.has_tag_name((DRAWING, "srgbClr")))?
+                            .attribute("val")?;
+                        Some((
+                            stop.attribute("pos")?.parse::<f64>().ok()? / 100_000.0,
+                            color.to_ascii_uppercase(),
+                        ))
+                    })
+                    .collect();
+                if let Some(mut stops) = stops.filter(|s| s.len() > 1) {
+                    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let angle = gradient
+                        .children()
+                        .find(|n| n.has_tag_name((DRAWING, "lin")))
+                        .map(|lin| {
+                            lin.attribute("ang")
+                                .and_then(|a| a.parse::<f64>().ok())
+                                .unwrap_or(0.0)
+                                / 60_000.0
+                        });
+                    drawing["gradient"] = serde_json::json!({"stops":stops,"angle":angle});
+                }
+            }
+            filled = paints(properties) || referred("fillRef");
+            lined = paints(outline) || referred("lnRef");
+            let body = at(child(Some(*node), "txBody"));
+            placed = (
+                body.and_then(|b| {
+                    b.descendants()
+                        .find(|n| n.has_tag_name((DRAWING, "pPr")))?
+                        .attribute("algn")
+                        .map(str::to_owned)
+                }),
+                at(child(body, "bodyPr")).and_then(|b| b.attribute("anchor").map(str::to_owned)),
+            );
+        }
+        let placeholder = drawing["placeholder"].is_object();
+        if !placeholder && !filled && drawing["fill"].is_null() {
+            drawing["fill"] = serde_json::json!("none");
+        }
+        if !placeholder && !lined && drawing["line"]["color"].is_null() {
+            drawing["line"]["color"] = serde_json::json!("none");
+        }
         // A placeholder and a text box hold text without a shape of their
-        // own; the text of another shape is centred in it.
-        let bare = drawing["placeholder"].is_object()
-            || (drawing["fill"] == "none" && drawing["line"]["color"] == "none");
-        let defaults = if bare {
-            Defaults {
-                fill: "none",
-                line: "none",
-                horizontal: "left",
-                vertical: "flex-start",
-            }
-        } else {
-            Defaults {
-                fill: "#ffffff",
-                line: "#404040",
-                horizontal: "center",
-                vertical: "center",
-            }
-        };
+        // own. Text stands at the top left of its shape unless the shape
+        // places it.
+        let bare = placeholder || (drawing["fill"] == "none" && drawing["line"]["color"] == "none");
+        let defaults = Defaults {
+            fill: if bare { "none" } else { "#ffffff" },
+            line: if bare { "none" } else { "#404040" },
+            horizontal: "left",
+            vertical: "flex-start",
+        }
+        .placed(placed.0.as_deref(), placed.1.as_deref());
+        let drawing = &drawing;
         // The end of the drawing's ID names the shape in a diagram (`s3`).
         let shape = drawing["id"]
             .as_str()

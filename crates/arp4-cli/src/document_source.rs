@@ -820,6 +820,51 @@ impl Source {
         }
     }
 
+    /// What `read` makes of the Word part `part`: its XML and the element of
+    /// each row of the part's sheet in the extraction, a paragraph or a
+    /// table row. None for a part the original lacks or another format.
+    pub fn word_rows<R>(
+        &self,
+        part: &str,
+        read: impl FnOnce(&Document<'_>, &BTreeMap<usize, Node<'_, '_>>) -> R,
+    ) -> Option<R> {
+        let Self::Text(TextSource {
+            backend: TextBackend::Office(parts),
+            ..
+        }) = self
+        else {
+            return None;
+        };
+        let text = xml_part(parts, part).ok()?;
+        let xml = Document::parse(&text).ok()?;
+        let drawn = word_drawn_texts(parts, part);
+        let layout = word::rows_layout(&xml, &drawn).ok()?;
+        Some(read(&xml, layout.rows()))
+    }
+
+    /// The bytes of the file `name` of an Office original's package, such
+    /// as a picture, which is not kept with its XML parts.
+    pub fn office_file(&self, name: &str) -> Option<Vec<u8>> {
+        use std::io::Read as _;
+        let Self::Text(TextSource {
+            backend: TextBackend::Office(_),
+            raw,
+            ..
+        }) = self
+        else {
+            return None;
+        };
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw.as_slice())).ok()?;
+        let mut file = archive.by_name(name).ok()?;
+        // A picture a page shows is not larger than this.
+        let mut bytes = vec![];
+        file.by_ref()
+            .take(64 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(bytes)
+    }
+
     /// The part the first internal relationship of `part` whose type ends
     /// with `kind` (such as `/slideLayout`) names, in a Word or PowerPoint
     /// original.

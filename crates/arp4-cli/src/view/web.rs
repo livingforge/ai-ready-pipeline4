@@ -47,7 +47,7 @@ pub(super) fn page(document: &Document<'_>, out: &mut Out) -> Result<Vec<Section
         shapes: document.original.html_shapes()?.unwrap_or_default(),
         pictures,
     };
-    let body = flow(document, sheet, "", out, &page)?;
+    let body = flow(document, sheet, "", out, &page, None)?;
     let name = sheet["name"].as_str().unwrap_or_default();
     Ok(vec![Section::new(
         name,

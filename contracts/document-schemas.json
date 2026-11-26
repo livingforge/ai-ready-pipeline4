@@ -5805,14 +5805,13 @@
                     },
                     "tables": {
                       "type": "array",
-                      "description": "表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定",
+                      "description": "表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。header_rows は網掛けが見出し行を示すときだけ記録する",
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
                           "name",
                           "range",
-                          "header_rows",
                           "totals_rows"
                         ],
                         "properties": {
@@ -6564,12 +6563,21 @@
                     "type": "string"
                   },
                   "header_rows": {
+                    "description": "Header rows the source tells: those of an Excel table, the rows a Word table repeats or emphasizes throughout, the thead or leading th rows of an HTML table, the rows a PDF page tags or shades. Absent when the source tells none; structure inference then reads the header from the table's cells.",
                     "type": "integer",
                     "minimum": 0
                   },
                   "totals_rows": {
                     "type": "integer",
                     "minimum": 0
+                  },
+                  "row_heights": {
+                    "description": "Rows of the sheet each row of the source's table takes, from its first, as a Word row whose cell holds several paragraphs takes one for each. Absent when every row takes one.",
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
                   },
                   "parent": {
                     "description": "Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.",
@@ -6579,7 +6587,6 @@
                 "required": [
                   "name",
                   "range",
-                  "header_rows",
                   "totals_rows"
                 ]
               }
@@ -8142,14 +8149,13 @@
                     },
                     "tables": {
                       "type": "array",
-                      "description": "表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定",
+                      "description": "表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。header_rows は網掛けが見出し行を示すときだけ記録する",
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
                           "name",
                           "range",
-                          "header_rows",
                           "totals_rows"
                         ],
                         "properties": {
@@ -8888,12 +8894,21 @@
                     "type": "string"
                   },
                   "header_rows": {
+                    "description": "Header rows the source tells: those of an Excel table, the rows a Word table repeats or emphasizes throughout, the thead or leading th rows of an HTML table, the rows a PDF page tags or shades. Absent when the source tells none; structure inference then reads the header from the table's cells.",
                     "type": "integer",
                     "minimum": 0
                   },
                   "totals_rows": {
                     "type": "integer",
                     "minimum": 0
+                  },
+                  "row_heights": {
+                    "description": "Rows of the sheet each row of the source's table takes, from its first, as a Word row whose cell holds several paragraphs takes one for each. Absent when every row takes one.",
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
                   },
                   "parent": {
                     "description": "Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.",
@@ -8903,7 +8918,6 @@
                 "required": [
                   "name",
                   "range",
-                  "header_rows",
                   "totals_rows"
                 ]
               }
@@ -13079,6 +13093,7 @@
       "picture_folders": {
         "description": "Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.",
         "type": "array",
+        "default": [],
         "uniqueItems": true,
         "items": {
           "type": "string",
@@ -13088,6 +13103,7 @@
       "exclude": {
         "description": "Regular expressions (Rust regex syntax) of the files and folders below sources that are not documents. Each is searched for anywhere in a path relative to sources, with / between names; a folder's path ends with /, and a folder that matches excludes everything below it. Folder import leaves excluded originals out without listing them, and importing or moving a document to an excluded path is refused.",
         "type": "array",
+        "default": [],
         "uniqueItems": true,
         "items": {
           "type": "string",

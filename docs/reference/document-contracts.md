@@ -1301,8 +1301,8 @@
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/size</code> | <code>{"description":"OCRが読んだ画像の幅と高さ（画素）。上限より大きい画像は縮小後の大きさ","maxItems":2,"minItems":2,"type":"array"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/size/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables</code> | <code>{"description":"表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定","type":"array"}</code> |
-| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables</code> | <code>{"description":"表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。header_rows は網掛けが見出し行を示すときだけ記録する","type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","totals_rows"],"type":"object"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
@@ -1601,11 +1601,13 @@
 | <code>/properties/sheets/items/properties/styles/items/properties/strike</code> | <code>{"description":"Every run of the text is struck through, by one line or two, which authors use to mark text as deleted. Excel cells always record it; other text only when struck.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/styles/items/properties/underline</code> | <code>{"description":"Every run of the text is underlined, by a line of any kind. Absent when not.","type":"boolean"}</code> |
 | <code>/properties/sheets/items/properties/tables</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
-| <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","totals_rows"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"description":"Header rows the source tells: those of an Excel table, the rows a Word table repeats or emphasizes throughout, the thead or leading th rows of an HTML table, the rows a PDF page tags or shades. Absent when the source tells none; structure inference then reads the header from the table's cells.","minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/parent</code> | <code>{"description":"Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/row_heights</code> | <code>{"description":"Rows of the sheet each row of the source's table takes, from its first, as a Word row whose cell holds several paragraphs takes one for each. Absent when every row takes one.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/row_heights/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/validations</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/validations/items</code> | <code>{"additionalProperties":false,"required":["range","type","allow_blank"],"type":"object"}</code> |
@@ -1720,8 +1722,8 @@
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/merges/items</code> | <code>{"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/size</code> | <code>{"description":"OCRが読んだ画像の幅と高さ（画素）。上限より大きい画像は縮小後の大きさ","maxItems":2,"minItems":2,"type":"array"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/size/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
-| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables</code> | <code>{"description":"表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。見出し行は推定","type":"array"}</code> |
-| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables</code> | <code>{"description":"表の範囲。罫線が交わる格子、または同じ列に並ぶ行から推定する。header_rows は網掛けが見出し行を示すときだけ記録する","type":"array"}</code> |
+| <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","totals_rows"],"type":"object"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
 | <code>/properties/assets/items/properties/ocr/properties/layout/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
@@ -2064,11 +2066,13 @@
 | <code>/properties/sheets/items/properties/part</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/state</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables</code> | <code>{"type":"array"}</code> |
-| <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","header_rows","totals_rows"],"type":"object"}</code> |
-| <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
+| <code>/properties/sheets/items/properties/tables/items</code> | <code>{"additionalProperties":false,"required":["name","range","totals_rows"],"type":"object"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/header_rows</code> | <code>{"description":"Header rows the source tells: those of an Excel table, the rows a Word table repeats or emphasizes throughout, the thead or leading th rows of an HTML table, the rows a PDF page tags or shades. Absent when the source tells none; structure inference then reads the header from the table's cells.","minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/name</code> | <code>{"type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/parent</code> | <code>{"description":"Name of the table on this sheet whose cell holds this table, as a Word table nested in a cell. Its range lies inside the parent's range, and its cells are not the parent's.","type":"string"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/range</code> | <code>{"type":"string"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/row_heights</code> | <code>{"description":"Rows of the sheet each row of the source's table takes, from its first, as a Word row whose cell holds several paragraphs takes one for each. Absent when every row takes one.","type":"array"}</code> |
+| <code>/properties/sheets/items/properties/tables/items/properties/row_heights/items</code> | <code>{"minimum":1,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/tables/items/properties/totals_rows</code> | <code>{"minimum":0,"type":"integer"}</code> |
 | <code>/properties/sheets/items/properties/validations</code> | <code>{"type":"array"}</code> |
 | <code>/properties/sheets/items/properties/validations/items</code> | <code>{"additionalProperties":false,"required":["range","type","allow_blank"],"type":"object"}</code> |
@@ -2620,9 +2624,9 @@
 | <code>/properties/agent_read_format</code> | <code>{"default":"toon","description":"Presentation of agent reading material; storage and reply protocols remain JSON.","enum":["toon","json"],"type":"string"}</code> |
 | <code>/properties/assets</code> | <code>{"additionalProperties":false,"description":"Which of the pictures an original shows import leaves out of its assets.","type":"object"}</code> |
 | <code>/properties/assets/properties/max_aspect_ratio</code> | <code>{"default":20,"description":"The most times longer than it is short an image or figure of a PDF page may be, as the page shows it. Longer ones are rules, bands and other decoration: they are not saved as assets, and the extraction's findings name their pages. null leaves none out for its shape. Originals already imported keep their assets until imported again with --force.","minimum":1,"type":["number","null"]}</code> |
-| <code>/properties/exclude</code> | <code>{"description":"Regular expressions (Rust regex syntax) of the files and folders below sources that are not documents. Each is searched for anywhere in a path relative to sources, with / between names; a folder's path ends with /, and a folder that matches excludes everything below it. Folder import leaves excluded originals out without listing them, and importing or moving a document to an excluded path is refused.","type":"array","uniqueItems":true}</code> |
+| <code>/properties/exclude</code> | <code>{"default":[],"description":"Regular expressions (Rust regex syntax) of the files and folders below sources that are not documents. Each is searched for anywhere in a path relative to sources, with / between names; a folder's path ends with /, and a folder that matches excludes everything below it. Folder import leaves excluded originals out without listing them, and importing or moving a document to an excluded path is refused.","type":"array","uniqueItems":true}</code> |
 | <code>/properties/exclude/items</code> | <code>{"minLength":1,"type":"string"}</code> |
-| <code>/properties/picture_folders</code> | <code>{"description":"Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.","type":"array","uniqueItems":true}</code> |
+| <code>/properties/picture_folders</code> | <code>{"default":[],"description":"Folders besides sources whose picture files HTML pages may read as assets when they name them by a relative path, relative to the project root and inside it. Folders outside the project go in .arp/local.yml.","type":"array","uniqueItems":true}</code> |
 | <code>/properties/picture_folders/items</code> | <code>{"minLength":1,"type":"string"}</code> |
 | <code>/properties/protected_originals</code> | <code>{"default":"skip","description":"What import does with an original that opens only with its protection removed: an Office file encrypted with a password, by IRM or by a sensitivity label, and a PDF that needs a password or wraps an encrypted document. skip leaves it as it is and lists it under skipped; documents protected lists such originals and documents unprotect removes the protection of an Office original once the user approves. unprotect lets import remove the protection of an Office original, save it over unprotected and import it. A protected PDF is skipped under both.","enum":["skip","unprotect"],"type":"string"}</code> |
 | <code>/properties/schema_version</code> | <code>{"const":"1"}</code> |

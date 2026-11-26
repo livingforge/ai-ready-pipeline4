@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(layout["size"], json!([700, 300]));
         assert_eq!(
             layout["tables"],
-            json!([{"name":"table-1","range":"A2:C4","header_rows":1,"totals_rows":0}])
+            json!([{"name":"table-1","range":"A2:C4","totals_rows":0}])
         );
         assert_eq!(layout["merges"], json!([]));
         assert_eq!(

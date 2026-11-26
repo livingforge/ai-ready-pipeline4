@@ -789,6 +789,164 @@ fn record_series(group: &[&Cell<'_>], left: u32) -> Option<Series> {
     Some((first.0.to_owned(), first.1, first.2, keys.last()?.2))
 }
 
+/// The last row of the headings that start on the rows `top` to `end`, where
+/// some are merged down past `end`: the row they reach when the rows between
+/// hold subheadings, each under a wider heading merged across its columns, or
+/// hold nothing. So do rows of second lines written under headings of their
+/// own width without merging ([`second_lines`]). Other rows of cells that
+/// each lie under a heading of their own width are records beside a label
+/// merged down over them, as a category over its records, and the headings
+/// end at `end`.
+fn headings_end(group: &[&Cell<'_>], top: u32, mut end: u32) -> u32 {
+    loop {
+        let heads = valued(in_rows(group, top, end).to_vec());
+        let Some(deep) = heads.iter().map(|c| c.bottom).max().filter(|d| *d > end) else {
+            return end;
+        };
+        let below = valued(in_rows(group, end + 1, deep).to_vec());
+        let subheading = |c: &&Cell<'_>| {
+            heads.iter().any(|h| {
+                h.bottom < c.top && h.left <= c.left && c.right <= h.right && h.span() != c.span()
+            })
+        };
+        if !below.is_empty()
+            && !below.iter().any(subheading)
+            && !second_lines(group, &heads, &below, deep)
+        {
+            return end;
+        }
+        end = deep;
+    }
+}
+
+/// Whether the cells `below` the headings `heads`, down to the row `deep`
+/// that those merged down reach, are second lines of headings rather than
+/// records: all texts, and either all notes in brackets or of a unit, as
+/// (千円) under 売上, or texts over numbers where most headings are merged
+/// down to `deep`, as authors merge down every heading of one line. Records
+/// beside a category merged down leave most headings of the row unmerged.
+fn second_lines(group: &[&Cell<'_>], heads: &[&Cell<'_>], below: &[&Cell<'_>], deep: u32) -> bool {
+    if below.iter().any(|c| number_like(c)) {
+        return false;
+    }
+    let note = |c: &&Cell<'_>| {
+        let text = c.text().trim();
+        text.starts_with("単位")
+            || [
+                ('(', ')'),
+                ('（', '）'),
+                ('[', ']'),
+                ('［', '］'),
+                ('【', '】'),
+                ('〔', '〕'),
+            ]
+            .iter()
+            .any(|(open, close)| text.starts_with(*open) && text.ends_with(*close))
+    };
+    if below.iter().all(note) {
+        return true;
+    }
+    let merged = heads.iter().filter(|h| h.bottom == deep).count();
+    let over_numbers = |c: &&Cell<'_>| {
+        let under: Vec<_> = group
+            .iter()
+            .filter(|o| o.top > deep && o.span() == c.span() && o.nonempty())
+            .collect();
+        under.len() >= 2 && under.iter().all(|o| number_like(o))
+    };
+    merged * 2 > heads.len()
+        && heads
+            .iter()
+            .all(|h| h.bottom == deep || h.bottom < below[0].top)
+        && below.iter().any(over_numbers)
+}
+
+/// Whether a cell starting on the rows `top` to `end` is a label merged down
+/// over records after `end` rather than a heading: it reaches the last row,
+/// or its column holds another cell of its look merged down below it, as the
+/// categories of a list are. Its row is then a record, and no heading row.
+fn labels_merged_down(group: &[&Cell<'_>], top: u32, end: u32) -> bool {
+    let bottom = group.iter().map(|c| c.bottom).max().unwrap_or(end);
+    in_rows(group, top, end)
+        .iter()
+        .filter(|h| h.nonempty() && h.bottom > end)
+        .any(|h| {
+            h.bottom == bottom
+                || group.iter().any(|c| {
+                    c.top > h.bottom
+                        && c.bottom > c.top
+                        && c.span() == h.span()
+                        && c.nonempty()
+                        && (c.bold(), c.fill()) == (h.bold(), h.fill())
+                })
+        })
+}
+
+/// Whether `c` holds a number, a date or a time, or a text written as one:
+/// digits with a sign, a currency mark, separators and a short unit, as
+/// "1,200円", "12.5%" or "2026/10/01". The cells of a document without cell
+/// types are all text.
+fn number_like(c: &Cell<'_>) -> bool {
+    static NUMBER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pattern = NUMBER.get_or_init(|| {
+        regex::Regex::new(r"^[+\-−△▲]?[¥￥$€]?\(?\d[\d,，]*(?:[.:/\-]\d+)*\)?\s*[^\d\s]{0,2}$")
+            .expect("the pattern of a number is valid")
+    });
+    !c.string() || pattern.is_match(c.text().trim())
+}
+
+/// The header rows of a table whose source draws its boundary and does not
+/// tell its header, as a Word table without repeated or emphasized rows and
+/// a ruled table of a PDF page: the first row of a table of three or more
+/// columns, `first_height` rows of the sheet, with the rows of the
+/// subheadings under it ([`headings_end`]). None when that row reads as a
+/// record: a label of it is merged down over records ([`labels_merged_down`]),
+/// or it holds a number over numbers and no text over numbers. Numbers that
+/// count on from one another, as years and months, are headings. A text its
+/// column holds again tells nothing: a heading as 必須 stands over that mark.
+fn assumed_header_rows(
+    group: &[&Cell<'_>],
+    (left, top, right, bottom): Extent,
+    first_height: u32,
+    rows: u32,
+) -> u32 {
+    if right - left < 2 || rows < 2 {
+        return 0;
+    }
+    let end = headings_end(group, top, top + first_height.max(1) - 1);
+    if end >= bottom || labels_merged_down(group, top, end) {
+        return 0;
+    }
+    let heads = valued(in_rows(group, top, end).to_vec());
+    let body = valued(group.iter().copied().filter(|c| c.top > end).collect());
+    let (mut contrast, mut counted) = (false, vec![]);
+    for h in &heads {
+        let under: Vec<_> = body.iter().filter(|c| c.span() == h.span()).collect();
+        let numbers = under.len() >= 2 && under.iter().all(|c| number_like(c));
+        match (number_like(h), numbers) {
+            (false, true) => contrast = true,
+            (true, true) => counted.push(h.text().trim()),
+            _ => {}
+        }
+    }
+    let digits = |text: &&str| -> Option<i64> {
+        let number: String = text.chars().filter(char::is_ascii_digit).collect();
+        number.parse().ok()
+    };
+    let counting = counted.len() >= 2
+        && counted
+            .iter()
+            .map(digits)
+            .collect::<Option<Vec<_>>>()
+            .is_some_and(|n| {
+                n[1] != n[0] && n.windows(2).all(|pair| pair[1] - pair[0] == n[1] - n[0])
+            });
+    if !counted.is_empty() && !counting && !contrast {
+        return 0;
+    }
+    end - top + 1
+}
+
 /// The last header row when the rows from `header_top` are set apart from the
 /// records by bold text or by a fill the records do not use.
 fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32> {
@@ -816,7 +974,7 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
     // Fills that the header rows share and no record uses.
     let mut fill_end = None;
     if shaded && (first.len() >= 2 || single) {
-        let mut end = last(&first_all);
+        let mut end = headings_end(group, header_top, header_top);
         'header: loop {
             let next = row(group, end + 1);
             let headings = valued(next.clone());
@@ -872,7 +1030,7 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
         && all_bold(&under);
     let mut bold_end = None;
     if (first.len() >= 2 && mostly_bold) || group_header || (single && first[0].bold()) {
-        let mut end = last(&first);
+        let mut end = headings_end(group, header_top, header_top);
         if !single {
             loop {
                 let next_all = row(group, end + 1);
@@ -890,7 +1048,8 @@ fn header_end(group: &[&Cell<'_>], header_top: u32, single: bool) -> Option<u32>
         bold_end = Some(end);
         // Bold text tells nothing when every row is bold.
         if !group.iter().any(|c| c.top > end) {
-            bold_end = Some(fill_end.unwrap_or_else(|| last(&first)));
+            bold_end =
+                Some(fill_end.unwrap_or_else(|| headings_end(group, header_top, header_top)));
         }
     }
     bold_end.max(fill_end)
@@ -950,7 +1109,7 @@ fn calculated_under(group: &[&Cell<'_>], headings: &[&Cell<'_>], end: u32) -> bo
 /// instead, and a row of marked labels between plain values is a form.
 fn plain_header(group: &[&Cell<'_>], header_top: u32) -> Option<u32> {
     let first = valued(row(group, header_top));
-    let end = first.iter().map(|c| c.bottom).max()?;
+    let end = headings_end(group, header_top, header_top);
     let texts: BTreeSet<&str> = first.iter().map(|c| c.text().trim()).collect();
     let looks: BTreeSet<(bool, u64)> = first.iter().map(|c| (c.bold(), c.fill())).collect();
     if first.len() < 3
@@ -1050,6 +1209,13 @@ fn layout(group: &[&Cell<'_>], explicit: Explicit) -> Result<Layout> {
                     .unwrap(),
             ));
         }
+    }
+    // A label merged down over the records from the first row makes it a record.
+    if explicit.is_none()
+        && header.is_some_and(|(first, last)| labels_merged_down(group, first, last))
+    {
+        header = None;
+        plain = false;
     }
     Ok(Layout {
         left,
@@ -3391,11 +3557,30 @@ pub(super) fn elements(extraction: &Extraction) -> Result<Vec<Element>> {
                     t,
                     indices,
                     bounds,
-                    tables[t]["header_rows"].as_u64().unwrap_or(0) as u32,
+                    tables[t]["header_rows"].as_u64().map(|rows| rows as u32),
                 ));
             }
             found.sort_by_key(|(t, ..)| *t);
-            for (t, mut indices, bounds, mut header_rows) in found {
+            for (t, mut indices, bounds, stated) in found {
+                // The source tells the header rows, or leaves them to be read
+                // from the table's own cells.
+                let mut header_rows = match stated {
+                    Some(rows) => rows,
+                    None => {
+                        let mut group: Vec<_> = indices.iter().map(|i| &cells[*i]).collect();
+                        group.sort_by_key(|c| (c.top, c.left));
+                        let heights = tables[t]["row_heights"].as_array();
+                        assumed_header_rows(
+                            &group,
+                            (bounds.0.0, bounds.0.1, bounds.1.0, bounds.1.1),
+                            heights
+                                .and_then(|h| h.first())
+                                .and_then(Value::as_u64)
+                                .unwrap_or(1) as u32,
+                            heights.map_or(bounds.1.1 - bounds.0.1 + 1, |h| h.len() as u32),
+                        )
+                    }
+                };
                 let mut header_top = bounds.0.1;
                 // Group headers written directly above an outermost table:
                 // bold cells within its columns, at least one merged across several.
@@ -4049,6 +4234,182 @@ mod tests {
                 assert_ne!(found[record], "column_header", "{scored_from}: {found:?}");
             }
         }
+    }
+    /// Categories merged down in column A, each over `per` records of a
+    /// name in B and what `value` gives in C, from row `top`.
+    fn categories(top: u32, per: u32, value: &dyn Fn(u32) -> Value) -> (Vec<Value>, Vec<String>) {
+        let (mut cells, mut merges) = (vec![], vec![]);
+        for group in 0..2 {
+            let first = top + group * per;
+            cells.push(cell(&format!("A{first}"), &format!("分類{group}")));
+            merges.push(format!("A{first}:A{}", first + per - 1));
+            for row in first..first + per {
+                cells.push(cell(&format!("B{row}"), &format!("品名{row}")));
+                let mut c = value(row);
+                c["address"] = json!(format!("C{row}"));
+                cells.push(c);
+            }
+        }
+        (cells, merges)
+    }
+    #[test]
+    fn a_label_merged_down_over_records_is_no_heading_over_them() {
+        let headers = |cells: Vec<Value>, merges: &[String]| -> Vec<String> {
+            let merges: Vec<&str> = merges.iter().map(String::as_str).collect();
+            merged_roles(cells, &merges)
+                .into_iter()
+                .filter(|(_, role)| role == "column_header")
+                .map(|(address, _)| address)
+                .collect()
+        };
+        // Every cell bold, and no heading row: the first category is merged
+        // down over records, as the second is.
+        let (mut cells, merges) = categories(1, 3, &|row| number("", row));
+        for c in &mut cells {
+            c["style"]["bold"] = json!(true);
+        }
+        assert_eq!(headers(cells, &merges), Vec::<String>::new());
+        // Plain, the first record holding a text where the others a number.
+        let (cells, merges) = categories(1, 3, &|row| {
+            if row == 1 {
+                cell("", "未定")
+            } else {
+                number("", row)
+            }
+        });
+        assert_eq!(headers(cells, &merges), Vec::<String>::new());
+        // A heading row over the categories heads the columns, alone.
+        let (mut cells, merges) = categories(2, 3, &|row| number("", row));
+        cells.extend([cell("A1", "分類"), cell("B1", "品名"), cell("C1", "価格")]);
+        assert_eq!(headers(cells, &merges), ["A1", "B1", "C1"]);
+        // A heading merged down beside one merged across its subheadings
+        // takes their row.
+        let (mut cells, mut merges) = categories(3, 3, &|row| number("", row));
+        for row in 3..=8 {
+            cells.push(number(&format!("D{row}"), row));
+        }
+        let mut heads = vec![
+            cell("A1", "分類"),
+            cell("B1", "品名"),
+            cell("C1", "売上"),
+            cell("C2", "国内"),
+            cell("D2", "海外"),
+        ];
+        for c in &mut heads {
+            c["style"]["bold"] = json!(true);
+        }
+        cells.extend(heads);
+        merges.extend(["A1:A2", "B1:B2", "C1:D1"].map(str::to_owned));
+        assert_eq!(headers(cells, &merges), ["A1", "B1", "C1", "C2", "D2"]);
+    }
+    #[test]
+    fn a_table_that_tells_no_header_is_read_from_its_cells() {
+        // The header rows of a table defined without `header_rows`.
+        let header_rows = |cells: Vec<Value>, merges: &[&str], table: Value| -> usize {
+            let extraction =
+                json!({"sheets":[{"name":"S","cells":cells,"merges":merges,"tables":[table]}]});
+            let elements = element_values(&crate::extraction::sample(extraction)).unwrap();
+            elements[0]["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["role"] == "column_header")
+                .map(|c| c["address"].as_str().unwrap()[1..].to_owned())
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
+        let table = |range: &str| json!({"name":"table-1","range":range,"totals_rows":0});
+        let grid = |rows: &[&[&str]]| -> Vec<Value> {
+            let mut cells = vec![];
+            for (r, row) in rows.iter().enumerate() {
+                for (c, text) in row.iter().enumerate() {
+                    if !text.is_empty() {
+                        cells.push(cell(&format!("{}{}", ["A", "B", "C", "D"][c], r + 1), text));
+                    }
+                }
+            }
+            cells
+        };
+        // The first row of three columns or more, as a mark 必須 under its
+        // heading; two columns are labels beside values.
+        let fields = grid(&[
+            &["項目", "型", "必須"],
+            &["得意先", "CHAR(5)", "必須"],
+            &["数量", "NUMBER(7)", "必須"],
+        ]);
+        assert_eq!(header_rows(fields, &[], table("A1:C3")), 1);
+        let pairs = grid(&[&["項目", "内容"], &["幅", "10"], &["高さ", "20"]]);
+        assert_eq!(header_rows(pairs, &[], table("A1:B3")), 0);
+        // Categories merged down from the first row: every row is a record.
+        let (cells, merges) = categories(1, 3, &|row| cell("", &format!("備考{row}")));
+        let merges: Vec<&str> = merges.iter().map(String::as_str).collect();
+        assert_eq!(header_rows(cells.clone(), &merges, table("A1:C6")), 0);
+        // The source may still tell that the first row is a header.
+        let mut stated = table("A1:C6");
+        stated["header_rows"] = json!(1);
+        assert_eq!(header_rows(cells, &merges, stated), 1);
+        // A number over numbers is a record; years counting on are headings,
+        // and so is any row with a text over numbers.
+        let records = grid(&[
+            &["りんご", "120", "青森"],
+            &["みかん", "80", "愛媛"],
+            &["ぶどう", "300", "山梨"],
+        ]);
+        assert_eq!(header_rows(records, &[], table("A1:C3")), 0);
+        let years = grid(&[
+            &["項目", "2023", "2024"],
+            &["売上", "1,200", "1,350"],
+            &["利益", "90", "110"],
+        ]);
+        assert_eq!(header_rows(years, &[], table("A1:C3")), 1);
+        let mixed = grid(&[
+            &["品名", "2024", "単価"],
+            &["りんご", "120", "30円"],
+            &["みかん", "80", "20円"],
+        ]);
+        assert_eq!(header_rows(mixed, &[], table("A1:C3")), 1);
+        // A heading merged across its subheadings takes their row.
+        let layered = grid(&[
+            &["分類", "売上", "", "備考"],
+            &["", "国内", "海外", ""],
+            &["果物", "10", "20", "a"],
+            &["野菜", "30", "40", "b"],
+        ]);
+        assert_eq!(
+            header_rows(layered, &["A1:A2", "B1:C1", "D1:D2"], table("A1:D4")),
+            2
+        );
+        // Second lines written under headings without merging across: a
+        // note of the unit, and a text over numbers where the other
+        // headings are merged down.
+        let unit = grid(&[
+            &["品名", "売上", "利益"],
+            &["", "(千円)", "（千円）"],
+            &["りんご", "120", "30"],
+            &["みかん", "80", "20"],
+        ]);
+        assert_eq!(header_rows(unit, &["A1:A2"], table("A1:C4")), 2);
+        let second = grid(&[
+            &["品名", "産地", "単価", "備考"],
+            &["", "", "税込", ""],
+            &["りんご", "青森", "120", "a"],
+            &["みかん", "愛媛", "80", "b"],
+        ]);
+        assert_eq!(
+            header_rows(second, &["A1:A2", "B1:B2", "D1:D2"], table("A1:D4")),
+            2
+        );
+        // A first row of the source over two rows of the sheet, as a Word
+        // cell of two paragraphs, is one row.
+        let tall = grid(&[
+            &["項目", "単価", "備考"],
+            &["", "(円)", ""],
+            &["りんご", "120", "a"],
+            &["みかん", "80", "b"],
+        ]);
+        let mut heights = table("A1:C4");
+        heights["row_heights"] = json!([2, 1, 1]);
+        assert_eq!(header_rows(tall, &["A1:A2", "C1:C2"], heights), 2);
     }
     #[test]
     fn a_cell_a_merge_hides_joins_no_table() {

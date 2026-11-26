@@ -727,7 +727,9 @@ struct Table {
     columns: usize,
     rows: usize,
     cells: Vec<([usize; 4], Vec<Piece>)>,
-    header_rows: usize,
+    /// The header rows the page tells, by tags or shading; `None` when it
+    /// tells none.
+    header_rows: Option<usize>,
 }
 
 /// Rulings that cross one another: the lines of its columns and rows, and
@@ -927,15 +929,10 @@ fn lattices(rules: Vec<Rule>) -> Vec<Lattice> {
     out
 }
 
-/// The header rows of a table as a hypothesis for review, as a Word table's
-/// are: its leading rows whose cells are all shaded, else the first row of a
-/// table of three or more columns. A header cell spanning rows takes them.
-fn header_rows(
-    cells: &[([usize; 4], Vec<Piece>)],
-    shaded: &[bool],
-    columns: usize,
-    rows: usize,
-) -> usize {
+/// The header rows the page tells by shading, as a Word table's are: its
+/// leading rows whose cells are all shaded. `None` when it shades none or all,
+/// and structure inference reads them from the table's cells.
+fn header_rows(cells: &[([usize; 4], Vec<Piece>)], shaded: &[bool], rows: usize) -> Option<usize> {
     let mut all = vec![(0usize, true); rows];
     for ((span, _), shaded) in cells.iter().zip(shaded) {
         all[span[1]].0 += 1;
@@ -945,23 +942,7 @@ fn header_rows(
         .iter()
         .take_while(|(count, all)| *count > 0 && *all)
         .count();
-    let mut header = if emphasized > 0 && emphasized < rows {
-        emphasized
-    } else if columns >= 3 && rows >= 2 {
-        1
-    } else {
-        0
-    };
-    while let Some(deeper) = cells
-        .iter()
-        .map(|(span, _)| span)
-        .filter(|span| span[1] < header && span[3] >= header)
-        .map(|span| span[3] + 1)
-        .max()
-    {
-        header = deeper;
-    }
-    if header < rows { header } else { 0 }
+    (emphasized > 0 && emphasized < rows).then_some(emphasized)
 }
 
 /// What a region of the page holds, in the order it is read.
@@ -1613,14 +1594,13 @@ fn unruled(columns: Vec<Vec<Fragment>>, shown: &[Shown<'_>]) -> Columns {
             ([column, row, column, row], whole.pieces)
         })
         .collect();
-    let header_rows = header_rows(&cells, &vec![false; cells.len()], width, depth);
     Columns::Table(Table {
         plain: false,
         bounds,
         columns: width,
         rows: depth,
         cells,
-        header_rows,
+        header_rows: None,
     })
 }
 
@@ -1941,11 +1921,8 @@ fn marked_table(
     if cells.is_empty() {
         return None;
     }
-    let header_rows = if marked.header_rows > 0 && marked.header_rows < depth {
-        marked.header_rows
-    } else {
-        header_rows(&cells, &vec![false; cells.len()], columns, depth)
-    };
+    // Rows the tags mark as headers; a table tagged without any tells none.
+    let header_rows = Some(marked.header_rows).filter(|rows| *rows > 0 && *rows < depth);
     Some(Table {
         plain: false,
         bounds,
@@ -2139,7 +2116,7 @@ pub(crate) fn ruled_layout(
             bounds,
             columns,
             rows,
-            header_rows: header_rows(&cells, &shaded, columns, rows),
+            header_rows: header_rows(&cells, &shaded, rows),
             cells,
         });
     }
@@ -2185,7 +2162,7 @@ pub(crate) fn ruled_layout(
             bounds,
             columns: cells.iter().map(|(span, _)| span[0] + 1).max().unwrap_or(1),
             rows: cells.iter().map(|(span, _)| span[1] + 1).max().unwrap_or(1),
-            header_rows: 0,
+            header_rows: Some(0),
             cells,
         });
     }
@@ -2270,10 +2247,14 @@ pub(crate) fn ruled_layout(
                 }
                 let last = row + table.rows as u32 - 1;
                 layout.table_bounds.push(table.bounds);
-                layout.tables.push(json!({
+                let mut definition = json!({
                     "name":format!("table-{}", layout.tables.len() + 1),
                     "range":format!("{}:{}", address(1, row), address(table.columns as u32, last)),
-                    "header_rows":table.header_rows,"totals_rows":0}));
+                    "totals_rows":0});
+                if let Some(header_rows) = table.header_rows {
+                    definition["header_rows"] = json!(header_rows);
+                }
+                layout.tables.push(definition);
                 row = last + 1;
             }
         }
@@ -2424,7 +2405,7 @@ mod tests {
         assert_eq!(layout.merges, ["A2:C2", "A3:A4"]);
         assert_eq!(
             layout.tables,
-            [json!({"name":"table-1","range":"A2:C4","header_rows":1,"totals_rows":0})]
+            [json!({"name":"table-1","range":"A2:C4","totals_rows":0})]
         );
     }
 
@@ -2523,7 +2504,7 @@ mod tests {
         );
         assert_eq!(
             layout.tables,
-            [json!({"name":"table-1","range":"A2:C4","header_rows":1,"totals_rows":0})]
+            [json!({"name":"table-1","range":"A2:C4","totals_rows":0})]
         );
     }
 
@@ -2799,7 +2780,7 @@ mod tests {
         );
         assert_eq!(
             layout.tables,
-            [json!({"name":"table-1","range":"A1:D3","header_rows":1,"totals_rows":0})]
+            [json!({"name":"table-1","range":"A1:D3","totals_rows":0})]
         );
     }
 

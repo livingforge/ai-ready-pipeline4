@@ -75,6 +75,20 @@ agent_read_format: toon
 
 `arp4 documents init` が `.arp/config.yml` と内部の `.gitignore` を作成します。原本の配置は `documents init --sources specifications` のように変更できます。初期化で既存の原本、AGENTS.md、エディタ設定は変更しません。
 
+作成する `config.yml` には、変更できる設定をすべて既定値で書き出します。内容は契約 `project-config` の `default` から組み立てるので、契約に設定を追加すると初期の `config.yml` にも現れます。既存の `config.yml` は書き換えません。書かれていない設定は既定値で動作します。
+
+```yaml
+# documents init が作成する .arp/config.yml
+agent_read_format: toon
+assets:
+  max_aspect_ratio: 20
+exclude: []
+picture_folders: []
+protected_originals: skip
+schema_version: "1"
+sources: docs
+```
+
 HTMLのページが相対パスで指す画像ファイルは、取り込み元フォルダ（sources）の中にあるものだけを読みます。画像を別のフォルダに置くときは、そのフォルダを `picture_folders` に書きます。プロジェクト内のフォルダは `.arp/config.yml` に、プロジェクトの外のフォルダ（共有ドライブなど）はGit管理外の `.arp/local.yml` に書きます。`local.yml` はそのマシンだけの設定で、絶対パスや `../` も書けます。存在しないフォルダは無視するので、ほかのマシンではその画像がassetsに入りません。
 
 ```yaml
