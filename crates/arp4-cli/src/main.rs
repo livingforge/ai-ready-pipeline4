@@ -177,6 +177,7 @@ fn run(cli: Cli) -> Result<bool> {
                 DocumentCommand::Init { .. }
                     | DocumentCommand::Import { .. }
                     | DocumentCommand::Unprotect { .. }
+                    | DocumentCommand::Convert { .. }
                     | DocumentCommand::Remove { .. }
                     | DocumentCommand::Move { .. }
                     | DocumentCommand::Discard { .. }
@@ -660,6 +661,28 @@ fn run(cli: Cli) -> Result<bool> {
                     });
                     if !array(&result["failed"])?.is_empty() {
                         result["error"] = json!({"code":"operation_failed","message":"The protection of some originals could not be removed; see failed. They stay as they were."});
+                        output.emit(result, false);
+                        return Ok(false);
+                    }
+                    result
+                }
+                DocumentCommand::Convert {
+                    source,
+                    approved_by,
+                } => {
+                    ensure!(
+                        !approved_by.trim().is_empty(),
+                        "--approved-by names the user who approved converting the originals"
+                    );
+                    let mut result = store.convert(&source)?;
+                    result["approved_by"] = json!(approved_by);
+                    result["state"] = json!(if array(&result["converted"])?.is_empty() {
+                        "unchanged"
+                    } else {
+                        "converted"
+                    });
+                    if !array(&result["failed"])?.is_empty() {
+                        result["error"] = json!({"code":"operation_failed","message":"Some originals could not be converted; see failed. They stay as they were."});
                         output.emit(result, false);
                         return Ok(false);
                     }
@@ -2354,6 +2377,23 @@ fn main() -> std::process::ExitCode {
             .nth(2)
             .ok_or_else(|| anyhow::anyhow!("Office unprotect request path missing"))
             .and_then(|path| arp4_cli::rights_management::worker(std::path::Path::new(&path)));
+        return match outcome {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
+    #[cfg(windows)]
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--internal-office-convert")
+    {
+        let outcome = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("Office conversion request path missing"))
+            .and_then(|path| arp4_cli::office_conversion::worker(std::path::Path::new(&path)));
         return match outcome {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {

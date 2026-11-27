@@ -30,6 +30,22 @@ pub(crate) fn execute(command: SpecCommand, output: Output) -> Result<bool> {
             } else {
                 None
             };
+            let command = match command {
+                StructureCommand::Read {
+                    extraction,
+                    structure,
+                    sheet,
+                    range,
+                    ..
+                } => StructureCommand::Read {
+                    extraction,
+                    structure,
+                    sheet,
+                    range,
+                    whole: output.full,
+                },
+                command => command,
+            };
             let mut result = arp4_cli::document_structure::execute(&root, command)?;
             result["ok"] = json!(true);
             output.note_ignored(&mut result);

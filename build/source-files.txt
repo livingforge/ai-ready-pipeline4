@@ -137,6 +137,7 @@ crates/arp4-cli/src/main.rs
 crates/arp4-cli/src/native_text.rs
 crates/arp4-cli/src/ocr.rs
 crates/arp4-cli/src/office_com.rs
+crates/arp4-cli/src/office_conversion.rs
 crates/arp4-cli/src/office_pdf.rs
 crates/arp4-cli/src/office_worker.rs
 crates/arp4-cli/src/path_limits.rs

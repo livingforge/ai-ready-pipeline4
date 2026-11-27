@@ -1,7 +1,8 @@
 use super::*;
 use crate::document_source::encryption::{self, Protected, Protection};
 use crate::document_structure::Carrier;
-use crate::project::ProtectedOriginals;
+use crate::office_conversion::Converted;
+use crate::project::{BinaryOriginals, ProtectedOriginals};
 use crate::rights_management::Unprotected;
 use foldhash::HashSet;
 use std::io::Read as _;
@@ -42,6 +43,10 @@ impl Unprotection {
         }
     }
 }
+
+/// Saves a binary Office original as Open XML: given the original and a folder
+/// for its files, as [`crate::office_conversion::convert`] is.
+pub type Converter = fn(&Path, &Path) -> Result<Converted>;
 
 /// How the protection `protected` is removed: with its `password` or by
 /// desktop `office`, both by `documents unprotect`, or `manual`ly outside ARP.
@@ -98,7 +103,10 @@ impl Store {
     /// and documents whose original is gone are listed for `documents remove`. An
     /// original that cannot be imported is listed under `failed` and the others are
     /// still imported. A protected original is listed under `skipped` with its
-    /// `protection`, unless the project lets import remove it.
+    /// `protection`, unless the project lets import remove it. A binary Office
+    /// original is listed under `skipped` too, unless the project lets import
+    /// convert it: it is then listed under `converted` and the Open XML file
+    /// that took its place is imported.
     pub fn import_folder(
         &self,
         source: &Path,
@@ -112,7 +120,9 @@ impl Store {
         }
         let unprotection = self.unprotection_at_import(unprotection)?;
         let exclusion = self.exclusion()?;
+        let convert = self.binary_originals()? == BinaryOriginals::Convert;
         let formats = crate::document_source::input_formats();
+        let mut converted = vec![];
         let mut imported = vec![];
         let mut unchanged = vec![];
         let mut pending_proposals = vec![];
@@ -124,14 +134,28 @@ impl Store {
         let moved = self.moved_originals(&originals)?;
         let moved_to: BTreeSet<&str> = moved.values().map(String::as_str).collect();
         for path in originals {
-            let (path, id) = self.resolve(&path)?;
+            let (mut path, mut id) = self.resolve(&path)?;
             if moved_to.contains(id.as_str()) {
                 continue;
             }
-            let ext = extension(&path);
+            let mut ext = extension(&path);
             if let Some(replacement) = crate::document_source::binary_office_replacement(&ext) {
-                skipped.push(json!({"document_id":id,"reason":format!("binary Office format; save as {replacement}")}));
-                continue;
+                if !convert {
+                    skipped.push(json!({"document_id":id,"reason":format!("binary Office format; save as {replacement}, or convert it with documents convert once the user approves")}));
+                    continue;
+                }
+                match self.convert_original(&path, &id, crate::office_conversion::convert) {
+                    Ok((saved, record)) => {
+                        id = string(&record["document_id"])?.to_owned();
+                        ext = extension(&saved);
+                        path = saved;
+                        converted.push(record);
+                    }
+                    Err(error) => {
+                        failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
+                        continue;
+                    }
+                }
             }
             if !formats.contains(&ext.as_str()) {
                 skipped.push(json!({"document_id":id,"reason":"unsupported format"}));
@@ -172,7 +196,7 @@ impl Store {
             .into_iter()
             .filter(|id| !moved.contains_key(id))
             .collect();
-        let mut result = json!({"imported":imported,"unchanged":unchanged,"pending_proposals":pending_proposals,"skipped":skipped,"failed":failed,"unprotected":unprotected,"missing":missing});
+        let mut result = json!({"imported":imported,"unchanged":unchanged,"pending_proposals":pending_proposals,"skipped":skipped,"failed":failed,"unprotected":unprotected,"converted":converted,"missing":missing});
         // Documents imported before their originals were excluded, for
         // `documents remove`, which keeps the originals.
         let scope = Some(scope.as_str()).filter(|s| !s.is_empty());
@@ -303,6 +327,83 @@ impl Store {
         }
         ensure!(!named || !unprotected.is_empty(), "{id} is not protected");
         Ok(json!({"unprotected":unprotected,"not_removable":not_removable,"failed":failed}))
+    }
+
+    /// Converts the binary Office original `source`, or every binary Office
+    /// original below the folder `source`, to Open XML with desktop Office:
+    /// the Open XML file takes its place and the binary file is deleted;
+    /// import then reads it. Lists the originals `converted`, each with the
+    /// document ID of the Open XML file, the ID it is `from`, its `format`
+    /// and whether it holds `macros`, and, below a folder, those that could
+    /// not be converted (`failed`), which stay as they were.
+    pub fn convert(&self, source: &Path) -> Result<Value> {
+        self.convert_with(source, crate::office_conversion::convert)
+    }
+
+    /// [`Self::convert`] with `converter` in place of desktop Office.
+    pub fn convert_with(&self, source: &Path, converter: Converter) -> Result<Value> {
+        let (path, id) = self.resolve(source)?;
+        let named = path.is_file();
+        let mut converted = vec![];
+        let mut failed = vec![];
+        for (path, id) in self.originals_at(Some(source))? {
+            if crate::document_source::binary_office_replacement(&extension(&path)).is_none() {
+                continue;
+            }
+            match self.convert_original(&path, &id, converter) {
+                Ok((_, record)) => converted.push(record),
+                Err(error) if named => return Err(error),
+                Err(error) => {
+                    failed.push(json!({"document_id":id,"reason":format!("{error:#}")}));
+                }
+            }
+        }
+        ensure!(
+            !named || !converted.is_empty(),
+            "{id} is not a binary Office file (.xls/.xlsb/.xlt/.doc/.dot/.ppt/.pot/.pps)"
+        );
+        Ok(json!({"converted":converted,"failed":failed}))
+    }
+
+    /// Saves the binary Office original at `path`, of the ID `id`, as Open
+    /// XML beside it and deletes it. Returns the path of the Open XML file
+    /// and the record of the conversion. Nothing changes when the conversion
+    /// fails or a file already has the Open XML file's name.
+    fn convert_original(
+        &self,
+        path: &Path,
+        id: &str,
+        converter: Converter,
+    ) -> Result<(PathBuf, Value)> {
+        let raw = fs::read(path)?;
+        let stage = Stage::new_in(&under(&self.arp, "work")?, &self.arp)?;
+        let converted = converter(path, stage.path())?;
+        // Only a package ARP opens takes the place of the original.
+        if let Err(error) = crate::document_source::office_package(&converted.bytes) {
+            bail!("the converted file is not an Open XML package: {error:#}");
+        }
+        let target = path.with_extension(&converted.format);
+        let target_id = Path::new(id)
+            .with_extension(&converted.format)
+            .to_string_lossy()
+            .replace('\\', "/");
+        self.ensure_included(&target_id)?;
+        ensure!(
+            !target.exists(),
+            "{target_id} already exists; move or remove one of the two files, then convert again"
+        );
+        ensure!(
+            fs::read(path)? == raw,
+            "source changed while it was converted"
+        );
+        replace(&target, &converted.bytes)?;
+        fs::remove_file(path).with_context(|| {
+            format!("{target_id} was saved, but {id} could not be deleted; delete it")
+        })?;
+        Ok((
+            target,
+            json!({"document_id":target_id,"from":id,"format":converted.format,"macros":converted.macros}),
+        ))
     }
 
     /// The original `source` names, or the originals below the folder it
@@ -561,23 +662,45 @@ impl Store {
 
     /// Imports one original as `import_with_force` does. Its encryption is
     /// removed with `unprotection` when the project lets import remove it;
-    /// otherwise a protected original is refused.
+    /// otherwise a protected original is refused. A binary Office original
+    /// is converted to Open XML first when the project lets import convert
+    /// it, and the result then records the conversion under `converted`;
+    /// otherwise it is refused.
     pub fn import_with(
         &self,
         source: &Path,
         force: bool,
         unprotection: &Unprotection,
     ) -> Result<Value> {
-        let (source, id) = self.resolve(source)?;
+        let (mut source, mut id) = self.resolve(source)?;
         ensure!(source.is_file(), "import a file or use a folder: {id}");
         self.ensure_included(&id)?;
-        let unprotection = self.unprotection_at_import(unprotection)?;
-        match self.import_changed(&source, &id, force, unprotection)? {
-            Some(result) => Ok(result),
-            None => Ok(
-                json!({"document_id":id,"state":"unchanged","pending_proposal":self.proposal_path(&id)?.exists()}),
-            ),
+        let mut converted = None;
+        if crate::document_source::binary_office_replacement(&extension(&source)).is_some()
+            && self.binary_originals()? == BinaryOriginals::Convert
+        {
+            let (saved, record) =
+                self.convert_original(&source, &id, crate::office_conversion::convert)?;
+            id = string(&record["document_id"])?.to_owned();
+            source = saved;
+            converted = Some(record);
         }
+        let unprotection = self.unprotection_at_import(unprotection)?;
+        let imported = self.import_changed(&source, &id, force, unprotection);
+        let imported = match converted {
+            Some(_) => imported.context("the original was converted, but its import failed")?,
+            None => imported?,
+        };
+        let mut result = match imported {
+            Some(result) => result,
+            None => {
+                json!({"document_id":id,"state":"unchanged","pending_proposal":self.proposal_path(&id)?.exists()})
+            }
+        };
+        if let Some(record) = converted {
+            result["converted"] = record;
+        }
+        Ok(result)
     }
 
     /// Imports `source` as the proposal of `id`. `carry`, from `apply`, moves the
@@ -608,7 +731,7 @@ impl Store {
         let ext = extension(source);
         if let Some(replacement) = crate::document_source::binary_office_replacement(&ext) {
             bail!(
-                ".{ext} is a binary Office format; save it in Office as {replacement} and import that copy"
+                ".{ext} is a binary Office format, which import does not read unless binary_originals of .arp/config.yml is convert; save it in Office as {replacement} and import that copy, or with the user's approval convert it with documents convert --approved-by, then import"
             );
         }
         let formats = crate::document_source::input_formats();

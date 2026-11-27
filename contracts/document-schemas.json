@@ -13119,6 +13119,15 @@
         ],
         "default": "skip"
       },
+      "binary_originals": {
+        "description": "What import does with a binary Office original (.xls, .xlsb, .xlt, .doc, .dot, .ppt, .pot, .pps), which ARP does not read. skip leaves it as it is and lists it under skipped; documents convert converts it once the user approves. convert lets import convert it as documents convert does: desktop Office on Windows saves it as Open XML under the same name (the macro-enabled format when it holds macros), the binary file is deleted and the Open XML file is imported.",
+        "type": "string",
+        "enum": [
+          "skip",
+          "convert"
+        ],
+        "default": "skip"
+      },
       "assets": {
         "description": "Which of the pictures an original shows import leaves out of its assets.",
         "type": "object",

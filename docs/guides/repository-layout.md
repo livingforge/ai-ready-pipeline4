@@ -82,6 +82,7 @@ agent_read_format: toon
 agent_read_format: toon
 assets:
   max_aspect_ratio: 20
+binary_originals: skip
 exclude: []
 picture_folders: []
 protected_originals: skip
@@ -121,6 +122,13 @@ exclude:
 ```yaml
 # .arp/config.yml
 protected_originals: unprotect   # 既定は skip
+```
+
+バイナリ形式のOffice文書（`.xls` / `.xlsb` / `.xlt` / `.doc` / `.dot` / `.ppt` / `.pot` / `.pps`）の扱いは `binary_originals` で決めます。既定の `skip` では、importはこれらを取り込まず原本も変えません（フォルダの取り込みでは `skipped` に挙げ、直接指定するとエラーにします）。利用者が承認した原本だけ `documents convert --approved-by <承認者>` でOpen XML形式に変換してから取り込みます。`convert` にすると、importがデスクトップ版Office（Windows）で同じ変換を行ってから取り込みます。変換後のファイルは同じ名前で拡張子だけが変わり（マクロを含むファイルは `.xlsm` / `.docm` / `.pptm`）、元のバイナリ形式のファイルは残りません。利用者が判断して設定し、Agentには書き換えさせません。
+
+```yaml
+# .arp/config.yml
+binary_originals: convert   # 既定は skip
 ```
 
 PDFのページが描く画像と図のうち、長辺が短辺の20倍を超えるものは、罫線や帯などの飾りとみなして `assets/` に保存しません（保存しなかったページと件数は抽出の注意事項に記録します）。倍率は `assets.max_aspect_ratio` で変えられ、`null` にすると縦横比では除外しません。設定を変えても原本が変わらない文書は再取込されないので、`documents import --force` で取り込み直します。

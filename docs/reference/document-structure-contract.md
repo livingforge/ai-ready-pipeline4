@@ -118,8 +118,13 @@
 | <code>/$defs/correction_journal/properties/visuals/items/properties/sources/items/properties/sha256</code> | <code>{"$ref":"#/$defs/hash"}</code> |
 | <code>/$defs/correction_journal/properties/visuals/items/properties/visual</code> | <code>{"$ref":"#/$defs/visual"}</code> |
 | <code>/$defs/document_id</code> | <code>{"description":"The original's path below the sources folder, including leading spaces in path segments.","pattern":"^[^/\\\\:*?\"&lt;&gt;&#124;]+(/[^/\\\\:*?\"&lt;&gt;&#124;]+)*$","type":"string"}</code> |
-| <code>/$defs/edit</code> | <code>{"additionalProperties":false,"description":"Batch interpretation edits. Upsert replaces the complete item by ID or adds a new one. Remove requires an existing ID. IDs must occur only once per collection across both operations. Revision is the complete interpretation hash returned by read/check. Source, extraction, regions and review are CLI-managed. Elements are given as read returns them (edit_element): a cell names what is not its default.","required":["revision"],"type":"object"}</code> |
+| <code>/$defs/edit</code> | <code>{"additionalProperties":false,"description":"Batch interpretation edits. Upsert replaces the complete item by ID or adds a new one. Patch changes cells of an element that stays. Remove requires an existing ID. IDs must occur only once per collection across both operations. Revision is the complete interpretation hash returned by read/check. Source, extraction, regions and review are CLI-managed. Elements are given as read returns them (edit_element): a cell names what is not its default.","required":["revision"],"type":"object"}</code> |
 | <code>/$defs/edit/properties/elements</code> | <code>{"additionalProperties":false,"minProperties":1,"type":"object"}</code> |
+| <code>/$defs/edit/properties/elements/properties/patch</code> | <code>{"description":"Changes to cells of elements that stay: each names an element by ID and gives the cells to replace, each by its address, as read returns them. The element's other cells and members are kept, as if the element were upserted as read returns it with these cells changed: the headers left out follow the roles after the change.","minItems":1,"type":"array"}</code> |
+| <code>/$defs/edit/properties/elements/properties/patch/items</code> | <code>{"additionalProperties":false,"required":["id","cells"],"type":"object"}</code> |
+| <code>/$defs/edit/properties/elements/properties/patch/items/properties/cells</code> | <code>{"minItems":1,"type":"array"}</code> |
+| <code>/$defs/edit/properties/elements/properties/patch/items/properties/cells/items</code> | <code>{"$ref":"#/$defs/edit_cell"}</code> |
+| <code>/$defs/edit/properties/elements/properties/patch/items/properties/id</code> | <code>{"$ref":"#/$defs/text"}</code> |
 | <code>/$defs/edit/properties/elements/properties/remove</code> | <code>{"$ref":"#/$defs/edit_ids"}</code> |
 | <code>/$defs/edit/properties/elements/properties/upsert</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/$defs/edit/properties/elements/properties/upsert/items</code> | <code>{"$ref":"#/$defs/edit_element"}</code> |
@@ -130,12 +135,21 @@
 | <code>/$defs/edit/properties/visuals/properties/upsert/items</code> | <code>{"$ref":"#/$defs/visual"}</code> |
 | <code>/$defs/edit/anyOf/0</code> | <code>{"required":["elements"]}</code> |
 | <code>/$defs/edit/anyOf/1</code> | <code>{"required":["visuals"]}</code> |
-| <code>/$defs/edit_cell</code> | <code>{"additionalProperties":false,"description":"A cell as read returns it and an edit takes it: cell, without the members that have their default.","required":["address","role"],"type":"object"}</code> |
+| <code>/$defs/edit_cell</code> | <code>{"additionalProperties":false,"description":"A cell as read returns it and an edit takes it: cell, without the members that have their default, and with what read returns of the original cell, which an edit takes back unread.","required":["address"],"type":"object"}</code> |
 | <code>/$defs/edit_cell/properties/address</code> | <code>{"$ref":"#/$defs/text"}</code> |
-| <code>/$defs/edit_cell/properties/headers</code> | <code>{"$ref":"#/$defs/ids","description":"The IDs of the cell's headers; left out when it has none."}</code> |
+| <code>/$defs/edit_cell/properties/cached</code> | <code>{"description":"Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/font</code> | <code>{"description":"The original cell's font where it is not the sheet's cell_font. Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/formula</code> | <code>{"description":"The original cell's formula. Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/headers</code> | <code>{"$ref":"#/$defs/ids","description":"The IDs of the cell's headers. Left out when they follow from the roles of the element's cells: of a data cell, the column_header cells of its column from the top, then the row_header cells of its row from the left; of a row_header, the column_header cells of its column; of any other cell, none. Give the list, empty for none, where the headers are others: left out in an edit, the headers follow the roles the edit gives."}</code> |
 | <code>/$defs/edit_cell/properties/id</code> | <code>{"$ref":"#/$defs/text","description":"Left out when it is s&lt;N&gt;-&lt;address&gt;, N the number of the element's sheet among the document's sheets from 1 (s2-B5): the ID headers, parent context and unresolved name the cell by."}</code> |
-| <code>/$defs/edit_cell/properties/role</code> | <code>{"enum":["unassigned","text","data","row_header","column_header","note"]}</code> |
+| <code>/$defs/edit_cell/properties/number_format</code> | <code>{"description":"The original cell's number format where it is not General. Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/position</code> | <code>{"description":"Where the cell lies in a text original. Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/role</code> | <code>{"description":"Left out when it is data in a table, text in a text element.","enum":["unassigned","text","data","row_header","column_header","note"]}</code> |
+| <code>/$defs/edit_cell/properties/source_id</code> | <code>{"description":"The original cell's ID where it is not the default. Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/style</code> | <code>{"description":"The original cell's style where it is not the sheet's cell_style. Read-only."}</code> |
 | <code>/$defs/edit_cell/properties/text_state</code> | <code>{"description":"Left out when read.","enum":["read","empty","unreadable","not_examined"]}</code> |
+| <code>/$defs/edit_cell/properties/type</code> | <code>{"description":"The original cell's type where its value does not give it. Read-only."}</code> |
+| <code>/$defs/edit_cell/properties/value</code> | <code>{"description":"The original cell's value, as extraction-read gives it. Read-only."}</code> |
 | <code>/$defs/edit_element</code> | <code>{"additionalProperties":false,"description":"An element as read returns it and an edit takes it: element, with each cell as edit_cell.","required":["id","kind","sheet","cells","evidence","reading"],"type":"object"}</code> |
 | <code>/$defs/edit_element/properties/cells</code> | <code>{"minItems":1,"type":"array"}</code> |
 | <code>/$defs/edit_element/properties/cells/items</code> | <code>{"$ref":"#/$defs/edit_cell"}</code> |

@@ -108,6 +108,33 @@ impl ProtectedOriginals {
     }
 }
 
+/// What import does with a binary Office original (.xls, .doc, .ppt and
+/// their kin), which ARP does not parse, by `binary_originals` of the project
+/// configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryOriginals {
+    /// Leaves it as it is and does not import it; `documents convert`
+    /// converts it once the user approves.
+    #[default]
+    Skip,
+    /// Has desktop Office save it as Open XML in its place, deletes the
+    /// binary file and imports the Open XML one.
+    Convert,
+}
+
+impl BinaryOriginals {
+    /// The setting of the project configuration `config`.
+    pub fn of(config: &Value) -> Result<Self> {
+        config
+            .get("binary_originals")
+            .map_or(Ok(Self::default()), |value| {
+                serde_json::from_value(value.clone())
+                    .context("binary_originals of .arp/config.yml must be skip or convert")
+            })
+    }
+}
+
 /// Which of the pictures an original shows import leaves out of its assets,
 /// by `assets` of the project configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -355,6 +382,7 @@ mod tests {
                 "picture_folders": [],
                 "exclude": [],
                 "protected_originals": "skip",
+                "binary_originals": "skip",
                 "assets": {"max_aspect_ratio": 20},
             })
         );
@@ -368,6 +396,10 @@ mod tests {
         assert_eq!(
             ProtectedOriginals::of(&config).unwrap(),
             ProtectedOriginals::of(&none).unwrap()
+        );
+        assert_eq!(
+            BinaryOriginals::of(&config).unwrap(),
+            BinaryOriginals::of(&none).unwrap()
         );
         assert_eq!(config["agent_read_format"], json!(AgentFormat::default()));
         assert!(Exclusion::of(&config).unwrap().0.is_empty());

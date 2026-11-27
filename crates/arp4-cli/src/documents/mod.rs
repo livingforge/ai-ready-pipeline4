@@ -8,7 +8,7 @@ mod diff;
 mod export;
 mod import;
 use import::Carry;
-pub use import::Unprotection;
+pub use import::{Converter, Unprotection};
 mod inspection;
 mod result_cache;
 pub mod search;
@@ -386,6 +386,13 @@ impl Store {
     /// The originals below the sources folder that are not documents.
     pub fn exclusion(&self) -> Result<crate::project::Exclusion> {
         crate::project::Exclusion::of(&read(
+            &under(&self.root, ".arp/config.yml")?,
+            Some("project-config"),
+        )?)
+    }
+    /// What import does with binary Office originals.
+    pub fn binary_originals(&self) -> Result<crate::project::BinaryOriginals> {
+        crate::project::BinaryOriginals::of(&read(
             &under(&self.root, ".arp/config.yml")?,
             Some("project-config"),
         )?)

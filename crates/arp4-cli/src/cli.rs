@@ -1324,7 +1324,11 @@ pub(crate) enum DocumentCommand {
     /// encrypted with a password, by IRM or by a sensitivity label, and a PDF
     /// that needs a password or wraps an encrypted document) is not imported:
     /// a folder lists it under skipped with its protection, and it is refused
-    /// when named. See protected and unprotect. Where protected_originals of
+    /// when named. A binary Office original (.xls, .xlsb, .xlt, .doc, .dot,
+    /// .ppt, .pot, .pps) is not imported either: a folder lists it under
+    /// skipped, and it is refused when named. See convert. Where
+    /// binary_originals of .arp/config.yml is convert, it is converted to
+    /// Open XML first as convert does. See protected and unprotect. Where protected_originals of
     /// .arp/config.yml is unprotect, an encrypted Office original is decrypted
     /// and saved over without its encryption first: a password with
     /// --password-stdin, IRM and sensitivity labels by desktop Office on
@@ -1373,6 +1377,24 @@ pub(crate) enum DocumentCommand {
         /// each encrypted original is opened with the first that fits.
         #[arg(long)]
         password_stdin: bool,
+    },
+    /// Convert a binary Office original (.xls, .xlsb, .xlt, .doc, .dot, .ppt,
+    /// .pot, .pps), or every one below a folder, to Open XML with desktop
+    /// Office; import then reads it. Run only after the user approved
+    /// converting these originals: the Open XML file takes the original's
+    /// place under the same name and the binary file is not kept. A file
+    /// that holds macros (a VBA project or an Excel 4.0 macro sheet) becomes
+    /// the macro-enabled format (.xlsm, .docm, .pptm), any other .xlsx, .docx
+    /// or .pptx; a template stays a template. The document ID follows the new
+    /// extension. Needs Windows and desktop Excel, Word or PowerPoint. An
+    /// original that cannot be converted, or whose Open XML name is taken,
+    /// stays as it was.
+    Convert {
+        /// The original, or a folder of originals, below the sources folder.
+        source: PathBuf,
+        /// The user who approved converting these originals.
+        #[arg(long)]
+        approved_by: String,
     },
     /// Move or rename an original, or a folder of originals, with its records.
     ///

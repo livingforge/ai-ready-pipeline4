@@ -183,12 +183,27 @@ pub enum StructureCommand {
         #[arg(long)]
         structure: PathBuf,
     },
-    /// Read the interpretation, original cells, compact drawings and verified image paths.
+    /// Read the interpretation with the original: each sheet with its elements,
+    /// whose cells hold the original's value and format beside their role and
+    /// headers, its compact drawings and its visuals, and the verified image
+    /// paths. A document too large for one response lists its sheets
+    /// (sheets_listed) to read with --sheet; --full returns all of it.
     Read {
         #[arg(long)]
         extraction: PathBuf,
         #[arg(long)]
         structure: PathBuf,
+        /// Return this sheet alone; repeat for several.
+        #[arg(long)]
+        sheet: Vec<String>,
+        /// With one --sheet, return the cells in this range, as A1:H200, and
+        /// the drawings anchored in it: for a sheet too large for one
+        /// response (elements_listed).
+        #[arg(long, requires = "sheet")]
+        range: Option<String>,
+        /// All sheets whatever the size, as --full gives.
+        #[arg(skip)]
+        whole: bool,
     },
     /// Batch upsert/remove elements and visuals against the revision returned by read.
     /// Validate the whole interpretation and reset review only when content changes.
@@ -879,7 +894,6 @@ impl<'a> SheetCells<'a> {
 }
 
 pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
-    let include_context = matches!(&command, StructureCommand::Read { .. });
     match command {
         StructureCommand::Edit {
             extraction,
@@ -991,28 +1005,36 @@ pub fn execute(root: &Path, command: StructureCommand) -> Result<Value> {
         StructureCommand::Check {
             extraction: path,
             structure,
-        }
-        | StructureCommand::Read {
-            extraction: path,
-            structure,
         } => {
             let ext = extraction(&path)?;
             let value = read(&structure, None)?;
             let mut report = validate(root, &ext, &value)?;
             report["revision"] = json!(hash(&encoded(&value)));
             report["unresolved"] = unresolved_by_state(&report["unresolved"]);
-            if !include_context {
-                return Ok(report);
-            }
-            report["structure"] = value;
-            for element in report["structure"]["elements"]
-                .as_array_mut()
-                .into_iter()
-                .flatten()
-            {
-                edit::compact_element(&ext, element);
-            }
-            context::read(root, &path, &ext, &mut report)?;
+            Ok(report)
+        }
+        StructureCommand::Read {
+            extraction: path,
+            structure,
+            sheet,
+            range,
+            whole,
+        } => {
+            let ext = extraction(&path)?;
+            let value = read(&structure, None)?;
+            let mut report = validate(root, &ext, &value)?;
+            report["revision"] = json!(hash(&encoded(&value)));
+            report["unresolved"] = unresolved_by_state(&report["unresolved"]);
+            context::read(
+                root,
+                &path,
+                &ext,
+                value,
+                &mut report,
+                &sheet,
+                range.as_deref(),
+                whole,
+            )?;
             Ok(report)
         }
         StructureCommand::Region {
